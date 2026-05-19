@@ -1449,27 +1449,11 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 {
 	struct dma_chan *rx = qce->dma.rxchan;
 	struct dma_chan *tx = qce->dma.txchan;
-	/*
-	 * ADM hardware byte+short swap on both directions: the CE2 engine
-	 * reads/writes data MSB-first on its DATA_SHADOW0 port; LuneOS RAM
-	 * is LE.  Byte+short combined = full 32-bit byte reverse, matching
-	 * the legacy webOS qce.c (CMD_DST_SWAP_BYTES | CMD_DST_SWAP_SHORTS
-	 * on CE_IN, CMD_SRC_SWAP_* on CE_OUT) and Samsung qce.ko patterns.
-	 * Doing the swap in hardware per CRCI handshake instead of in
-	 * software before DMA changes the pacing the engine sees, which is
-	 * the primary suspect for the 4-AES-block cap on the SW-swap path.
-	 */
 	struct qcom_adm_peripheral_config in_periph = {
 		.crci = qce->dma.rx_crci,	/* CRCI 4 = CE_IN */
-		.cmd_flags = QCOM_ADM_CMD_FLAG_SWAP_BYTES |
-			     QCOM_ADM_CMD_FLAG_SWAP_SHORTS |
-			     QCOM_ADM_CMD_FLAG_MODE_SG,
 	};
 	struct qcom_adm_peripheral_config out_periph = {
 		.crci = 5,			/* CRCI 5 = CE_OUT */
-		.cmd_flags = QCOM_ADM_CMD_FLAG_SWAP_BYTES |
-			     QCOM_ADM_CMD_FLAG_SWAP_SHORTS |
-			     QCOM_ADM_CMD_FLAG_MODE_SG,
 	};
 	struct dma_slave_config in_conf = {
 		.direction = DMA_MEM_TO_DEV,
@@ -1483,16 +1467,6 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		 * (other 8 read back as zero from DATA_SHADOW0).
 		 */
 		.dst_maxburst = block_dwords,
-		/* CRCI flow control: the ADM must wait for the engine to
-		 * assert DIN_RDY between bursts so we don't overrun its DIN
-		 * FIFO (4-block AES depth on this silicon).  Without
-		 * device_fc=1 qcom_adm routes through the non-flow-controlled
-		 * SINGLE-cmd path which ignores both crci and cmd_flags --
-		 * that was the real cause of the long-standing 4-block AES
-		 * cap.  Same goes for the swap bits below; they only kick in
-		 * on the flow-controlled path.
-		 */
-		.device_fc = true,
 		.peripheral_config = &in_periph,
 		.peripheral_size = sizeof(in_periph),
 	};
@@ -1501,7 +1475,6 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		.src_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
 		.src_maxburst = block_dwords,
-		.device_fc = true,
 		.peripheral_config = &out_periph,
 		.peripheral_size = sizeof(out_periph),
 	};
@@ -1514,10 +1487,13 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	enum dma_status status;
 	unsigned int burst_bytes = block_dwords * 4;
 	unsigned int padded = round_up(nbytes, burst_bytes);
+	unsigned int dwords;
+	unsigned int i;
 	int ret;
 
 	if (!padded)
 		return -EINVAL;
+	dwords = padded / 4;
 
 	src_copy = kzalloc(padded, GFP_KERNEL);
 	if (!src_copy)
@@ -1540,13 +1516,14 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		goto out_free_in;
 	}
 
-	/*
-	 * Copy src bytes verbatim.  The ADM hardware does the byte+short
-	 * swap on each CRCI handshake (see in_periph.cmd_flags above), so
-	 * no software swap here -- this is what legacy webOS qce.c and
-	 * Samsung qce.ko do.
-	 */
-	memcpy(in_buf, src_copy, padded);
+	/* Byte-swap input dwords to BE (CE2 reads MSB-first) */
+	for (i = 0; i < dwords; i++) {
+		u32 w = ((u32)src_copy[i * 4 + 0] << 24) |
+			((u32)src_copy[i * 4 + 1] << 16) |
+			((u32)src_copy[i * 4 + 2] <<  8) |
+			((u32)src_copy[i * 4 + 3] <<  0);
+		in_buf[i] = cpu_to_le32(w);
+	}
 
 	/* Configure rxchan for input (CRCI 4 -> DATA_SHADOW0).  Earlier
 	 * hash ops may have left rxchan reconfigured for digest readback
@@ -1607,20 +1584,9 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	dma_async_issue_pending(rx);
 	dma_async_issue_pending(tx);
 
-	/*
-	 * Both ADM channels are now armed and stalled at the CRCI line.
-	 * Writing GOPROC kicks the engine into PROCESSING; the engine
-	 * asserts DIN_RDY, the rx channel CRCI handshake fires, data
-	 * streams in, output flows out, DOUT_RDY fires the tx channel
-	 * handshake.  The wait_for_completion below blocks on the tx
-	 * descriptor's callback.
-	 */
-	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
-
 	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(1000))) {
-		dev_err(qce->dev,
-			"CE2 cipher: DMA timeout (%u bytes) STATUS=0x%08x\n",
-			padded, readl_relaxed(qce->base + CE2_REG_STATUS));
+		dev_err(qce->dev, "CE2 cipher: DMA timeout (%u bytes)\n",
+			padded);
 		ret = -ETIMEDOUT;
 		goto out_terminate;
 	}
@@ -1632,13 +1598,15 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		goto out_terminate;
 	}
 
-	/*
-	 * ADM hardware did the byte+short swap on each CRCI handshake while
-	 * draining the engine's DATA_SHADOW0 port (see out_periph.cmd_flags
-	 * above), so out_buf already holds the ciphertext bytes in their
-	 * natural memory order.  Just copy out.
-	 */
-	memcpy(dst_copy, out_buf, padded);
+	/* Byte-swap output dwords from raw LE u32 -> BE bytes */
+	for (i = 0; i < dwords; i++) {
+		u32 w = le32_to_cpu(out_buf[i]);
+
+		dst_copy[i * 4 + 0] = (w >> 24) & 0xff;
+		dst_copy[i * 4 + 1] = (w >> 16) & 0xff;
+		dst_copy[i * 4 + 2] = (w >>  8) & 0xff;
+		dst_copy[i * 4 + 3] = (w >>  0) & 0xff;
+	}
 	sg_copy_from_buffer(dst, sg_nents(dst), dst_copy, nbytes);
 
 	ret = 0;
@@ -1856,41 +1824,39 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 "CE2 skc pre-GO: SEG_CFG=0x%08x len=%u CONFIG=0x%08x flags=0x%lx keylen=%u\n",
 		 encr_cfg, rctx->cryptlen, config, flags, keylen);
 
+	/* GOPROC */
+	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+
+	/* Wait for engine to leave IDLE (transition to LOCKED/PROCESSING) */
+	for (timeout = 1000; timeout > 0; timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status & CE2_CRYPTO_STATE_MASK)
+			break;
+		udelay(10);
+	}
+	if (timeout <= 0) {
+		dev_err(qce->dev,
+			"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
+			status);
+		return -ETIMEDOUT;
+	}
+
 	/* Dual-channel DMA: input -> DATA_SHADOW0, output <- DATA_SHADOW0.
 	 *
-	 * Arm both ADM channels with device_fc=true (CRCI flow control) so
-	 * the controller stops at the CRCI line until the engine asserts
-	 * DIN_RDY / DOUT_RDY.  qce_ce2_dma_inout_cipher writes GOPROC
-	 * AFTER it has issued both channels -- if we wrote GOPROC here, the
-	 * engine would enter PROCESSING with no ADM listening yet, and on
-	 * this silicon that races into a wedge.
+	 * Use the largest ADM block size (256 B = 64 dwords) for AES,
+	 * and 32 B (8 dwords) for DES/3DES.  qcom_adm only accepts burst
+	 * values in {8,16,32,64,128,192,256} bytes per adm_get_blksize().
 	 *
-	 * Burst MUST agree with the CRCI block-size programmed into CRCI_CTL.
-	 * Probe set CRCI_CTL[4]=1, CRCI_CTL[5]=1 via qcom_adm_program_crci_ee0,
-	 * matching webOS qce.c's dmov_conf{blk_size=1} for CE_IN/CE_OUT.
-	 *
-	 * qcom_adm's adm_get_blksize() encodes burst=8 -> blk_size=1 as a
-	 * special-case for MMCI (special case still gives blk_size=1, the
-	 * value the hardware actually uses for "small fixed-granularity
-	 * peripheral").  Use burst = 8 B (2 dwords) for both AES and DES/3DES:
-	 *
-	 *   - blk_size matches CRCI_CTL (no DIN_ERR mid-stream)
-	 *   - 8 B per CRCI fire is below every cipher block size, so the
-	 *     engine accumulates 2 fires for a DES block / 2 fires for a
-	 *     3DES sub-block / 2 fires for an AES block (4 dwords)
-	 *   - works empirically for 3DES-CBC across all NIST + bulk sizes
-	 *
-	 * The previous burst=16 (cipher-block-size) under-asked vs CRCI=32:
-	 * engine signalled for 32 B but ADM only delivered 16 B per CRCI
-	 * fire, then went to next row.  After 32 B of input the engine's
-	 * FIFO underran and SW_ERR+DIN_ERR fired at byte 33 of bulk streams.
-	 *
-	 * burst=32 was symmetric: matched CRCI=32 for >=32 B transfers but
-	 * over-asked for 16 B transfers (NIST ECB/CTR), starving the engine
-	 * which then errored.
+	 * Empirically the CE2 engine produces correct output only when
+	 * the data fits within a single ADM CRCI handshake (one burst);
+	 * additional bursts in the same op fail to chain CBC.  Setting
+	 * burst > op size makes qcom_adm emit a SINGLE descriptor (one
+	 * CRCI fire for the whole transfer) instead of multiple BOX rows,
+	 * so all 256/32 B (16 AES blocks / 4 DES blocks) per op chain
+	 * correctly.
 	 */
 	ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst, rctx->cryptlen,
-				       2);
+				       (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64);
 	dev_info(qce->dev,
 		 "CE2 skc post-DMA: ret=%d STATUS=0x%08x\n", ret,
 		 readl_relaxed(qce->base + CE2_REG_STATUS));
