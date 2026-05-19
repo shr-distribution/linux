@@ -3002,15 +3002,18 @@ static int mmci_probe(struct amba_device *dev,
 		/*
 		 * Vote for DFAB bandwidth to keep the fabric active.
 		 *
-		 * The legacy webOS kernel set dfab_sdc_clk to 64 MHz which
-		 * ensures sufficient DFAB bandwidth for SD/eMMC operations.
-		 * For eMMC (8-bit @ 48MHz) peak throughput is ~48 MB/s,
-		 * for SDIO WiFi (4-bit @ 48MHz) peak is ~24 MB/s.
+		 * Legacy webOS msm_sdcc force-votes dfab_sdc_clk=64MHz on
+		 * every SDCC instance with pclk_src_dfab=1 (board-tenderloin
+		 * sets it on both SDC1/eMMC and SDC4/WiFi). At 64MHz on the
+		 * 64-bit DFAB that's ~512 MB/s peak. Below ~256 MB/s the
+		 * SDIO init chain (CMD52 / CMD5 / CMD55) sees CMDTIMEOUTs
+		 * because the SDCC peripheral clock stalls relative to the
+		 * card; high-speed eMMC reads also fall back to bus-width 1.
 		 *
-		 * Using 400 MB/s peak to ensure DFAB runs at sufficient
-		 * speed for high-speed transfers with margin for overhead.
+		 * Match legacy: 512 MB/s peak. avg=0 because the vote is a
+		 * floor (we don't actually expect sustained 512 MB/s).
 		 */
-		ret = icc_set_bw(host->icc_path, 0, 400000);
+		ret = icc_set_bw(host->icc_path, 0, 512000);
 		if (ret) {
 			dev_err(&dev->dev, "failed to set interconnect bw: %d\n", ret);
 			goto clk_disable;

@@ -1439,6 +1439,20 @@
 				max-frequency = <48000000>;
 				cap-sd-highspeed;
 				cap-mmc-highspeed;
+				/*
+				 * Daytona Fabric path. Legacy webOS msm_sdcc.c
+				 * sets pclk_src_dfab=1 and force-votes
+				 * dfab_sdc_clk=64MHz (=512MB/s on the 64-bit
+				 * DFAB) for every active SDCC, including SDC4.
+				 * Without this property mmci's devm_of_icc_get
+				 * fails with -ENODATA and SDC4 gets no DFAB
+				 * vote -- DFAB then runs at the RPM-minimum
+				 * default and SDIO init / BMI CMD52/53 traffic
+				 * sees CMDTIMEOUT under load.
+				 */
+				interconnects = <&daytona_fabric DFAB_MAS_SDC4
+						&apps_fabric AFAB_SLV_EBI_CH0>;
+				interconnect-names = "sdc";
 			};
 
 			sdcc5: mmc@12200000 {
