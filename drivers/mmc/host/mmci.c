@@ -1781,6 +1781,66 @@ static void mmci_stop_command(struct mmci_host *host)
 	mmci_start_command(host, &host->stop_abort, 0);
 }
 
+/*
+ * Diagnostic helper to dump SDCC + ADM state at the moment a data
+ * IRQ error fires. Used for investigating the heavy-concurrent-DMA
+ * failure mode (legacy passes the same workload; mainline doesn't).
+ *
+ * Ratelimited so the recovery cascade (cmd12/cmd13 retries each
+ * generating their own CMDTIMEOUTs) doesn't drown the log.
+ */
+static void mmci_diag_dump_state(struct mmci_host *host, const char *reason)
+{
+	static DEFINE_RATELIMIT_STATE(rs, HZ, 4);
+	void __iomem *base = host->base;
+	u32 cmd_reg, arg_reg, resp0, dctrl_reg, dlen_reg, dcnt_reg;
+	u32 mask0_reg, fifocnt_reg, status_reg;
+	struct mmc_data *data = host->data;
+	struct mmc_command *cmd = host->cmd;
+	const char *dma_state;
+
+	if (!__ratelimit(&rs))
+		return;
+
+	cmd_reg     = readl(base + MMCICOMMAND);
+	arg_reg     = readl(base + MMCIARGUMENT);
+	resp0       = readl(base + MMCIRESPONSE0);
+	dctrl_reg   = readl(base + MMCIDATACTRL);
+	dlen_reg    = readl(base + MMCIDATALENGTH);
+	dcnt_reg    = readl(base + MMCIDATACNT);
+	mask0_reg   = readl(base + MMCIMASK0);
+	status_reg  = readl(base + MMCISTATUS);
+	fifocnt_reg = host->variant->qcom_fifo ? readl(base + 0x44) : 0;
+
+	if (host->dma_in_progress)
+		dma_state = "DMA_IN_PROGRESS";
+	else if (host->dma_issue_deferred)
+		dma_state = "DMA_DEFERRED";
+	else if (host->atomic_submit.active)
+		dma_state = "ATOMIC_SUBMIT";
+	else
+		dma_state = "PIO_OR_IDLE";
+
+	dev_warn(mmc_dev(host->mmc),
+		 "DIAG[%s]: STATUS=0x%08x DATACTRL=0x%08x DATALEN=%u DATACNT=%u MASK0=0x%08x FIFOCNT=%u\n",
+		 reason, status_reg, dctrl_reg, dlen_reg, dcnt_reg,
+		 mask0_reg, fifocnt_reg);
+	dev_warn(mmc_dev(host->mmc),
+		 "DIAG[%s]: cur_cmd=%p CMD_reg=0x%08x ARG=0x%08x RESP0=0x%08x dma=%s\n",
+		 reason, cmd, cmd_reg, arg_reg, resp0, dma_state);
+	if (data) {
+		dev_warn(mmc_dev(host->mmc),
+			 "DIAG[%s]: data: blksz=%u blocks=%u flags=0x%x sg_len=%u host->size=%u bytes_xfered=%u\n",
+			 reason, data->blksz, data->blocks, data->flags,
+			 data->sg_len, host->size, data->bytes_xfered);
+	}
+	if (cmd) {
+		dev_warn(mmc_dev(host->mmc),
+			 "DIAG[%s]: cmd: opcode=%u arg=0x%08x flags=0x%x\n",
+			 reason, cmd->opcode, cmd->arg, cmd->flags);
+	}
+}
+
 static void
 mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 	      unsigned int status)
@@ -1821,12 +1881,14 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		if (status_err & MCI_DATACRCFAIL) {
 			dev_err(mmc_dev(host->mmc), "DATACRCFAIL: blksz=%d blocks=%d flags=0x%x\n",
 				data->blksz, data->blocks, data->flags);
+			mmci_diag_dump_state(host, "DATACRCFAIL");
 			/* Last block was not successful */
 			success -= 1;
 			data->error = -EILSEQ;
 		} else if (status_err & MCI_DATATIMEOUT) {
 			dev_err(mmc_dev(host->mmc), "DATATIMEOUT: blksz=%d blocks=%d flags=0x%x\n",
 				data->blksz, data->blocks, data->flags);
+			mmci_diag_dump_state(host, "DATATIMEOUT");
 			data->error = -ETIMEDOUT;
 		} else if (status_err & MCI_STARTBITERR) {
 			data->error = -ECOMM;
