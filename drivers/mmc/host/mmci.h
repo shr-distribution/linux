@@ -510,26 +510,6 @@ struct mmci_host {
 	s32			next_cookie;
 	struct delayed_work	ux500_busy_timeout_work;
 	struct delayed_work	qcom_dma_timeout_work;
-
-	/*
-	 * Dynamic interconnect bandwidth voting.
-	 *
-	 * Static icc_set_bw at probe doesn't tell the fabric arbiter
-	 * "this master is actively driving traffic right now". Legacy
-	 * Qualcomm kernels triggered RPM-driven arbitration weight
-	 * updates by calling clk_enable/disable on dfab_sdc_clk per
-	 * host activity transition. The mainline equivalent is to
-	 * re-vote icc bandwidth at request boundaries.
-	 *
-	 * @icc_idle_work: drops the vote back to "idle" after a delay
-	 *                 since the last completed request, so back-to-
-	 *                 back requests don't churn the vote.
-	 * @icc_active:   tracks whether the current vote is the active
-	 *                 (high) level. Toggled from sleepable context
-	 *                 only.
-	 */
-	struct delayed_work	icc_idle_work;
-	bool			icc_active;
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)

@@ -807,71 +807,6 @@ static void mmci_dma_error(struct mmci_host *host)
 		host->ops->dma_error(host);
 }
 
-/*
- * Dynamic interconnect bandwidth voting.
- *
- * Static icc_set_bw at probe sets a steady-state floor but doesn't
- * tell the fabric arbiter "this master is actively pushing traffic
- * RIGHT NOW". On APQ8060/MSM8660 (Tenderloin), two ADM channels can
- * share adm_dma1 (e.g. sdcc1 eMMC + sdcc4 SDIO/WiFi); under heavy
- * concurrent load the busier master can starve the other -- mainline
- * sees this as eMMC DMA stalling mid-transfer with DATATIMEOUT a few
- * seconds after WiFi DMA begins (diagnostic-captured: DPSM enabled,
- * DMA_ENABLE set, 1 KB transferred then bus silent for the full
- * data-timeout). Legacy webOS avoids this by toggling dfab_sdc_clk's
- * enable count per host activity transition, which signals RPM to
- * re-evaluate fabric arbitration weights.
- *
- * Replicate that signaling here: vote a higher BW level for the
- * duration of each request, drop back to a low idle vote after a
- * short hysteresis. icc_set_bw can sleep (sends an SMD message to
- * RPM), so the idle drop is deferred to delayed_work.
- */
-#define MMCI_ICC_BW_ACTIVE	400000	/* KBps -- matches probe-time vote */
-#define MMCI_ICC_BW_IDLE	50000	/* KBps -- small floor, keeps path alive */
-#define MMCI_ICC_IDLE_DELAY_MS	50
-
-static void mmci_icc_idle_work(struct work_struct *work)
-{
-	struct mmci_host *host = container_of(to_delayed_work(work),
-					      struct mmci_host, icc_idle_work);
-
-	if (!host->icc_path || !host->icc_active)
-		return;
-
-	if (icc_set_bw(host->icc_path, 0, MMCI_ICC_BW_IDLE) == 0)
-		host->icc_active = false;
-}
-
-/*
- * Call from process context (mmc_host_ops.request entry). Bumps the
- * icc vote to the active level if not already active, and cancels
- * any pending idle drop so back-to-back requests don't churn.
- */
-static void mmci_icc_request_active(struct mmci_host *host)
-{
-	if (!host->icc_path)
-		return;
-	cancel_delayed_work(&host->icc_idle_work);
-	if (host->icc_active)
-		return;
-	if (icc_set_bw(host->icc_path, 0, MMCI_ICC_BW_ACTIVE) == 0)
-		host->icc_active = true;
-}
-
-/*
- * Call from any context (IRQ-safe). Schedules a deferred drop back
- * to the idle vote. If another request arrives within the hysteresis
- * window, mmci_icc_request_active() will cancel the work.
- */
-static void mmci_icc_request_idle(struct mmci_host *host)
-{
-	if (!host->icc_path)
-		return;
-	mod_delayed_work(system_wq, &host->icc_idle_work,
-			 msecs_to_jiffies(MMCI_ICC_IDLE_DELAY_MS));
-}
-
 static void
 mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 {
@@ -882,7 +817,6 @@ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 	host->mrq = NULL;
 	host->cmd = NULL;
 
-	mmci_icc_request_idle(host);
 	mmc_request_done(host->mmc, mrq);
 }
 
@@ -2518,13 +2452,6 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		return;
 	}
 
-	/*
-	 * Signal RPM that this controller is actively driving fabric
-	 * traffic. Must be done in process context BEFORE taking
-	 * host->lock because icc_set_bw can sleep.
-	 */
-	mmci_icc_request_active(host);
-
 	spin_lock_irqsave(&host->lock, flags);
 
 	host->mrq = mrq;
@@ -3005,22 +2932,21 @@ static int mmci_probe(struct amba_device *dev,
 
 	if (host->icc_path) {
 		/*
-		 * Start at the idle vote level. mmci_icc_request_active()
-		 * bumps to MMCI_ICC_BW_ACTIVE on each incoming request and
-		 * a delayed_work drops back to MMCI_ICC_BW_IDLE after a
-		 * short hysteresis window. This re-vote signaling is what
-		 * tells the Qualcomm RPM to update fabric arbitration
-		 * weights per active master -- legacy webOS did this via
-		 * clk_enable/disable on dfab_sdc_clk; mainline uses the
-		 * interconnect framework equivalent.
+		 * Vote for DFAB bandwidth to keep the fabric active.
+		 *
+		 * The legacy webOS kernel set dfab_sdc_clk to 64 MHz which
+		 * ensures sufficient DFAB bandwidth for SD/eMMC operations.
+		 * For eMMC (8-bit @ 48MHz) peak throughput is ~48 MB/s,
+		 * for SDIO WiFi (4-bit @ 48MHz) peak is ~24 MB/s.
+		 *
+		 * Using 400 MB/s peak to ensure DFAB runs at sufficient
+		 * speed for high-speed transfers with margin for overhead.
 		 */
-		INIT_DELAYED_WORK(&host->icc_idle_work, mmci_icc_idle_work);
-		ret = icc_set_bw(host->icc_path, 0, MMCI_ICC_BW_IDLE);
+		ret = icc_set_bw(host->icc_path, 0, 400000);
 		if (ret) {
 			dev_err(&dev->dev, "failed to set interconnect bw: %d\n", ret);
 			goto clk_disable;
 		}
-		host->icc_active = false;
 		dev_dbg(&dev->dev, "interconnect bandwidth voting enabled\n");
 	}
 
@@ -3326,9 +3252,6 @@ static void mmci_remove(struct amba_device *dev)
 
 		if (variant->qcom_dml)
 			cancel_delayed_work_sync(&host->qcom_dma_timeout_work);
-
-		if (host->icc_path)
-			cancel_delayed_work_sync(&host->icc_idle_work);
 
 		writel(0, host->base + MMCIMASK0);
 
