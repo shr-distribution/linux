@@ -1803,8 +1803,9 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	if (IS_CTR(flags))
 		writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
 
-	/* CONFIG: high-speed enable + interrupt masks (same as hash).
-	 * Written once before the chunk loop -- doesn't change per chunk.
+	/* CONFIG value computed once.  Engine expects CONFIG written
+	 * AFTER SEG_CFG/SEG_SIZE (webOS order), so the actual writel
+	 * happens inside the loop body before GOPROC.
 	 */
 	config = readl(qce->base + CE2_REG_CONFIG);
 	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
@@ -1815,7 +1816,6 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
 		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
 	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
-	writel(config, qce->base + CE2_REG_CONFIG);
 
 	/*
 	 * Chunked DMA loop.  CE2 AES engine has a ~64 B internal FIFO; ops
@@ -1862,10 +1862,16 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 					       k * 4);
 			}
 
+			/* webOS register write order: SEG_CFG ->
+			 * ENCR_SEG_CFG -> SEG_SIZE -> CONFIG -> GOPROC.
+			 * Writing CONFIG before SEG_CFG empirically breaks
+			 * 3DES-CBC decrypt (engine returns input unchanged).
+			 */
 			writel(chunk_cfg, qce->base + CE2_REG_SEG_CFG);
 			writel(chunk_len << CE2_ENCR_SEG_SIZE_SHIFT,
 			       qce->base + CE2_REG_ENCR_SEG_CFG);
 			writel(chunk_len, qce->base + CE2_REG_SEG_SIZE);
+			writel(config, qce->base + CE2_REG_CONFIG);
 
 			dev_info(qce->dev,
 				 "CE2 skc chunk off=%u len=%u\n",
