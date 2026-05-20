@@ -1427,8 +1427,17 @@ int mmci_dmae_prep_data(struct mmci_host *host,
 	if (next)
 		return _mmci_dmae_prep_data(host, data, &nd->chan, &nd->desc);
 	/* Check if next job is already prepared. */
-	if (dmae->cur && dmae->desc_current)
+	if (dmae->cur && dmae->desc_current) {
+		/*
+		 * mmci_pre_request → _mmci_dmae_prep_data already set
+		 * host->atomic_submit.armed = true, but __mmci_start_request
+		 * cleared it on its way in.  Re-arm here when this data
+		 * qualifies, matching what a non-pre-prepared path would do.
+		 */
+		if (mmci_should_atomic_submit(host, data))
+			host->atomic_submit.armed = true;
 		return 0;
+	}
 
 	/* No job were prepared thus do it now. */
 	return _mmci_dmae_prep_data(host, data, &dmae->cur,
