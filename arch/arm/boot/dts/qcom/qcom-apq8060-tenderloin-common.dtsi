@@ -3748,9 +3748,29 @@
 			reg = <0x38000000 0x300000>; /* 3MB - matches PMEM_KERNEL_SMI_SIZE */
 		};
 
-		drm_smi_mem: framebuffer@38300000 {
+		/*
+		 * VIDC SMI Pool — the 61 MB user-space portion of the 64 MB SMI
+		 * address window.  webOS comment from board-tenderloin.c:
+		 *   "User space SMI PMEM Region for video core / used for
+		 *    encoder, decoder input & output buffers"
+		 *   "Kernel SMI PMEM Region Should always precede the user space
+		 *    SMI PMEM Region, as the video core will use offset address
+		 *    from the Firmware base."
+		 *
+		 * The VIDC firmware addresses all bitstream + DPB buffers via
+		 * DRAM_BASE_A-relative offsets shifted right by 11.  With the
+		 * firmware loaded at SMI 0x38000000, only buffers within
+		 * 0x38000000-0x3BFFFFFF are reachable.  Generic CMA at 0x7c000000
+		 * is outside this window and the firmware silently fails to
+		 * fetch (HEADER_NOT_FOUND on SEQ_HEADER, INIT_BUFFERS timeout).
+		 *
+		 * Wired into the VIDC node via memory-region[1]; the driver calls
+		 * of_reserved_mem_device_init_by_idx() in probe so that
+		 * dma_alloc_coherent() and vb2-dma-contig allocations land here.
+		 */
+		vidc_smipool_mem: vidc-smipool@38300000 {
 			compatible = "shared-dma-pool";
-			reg = <0x38300000 0x3d00000>; /* 61MB - exact webOS size */
+			reg = <0x38300000 0x3d00000>; /* 61 MB — exact webOS size */
 			no-map;
 		};
 
@@ -3861,11 +3881,25 @@
 &vidc {
 	status = "okay";
 	/*
-	 * Firmware must live in SMI memory (0x38000000). The VIDC RISC CPU
-	 * fetches instructions via MMFAB→SMI; it cannot access EBI/DRAM.
-	 * This matches webOS PMEM_KERNEL_SMI_BASE allocation.
+	 * Two SMI-window reserved-memory regions, in fixed order:
+	 *
+	 *   [0] vidc_fw_mem      @ 0x38000000  3 MB   — firmware code + scratch
+	 *                                              (no-map, populated via
+	 *                                               ioremap in probe)
+	 *   [1] vidc_smipool_mem @ 0x38300000 61 MB   — bitstream + DPB buffers
+	 *                                              (shared-dma-pool, attached
+	 *                                               via of_reserved_mem_device_
+	 *                                               init_by_idx so vb2 + DPB
+	 *                                               dma_alloc_coherent() lands
+	 *                                               here, inside the SMI
+	 *                                               address window the
+	 *                                               firmware can reach)
+	 *
+	 * Order is fixed by index — the driver looks up vidc_fw_mem at index 0
+	 * for the firmware physical base and calls
+	 * of_reserved_mem_device_init_by_idx(..., 1) for the SMIPOOL.
 	 */
-	memory-region = <&vidc_fw_mem>;
+	memory-region = <&vidc_fw_mem>, <&vidc_smipool_mem>;
 	/*
 	 * RISC fetches from SMI, not EBI. Vote on the MMFAB→SMI path.
 	 * Keep EBI vote for DPB/output buffers which live in DRAM.

@@ -2341,9 +2341,17 @@ static int vidc_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * Read SMI reserved-memory region for firmware placement.
-	 * The VIDC RISC CPU can only fetch from SMI (0x38000000); firmware
-	 * placed in EBI/DRAM is unreachable for the RISC.
+	 * SMI window reserved-memory bindings (see &vidc node in DT):
+	 *   index 0 → vidc_fw_mem      (firmware code + scratch, ioremap)
+	 *   index 1 → vidc_smipool_mem (bitstream + DPB DMA pool)
+	 *
+	 * The firmware addresses ALL data buffers via DRAM_BASE_A-relative
+	 * offsets (shift right 11).  With firmware loaded at SMI 0x38000000,
+	 * only buffers within 0x38000000-0x3BFFFFFF are reachable; generic
+	 * CMA in DDR (0x7c000000+) is outside this window and the firmware
+	 * silently fails to fetch from there.  Attach the 61 MB SMIPOOL
+	 * region as this device's coherent DMA pool so dma_alloc_coherent()
+	 * and vb2-dma-contig allocations land at 0x38300000+.
 	 */
 	if (dev->of_node) {
 		struct device_node *mem_node;
@@ -2366,6 +2374,21 @@ static int vidc_probe(struct platform_device *pdev)
 			dev_err(dev, "no memory-region specified; firmware cannot be placed in SMI\n");
 			return -EINVAL;
 		}
+
+		/*
+		 * Attach SMIPOOL (memory-region index 1) as the device's
+		 * coherent DMA pool.  After this, dma_alloc_coherent(dev, ...)
+		 * and vb2-dma-contig allocations come from 0x38300000+ — inside
+		 * the SMI window the firmware can reach via fw-relative offsets.
+		 */
+		ret = of_reserved_mem_device_init_by_idx(dev, dev->of_node, 1);
+		if (ret) {
+			dev_err(dev,
+				"SMIPOOL attach failed (%d): bitstream/DPB buffers will land in DDR and the firmware will not be able to fetch them\n",
+				ret);
+			return ret;
+		}
+		dev_info(dev, "SMIPOOL attached as coherent DMA pool\n");
 	}
 
 	/* video-smi: RISC AXI fetch from SMI (critical: without this vote the

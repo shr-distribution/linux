@@ -713,40 +713,14 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_CH0_C_ADDR, 0);
 
 	/*
-	 * DIAGNOSTIC for HEADER_NOT_FOUND: copy SPS+PPS into SMI SRAM at a
-	 * 2048-byte-aligned offset in the SHM page (offset 0x800 — past SHM
-	 * fields ending at 0x011c and metadata input at 0x200..0x260, but
-	 * still within the 4 KB SHM allocation) and pass that SMI offset as
-	 * STREAM_ADDR for SEQ_HEADER.  STREAM_ADDR is shifted right by
-	 * VIDC_ADDR_SHIFT (11) so the source must be 2048-byte aligned to
-	 * avoid offset truncation losing the low bits.  Previous attempt at
-	 * offset 0xc00 (NOT 2048-aligned) wrote data to 0x250c00 but the
-	 * firmware computed read address 0x250800, missing the data.
-	 *
-	 * If the firmware finds the SPS at the SMI address but not at the
-	 * DDR address (0x7c180000), the issue is firmware DDR access.
-	 * FRAME_DATA still uses the DDR buffer directly.
+	 * All VIDC buffer addresses are firmware-relative: byte offset from
+	 * fw_dma_addr (SMI base 0x38000000), shifted right by VIDC_ADDR_SHIFT.
+	 * vb2 buffers come from the SMIPOOL reserved-memory pool at
+	 * 0x38300000+ (attached as the device's coherent DMA pool in probe),
+	 * so src_addr is within the SMI window the firmware can fetch from.
 	 */
-	if (op == VIDC_OP_SEQ_HEADER && inst->src_buf) {
-		const u8 *kva = vb2_plane_vaddr(&inst->src_buf->vb2_buf, 0);
-		u32 smi_off = core->shm_offset + 0x800;
-
-		if (kva && src_size <= 0x400) {
-			memcpy_toio(core->shm_vaddr + 0x800, kva, src_size);
-			vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
-				   smi_off >> VIDC_ADDR_SHIFT);
-			dev_info(core->dev,
-				 "SEQ_HDR diag: copied %u bytes to SMI off=0x%x (stream_addr=0x%x)\n",
-				 src_size, smi_off,
-				 smi_off >> VIDC_ADDR_SHIFT);
-		} else {
-			vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
-				   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
-		}
-	} else {
-		vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
-			   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
-	}
+	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
+		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
 
 	/* DEBUG: dump first 40 bytes of the stream the firmware will read */
@@ -769,27 +743,17 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		   core->desc_offset >> VIDC_ADDR_SHIFT);
 
 	/*
-	 * STREAM_BUF_SIZE: buffer capacity for this command.
-	 *
-	 * Empirically determined (with desc=non-zero):
-	 *   2 KB     → error 0x1a (26) — firmware rejects, buf too small
-	 *   512 KB   → error 0x34 (52, HEADER_NOT_FOUND) — firmware scans
-	 *              past SPS+PPS into zero memory
-	 *
-	 * webOS DDL default decoder->client_input_buf_req.sz is 1 MB
-	 * (vcd_ddl_properties.c:1646), but the SEQ_HEADER path runs into
-	 * HEADER_NOT_FOUND when the scan reaches buffer zeros.  Use 4 KB
-	 * (one page) — large enough to clear the firmware's minimum-size
-	 * gate but small enough that scanning stops near the actual data.
-	 *
-	 * For FRAME_DATA: use the full plane allocation so the firmware
-	 * sees the maximum bytes available for decoding.
+	 * STREAM_BUF_SIZE: buffer capacity for this command.  webOS DDL uses
+	 * max(client_input_buf_req.sz, header_len + 2048 + 256) for SEQ_HEADER
+	 * and the full input buffer for FRAME_DATA.  client_input_buf_req.sz
+	 * is the full allocated input buffer (decoder default 1 MB), so the
+	 * result equals vb2_plane_size for both ops.  Previous earlier scans
+	 * of "zero memory beyond the SPS" were a symptom of the firmware not
+	 * being able to fetch the DDR-backed vb2 buffer at all; with vb2 now
+	 * in SMIPOOL the firmware reads the actual bitstream bytes.
 	 */
-	if (op == VIDC_OP_SEQ_HEADER)
-		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE, SZ_4K);
-	else
-		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
-			   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
+	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
+		   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
 	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
 
 	/*
@@ -828,9 +792,7 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		 op, inst->inst_id, &src_addr,
 		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
 		 src_size,
-		 op == VIDC_OP_SEQ_HEADER ?
-			 (u32)SZ_4K :
-			 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
+		 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
 		 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT),
 		 core->shm_offset + VIDC_META_INPUT_OFF);
 
