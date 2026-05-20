@@ -206,33 +206,50 @@ DT — `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
   values; `webos .../drivers/usb/otg/msm72k_otg.c:243-293` for the
   write-path semantics.
 
-### Companion fix: PHY POR reset wiring (plug/unplug repro)
+### Failed experiment: PHY POR reset wiring
 
 On-device test of soft_connect "disconnect" -> "connect" on kernel
 gb2dc29139bba showed the device failed to re-enumerate to the host
 (USB-net interface disappeared on host, never came back, manual power
-cycle required). Root cause: `usb_hs1_phy` DT node was missing
-`resets`/`reset-names` properties, so
-`qcom_usb_hs_phy_power_on()` skipped the `reset_control_reset()`
-call entirely. First boot worked because the PHY was at silicon-level
-POR. Subsequent power-cycle paths (CI_HDRC_CONTROLLER_RESET_EVENT
-firing from `hw_device_reset()` via `ci_hdrc_gadget_connect(true)`)
-re-ran `phy_power_on` but without the POR reset, so vendor-init-seq
-writes landed on top of stale ULPI state.
+cycle required). Root-cause hypothesis: `usb_hs1_phy` DT node missing
+`resets`/`reset-names`, so `qcom_usb_hs_phy_power_on()` skipped
+`reset_control_reset()` and vendor-init-seq writes landed on stale
+ULPI state.
 
-Fix: add `resets = <&usb1 0>; reset-names = "por";` to `usb_hs1_phy`,
-matching the apq8064/msm8960 mainline DT pattern. The reset provider
-is the chipidea controller itself (signal 0 = `HS_PHY_POR_ASSERT` on
-`HS_PHY_CTRL`, implemented at
-`drivers/usb/chipidea/ci_hdrc_msm.c:ci_hdrc_msm_por_reset`). The
-controller node already declared `#reset-cells = <1>`; only the PHY
-side was missing the consumer reference.
+Attempted fix in commit cae1a8c571b9: add `resets = <&usb1 0>;
+reset-names = "por";` matching apq8064/msm8960 mainline pattern.
 
-The original comment claiming "Using separate reset from GCC causes
-conflict since USB controller already owns USB_HS1_RESET" referred to
-a different reset (`<&gcc USB_HS1_RESET>` = the *controller* core
-reset). That conflict is real but irrelevant here -- we are wiring
-the controller's *PHY* reset provider, not GCC.
+**Result: REGRESSION.** Gadget enumeration broke completely -- nothing
+shows up in the host's lsusb after the change. Reverted in a
+follow-up commit. Detailed comment retained in the DT node explaining
+why we cannot wire POR reset today and what would unblock it.
+
+Hypothesis for the regression: with POR asserted via the chipidea
+reset_controller, the PHY core resets to silicon defaults. The
+subsequent `for (seq = uphy->vendor_init_seq; ...)` ULPI writes are
+issued through the chipidea ULPI viewport before the PHY has
+re-synced its ULPI link (POR deassert wait is only `udelay(12)` and
+the AHB_MODE / GENCONFIG / SESS_VLD bits in HS_PHY_CTRL have not yet
+been written -- those happen *after* `phy_power_on` returns). The
+ULPI writes silently fail or corrupt state, leaving the controller
+unable to bring up the bus.
+
+Follow-up options (not done in this cavekit batch):
+  a) Patch `qcom_usb_hs_phy_power_on` to insert a settle delay after
+     `reset_control_reset` (e.g. `usleep_range(200, 500)`) and/or
+     move the vendor-init-seq write loop to a later hook that runs
+     after chipidea has configured AHB_MODE / GENCONFIG / SESS_VLD.
+  b) Wire VBUS / ID detection via a PM8058 extcon driver so cable
+     unplug/replug works without needing soft_connect-cycle.
+  c) Compare ULPI timing / clock topology between apq8064 and
+     tenderloin to identify a board-level difference (apq8064 and
+     msm8960 tolerate the same `<&usb1 0>` reference; tenderloin
+     does not, despite using the apq8064 PHY compatible).
+
+For now, plug/unplug-via-soft_connect is documented as a known
+limitation. T-016's "vendor-init-seq applied at first boot" path is
+not affected -- a cold boot still puts the PHY in silicon-POR state
+naturally so the writes succeed.
 
 ### Acceptance criteria coverage (R2)
 
