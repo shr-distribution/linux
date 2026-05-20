@@ -206,6 +206,34 @@ DT — `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
   values; `webos .../drivers/usb/otg/msm72k_otg.c:243-293` for the
   write-path semantics.
 
+### Companion fix: PHY POR reset wiring (plug/unplug repro)
+
+On-device test of soft_connect "disconnect" -> "connect" on kernel
+gb2dc29139bba showed the device failed to re-enumerate to the host
+(USB-net interface disappeared on host, never came back, manual power
+cycle required). Root cause: `usb_hs1_phy` DT node was missing
+`resets`/`reset-names` properties, so
+`qcom_usb_hs_phy_power_on()` skipped the `reset_control_reset()`
+call entirely. First boot worked because the PHY was at silicon-level
+POR. Subsequent power-cycle paths (CI_HDRC_CONTROLLER_RESET_EVENT
+firing from `hw_device_reset()` via `ci_hdrc_gadget_connect(true)`)
+re-ran `phy_power_on` but without the POR reset, so vendor-init-seq
+writes landed on top of stale ULPI state.
+
+Fix: add `resets = <&usb1 0>; reset-names = "por";` to `usb_hs1_phy`,
+matching the apq8064/msm8960 mainline DT pattern. The reset provider
+is the chipidea controller itself (signal 0 = `HS_PHY_POR_ASSERT` on
+`HS_PHY_CTRL`, implemented at
+`drivers/usb/chipidea/ci_hdrc_msm.c:ci_hdrc_msm_por_reset`). The
+controller node already declared `#reset-cells = <1>`; only the PHY
+side was missing the consumer reference.
+
+The original comment claiming "Using separate reset from GCC causes
+conflict since USB controller already owns USB_HS1_RESET" referred to
+a different reset (`<&gcc USB_HS1_RESET>` = the *controller* core
+reset). That conflict is real but irrelevant here -- we are wiring
+the controller's *PHY* reset provider, not GCC.
+
 ### Acceptance criteria coverage (R2)
 
 - AC1 Pre-emphasis 20 % configured: DONE — reg 0x32 bits 4-5 written
