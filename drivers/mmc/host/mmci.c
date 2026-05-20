@@ -697,27 +697,33 @@ static void mmci_get_next_data(struct mmci_host *host, struct mmc_data *data)
  * Decide whether a given (data) request qualifies for the
  * atomic-submission path.
  *
- * Originally gated to sdcc4 SDIO writes (the visible race was BMI PIO
- * vs concurrent eMMC DMA), but live-trace comparison with legacy
- * webOS msm_sdcc on the same hardware (2026-05-20) showed legacy
- * uses the equivalent of atomic-submit for ALL data paths: every
- * DMA-flagged data transfer writes DATATIMER + DATALENGTH + DATACTRL
- * + ARG + CMD inside the msm_dmov exec_func callback, immediately
- * before the channel's CMD_PTR write.  The DPSM-armed-to-ADM-ready
- * window is ~3 µs in legacy; in mainline's old "DATACTRL up front,
- * DMA submit, CMD, ADM later" sequence it could grow to 50-100 µs+
- * under fabric contention — which correlates with the boot-time
- * DATACRCFAIL we see during systemd journal recovery on tenderloin.
+ * Legacy msm_sdcc uses TWO distinct structural sequences depending on
+ * direction:
  *
- * Drop the direction + SDIO_IRQ gates so eMMC reads, eMMC writes,
- * and all SDIO data paths take the atomic-submit route, matching
- * the legacy structural pattern.
+ *   READ : DATACTRL + ARG + CMD all written inside msm_dmov exec_func,
+ *          immediately before the channel's CMD_PTR write.  SDCC is
+ *          armed (RX direction) BEFORE the card receives the read
+ *          command, so by the time the card responds with data the
+ *          DPSM is ready and ADM is pulling.
+ *
+ *   WRITE: CMD is written first (mmci_start_command), the card
+ *          processes the command + responds, THEN start_data sets up
+ *          DPSM (TX direction) inside exec_func with NO CMD (data
+ *          arrives only after card is in receive state).  Trying to
+ *          arm the WRITE-direction DPSM before the card has accepted
+ *          the command causes CRC errors on the data the SDCC sends
+ *          (AR6003 reports -84 EILSEQ on WRITE-data CRC check).
+ *
+ * Match that asymmetry: atomic-submit only for READS.  WRITES fall
+ * through to the conventional deferred-DMA path which already mirrors
+ * the legacy CMD-first write sequence.
  */
 static inline bool mmci_should_atomic_submit(struct mmci_host *host,
 					     struct mmc_data *data)
 {
 	return host->variant->qcom_dml_atomic_submit &&
-	       host->datactrl_first;
+	       host->datactrl_first &&
+	       (data->flags & MMC_DATA_READ);
 }
 
 static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
