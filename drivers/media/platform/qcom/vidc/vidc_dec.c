@@ -713,20 +713,26 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_CH0_C_ADDR, 0);
 
 	/*
-	 * DIAGNOSTIC for HEADER_NOT_FOUND: copy SPS+PPS into SMI SRAM at the
-	 * top of the SHM page (offset 0xc00, unused — SHM fields end at 0x011c
-	 * and metadata input is at 0x200..0x260) and pass that SMI offset as
-	 * STREAM_ADDR for SEQ_HEADER instead of the DDR vb2 buffer offset.
-	 * If the firmware finds the SPS at the SMI address but not at the DDR
-	 * address (0x7c180000), the issue is firmware DDR access, not the
-	 * scan/buffer size.  FRAME_DATA still uses the DDR buffer directly.
+	 * DIAGNOSTIC for HEADER_NOT_FOUND: copy SPS+PPS into SMI SRAM at a
+	 * 2048-byte-aligned offset in the SHM page (offset 0x800 — past SHM
+	 * fields ending at 0x011c and metadata input at 0x200..0x260, but
+	 * still within the 4 KB SHM allocation) and pass that SMI offset as
+	 * STREAM_ADDR for SEQ_HEADER.  STREAM_ADDR is shifted right by
+	 * VIDC_ADDR_SHIFT (11) so the source must be 2048-byte aligned to
+	 * avoid offset truncation losing the low bits.  Previous attempt at
+	 * offset 0xc00 (NOT 2048-aligned) wrote data to 0x250c00 but the
+	 * firmware computed read address 0x250800, missing the data.
+	 *
+	 * If the firmware finds the SPS at the SMI address but not at the
+	 * DDR address (0x7c180000), the issue is firmware DDR access.
+	 * FRAME_DATA still uses the DDR buffer directly.
 	 */
 	if (op == VIDC_OP_SEQ_HEADER && inst->src_buf) {
 		const u8 *kva = vb2_plane_vaddr(&inst->src_buf->vb2_buf, 0);
-		u32 smi_off = core->shm_offset + 0xc00;
+		u32 smi_off = core->shm_offset + 0x800;
 
 		if (kva && src_size <= 0x400) {
-			memcpy_toio(core->shm_vaddr + 0xc00, kva, src_size);
+			memcpy_toio(core->shm_vaddr + 0x800, kva, src_size);
 			vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
 				   smi_off >> VIDC_ADDR_SHIFT);
 			dev_info(core->dev,
