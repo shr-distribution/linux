@@ -1396,22 +1396,23 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar->hif_priv = ar_sdio;
 	ar->hif_ops = &ath6kl_sdio_ops;
 	/*
-	 * BMI data size: 256 bytes — matches Atheros's own bmi_msg.h
-	 * BMI_DATASZ_MAX and what legacy webOS msm_sdcc uses successfully.
+	 * BMI data size: 52 bytes.
 	 *
-	 * The previous value of 52 was a workaround for the era when
-	 * mainline mmci was falling back to PIO for sdcc4 (dma_threshold
-	 * was 256, so all BMI 52 B CMD53s went via PIO).  Now that mmci
-	 * is configured to route everything above 32 B through ADM DMA
-	 * (variant_qcom.dma_threshold = 32), BMI transfers go via ADM
-	 * ch 5 just like webOS, and we can use the chip's full mailbox
-	 * size.  The "LZ buffer underflow at 108 B" failure mode was
-	 * a PIO-specific symptom — the host couldn't refill the FIFO
-	 * fast enough between IRQs to feed the chip's LZ decompressor
-	 * at the expected rate.  With DMA the data stream is continuous
-	 * and the LZ engine sees its expected 256 B chunks back-to-back.
+	 * With dma_threshold = 32, any CMD53 > 32 B goes via ADM DMA
+	 * (ch 5, CRCI 5) — so even 52 B BMI chunks use DMA, eliminating
+	 * the PIO TXFIFOHALFEMPTY IRQ storm on CPU0 that previously caused
+	 * concurrent eMMC DATACRCFAIL.
+	 *
+	 * 256 B chunks (BMI_DATASZ_MAX) were tried with the DMA path and
+	 * failed: AR6003 stops responding to CMD52 after the first 256 B
+	 * CMD53 write ("Unable to decrement credit count register: -110").
+	 * The LZ decompressor inside AR6003 processes chunks through the
+	 * BMI mailbox; 256 B appears to overflow or confuse it even via
+	 * DMA — the chip's BMI state machine crashes silently and ignores
+	 * all subsequent SDIO commands.  52 B is the smallest single-FIFO-
+	 * fill chunk that keeps the LZ engine refreshing its credit counter.
 	 */
-	ar->bmi.max_data_size = 256;
+	ar->bmi.max_data_size = 52;
 
 	ath6kl_sdio_set_mbox_info(ar);
 
