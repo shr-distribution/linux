@@ -1642,13 +1642,31 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
 
+	dev_info(core->dev,
+		 "INIT_BUFFERS pre-trigger: shm=0x%x dpb_cnt=%u seq_num=%u inst_id=0x%x op=0x%x\n",
+		 core->shm_offset, inst->dpb_count, core->cmd_seq_num,
+		 inst->inst_id, VIDC_OP_INIT_BUFFERS | inst->inst_id);
+	dev_info(core->dev,
+		 "INIT_BUFFERS regs: DPB[0]=0x%x H264_NB_VERT_MV=0x%x H264_NB_IP=0x%x SHM[mv_sz]=0x%x SHM[y_sz]=0x%x\n",
+		 vidc_read(core, VIDC_REG_DPB_LUMA_BASE),
+		 vidc_read(core, VIDC_REG_H264_VERT_NB_MV),
+		 vidc_read(core, VIDC_REG_H264_NB_IP),
+		 readl(core->shm_vaddr + VIDC_SHM_ALLOCATED_MV_SIZE),
+		 readl(core->shm_vaddr + VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE));
+
 	/* Kick INIT_BUFFERS via the operation-type bits in INST_ID */
 	vidc_write(core, VIDC_REG_CH0_INST_ID,
 		   VIDC_OP_INIT_BUFFERS | inst->inst_id);
 
 	if (!wait_for_completion_timeout(&inst->done,
-					 msecs_to_jiffies(1000))) {
-		dev_err(core->dev, "INIT_BUFFERS timeout\n");
+					 msecs_to_jiffies(3000))) {
+		dev_err(core->dev,
+			"INIT_BUFFERS timeout — FW_VERSION=0x%x INTR=0x%x R2H_CMD=0x%x CH0_INST_ID=0x%x RET_INST=0x%x\n",
+			vidc_read(core, VIDC_REG_FW_VERSION),
+			vidc_read(core, VIDC_REG_INTERRUPT),
+			vidc_read(core, VIDC_REG_RISC2HOST_CMD),
+			vidc_read(core, VIDC_REG_CH0_INST_ID),
+			vidc_read(core, VIDC_REG_RETURNED_CH_INST_ID));
 		ret = -ETIMEDOUT;
 		goto err_free_dma;
 	}
