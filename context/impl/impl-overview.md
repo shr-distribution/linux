@@ -1,6 +1,6 @@
 ---
 created: "2026-05-11"
-last_edited: "2026-05-11"
+last_edited: "2026-05-20"
 ---
 
 # Implementation Overview
@@ -9,14 +9,18 @@ last_edited: "2026-05-11"
 | Domain | Tasks Done | Tasks Total | Status |
 |--------|-----------|-------------|--------|
 | spm-init | 5 | 5 | Testing - Implementation complete, device testing pending |
+| soc-watchdog | 1 | 5 | T-001 done (enable-path decision); T-008/T-010/T-011/T-021 pending |
 
 ## Current Work
 
-**Active:** SPM register initialization testing phase
-- Implementation: All 5 requirements (R1-R5) completed
-- Commits: efcc84bb7319, 2f1d7b574535, e811e223049c
-- Next: Deploy to device and run test suite
+**Active:** Cavekit batch 2026-05-19 — audit-gap kit implementation
+(soc-watchdog, sensor-i2c-recovery, pmic-thermal, wifi-suspend-wake,
+usb-phy-tuning). Build site: `context/plans/build-site.md`.
+
+Background: SPM register initialization in testing phase (PM-1 complete,
+PM-2 blocked by MPM — see `impl-mpm-boot-hang.md`).
 
 ## Testing Queue
 
 1. **spm-init** - Register verification + power collapse entry test (ready to test)
+2. **soc-watchdog** - Pending T-008 DT change + T-010 defconfig + device boot
