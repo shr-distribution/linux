@@ -11,11 +11,23 @@ Build site: context/plans/build-site.md
 
 ## Status
 
-**T-004 DONE** — PM8058 thermal zone wired via `generic-adc-thermal` over
-the existing `pm8058_xoadc die_temp` channel. Three trip points at
-105 / 125 / 145 deg C with 2 deg C hysteresis exactly matching legacy
-`pmic8058-tm` values. Critical trip (145 deg C) drives the standard
-mainline `orderly_poweroff()` path automatically.
+**T-004 DONE end-to-end** — PM8058 thermal zone wired via
+`generic-adc-thermal` over the existing `pm8058_xoadc die_temp` channel.
+Three trip points at 105 / 125 / 145 deg C with 2 deg C hysteresis
+exactly matching legacy `pmic8058-tm` values. Critical trip (145 deg C)
+drives the standard mainline `orderly_poweroff()` path automatically.
+On-device verification on kernel `g73d42f55522d` (2026-05-20):
+
+- `/sys/class/thermal/thermal_zone2/type = "pm8058-thermal"`
+- Live idle temp = 33550-33616 mC (within R1 AC2 15-80 k mC range)
+- All three trip-point temp/hysteresis values match cavekit exactly
+- `trip_point_2_type = "critical"` (R3 wiring confirmed)
+- `emul_temp` writable: inject 80000 -> readback 80000; clear -> 33583
+  (real sensor restored). T-014/T-022/T-023 emul_temp injection path
+  is now confirmed functional.
+- `iio:device0 = "PM8058-XOADC"`, `iio:device2 =
+  "thermal-sensor-pm8058-die"`
+- `dmesg`: `pm8xxx-adc ...:xoadc@197: PM8058-XOADC XOADC driver enabled`
 
 **T-005 PARTIAL** — PM8901 die-temperature monitoring is **not feasible
 without new driver code in mainline 6.18.** PM8901 has no IIO channel,
@@ -152,12 +164,12 @@ Flags required across all three tenderloin defconfigs:
 
 | Task | Status | Notes |
 |------|--------|-------|
-| T-004 | DONE | PM8058 zone via generic-adc-thermal + die_temp xoadc channel; 3 trips 105/125/145, hysteresis 2k mC each |
+| T-004 | DONE (verified on-device) | PM8058 zone live at thermal_zone2; idle 33.5 C; trips/hysteresis match; emul_temp path functional |
 | T-005 | PARTIAL | DT cannot land — PM8901 needs new driver port (pmic8901-tm). Recommended follow-up task scope ~200 lines driver + minor DT |
-| T-014 | TODO | emul_temp -> orderly_poweroff e2e (HW, Tier 1) |
-| T-015 | DONE | defconfigs: `CONFIG_GENERIC_ADC_THERMAL=y` + `CONFIG_THERMAL_EMULATION=y` + `CONFIG_THERMAL_OF=y` across 3 configs |
+| T-014 | READY | emul_temp injection mechanism confirmed; awaiting 145 C critical-trip e2e test (will shut device down — schedule deliberately) |
+| T-015 | DONE (verified on-device) | initial commit f715f2b3a2eb + fix-up b75b1871bbb9 (CONFIG_QCOM_PM8XXX_XOADC=y) — driver bound, IIO + thermal-zone live |
 | T-022 | TODO | no userspace daemon test (HW, Tier 2) |
-| T-023 | TODO | latency measurement (HW, Tier 2) |
+| T-023 | READY | latency measurement once T-014 runs |
 
 ## Files Changed
 
