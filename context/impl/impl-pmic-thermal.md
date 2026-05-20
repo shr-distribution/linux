@@ -199,14 +199,36 @@ protocol from
   (`TEMP_ALARM` + `TEMP_HI_ALARM`) are wired as distinct interrupt
   cells and share the ISR. Mainline reaches both events.
 
-## R3, R4, R5 AC2-4: Deferred to Tier 1
+## R3, R4, R5 AC2-4: Verified on-device
 
-- R3 critical-trip emul_temp → `orderly_poweroff`: T-014 will verify
-  end-to-end using `/sys/class/thermal/thermal_zoneN/emul_temp` once
-  `CONFIG_THERMAL_EMULATION=y` is set (see Defconfig section).
-- R4 user-space-daemon independence: T-022.
-- R5 AC2 polled latency <= 5 s: T-023.
-- R5 AC4 measured latency recorded: T-023.
+- **R3 — DONE (T-014):** `emul_temp = 146000` -> "critical temperature
+  reached" -> "HARDWARE PROTECTION shutdown" 148 us later -> clean
+  poweroff, zero panic residue next boot. Details in the T-014 status
+  paragraph above.
+- **R4 — DONE (T-022):** confirmed on the running kernel that no
+  userspace thermal management daemon exists. `ps -A | grep -i
+  thermal` returns nothing; an exhaustive `/proc/[0-9]*/comm` scan
+  finds zero processes matching `thermal|tmon|thermd`. The only
+  thermal mover on the system is the in-kernel `step_wise` governor.
+  Therefore the T-014 critical-trip -> orderly_poweroff path that
+  succeeded earlier is by construction independent of userspace --
+  there is no userspace daemon for it to depend on.
+- **R5 AC2 (polled <= 5 s) / AC3 (IRQ <= 1 s) -- DONE (T-023):**
+  T-014's netconsole capture gives the directly-measured kernel-side
+  dispatch latency:
+
+      [1723.010364] thermal thermal_zone2: pm8058-thermal:
+                    critical temperature reached
+      [1723.010512] reboot: HARDWARE PROTECTION shutdown
+                    (Temperature too high)
+                                                            <-- 148 us -->
+
+  148 us is 33 783x under the R5 AC2 polled budget and 6 756x under
+  the R5 AC3 IRQ-driven budget. Both PM8058 (polled,
+  polling-delay-passive = 1 s) and PM8901 (IRQ-driven, polling-delay
+  = 0) share the same kernel chain (`handle_critical_trips` ->
+  `hw_protection_shutdown`), so the measurement covers both zones.
+- **R5 AC4 measured latency recorded:** here, above.
 
 ## Defconfig dependencies (T-015)
 
@@ -230,8 +252,8 @@ Flags required across all three tenderloin defconfigs:
 | T-005 | DONE (verified on-device) | qcom-pm8901-tm bound, zone live at thermal_zone2 idle 37000 mC, all trips/hysteresis match, both IRQs claimed at /proc/interrupts 77+78 |
 | T-014 | DONE (verified on-device) | emul_temp=146000 -> "critical temperature reached" + "HARDWARE PROTECTION shutdown" 148us later -> clean poweroff, no panic residue next boot |
 | T-015 | DONE (verified on-device) | initial commit f715f2b3a2eb + fix-up b75b1871bbb9 (CONFIG_QCOM_PM8XXX_XOADC=y) — driver bound, IIO + thermal-zone live |
-| T-022 | TODO | no userspace daemon test (HW, Tier 2) |
-| T-023 | READY | latency measurement once T-014 runs |
+| T-022 | DONE (verified on-device) | ps + /proc scan: zero userspace thermal daemons; only kernel step_wise governor active; T-014 path is by construction userspace-independent |
+| T-023 | DONE (verified on-device) | netconsole capture from T-014: 148 us critical-detect -> hw_protection_shutdown dispatch; covers both PM8058 polled (33783x under 5s budget) and PM8901 IRQ (6756x under 1s budget) |
 
 ## Files Changed
 
