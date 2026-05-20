@@ -183,18 +183,25 @@ DT — `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
   qcom,vendor-init-seq = /bits/ 8 <0x32 0x35>, /bits/ 8 <0x36 0x02>;
   ```
 
-### Value derivation (from legacy)
+### Value derivation (from legacy mach-msm headers — MSM8X60 variant)
 
 - `ULPI_CONFIG_REG3 (0x32)`:
   - `ULPI_PRE_EMPHASIS_MASK = (3 << 4) = 0x30` → 20 % pre-emphasis
-  - HS driver slope value `0x05` (within `ULPI_HSDRVSLOPE_MASK`)
+  - HS driver slope value `0x05` (within `ULPI_HSDRVSLOPE_MASK = 0x0F`)
   - Combined post-reset value: `0x30 | 0x05 = 0x35`
 - `ULPI_DIGOUT_CTRL (0x36)`:
   - `ULPI_CDR_AUTORESET = (1 << 1) = 0x02` set → CDR auto-reset disable
-    (legacy semantics: setting this bit *disables* the auto-reset)
+    (legacy semantics: setting this bit *disables* the auto-reset).
+  - `ULPI_SE1_GATE = (1 << 2) = 0x04` set → SE1 gating disable
+    (legacy semantics: setting bit 2 *disables* gating; see
+    `set_se1_gating()` at
+    `webos .../drivers/usb/otg/msm72k_otg.c:280-294`).
+  - Combined post-reset value: `0x02 | 0x04 = 0x06`.
 - Source:
-  `webos .../arch/arm/mach-fsm/include/mach/msm_hsusb_hw.h`
-  for the reg addresses + bit masks;
+  `webos .../arch/arm/mach-msm/include/mach/msm_hsusb_hw.h:163-189`
+  (mach-msm — the MSM8X60 variant. NB: there is also a mach-fsm
+  variant with different bit positions — for tenderloin we use the
+  mach-msm one because MSM8X60 falls under `CONFIG_ARCH_MSM8X60`);
   `webos .../arch/arm/mach-msm/board-tenderloin.c:1127-1153` for the
   values; `webos .../drivers/usb/otg/msm72k_otg.c:243-293` for the
   write-path semantics.
@@ -206,13 +213,13 @@ DT — `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
 - AC2 HS driver slope 0x05 configured: DONE — reg 0x32 low bits
   written as 0x05.
 - AC3 CDR auto-reset disabled: DONE — reg 0x36 bit 1 set.
-- AC4 SE1 gating disabled: **NOT IMPLEMENTED**. The legacy SE1-gating
-  bit position was not found in either of the two `msm_hsusb_hw.h`
-  variants searched (both `mach-fsm` variants showed only
-  CDR_AUTORESET in DIGOUT_CTRL). Writing a guessed bit position risks
-  regressing USB enumeration; safer to defer until either the legacy
-  reference is recovered or signal-quality testing shows value in the
-  bit. Append to `qcom,vendor-init-seq` once known.
+- AC4 SE1 gating disabled: **DONE** — reg 0x36 bit 2 set
+  (`ULPI_SE1_GATE = (1 << 2)`). Originally deferred because I had
+  only inspected the `mach-fsm` variant of `msm_hsusb_hw.h`; a
+  deeper search of the `mach-msm` variant (which carries the
+  `CONFIG_ARCH_MSM8X60` ifdef branch) located the macro at line 171
+  and `set_se1_gating()` confirmed the polarity (set bit -> disable
+  gating). Combined reg 0x36 value updated from 0x02 -> 0x06.
 - AC5 verifiable from driver state: deferred to T-018 / ad-hoc
   `ulpi_read` from a debug shim. The driver patch keeps the writes in
   `qcom_usb_hs_phy_init()` so they execute on every PHY init —
@@ -246,7 +253,7 @@ to revisit):
 | Task | Status | Notes |
 |------|--------|-------|
 | T-006 | DONE | path-found: small driver patch + new DT prop `qcom,vendor-init-seq`; targets `ulpi_write(addr, val)` directly with no +0x80 base |
-| T-016 | DONE | driver patch + binding + DT property landed; 3/4 legacy values applied; AC4 SE1 deferred |
+| T-016 | DONE | driver patch + binding + DT property landed; all 4 legacy values applied (reg 0x32 = 0x35, reg 0x36 = 0x06 = CDR_AUTORESET | SE1_GATE) |
 | T-017 | N/A | won't-fix path not active (path exists) |
 | T-018 | TODO | regression guard, HW (Tier 1) |
 
