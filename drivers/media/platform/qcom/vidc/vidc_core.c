@@ -1671,8 +1671,28 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	vidc_write(core, VIDC_REG_CH0_INST_ID,
 		   VIDC_OP_INIT_BUFFERS | inst->inst_id);
 
-	if (!wait_for_completion_timeout(&inst->done,
-					 msecs_to_jiffies(3000))) {
+	/*
+	 * Diagnostic poll during the wait: every 250 ms, log CH0_INST_ID,
+	 * RISC2HOST_CMD and INTR.  Firmware processing CH0_INST_ID will
+	 * change it from 0x40000 to either 0xffff (idle marker) or
+	 * something else; firmware completion will set R2H_CMD non-zero.
+	 * If both stay constant for the full timeout, the firmware never
+	 * consumed the trigger.
+	 */
+	{
+		int i;
+		for (i = 0; i < 12; i++) {
+			if (wait_for_completion_timeout(&inst->done,
+				msecs_to_jiffies(250)))
+				goto init_buf_done;
+			dev_info(core->dev,
+				 "INIT_BUFFERS poll t=%d ms: CH0_INST=0x%x R2H=0x%x INTR=0x%x\n",
+				 (i + 1) * 250,
+				 vidc_read(core, VIDC_REG_CH0_INST_ID),
+				 vidc_read(core, VIDC_REG_RISC2HOST_CMD),
+				 vidc_read(core, VIDC_REG_INTERRUPT));
+		}
+
 		dev_err(core->dev,
 			"INIT_BUFFERS timeout — FW_VERSION=0x%x INTR=0x%x R2H_CMD=0x%x CH0_INST_ID=0x%x RET_INST=0x%x\n",
 			vidc_read(core, VIDC_REG_FW_VERSION),
@@ -1683,6 +1703,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		ret = -ETIMEDOUT;
 		goto err_free_dma;
 	}
+init_buf_done:
 
 	if (inst->error) {
 		dev_err(core->dev, "INIT_BUFFERS firmware error: %d\n",
