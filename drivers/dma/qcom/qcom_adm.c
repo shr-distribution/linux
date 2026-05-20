@@ -147,19 +147,6 @@ struct adm_async_desc {
 	void (*exec_func)(void *exec_user);
 	void *exec_user;
 
-	/*
-	 * Per-completion fields populated by the hardirq and consumed
-	 * by the completion tasklet. last_result holds the value the
-	 * hardirq read from ADM_CH_RSLT; completed_node lets the desc
-	 * be queued on adm_chan.pending_completed while it waits for
-	 * tasklet processing. vd.node is unused at this point because
-	 * adm_start_dma list_del'd it when the descriptor became
-	 * curr_txd, so it remains free for vchan_cookie_complete in
-	 * the tasklet.
-	 */
-	u32 last_result;
-	struct list_head completed_node;
-
 	/* Pool management */
 	struct list_head pool_node;
 	int pool_index;		/* -1 = dynamic alloc, >=0 = pooled */
@@ -186,22 +173,21 @@ struct adm_chan {
 	void *exec_user;
 
 	/*
-	 * Per-channel queue of completed descriptors waiting for
-	 * tasklet processing. The hardirq reads CH_RSLT (acks the
-	 * device IRQ), captures curr_txd along with its result, and
-	 * appends to this queue. The tasklet drains the queue,
-	 * calling vchan_cookie_complete + adm_start_dma for each.
+	 * Result + descriptor captured by the hardirq, consumed by
+	 * the completion tasklet. The hardirq reads CH_RSLT (which
+	 * acks the IRQ in the device), claims the in-flight
+	 * descriptor (curr_txd -> NULL), and stashes both here so
+	 * the tasklet can dispatch errors / vchan_cookie_complete /
+	 * adm_start_dma out of IRQ context without racing against a
+	 * peripheral driver re-submitting a fresh request between
+	 * the hardirq and the tasklet running.
 	 *
-	 * A queue (not a single slot) is required because under
-	 * heavy I/O the hardware can fire several completions on the
-	 * same channel before the softirq tasklet gets to run; a
-	 * single-slot stash would lose the earlier ones and the
-	 * peripheral driver would never see those cookies marked
-	 * complete (mmci then waits indefinitely -> rootfs cascade).
-	 *
-	 * Protected by achan->vc.lock.
+	 * pending_completed gets the descriptor pointer; the tasklet
+	 * takes ownership and clears it. Cleared back to NULL when
+	 * the tasklet picks it up.
 	 */
-	struct list_head pending_completed;
+	u32 pending_result;
+	struct adm_async_desc *pending_completed;
 
 	struct list_head node;
 
@@ -320,7 +306,6 @@ static int adm_desc_pool_init(struct adm_device *adev)
 		desc->cpl = adev->cpl_pool_virt + (i * ADM_CPL_BUF_SIZE);
 		desc->dma_addr = adev->cpl_pool_dma + (i * ADM_CPL_BUF_SIZE);
 		INIT_LIST_HEAD(&desc->pool_node);
-		INIT_LIST_HEAD(&desc->completed_node);
 		list_add_tail(&desc->pool_node, &adev->desc_free_list);
 	}
 
@@ -421,7 +406,8 @@ static struct adm_async_desc *adm_desc_alloc_fallback(struct adm_device *adev,
 	desc->pool_index = -1;	/* Mark as dynamic allocation */
 	desc->dma_len = cpl_size;
 	INIT_LIST_HEAD(&desc->pool_node);
-	INIT_LIST_HEAD(&desc->completed_node);
+
+	dev_dbg(adev->dev, "ADM fallback alloc: cpl_size=%zu\n", cpl_size);
 
 	return desc;
 }
@@ -977,7 +963,6 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 	 */
 	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
 		struct adm_chan *achan = &adev->channels[i];
-		struct adm_async_desc *done;
 		u32 status, result;
 		unsigned long flags;
 
@@ -995,17 +980,12 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			continue;
 
 		spin_lock_irqsave(&achan->vc.lock, flags);
-		done = achan->curr_txd;
+		achan->pending_result = result;
+		achan->pending_completed = achan->curr_txd;
 		achan->curr_txd = NULL;
-		if (done) {
-			done->last_result = result;
-			list_add_tail(&done->completed_node,
-				      &achan->pending_completed);
-		}
 		spin_unlock_irqrestore(&achan->vc.lock, flags);
 
-		if (done)
-			set_bit(i, &adev->pending_completion);
+		set_bit(i, &adev->pending_completion);
 	}
 
 	tasklet_schedule(&adev->completion_tasklet);
@@ -1030,46 +1010,37 @@ static void adm_completion_tasklet_fn(struct tasklet_struct *t)
 
 	for_each_set_bit(i, &pending, ADM_MAX_CHANNELS) {
 		struct adm_chan *achan = &adev->channels[i];
-		struct adm_async_desc *done, *tmp;
-		LIST_HEAD(local);
+		struct adm_async_desc *async_desc;
 		unsigned long flags;
+		u32 result;
 
-		/*
-		 * Splice the per-channel completed queue onto our local
-		 * list under the channel lock, then drop the lock for
-		 * vchan_cookie_complete + adm_start_dma. This avoids
-		 * holding vc.lock across the vchan tasklet schedule.
-		 */
 		spin_lock_irqsave(&achan->vc.lock, flags);
-		list_splice_init(&achan->pending_completed, &local);
+		async_desc = achan->pending_completed;
+		achan->pending_completed = NULL;
+		result = achan->pending_result;
 
-		/*
-		 * Kick off next DMA on this channel if mmci queued anything
-		 * while we were waiting. adm_start_dma needs vc.lock held;
-		 * it's a no-op if vchan_next_desc returns null.
-		 */
-		adm_start_dma(achan);
+		if (result & ADM_CH_RSLT_ERR)
+			achan->error = 1;
+
+		if (async_desc) {
+			vchan_cookie_complete(&async_desc->vd);
+			/* kick off next DMA on this channel if any queued */
+			adm_start_dma(achan);
+		}
+
 		spin_unlock_irqrestore(&achan->vc.lock, flags);
 
-		list_for_each_entry_safe(done, tmp, &local, completed_node) {
-			u32 result = done->last_result;
-
-			list_del_init(&done->completed_node);
-
-			if (result & ADM_CH_RSLT_ERR) {
-				achan->error = 1;
-				dev_err(adev->dev,
-					"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
-					i, result,
-					!!(result & ADM_CH_RSLT_ERR),
-					!!(result & ADM_CH_RSLT_FLUSH),
-					!!(result & ADM_CH_RSLT_TPD));
-			}
-
-			spin_lock_irqsave(&achan->vc.lock, flags);
-			vchan_cookie_complete(&done->vd);
-			spin_unlock_irqrestore(&achan->vc.lock, flags);
-		}
+		/*
+		 * Log errors outside the channel lock to avoid printk
+		 * latency under contention.
+		 */
+		if (result & ADM_CH_RSLT_ERR)
+			dev_err(adev->dev,
+				"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
+				i, result,
+				!!(result & ADM_CH_RSLT_ERR),
+				!!(result & ADM_CH_RSLT_FLUSH),
+				!!(result & ADM_CH_RSLT_TPD));
 	}
 }
 
@@ -1160,8 +1131,6 @@ static void adm_channel_init(struct adm_device *adev, struct adm_chan *achan,
 {
 	achan->id = index;
 	achan->adev = adev;
-
-	INIT_LIST_HEAD(&achan->pending_completed);
 
 	vchan_init(&achan->vc, &adev->common);
 	achan->vc.desc_free = adm_dma_free_desc;
