@@ -155,10 +155,10 @@ part of T-015 in Tier 1.
 |------|--------|-------|
 | T-004 | DONE | PM8058 zone via generic-adc-thermal + die_temp xoadc channel; 3 trips 105/125/145, hysteresis 2k mC each |
 | T-005 | PARTIAL | DT cannot land — PM8901 needs new driver port (pmic8901-tm). Recommended follow-up task scope ~200 lines driver + minor DT |
-| T-014 | TODO | emul_temp -> orderly_poweroff e2e (Tier 1) |
-| T-015 | TODO | defconfig: CONFIG_GENERIC_ADC_THERMAL=y + THERMAL_EMULATION=y + THERMAL_OF=y across 3 configs (Tier 1) |
-| T-022 | TODO | no userspace daemon test (Tier 2) |
-| T-023 | TODO | latency measurement (Tier 2) |
+| T-014 | TODO | emul_temp -> orderly_poweroff e2e (HW, Tier 1) |
+| T-015 | DONE | defconfigs: `CONFIG_GENERIC_ADC_THERMAL=y` + `CONFIG_THERMAL_EMULATION=y` + `CONFIG_THERMAL_OF=y` across 3 configs |
+| T-022 | TODO | no userspace daemon test (HW, Tier 2) |
+| T-023 | TODO | latency measurement (HW, Tier 2) |
 
 ## Files Changed
 
