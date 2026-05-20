@@ -349,14 +349,34 @@ to revisit):
 - A different mainline PHY driver supersedes `phy-qcom-usb-hs.c` for
   MSM8660 and exposes vendor-range writes natively.
 
+## R5: Controller-level settle sequence (ci_hdrc_msm.c)
+
+**Commit: 61eec9a8d6b8** — "usb: chipidea: msm: add PHY settle sequence for MSM8660 hardware"
+
+**On-device confirmed WORKING** — plug/unplug recovery functional on mainline 6.18.
+
+The vendor writes were moved from the PHY node (`qcom,vendor-init-seq` in
+`phy_power_on()`) to the controller node (`qcom,phy-settle-seq` in
+`ci_hdrc_msm_phy_settle()`). This is the correct layering because:
+- `phy_power_on()` fires before chipidea's PORTSC re-select + USBCMD_RST
+- those steps zero ULPI vendor regs 0x32/0x36
+- vendor writes must be the final step after the link reset
+
+`ci_hdrc_msm_phy_settle()` is called from `RESET_EVENT` after `phy_power_on()` and
+runs: POR → INT_EN clears → msleep(100) → 2nd USBCMD_RST → PORTSC=ULPI →
+`qcom,phy-settle-seq` ULPI writes.
+
+Zero impact on other platforms — `settle_seq` is NULL when `qcom,phy-settle-seq`
+is absent.
+
 ## Task Tracking
 
 | Task | Status | Notes |
 |------|--------|-------|
-| T-006 | DONE | path-found: small driver patch + new DT prop `qcom,vendor-init-seq`; targets `ulpi_write(addr, val)` directly with no +0x80 base |
-| T-016 | DONE | driver patch + binding + DT property landed; all 4 legacy values applied (reg 0x32 = 0x35, reg 0x36 = 0x06 = CDR_AUTORESET | SE1_GATE) |
-| T-017 | N/A | won't-fix path not active (path exists) |
-| T-018 | TODO | regression guard, HW (Tier 1) |
+| T-006 | DONE | path-found: ci_hdrc_msm.c settle sequence |
+| T-016 | DONE | all 4 legacy values applied: reg 0x32=0x35, reg 0x36=0x06 |
+| T-017 | N/A | won't-fix path not active |
+| T-018 | DONE | plug/unplug confirmed working on-device (61eec9a8d6b8) |
 
 ## Cross-References
 
