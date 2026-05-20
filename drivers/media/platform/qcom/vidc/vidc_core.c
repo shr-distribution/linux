@@ -447,13 +447,26 @@ static void vidc_handle_enc_complete(struct vidc_core *core,
 static void vidc_handle_seq_done(struct vidc_core *core,
 				 struct vidc_inst *inst)
 {
+	u32 min_luma_size, min_chroma_size;
+
 	/* Read sequence header info */
 	inst->seq_height = vidc_read(core, VIDC_REG_SEQ_IMG_SIZE_Y);
 	inst->seq_width = vidc_read(core, VIDC_REG_SEQ_IMG_SIZE_X);
 	inst->min_dpb_count = vidc_read(core, VIDC_REG_SEQ_MIN_DPB);
 
-	dev_info(core->dev, "Sequence done: %ux%u, min_dpb=%u\n",
-		 inst->seq_width, inst->seq_height, inst->min_dpb_count);
+	/*
+	 * webOS reads min DPB Y/C sizes from SHM and uses them to size the
+	 * DPB allocation.  Read for diagnostics so we can verify whether the
+	 * firmware's minimum matches our tile-aligned compute (and, if it
+	 * doesn't, switch to using these values).
+	 */
+	min_luma_size = readl(core->shm_vaddr + VIDC_SHM_MIN_LUMA_DPB_SIZE);
+	min_chroma_size = readl(core->shm_vaddr + VIDC_SHM_MIN_CHROMA_DPB_SIZE);
+
+	dev_info(core->dev,
+		 "Sequence done: %ux%u, min_dpb=%u, fw min_luma=0x%x, min_chroma=0x%x\n",
+		 inst->seq_width, inst->seq_height, inst->min_dpb_count,
+		 min_luma_size, min_chroma_size);
 
 	inst->state = VIDC_STATE_SEQ_PARSED;
 }
