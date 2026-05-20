@@ -1572,14 +1572,28 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	 * device_run lands the SHM register should be written from a
 	 * common helper.
 	 */
+	/*
+	 * Clear RISC2HOST_CMD before every host→firmware command — the
+	 * firmware checks this register to know the previous response was
+	 * consumed and it can write a new one.  Skipping the clear leaves
+	 * the previous SEQ_DONE in the slot; the firmware processes
+	 * INIT_BUFFERS but never raises a new IRQ, which manifests as an
+	 * INIT_BUFFERS timeout.  webOS vidc_1080p_decode_init_buffers_ch0
+	 * writes EMPTY here as the first step.
+	 */
+	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
+
 	/* INIT_CH before parameters (DDL pattern for every command) */
 	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 
-	/* Sequence number + DPB count visible to the firmware */
+	/*
+	 * Order matches webOS vidc_1080p_decode_init_buffers_ch0:
+	 *   SHARED_MEM, DPB_CONFIG, CMD_SEQ_NUM, then trigger.
+	 */
+	vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
-	vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
 
 	/* Kick INIT_BUFFERS via the operation-type bits in INST_ID */
 	vidc_write(core, VIDC_REG_CH0_INST_ID,
