@@ -2481,6 +2481,22 @@
 	};
 };
 
+&apcs_timer {
+	/*
+	 * Wire the SoC watchdog. The qcom-wdt driver binds against
+	 * "qcom,scss-timer" (already on this node) and uses the apcs_tmr
+	 * offset layout; cpu-offset = 0x40000 (set in qcom-msm8660.dtsi)
+	 * lands the watchdog MMIO at 0x02040000, matching the legacy
+	 * MSM_WATCHDOG=y window. The driver requires a non-zero clock
+	 * rate via devm_clk_get_enabled(), so reference the existing
+	 * sleep_clk (32 768 Hz) — same convention apq8064/msm8960 use.
+	 *
+	 * Cavekit: cavekit-soc-watchdog.md R1 (enable decision) + R2.
+	 */
+	clocks = <&sleep_clk>;
+	clock-names = "sleep";
+};
+
 &gsbi3 {
 	status = "okay";
 	qcom,mode = <GSBI_PROT_I2C>;

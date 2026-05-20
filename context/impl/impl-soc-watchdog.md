@@ -154,11 +154,11 @@ clock-names = "sleep";
 | Task | Status | Notes |
 |------|--------|-------|
 | T-001 | DONE | enable path verified; driver=qcom-wdt.c, combo=`qcom,scss-timer + qcom,msm-timer`, reg via cpu-offset 0x40000, legacy offset 0x38 matches apcs_tmr.WDT_RST |
-| T-008 | TODO | add `clocks=<&sleep_clk>; clock-names = "sleep";` to `arch/arm/boot/dts/qcom/qcom-msm8660.dtsi` timer@2000000 |
-| T-010 | TODO | add `CONFIG_QCOM_WDT=y` to three defconfigs |
-| T-011 | TODO | 5 cold boots + 30-min pet + orderly poweroff |
-| T-021 | TODO | induced lockup → HW reset + pstore preservation |
+| T-008 | DONE | `apcs_timer:` label added to qcom-msm8660.dtsi timer@2000000; tenderloin-common.dtsi `&apcs_timer` override adds `clocks = <&sleep_clk>; clock-names = "sleep";` |
 | T-009 | N/A | won't-fix path not taken |
+| T-010 | DONE | `CONFIG_WATCHDOG=y` + `CONFIG_QCOM_WDT=y` added to all three tenderloin defconfigs |
+| T-011 | TODO | 5 cold boots + 30-min pet + orderly poweroff (HW) |
+| T-021 | TODO | induced lockup → HW reset + pstore preservation (HW) |
 
 ## Cross-References
 

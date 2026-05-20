@@ -9,10 +9,10 @@ last_edited: "2026-05-20"
 | Domain | Tasks Done | Tasks Total | Status |
 |--------|-----------|-------------|--------|
 | spm-init | 5 | 5 | Testing - Implementation complete, device testing pending |
-| soc-watchdog | 1 | 5 | T-001 done (enable-path decision); T-008/T-010/T-011/T-021 pending |
+| soc-watchdog | 3 | 5 | T-001/T-008/T-010 done; T-011/T-021 HW verification pending |
 | usb-phy-tuning | 1 | 4 | T-006 done (path-found via small driver patch + new DT prop); T-016/T-018 pending |
-| sensor-i2c-recovery | 2 | 4 | T-002/T-003 done (i2c-qup recovery wired, 9-cycle generic SCL); T-012/T-013 pending |
-| pmic-thermal | 1.5 | 6 | T-004 done (PM8058 polled zone, generic-adc-thermal); T-005 partial (PM8901 needs driver port); T-014/T-015/T-022/T-023 pending |
+| sensor-i2c-recovery | 2 | 4 | T-002/T-003 done (i2c-qup recovery wired, 9-cycle generic SCL); T-012/T-013 HW pending |
+| pmic-thermal | 2.5 | 6 | T-004/T-015 done; T-005 PARTIAL (PM8901 needs driver port); T-014/T-022/T-023 HW pending |
 
 ## Current Work
 
