@@ -2014,7 +2014,9 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			unsigned int chunk_len =
 				(total - sg_off > max_chunk) ?
 				max_chunk : (total - sg_off);
+			unsigned int chunk_retries = 0;
 
+retry_chunk:
 			/*
 			 * Between chunks, the CE2 engine's DOUT FIFO retains
 			 * stale data from the prior chunk -- on next GOPROC
@@ -2040,7 +2042,7 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			 * software AES by default; HW path is for explicit-
 			 * driver-name testing.
 			 */
-			if (sg_off != 0) {
+			if (sg_off != 0 || chunk_retries > 0) {
 				/* Inter-chunk reset: cycle the engine core
 				 * clock (clk_disable / clk_enable) PLUS the
 				 * SW_RST pulse.  webOS qce.c and Samsung
@@ -2113,8 +2115,11 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			/* Re-install IV (CNTR0..3) for non-first chunks --
 			 * holds the previous chunk's tail block / next CTR.
 			 * IV for first chunk was already written above.
+			 * Also re-install on retry (engine state was just
+			 * reset, CNTR0..3 wiped).
 			 */
-			if (sg_off != 0 && !IS_ECB(flags) && enciv_words) {
+			if ((sg_off != 0 || chunk_retries > 0) &&
+			    !IS_ECB(flags) && enciv_words) {
 				for (k = 0; k < enciv_words; k++)
 					writel((__force u32)enciv[k],
 					       qce->base + CE2_REG_CNTR0_IV0 +
@@ -2185,13 +2190,53 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				return ret;
 			}
 
-			if (qce_ce2_chunk_debug) {
-				unsigned int chunk_idx = sg_off / max_chunk;
+			{
 				u32 st_post_dma = readl_relaxed(qce->base +
 								CE2_REG_STATUS);
+				unsigned int dout_avail =
+					(st_post_dma & CE2_DOUT_SIZE_AVAIL_MASK) >>
+					CE2_DOUT_SIZE_AVAIL_SHIFT;
 
-				pr_info("CE2dbg chunk=%u status post-dma=%08x\n",
-					chunk_idx, st_post_dma);
+				if (qce_ce2_chunk_debug)
+					pr_info("CE2dbg chunk=%u status post-dma=%08x\n",
+						sg_off / max_chunk,
+						st_post_dma);
+
+				/* Engine no-op detection: on healthy chunks
+				 * the engine has produced all output and DOUT
+				 * FIFO is drained (DOUT_SIZE_AVAIL=0).  On the
+				 * ~1.5% stochastic no-op chunks, the engine
+				 * never produced anything; DMA in non-FC BOX
+				 * mode pulled 12 stale DATA_SHADOW0 dwords and
+				 * the engine still has 4 dwords sitting in
+				 * its DOUT FIFO (DOUT_SIZE_AVAIL=4).  Use that
+				 * as the retry trigger -- the heavy
+				 * inter-chunk reset (clk cycle + SW_RST + key
+				 * re-write) above clears the wedge state and
+				 * a re-run normally succeeds.
+				 *
+				 * Retry up to a small bound; if we exceed it
+				 * the engine is in a deeper wedge and the
+				 * outer DMA layer or a higher-level reset
+				 * needs to recover.
+				 */
+				if (dout_avail != 0 &&
+				    chunk_retries < 4) {
+					chunk_retries++;
+					dev_warn_ratelimited(qce->dev,
+						"CE2 skc no-op chunk at off=%u (DOUT_AVAIL=%u STATUS=0x%08x), retry %u\n",
+						sg_off, dout_avail,
+						st_post_dma, chunk_retries);
+					goto retry_chunk;
+				}
+				if (dout_avail != 0) {
+					dev_err(qce->dev,
+						"CE2 skc chunk wedged after %u retries at off=%u STATUS=0x%08x\n",
+						chunk_retries, sg_off,
+						st_post_dma);
+					qce_ce2_free_bounce(qce, &bounce);
+					return -EIO;
+				}
 			}
 
 			/* Wait for engine to finish processing AND drop back
