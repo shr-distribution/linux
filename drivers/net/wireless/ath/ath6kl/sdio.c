@@ -1396,24 +1396,22 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	ar->hif_priv = ar_sdio;
 	ar->hif_ops = &ath6kl_sdio_ops;
 	/*
-	 * BMI data size: 116 bytes keeps all CMD53 transfers <= 128 bytes
-	 * which is the Qualcomm SDCC PIO-safe limit. Setting this to the
-	 * mainline default of 256 causes mmci CMD53 timeouts because
-	 * mainline mmci falls back to PIO for sdcc4 (DMA channels are
-	 * allocated but not used). Until the mmci DMA path is wired up
-	 * for sdcc4, we must stay at 116.
+	 * BMI data size: 256 bytes — matches Atheros's own bmi_msg.h
+	 * BMI_DATASZ_MAX and what legacy webOS msm_sdcc uses successfully.
 	 *
-	 * Caveat: bmi_fast_download (LZ stream, used for OTP/firmware
-	 * upload) appears to require the chip to receive its expected
-	 * chunk size. At 116-byte data chunks (108-byte LZ payload), the
-	 * chip's LZ decompressor stops refreshing the BMI command credit
-	 * register and the next credit read times out with -110. Force
-	 * 64-byte total CMD53 transfers (52-byte LZ payload, single FIFO
-	 * fill) which matches the earlier pre-optimization workaround
-	 * before fast-PIO was added. Slow (~78s firmware upload) but
-	 * the chip's LZ engine keeps the credit register refreshed.
+	 * The previous value of 52 was a workaround for the era when
+	 * mainline mmci was falling back to PIO for sdcc4 (dma_threshold
+	 * was 256, so all BMI 52 B CMD53s went via PIO).  Now that mmci
+	 * is configured to route everything above 32 B through ADM DMA
+	 * (variant_qcom.dma_threshold = 32), BMI transfers go via ADM
+	 * ch 5 just like webOS, and we can use the chip's full mailbox
+	 * size.  The "LZ buffer underflow at 108 B" failure mode was
+	 * a PIO-specific symptom — the host couldn't refill the FIFO
+	 * fast enough between IRQs to feed the chip's LZ decompressor
+	 * at the expected rate.  With DMA the data stream is continuous
+	 * and the LZ engine sees its expected 256 B chunks back-to-back.
 	 */
-	ar->bmi.max_data_size = 52;
+	ar->bmi.max_data_size = 256;
 
 	ath6kl_sdio_set_mbox_info(ar);
 
