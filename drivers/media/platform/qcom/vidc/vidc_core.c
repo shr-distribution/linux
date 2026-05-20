@@ -1533,35 +1533,15 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		goto err_free_dma;
 	}
 
-	/* Program DPB register slots */
-	for (i = 0; i < inst->dpb_count; i++) {
-		slot_base = inst->dpb_y_dma_addr + i * slot_size;
-		fw_relative = slot_base - core->fw_dma_addr;
-
-		vidc_write(core, VIDC_REG_DPB_LUMA_BASE + i * 4,
-			   fw_relative >> VIDC_ADDR_SHIFT);
-		vidc_write(core, VIDC_REG_DPB_CHROMA_BASE + i * 4,
-			   (fw_relative + y_size) >> VIDC_ADDR_SHIFT);
-		if (mv_size)
-			vidc_write(core, VIDC_REG_DPB_MV_BASE + i * 4,
-				   (fw_relative + y_size + c_size)
-				    >> VIDC_ADDR_SHIFT);
-	}
-
-	dev_info(core->dev,
-		 "DPB pool: %u slots × (y=%u c=%u mv=%u), total %u bytes at %pad\n",
-		 inst->dpb_count, y_size, c_size, mv_size, total_size,
-		 &inst->dpb_y_dma_addr);
-
 	/*
-	 * Allocate H.264 work buffers and program the two address registers.
-	 * webOS vidc_1080p_set_h264_decode_buffers writes these before every
-	 * INIT_BUFFERS.  Without them the firmware accepts INIT_BUFFERS but
-	 * never raises a response IRQ (INIT_BUFFERS timeout).
+	 * webOS register-write order in vidc_1080p_set_h264_decode_buffers:
+	 *   1. H264_VERT_NB_MV  (work buf)
+	 *   2. H264_NB_IP       (work buf)
+	 *   3. per-slot DPB_LUMA[i], DPB_CHROMA[i], DPB_MV[i]
 	 *
-	 * Buffers land in the SMIPOOL coherent DMA pool (attached at probe
-	 * via of_reserved_mem_device_init_by_idx) so the firmware can fetch
-	 * them via DRAM_BASE_A-relative offsets.
+	 * Allocate H.264 work buffers first and write their registers BEFORE
+	 * the per-slot DPB registers (was the other way around).  Work
+	 * buffers land in SMIPOOL coherent pool.
 	 */
 	if (inst->codec == VIDC_CODEC_H264_DEC) {
 		dma_addr_t fw_off;
@@ -1599,6 +1579,26 @@ int vidc_init_buffers(struct vidc_inst *inst)
 			 &inst->h264_vert_nb_mv_dma_addr,
 			 &inst->h264_nb_ip_dma_addr);
 	}
+
+	/* Program DPB register slots — after H264 work bufs, matching webOS */
+	for (i = 0; i < inst->dpb_count; i++) {
+		slot_base = inst->dpb_y_dma_addr + i * slot_size;
+		fw_relative = slot_base - core->fw_dma_addr;
+
+		vidc_write(core, VIDC_REG_DPB_LUMA_BASE + i * 4,
+			   fw_relative >> VIDC_ADDR_SHIFT);
+		vidc_write(core, VIDC_REG_DPB_CHROMA_BASE + i * 4,
+			   (fw_relative + y_size) >> VIDC_ADDR_SHIFT);
+		if (mv_size)
+			vidc_write(core, VIDC_REG_DPB_MV_BASE + i * 4,
+				   (fw_relative + y_size + c_size)
+				    >> VIDC_ADDR_SHIFT);
+	}
+
+	dev_info(core->dev,
+		 "DPB pool: %u slots × (y=%u c=%u mv=%u), total %u bytes at %pad\n",
+		 inst->dpb_count, y_size, c_size, mv_size, total_size,
+		 &inst->dpb_y_dma_addr);
 
 	/*
 	 * Publish the per-slot buffer sizes via the shared-memory region.
