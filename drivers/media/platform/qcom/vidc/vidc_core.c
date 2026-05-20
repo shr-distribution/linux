@@ -1727,8 +1727,10 @@ init_buf_done:
 	}
 
 	inst->dpb_inited = true;
-	dev_info(core->dev, "VIDC DPB initialised, %u slots active\n",
-		 inst->dpb_count);
+	/* All DPB slots initially free for firmware to decode into */
+	inst->dpb_hw_mask = (1u << inst->dpb_count) - 1;
+	dev_info(core->dev, "VIDC DPB initialised, %u slots active (hw_mask=0x%x)\n",
+		 inst->dpb_count, inst->dpb_hw_mask);
 	return 0;
 
 err_free_dma:
@@ -2399,6 +2401,7 @@ void vidc_free_buffers(struct vidc_inst *inst)
 	inst->dpb_c_size = 0;
 	inst->dpb_mv_size = 0;
 	inst->dpb_inited = false;
+	inst->dpb_hw_mask = 0;
 }
 
 void vidc_core_deinit(struct vidc_core *core)

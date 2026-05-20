@@ -661,6 +661,15 @@ struct vidc_inst {
 	u32 dpb_mv_size;
 	u32 dpb_count;
 	bool dpb_inited;
+	/*
+	 * DPB slot availability bitmask for DPB_RELEASE register.  Bit N=1
+	 * means slot N is free for the firmware to write into.  Initialised
+	 * to (1<<dpb_count)-1 (all free) after INIT_BUFFERS.  After a
+	 * FRAME_DONE the IRQ handler clears the used slot's bit; after the
+	 * frame is copied to the CAPTURE buffer, the frame_done_work re-sets
+	 * it so it's available for the next decode cycle.
+	 */
+	u32 dpb_hw_mask;
 
 	/*
 	 * H.264 decoder work buffers programmed via VIDC_REG_H264_VERT_NB_MV

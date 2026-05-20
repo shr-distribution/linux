@@ -778,12 +778,22 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 
 	/*
 	 * FRAME_DATA additionally requires DPB_RELEASE and DPB_CONFIG.
-	 * Legacy vidc_1080p_decode_frame_start_ch0 always writes these.
-	 * DPB_RELEASE = 0: do not release any DPB slots back to firmware.
-	 * DPB_CONFIG  = dpb_count: tell firmware how many DPB slots exist.
+	 *
+	 * DPB_RELEASE is a bitmask of DPB slots the host is releasing back
+	 * to the firmware for writing decoded frames.  Bit N=1 means slot N
+	 * is available.  webOS sets this from dpb_mask->hw_mask, which
+	 * accumulates bits as the client returns displayed output buffers.
+	 * Writing 0 causes error 125 (VIDC_1080P_ERROR_NO_BUFFER_RELEASED_FROM_HOST).
+	 *
+	 * We manage DPB internally (firmware slots not mapped 1:1 to V4L2
+	 * CAPTURE buffers — we memcpy out after FRAME_DONE).  Use the
+	 * inst->dpb_hw_mask field which starts fully open (all slots free)
+	 * and is updated by the IRQ handler after each FRAME_DONE.
+	 *
+	 * DPB_CONFIG = dpb_count: tell firmware how many DPB slots exist.
 	 */
 	if (op == VIDC_OP_FRAME_DATA) {
-		vidc_write(core, VIDC_REG_CH0_DPB_RELEASE, 0);
+		vidc_write(core, VIDC_REG_CH0_DPB_RELEASE, inst->dpb_hw_mask);
 		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
 	}
 
