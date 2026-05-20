@@ -832,6 +832,19 @@
 					qcom,switch-mode-frequency = <1600000>;
 					bias-pull-down;
 					regulator-allow-set-load;
+					/*
+					 * Keep SMPS3 in PWM/HPM mode at all times.
+					 * Legacy board-tenderloin.c board_setup_S3A_1V8()
+					 * calls regulator_set_optimum_mode(vreg_S3A_1V8, 100000)
+					 * to force HPM before WiFi/codec power-up. Without a
+					 * declared load the RPM keeps the SMPS in pulse-skipping
+					 * (LPM), causing the 1.8V rail to droop on the first SDIO
+					 * transaction — the AR6003 times out on its BMI response
+					 * and ath6kl probe fails with "failed to read reg table".
+					 * 100 mA matches the legacy forced-HPM threshold; the
+					 * SMPS can easily sustain this at all times.
+					 */
+					regulator-system-load = <100000>;
 					/* Core 1.8V rail for audio, WiFi, sensors - must be on early */
 					regulator-boot-on;
 					regulator-always-on;
