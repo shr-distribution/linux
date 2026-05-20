@@ -35,6 +35,13 @@ struct qcom_usb_hs_phy {
 	struct regulator *v3p3;
 	struct reset_control *reset;
 	struct ulpi_seq *init_seq;
+	/*
+	 * Optional sequence of writes targeting raw ULPI addresses (no
+	 * ULPI_EXT_VENDOR_SPECIFIC base added). Populated from the
+	 * "qcom,vendor-init-seq" DT property. Applied after PHY reset
+	 * so the values survive the reset that follows init_seq writes.
+	 */
+	struct ulpi_seq *vendor_init_seq;
 	struct extcon_dev *vbus_edev;
 	struct notifier_block vbus_notify;
 };
@@ -154,6 +161,19 @@ static int qcom_usb_hs_phy_power_on(struct phy *phy)
 			goto err_ulpi;
 	}
 
+	/*
+	 * Apply board-specific raw-address ULPI writes after the PHY reset
+	 * so they survive register restore. Used to reach the standard
+	 * vendor range 0x30-0x3F which qcom,init-seq (above) cannot —
+	 * pre-emphasis level / HS driver slope / CDR auto-reset etc. live
+	 * there on MSM8660-class hardware.
+	 */
+	for (seq = uphy->vendor_init_seq; seq->addr; seq++) {
+		ret = ulpi_write(ulpi, seq->addr, seq->val);
+		if (ret)
+			goto err_ulpi;
+	}
+
 	if (uphy->vbus_edev) {
 		state = extcon_get_state(uphy->vbus_edev, EXTCON_USB);
 		/* setup initial state */
@@ -228,6 +248,30 @@ static int qcom_usb_hs_phy_probe(struct ulpi *ulpi)
 		return ret;
 	/* NUL terminate */
 	uphy->init_seq[size / 2].addr = uphy->init_seq[size / 2].val = 0;
+
+	/*
+	 * Optional raw-address vendor init sequence — same encoding as
+	 * qcom,init-seq (u8 addr/val pairs) but each pair is written to
+	 * the raw ULPI address rather than to ULPI_EXT_VENDOR_SPECIFIC +
+	 * addr. Lets boards reach the standard vendor range 0x30-0x3F.
+	 */
+	size = of_property_count_u8_elems(ulpi->dev.of_node,
+					  "qcom,vendor-init-seq");
+	if (size < 0)
+		size = 0;
+	uphy->vendor_init_seq = devm_kmalloc_array(&ulpi->dev,
+						   (size / 2) + 1,
+						   sizeof(*uphy->vendor_init_seq),
+						   GFP_KERNEL);
+	if (!uphy->vendor_init_seq)
+		return -ENOMEM;
+	ret = of_property_read_u8_array(ulpi->dev.of_node,
+					"qcom,vendor-init-seq",
+					(u8 *)uphy->vendor_init_seq, size);
+	if (ret && size)
+		return ret;
+	uphy->vendor_init_seq[size / 2].addr = 0;
+	uphy->vendor_init_seq[size / 2].val = 0;
 
 	uphy->ref_clk = clk = devm_clk_get(&ulpi->dev, "ref");
 	if (IS_ERR(clk))

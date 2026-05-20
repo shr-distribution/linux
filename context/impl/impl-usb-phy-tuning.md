@@ -13,8 +13,12 @@ Build site: context/plans/build-site.md
 
 **T-006 DONE** — investigation concludes a programming path exists but
 requires a small driver patch + a new DT property. Recommendation
-recorded below. Apply step (T-016) and regression guard (T-018) deferred
-to Tier 1.
+recorded below.
+
+**T-016 DONE (code), HW-verification deferred to T-018** — driver patch
++ binding + DT property landed. Three of four legacy values applied
+(pre-emphasis 20 %, HS driver slope 0x05, CDR auto-reset disable);
+SE1-gating-disable intentionally skipped, see R2 AC4 below.
 
 ## R1: Mainline Programming-Path Investigation
 
@@ -147,21 +151,72 @@ R1 AC4 ("if no route exists, documented as such") is not invoked: a
 small driver patch + new binding property is a route, even though it is
 not entirely zero-effort.
 
-## R2: Apply Legacy Values (Conditional on T-016)
+## R2: Apply Legacy Values
 
-T-016 will, when executed:
+### Implementation
 
-- Add `qcom,vendor-init-seq = /bits/ 8 < 0x32 0x30  0x36 0x05  ... >;`
-  (or whichever exact pair encoding the new binding uses) to the
-  `&usb_hs1_phy` board node in
-  `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`,
-  replacing the TODO comment with the actual sequence.
-- Land the matching `phy-qcom-usb-hs.c` driver patch.
-- Verify the applied values from a register dump or debugfs (whichever
-  the driver exposes; if neither exists, add a debugfs node behind a
-  KConfig).
+Driver — `drivers/phy/qualcomm/phy-qcom-usb-hs.c`:
 
-R2 stays open until T-016 lands.
+- New `struct ulpi_seq *vendor_init_seq` field on `struct qcom_usb_hs_phy`.
+- New parser block in `qcom_usb_hs_phy_probe()` mirroring the existing
+  `qcom,init-seq` parser (allocate `(size/2) + 1` slots,
+  `of_property_read_u8_array`, NUL-terminate).
+- New write loop in `qcom_usb_hs_phy_init()` placed **after**
+  `reset_control_reset(uphy->reset)`, calling `ulpi_write(ulpi,
+  seq->addr, seq->val)` with the raw address (no
+  `ULPI_EXT_VENDOR_SPECIFIC` offset). Placement after reset ensures
+  the values survive the controller's reset path; the existing
+  `qcom,init-seq` loop runs before reset and therefore cannot guarantee
+  the same.
+
+Binding — `Documentation/devicetree/bindings/phy/qcom,usb-hs-phy.yaml`:
+
+- Add `qcom,vendor-init-seq` as a `uint8-matrix` of (raw addr, val)
+  pairs. Same shape as `qcom,init-seq`, different semantics (no
+  +0x80 base).
+
+DT — `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
+
+- Replace the old TODO comment in `&usb_hs1_phy` with the actual
+  sequence:
+  ```
+  qcom,vendor-init-seq = /bits/ 8 <0x32 0x35>, /bits/ 8 <0x36 0x02>;
+  ```
+
+### Value derivation (from legacy)
+
+- `ULPI_CONFIG_REG3 (0x32)`:
+  - `ULPI_PRE_EMPHASIS_MASK = (3 << 4) = 0x30` → 20 % pre-emphasis
+  - HS driver slope value `0x05` (within `ULPI_HSDRVSLOPE_MASK`)
+  - Combined post-reset value: `0x30 | 0x05 = 0x35`
+- `ULPI_DIGOUT_CTRL (0x36)`:
+  - `ULPI_CDR_AUTORESET = (1 << 1) = 0x02` set → CDR auto-reset disable
+    (legacy semantics: setting this bit *disables* the auto-reset)
+- Source:
+  `webos .../arch/arm/mach-fsm/include/mach/msm_hsusb_hw.h`
+  for the reg addresses + bit masks;
+  `webos .../arch/arm/mach-msm/board-tenderloin.c:1127-1153` for the
+  values; `webos .../drivers/usb/otg/msm72k_otg.c:243-293` for the
+  write-path semantics.
+
+### Acceptance criteria coverage (R2)
+
+- AC1 Pre-emphasis 20 % configured: DONE — reg 0x32 bits 4-5 written
+  as 0x30.
+- AC2 HS driver slope 0x05 configured: DONE — reg 0x32 low bits
+  written as 0x05.
+- AC3 CDR auto-reset disabled: DONE — reg 0x36 bit 1 set.
+- AC4 SE1 gating disabled: **NOT IMPLEMENTED**. The legacy SE1-gating
+  bit position was not found in either of the two `msm_hsusb_hw.h`
+  variants searched (both `mach-fsm` variants showed only
+  CDR_AUTORESET in DIGOUT_CTRL). Writing a guessed bit position risks
+  regressing USB enumeration; safer to defer until either the legacy
+  reference is recovered or signal-quality testing shows value in the
+  bit. Append to `qcom,vendor-init-seq` once known.
+- AC5 verifiable from driver state: deferred to T-018 / ad-hoc
+  `ulpi_read` from a debug shim. The driver patch keeps the writes in
+  `qcom_usb_hs_phy_init()` so they execute on every PHY init —
+  reproducible across resume cycles.
 
 ## R3: USB Regression Guard
 
@@ -191,9 +246,9 @@ to revisit):
 | Task | Status | Notes |
 |------|--------|-------|
 | T-006 | DONE | path-found: small driver patch + new DT prop `qcom,vendor-init-seq`; targets `ulpi_write(addr, val)` directly with no +0x80 base |
-| T-016 | TODO | apply legacy values via the new property after the driver patch lands |
+| T-016 | DONE | driver patch + binding + DT property landed; 3/4 legacy values applied; AC4 SE1 deferred |
 | T-017 | N/A | won't-fix path not active (path exists) |
-| T-018 | TODO | regression guard (runs in either outcome) |
+| T-018 | TODO | regression guard, HW (Tier 1) |
 
 ## Cross-References
 

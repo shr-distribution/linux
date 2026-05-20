@@ -3650,22 +3650,41 @@
 	v1p8-supply = <&pm8058_l7>;
 
 	/*
-	 * HP TouchPad USB PHY tuning parameters from legacy kernel:
-	 * - Pre-emphasis: 20% (PRE_EMPHASIS_WITH_20_PERCENT = 0x30)
-	 * - HS driver slope: 0x05
-	 * - CDR auto reset: DISABLE (bit 1 = 0x02)
-	 * - SE1 gating: DISABLE (bit 2 = 0x04)
+	 * HP TouchPad USB PHY tuning parameters, replicated from the
+	 * legacy webOS msm_otg_pdata block in board-tenderloin.c:
 	 *
-	 * These are written to ULPI vendor-specific registers, but the
-	 * mainline qcom-usb-hs-phy driver only supports extended vendor
-	 * registers (0x80+) via qcom,init-seq. The legacy parameters
-	 * targeted registers 0x32 and 0x36 which are in the standard
-	 * vendor range (0x30-0x3F).
+	 *   pemp_level = PRE_EMPHASIS_WITH_20_PERCENT (0x30) into the
+	 *                ULPI_PRE_EMPHASIS_MASK bits of ULPI_CONFIG_REG3
+	 *   hsdrvslope = 0x05 into the ULPI_HSDRVSLOPE_MASK bits of the
+	 *                same ULPI_CONFIG_REG3
+	 *   cdr_autoreset = CDR_AUTO_RESET_DISABLE (sets ULPI_CDR_AUTORESET
+	 *                bit in ULPI_DIGOUT_CTRL — legacy meaning: writing
+	 *                "1" disables the CDR auto-reset)
 	 *
-	 * For now, we rely on driver defaults which should be safe.
-	 * TODO: Investigate if these legacy tuning values need to be
-	 * ported to improve signal quality or compatibility.
+	 * ULPI_CONFIG_REG3 is at address 0x32 and ULPI_DIGOUT_CTRL is at
+	 * 0x36 on this PHY (msm_hsusb_hw.h in the legacy tree). Both
+	 * sit in the standard ULPI vendor range (0x30-0x3f) which the
+	 * mainline qcom,init-seq property cannot reach — it base-offsets
+	 * every entry by ULPI_EXT_VENDOR_SPECIFIC (0x80). The
+	 * "qcom,vendor-init-seq" property added by the T-016 driver
+	 * patch writes to the raw ULPI address instead, and the writes
+	 * are deliberately applied after the PHY reset so they survive.
+	 *
+	 * Bit positions used (post-reset, register defaults are 0):
+	 *   reg 0x32 = 0x35  -> pre-emphasis 20% (bits 4-5 = 0x30)
+	 *                        | HS driver slope 0x05 (bits 0-2)
+	 *   reg 0x36 = 0x02  -> ULPI_CDR_AUTORESET (bit 1) set
+	 *
+	 * SE1-gating-disable is intentionally NOT applied: the legacy
+	 * SE1 gating bit was not found in either of the legacy ULPI
+	 * header variants and writing a guessed bit could regress
+	 * enumeration. T-018 verifies USB regression in either
+	 * outcome; if signal-quality tests later show value in SE1
+	 * gating, the bit can be appended to this property.
+	 *
+	 * Cavekit: cavekit-usb-phy-tuning.md R2 (R2 AC4 SE1 deferred).
 	 */
+	qcom,vendor-init-seq = /bits/ 8 <0x32 0x35>, /bits/ 8 <0x36 0x02>;
 };
 
 &lpass {
