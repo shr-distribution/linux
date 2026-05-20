@@ -3706,62 +3706,33 @@
 &usb1 {
 	status = "okay";
 	dr_mode = "peripheral";
-	/*
-	 * Mark USB1 as a system wakeup source — events on the USB bus
-	 * (cable plug, charger attach, host bus activity) should wake the
-	 * system from suspend. The kernel will only honour this once the
-	 * MPM wakeup-controller resume path is functional, but it is
-	 * harmless to declare now and saves an edit later.
-	 */
 	wakeup-source;
 	/*
-	 * USB bandwidth removed - webOS didn't use explicit bandwidth voting.
-	 * Instead, it used dfab_usb_hs_clk as a fabric clock voter.
-	 * With MDP now using SMI memory (separate MMSS fabric path),
-	 * there's no contention with USB on the EBI path.
+	 * PHY settle sequence for MSM8660 ULPI PHY, applied by
+	 * ci_hdrc_msm on every connect event after POR + 100ms +
+	 * link-reset + PORTSC (which zeroes the ULPI vendor regs).
+	 *
+	 * Values derived from legacy msm_otg_pdata (board-tenderloin.c):
+	 *   reg 0x32 = 0x35  pre-emphasis 20% (bits 4-5 = 0x30)
+	 *                  | HS driver slope 0x05 (bits 0-3)
+	 *   reg 0x36 = 0x06  CDR auto-reset disable (bit 1)
+	 *                  | SE1 gating disable (bit 2)
+	 *
+	 * On-device confirmed: 9/9 plug events write 0x35/0x06 correctly
+	 * (webOS kernel trace 2026-05-20, cavekit-usb-phy-tuning.md).
 	 */
+	qcom,phy-settle-seq = /bits/ 8 <0x32 0x35>, /bits/ 8 <0x36 0x06>;
 };
 &usb_hs1_phy {
 	v3p3-supply = <&pm8058_l6>;
 	v1p8-supply = <&pm8058_l7>;
-
 	/*
-	 * HP TouchPad USB PHY tuning parameters, replicated from the
-	 * legacy webOS msm_otg_pdata block in board-tenderloin.c:1127-1153
-	 *
-	 *   pemp_level    = PRE_EMPHASIS_WITH_20_PERCENT (0x30) into the
-	 *                   ULPI_PRE_EMPHASIS_MASK bits (4-5) of
-	 *                   ULPI_CONFIG_REG3 (addr 0x32).
-	 *   hsdrvslope    = 0x05 into the ULPI_HSDRVSLOPE_MASK bits (0-3)
-	 *                   of the same ULPI_CONFIG_REG3.
-	 *   cdr_autoreset = CDR_AUTO_RESET_DISABLE -- sets ULPI_CDR_AUTORESET
-	 *                   bit (1<<1 = 0x02) in ULPI_DIGOUT_CTRL (addr 0x36).
-	 *                   Legacy semantics: writing 1 *disables* auto-reset.
-	 *   se1_gating    = SE1_GATING_DISABLE -- sets ULPI_SE1_GATE bit
-	 *                   (1<<2 = 0x04) in the same ULPI_DIGOUT_CTRL.
-	 *                   Legacy semantics: setting bit 2 *disables*
-	 *                   gating (see set_se1_gating() at
-	 *                   webos .../drivers/usb/otg/msm72k_otg.c:280-294,
-	 *                   bit defined at
-	 *                   webos .../arch/arm/mach-msm/include/mach/msm_hsusb_hw.h:171).
-	 *
-	 * All four tunings live in the standard ULPI vendor range
-	 * (0x30-0x3f) which the mainline qcom,init-seq property cannot
-	 * reach -- it base-offsets every entry by ULPI_EXT_VENDOR_SPECIFIC
-	 * (0x80). The "qcom,vendor-init-seq" property added by the T-016
-	 * driver patch writes to the raw ULPI address instead, and the
-	 * writes are deliberately applied after the PHY reset so they
-	 * survive.
-	 *
-	 * Final ULPI register values (post-reset baseline is 0x00):
-	 *   reg 0x32 = 0x35   pre-emphasis 20% (bits 4-5 = 0x30)
-	 *                   | HS driver slope 0x05 (bits 0-3)
-	 *   reg 0x36 = 0x06   ULPI_CDR_AUTORESET (bit 1) set
-	 *                   | ULPI_SE1_GATE     (bit 2) set
-	 *
-	 * Cavekit: cavekit-usb-phy-tuning.md R2 (AC1-4 all applied).
+	 * Signal quality tuning is applied by ci_hdrc_msm via
+	 * qcom,phy-settle-seq above, after the full POR + link-reset
+	 * sequence that zeroes ULPI vendor regs.  qcom,vendor-init-seq
+	 * is intentionally absent here: writes at phy_power_on() time
+	 * would land before the link-reset that follows and be wiped.
 	 */
-	qcom,vendor-init-seq = /bits/ 8 <0x32 0x35>, /bits/ 8 <0x36 0x06>;
 };
 
 &lpass {

@@ -14,8 +14,12 @@
 #include <linux/reset-controller.h>
 #include <linux/extcon.h>
 #include <linux/of.h>
+#include <linux/delay.h>
+#include <linux/ulpi/driver.h>
+#include <linux/ulpi/regs.h>
 
 #include "ci.h"
+#include "bits.h"
 
 #define HS_PHY_AHB_MODE			0x0098
 
@@ -59,6 +63,15 @@
 #define USB_HS_DFAB_BW_AVG_KBPS		(128 * 1024)	/* 128 MB/s */
 #define USB_HS_DFAB_BW_PEAK_KBPS	(128 * 1024)	/* 128 MB/s */
 
+/*
+ * ULPI address/value pair used in the PHY settle sequence.
+ * Terminated by an entry with addr == 0.
+ */
+struct ci_msm_ulpi_seq {
+	u8 addr;
+	u8 val;
+};
+
 struct ci_hdrc_msm {
 	struct platform_device *ci;
 	struct clk *core_clk;
@@ -74,6 +87,15 @@ struct ci_hdrc_msm {
 	bool secondary_phy;
 	bool hsic;
 	void __iomem *base;
+	/*
+	 * Optional PHY settle sequence for MSM8660-class hardware.
+	 * When present, CI_HDRC_CONTROLLER_RESET_EVENT runs the full
+	 * legacy otg_reset() sequence: POR -> INT clears -> 100ms settle
+	 * -> link reset -> PORTSC re-select -> ULPI vendor writes.
+	 * Populated from "qcom,phy-settle-seq" DT property on the
+	 * USB controller node (u8 addr/val pairs, raw ULPI addresses).
+	 */
+	struct ci_msm_ulpi_seq *settle_seq;
 };
 
 static int
@@ -107,6 +129,76 @@ static const struct reset_control_ops ci_hdrc_msm_reset_ops = {
 	.reset = ci_hdrc_msm_por_reset,
 };
 
+/*
+ * ci_hdrc_msm_phy_settle - full MSM8660 ULPI PHY settle sequence
+ *
+ * Replicates the legacy msm72k_otg.c otg_reset() sequence required
+ * for APQ8060/MSM8660-class hardware after every connect event.
+ *
+ * On-device trace (webOS 2.6.35-palm, 2026-05-20, 9 plug events):
+ *   - every connect uses phy_reset=1 (full sequence, no exceptions)
+ *   - ULPI regs 0x32/0x36 are always 0x00 before vendor writes
+ *   - reg0x32=0x35, reg0x36=0x06 confirmed written correctly each time
+ *
+ * Precondition: hw_controller_reset() (USBCMD_RST) has already run —
+ * it fires before CI_HDRC_CONTROLLER_RESET_EVENT in hw_device_reset().
+ * hw_phymode_configure() has also already selected the ULPI transceiver.
+ *
+ * Sequence:
+ *   1. PHY POR (HS_PHY_POR_ASSERT, 12 µs pulse)
+ *   2. Disable all PHY rise/fall interrupt enables (INT_RISE_CLR /
+ *      INT_FALL_CLR) — prevents spurious events during ULPI re-sync
+ *   3. 100 ms ULPI settle — PHY hardware requirement after POR
+ *   4. Link reset (USBCMD_RST) + PORTSC ULPI re-select — re-syncs
+ *      the controller's ULPI engine; ULPI vendor regs are zeroed here
+ *   5. Apply settle_seq ULPI writes (e.g. pre-emphasis, HS slope) —
+ *      must be last, after the link reset that zeros vendor regs
+ */
+static void ci_hdrc_msm_phy_settle(struct ci_hdrc *ci,
+				   struct ci_hdrc_msm *msm_ci)
+{
+	const struct ci_msm_ulpi_seq *seq;
+	unsigned long timeout;
+
+	/* 1. PHY POR */
+	ci_hdrc_msm_por_reset(&msm_ci->rcdev, msm_ci->secondary_phy ? 1 : 0);
+
+	/*
+	 * 2. Clear all PHY interrupt enables so no spurious events fire
+	 *    while the ULPI link re-syncs.  Legacy wrote 0xFF to the
+	 *    SET-to-CLEAR registers (0x0F/0x12); using the direct base
+	 *    registers and writing 0 achieves the same final state.
+	 *    These writes may silently fail if the ULPI link is not yet
+	 *    ready — that is acceptable, step 4 re-syncs the link.
+	 */
+	ulpi_write(ci->ulpi, ULPI_USB_INT_EN_RISE, 0);
+	ulpi_write(ci->ulpi, ULPI_USB_INT_EN_FALL, 0);
+
+	/* 3. 100 ms settle — hardware characteristic of this PHY family */
+	msleep(100);
+
+	/*
+	 * 4. Second link reset + ULPI transceiver re-select.
+	 *    This is what zeroes ULPI vendor regs 0x32/0x36 (confirmed
+	 *    on-device); vendor writes below must come after this step.
+	 */
+	hw_write(ci, OP_USBCMD, USBCMD_RST, USBCMD_RST);
+	timeout = jiffies + msecs_to_jiffies(100);
+	while (hw_read(ci, OP_USBCMD, USBCMD_RST)) {
+		if (time_after(jiffies, timeout)) {
+			dev_err(ci->dev,
+				"phy_settle: link reset timed out\n");
+			break;
+		}
+		usleep_range(1000, 2000);
+	}
+	hw_phymode_configure(ci);	/* PORTSC = ULPI transceiver */
+
+	/* 5. Apply vendor ULPI writes with register values now at 0x00 */
+	for (seq = msm_ci->settle_seq; seq->addr; seq++)
+		ulpi_write(ci->ulpi, seq->addr, seq->val);
+}
+
 static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 {
 	struct device *dev = ci->dev->parent;
@@ -115,7 +207,7 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 
 	switch (event) {
 	case CI_HDRC_CONTROLLER_RESET_EVENT:
-		dev_info(dev, "CI_HDRC_CONTROLLER_RESET_EVENT received\n");
+		dev_dbg(dev, "CI_HDRC_CONTROLLER_RESET_EVENT received\n");
 
 		hw_phymode_configure(ci);
 		if (msm_ci->secondary_phy) {
@@ -133,6 +225,15 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 			phy_exit(ci->phy);
 			return ret;
 		}
+
+		/*
+		 * MSM8660 PHY settle sequence: replaces simple POR + writes
+		 * with the full legacy otg_reset() flow (POR -> INT clears ->
+		 * 100ms -> link reset -> PORTSC -> vendor writes).  Must run
+		 * after phy_power_on() so clocks and regulators are up.
+		 */
+		if (msm_ci->settle_seq)
+			ci_hdrc_msm_phy_settle(ci, msm_ci);
 
 		/* use AHB transactor, allow posted data writes */
 		hw_write_id_reg(ci, HS_PHY_AHB_MODE, 0xffffffff, 0x8);
@@ -280,6 +381,41 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 			     &ci->icc_bw_avg);
 	of_property_read_u32(pdev->dev.of_node, "qcom,icc-bw-peak-kbps",
 			     &ci->icc_bw_peak);
+
+	/*
+	 * Optional PHY settle sequence for MSM8660-class hardware.
+	 * Encodes ULPI (addr, val) pairs written as the final step of
+	 * ci_hdrc_msm_phy_settle() on every connect event, after the
+	 * POR + 100ms + link-reset + PORTSC sequence that zeros them.
+	 * Absent on platforms that don't need the full settle flow.
+	 */
+	{
+		int size = of_property_count_u8_elems(pdev->dev.of_node,
+						      "qcom,phy-settle-seq");
+
+		if (size > 0 && !(size & 1)) {
+			ci->settle_seq = devm_kmalloc_array(&pdev->dev,
+							    (size / 2) + 1,
+							    sizeof(*ci->settle_seq),
+							    GFP_KERNEL);
+			if (!ci->settle_seq)
+				return -ENOMEM;
+
+			ret = of_property_read_u8_array(pdev->dev.of_node,
+							"qcom,phy-settle-seq",
+							(u8 *)ci->settle_seq,
+							size);
+			if (ret)
+				return ret;
+
+			ci->settle_seq[size / 2].addr = 0;
+			ci->settle_seq[size / 2].val  = 0;
+		} else if (size > 0) {
+			dev_err(&pdev->dev,
+				"qcom,phy-settle-seq must have an even number of bytes\n");
+			return -EINVAL;
+		}
+	}
 
 	ci->base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(ci->base))
