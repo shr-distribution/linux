@@ -2094,21 +2094,42 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			dev_dbg(qce->dev, "CE2 skc chunk off=%u len=%u\n",
 				sg_off, chunk_len);
 
-			/* GOPROC + wait for engine to leave IDLE */
-			writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
-			for (timeout = 1000; timeout > 0; timeout--) {
-				status = readl_relaxed(qce->base +
-						       CE2_REG_STATUS);
-				if (status & CE2_CRYPTO_STATE_MASK)
-					break;
-				udelay(10);
-			}
-			if (timeout <= 0) {
-				dev_err(qce->dev,
-					"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
-					status);
-				qce_ce2_free_bounce(qce, &bounce);
-				return -ETIMEDOUT;
+			/* Status snapshots around GOPROC.  Captured
+			 * unconditionally; emitted as a single per-chunk
+			 * pr_info if ce2_chunk_debug is on.  Cheap (4 extra
+			 * readl_relaxed) and lets us correlate "out == iv"
+			 * no-op chunks with engine state transitions.
+			 */
+			{
+				u32 st_pre_go = readl_relaxed(qce->base +
+							      CE2_REG_STATUS);
+
+				/* GOPROC + wait for engine to leave IDLE */
+				writel(BIT(CE2_GO_SHIFT),
+				       qce->base + CE2_REG_GOPROC);
+				for (timeout = 1000; timeout > 0; timeout--) {
+					status = readl_relaxed(qce->base +
+							       CE2_REG_STATUS);
+					if (status & CE2_CRYPTO_STATE_MASK)
+						break;
+					udelay(10);
+				}
+				if (timeout <= 0) {
+					dev_err(qce->dev,
+						"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
+						status);
+					qce_ce2_free_bounce(qce, &bounce);
+					return -ETIMEDOUT;
+				}
+
+				if (qce_ce2_chunk_debug) {
+					unsigned int chunk_idx = sg_off /
+								  max_chunk;
+
+					pr_info("CE2dbg chunk=%u status pre-go=%08x post-go=%08x n_leave=%d\n",
+						chunk_idx, st_pre_go, status,
+						1000 - timeout);
+				}
 			}
 
 			ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst,
@@ -2121,6 +2142,15 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 					readl_relaxed(qce->base + CE2_REG_STATUS));
 				qce_ce2_free_bounce(qce, &bounce);
 				return ret;
+			}
+
+			if (qce_ce2_chunk_debug) {
+				unsigned int chunk_idx = sg_off / max_chunk;
+				u32 st_post_dma = readl_relaxed(qce->base +
+								CE2_REG_STATUS);
+
+				pr_info("CE2dbg chunk=%u status post-dma=%08x\n",
+					chunk_idx, st_post_dma);
 			}
 
 			/* Wait for engine to finish processing AND drop back
@@ -2148,6 +2178,13 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				udelay(10);
 			}
 			udelay(5);
+
+			if (qce_ce2_chunk_debug) {
+				unsigned int chunk_idx = sg_off / max_chunk;
+
+				pr_info("CE2dbg chunk=%u status post-idle=%08x n_idle=%d\n",
+					chunk_idx, status, 1000 - timeout);
+			}
 
 			/* Drain any residual DOUT FIFO dwords.  If even one
 			 * dword leaks across the chunk boundary, the engine's
