@@ -746,14 +746,24 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	/*
 	 * STREAM_BUF_SIZE: buffer capacity for this command.
 	 *
-	 * webOS DDL sets stream_buffersize = max(client_input_buf_req.sz,
-	 * header_len + DDL_LINEAR_BUFFER_ALIGN_BYTES + VCD_SEQ_HDR_PADDING_BYTES)
-	 * for SEQ_HEADER (vcd_ddl_vidc.c:227-232).  client_input_buf_req.sz is
-	 * the full allocated input buffer, so the result equals vb2_plane_size.
-	 * Use vb2_plane_size for both SEQ_HEADER and FRAME_DATA to match webOS.
+	 * For SEQ_HEADER: use header_len + DDL_LINEAR_BUFFER_ALIGN_BYTES(2048)
+	 * + VCD_SEQ_HDR_PADDING_BYTES(256), matching webOS seq_size lower bound.
+	 * Empirically, passing vb2_plane_size (512 KB) causes the firmware to
+	 * scan past the actual SPS+PPS bytes into zero memory and report error
+	 * 0x34 (HEADER_NOT_FOUND).  The small computed bound keeps the scan
+	 * tight to the data we provided.  This combination only works with a
+	 * non-zero DESC_ADDR (which now points at the global 128 KB scratch),
+	 * matching the webOS allocation pattern.
+	 *
+	 * For FRAME_DATA: use the full plane allocation so the firmware sees
+	 * the maximum bytes available for decoding.
 	 */
-	vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
-		   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
+	if (op == VIDC_OP_SEQ_HEADER)
+		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
+			   ALIGN(src_size + 2048 + 256, 4));
+	else
+		vidc_write(core, VIDC_REG_CH0_STREAM_BUF_SIZE,
+			   (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0));
 	vidc_write(core, VIDC_REG_CH0_DESC_BUF_SIZE, VIDC_DESC_BUF_SIZE);
 
 	/*
@@ -792,7 +802,9 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		 op, inst->inst_id, &src_addr,
 		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
 		 src_size,
-		 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
+		 op == VIDC_OP_SEQ_HEADER ?
+			 ALIGN(src_size + 2048 + 256, 4) :
+			 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
 		 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT),
 		 core->shm_offset + VIDC_META_INPUT_OFF);
 
