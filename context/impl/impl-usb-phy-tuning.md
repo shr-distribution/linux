@@ -265,6 +265,40 @@ This keeps the sequence atomic at the controller level where all the
 required MMIO is accessible. Tracked as a follow-up; not in this
 cavekit batch.
 
+**On-device confirmation (webOS kernel trace, 2026-05-20):**
+
+Added `[USB-OTG-TRACE]` printks to `otg_reset()` and
+`msm_otg_phy_reset()` in the legacy 2.6.35-palm kernel, built with
+the PalmSDK toolchain, deployed via novacom. Output from
+`/var/log/messages` on the running device:
+
+```
+[113.566] otg_reset entry: phy_reset=1 PORTSC=0x8c000004 USBCMD=0x00000000
+[113.570] calling msm_otg_phy_reset
+                 (PHY clock reset + phy_caliberate ~480ms)
+[114.053] 1st USBCMD_RESET inside msm_otg_phy_reset
+[114.083] 1st link reset done
+[114.091] INT_RISE_CLR(0x0F) / INT_FALL_CLR(0x12) written
+[114.096] msleep(100) start
+[114.203] msleep(100) done
+[114.203] 2nd USBCMD_RESET (reset_link label)
+[114.223] 2nd link reset done USBCMD=0x00080000
+[114.223] PORTSC = 0x80000000
+[114.223] PORTSC after = 0x8c000004
+[114.223] ULPI BEFORE vendor writes: reg0x32=0x00 reg0x36=0x00
+[114.223] ULPI AFTER  vendor writes: reg0x32=0x35 reg0x36=0x06
+[114.223] otg_reset complete
+```
+
+**Critical finding from the readback:** The 2nd `USBCMD_RESET` +
+`PORTSC=0x80000000` step **zeros ULPI regs 0x32 and 0x36 to 0x00**
+before the vendor writes are applied. This means any ULPI write done
+before the 2nd link reset would be wiped, confirming why both failed
+attempts (no 2nd link reset) left the PHY state wrong.
+
+The vendor writes (reg0x32=0x35, reg0x36=0x06) are confirmed to
+land correctly on the device when the full sequence is followed.
+
 Not done in this batch (still tracked as follow-ups):
   - PM8058 extcon for ID-pin detection (not needed for plug/unplug --
     legacy webOS itself does not wire PMIC ID detection on tenderloin
