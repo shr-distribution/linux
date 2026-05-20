@@ -134,20 +134,19 @@ SSBI level.
 - R5 AC2 polled latency <= 5 s: T-023.
 - R5 AC4 measured latency recorded: T-023.
 
-## Defconfig dependencies (for T-015)
+## Defconfig dependencies (T-015)
 
-These flags need to be added to the three tenderloin defconfigs so the
-DT changes take effect:
+Flags required across all three tenderloin defconfigs:
 
-- `CONFIG_THERMAL_OF=y` (auto-selected on most kernels, but worth
-  asserting explicitly)
-- `CONFIG_GENERIC_ADC_THERMAL=y` — *not currently set in tenderloin
-  defconfigs* per `grep -E "GENERIC_ADC_THERMAL|THERMAL" arch/arm/configs/tenderloin*`
-- `CONFIG_THERMAL_EMULATION=y` — required for `emul_temp` injection in
-  T-014 / T-023
-
-These should be applied to all three configs (default, debug, fast) as
-part of T-015 in Tier 1.
+- `CONFIG_THERMAL_OF=y`
+- `CONFIG_GENERIC_ADC_THERMAL=y`
+- `CONFIG_THERMAL_EMULATION=y`
+- `CONFIG_QCOM_PM8XXX_XOADC=y` — **the xoadc IIO driver that exposes
+  the `die_temp` channel**. Without it, on-device verification showed
+  `platform thermal-sensor-pm8058-die: deferred probe pending:
+  generic-adc-thermal: IIO channel not found` and the thermal zone
+  never registered. Initial T-015 commit (f715f2b3a2eb) missed this
+  dependency; fix-up commit adds it.
 
 ## Task Tracking
 
