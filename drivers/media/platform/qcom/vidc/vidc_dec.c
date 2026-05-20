@@ -713,15 +713,34 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_CH0_C_ADDR, 0);
 
 	/*
-	 * All VIDC buffer addresses are firmware-relative: byte offset from
-	 * fw_dma_addr (the SMI SRAM base, 0x38000000), shifted right by
-	 * VIDC_ADDR_SHIFT.  This mirrors DDL_OFFSET(dram_base_a, buf_phys)
-	 * from the legacy vidc_1080p driver.  Writing src_addr directly
-	 * (without subtracting fw_dma_addr) pointed the firmware at DDR
-	 * garbage and caused a silent firmware hang on every SEQ_HEADER.
+	 * DIAGNOSTIC for HEADER_NOT_FOUND: copy SPS+PPS into SMI SRAM at the
+	 * top of the SHM page (offset 0xc00, unused — SHM fields end at 0x011c
+	 * and metadata input is at 0x200..0x260) and pass that SMI offset as
+	 * STREAM_ADDR for SEQ_HEADER instead of the DDR vb2 buffer offset.
+	 * If the firmware finds the SPS at the SMI address but not at the DDR
+	 * address (0x7c180000), the issue is firmware DDR access, not the
+	 * scan/buffer size.  FRAME_DATA still uses the DDR buffer directly.
 	 */
-	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
-		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
+	if (op == VIDC_OP_SEQ_HEADER && inst->src_buf) {
+		const u8 *kva = vb2_plane_vaddr(&inst->src_buf->vb2_buf, 0);
+		u32 smi_off = core->shm_offset + 0xc00;
+
+		if (kva && src_size <= 0x400) {
+			memcpy_toio(core->shm_vaddr + 0xc00, kva, src_size);
+			vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
+				   smi_off >> VIDC_ADDR_SHIFT);
+			dev_info(core->dev,
+				 "SEQ_HDR diag: copied %u bytes to SMI off=0x%x (stream_addr=0x%x)\n",
+				 src_size, smi_off,
+				 smi_off >> VIDC_ADDR_SHIFT);
+		} else {
+			vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
+				   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
+		}
+	} else {
+		vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
+			   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
+	}
 	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
 
 	/* DEBUG: dump first 40 bytes of the stream the firmware will read */
