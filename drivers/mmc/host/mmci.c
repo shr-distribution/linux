@@ -387,14 +387,30 @@ static struct variant_data variant_qcom = {
 	.qcom_dml_atomic_submit	= true,
 	.dma_flow_controller	= true,
 	/*
-	 * Force PIO for transfers <= 256 bytes.  ADM DMA on msm8x60
-	 * corrupts data during SDIO firmware upload (BMI phase) due to
-	 * the tight credit-polling transfer pattern.  PIO works reliably
-	 * up to 128 bytes (2x FIFO); 192+ byte PIO fails because the
-	 * DPSM times out waiting for 3+ interrupt-driven FIFO refills.
-	 * Post-BMI WiFi data frames (1500+ bytes) use DMA correctly.
+	 * Route everything above the half-FIFO size (32 B) through ADM
+	 * DMA.  Only genuinely tiny transfers stay on PIO because DMA
+	 * setup overhead dominates at that size and a single FIFO fill
+	 * is enough by construction.
+	 *
+	 * Previous attempts kept this at 256 B to "force PIO for BMI"
+	 * based on the belief that AR6003 BMI required PIO.  This was
+	 * a misdiagnosis: Atheros's own bmi_msg.h defines
+	 * BMI_DATASZ_MAX = 256, webOS legacy msm_sdcc pushes 256-byte
+	 * BMI chunks via DMA, and the AR6003 sees CMD53 traffic at the
+	 * SDIO bus regardless of how the host sources the data.  The
+	 * real failure mode of the earlier DMA-on-BMI experiments was
+	 * shared-controller contention on adm_dma1 — which has since
+	 * been closed by qcom_adm's submit_lock, hardirq-only
+	 * completion (no tasklet), CPU1 IRQ pin, and B+F+G shaving.
+	 *
+	 * Keeping WiFi BMI on PIO has its own cost: every 52-byte
+	 * CMD53 needs an mmci PIO FIFO-refill IRQ on CPU0, and the
+	 * resulting IRQ storm during the AR6003 firmware download
+	 * delays sdcc1's mmci CMD/RESP processing on the same CPU
+	 * enough that eMMC DATACRCFAILs.  Routing BMI through DMA
+	 * eliminates the storm entirely.
 	 */
-	.dma_threshold		= 256,
+	.dma_threshold		= 32,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
 	/*
