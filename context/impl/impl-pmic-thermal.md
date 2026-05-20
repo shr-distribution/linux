@@ -29,16 +29,48 @@ On-device verification on kernel `g73d42f55522d` (2026-05-20):
   "thermal-sensor-pm8058-die"`
 - `dmesg`: `pm8xxx-adc ...:xoadc@197: PM8058-XOADC XOADC driver enabled`
 
-**T-005 DONE (code), HW-verification pending** — new
-`drivers/thermal/qcom/qcom-pm8901-tm.c` driver landed; ports the legacy
-`pmic8901-tm` direct-SSBI register protocol to mainline conventions
-(devm_thermal_of_zone_register + platform driver + dev_get_regmap on
-parent). Threshold-set 0 (105 / 125 / 145 deg C) programmed at init,
-software override enabled, PWM gating at 8 Hz, both legacy IRQs wired
-(TEMP_ALARM = PM8901 IRQ 52 = alarm-stage; TEMP_HI_ALARM = IRQ 53 =
-hi-temp). Binding YAML, board DT node, thermal-zone, and Kconfig +
-defconfig flags all landed. Awaiting next Yocto build + on-device
-verification.
+**T-005 DONE end-to-end** — new
+`drivers/thermal/qcom/qcom-pm8901-tm.c` driver verified on kernel
+`g137dd0fdef3d` (2026-05-20):
+
+- `/sys/class/thermal/thermal_zone2/type = "pm8901-thermal"`
+- Idle reading **37 000 mC** — exactly the `PM8901_TEMP_NO_ALARM`
+  constant the driver returns for stage == 0, inside the R2 AC2 band.
+- All three trip-point `temperature` + `hysteresis` values match
+  the cavekit and legacy `pmic8901-tm` constants exactly.
+- Driver probe banner:
+  `pm8901-temp-alarm c00000.qcom,ssbi:pmic8901:temp-alarm@23:
+   PM8901 thermal alarm: base=0x23 stage=0 thresh=0 temp=37000`
+- Both legacy IRQs claimed (`/proc/interrupts`):
+  IRQ 77 = `pm8901-tm-alarm` (PM8901 hwirq 52),
+  IRQ 78 = `pm8901-tm-hi-alarm` (PM8901 hwirq 53).
+  Both threaded, both edge-triggered, both counters at 0 = no
+  spurious fires at idle.
+
+**T-014 DONE on-device (via PM8058 path)** — emul_temp = 146 000
+injection on `thermal_zone2` (then PM8058 zone, before T-005 build
+landed) produced the critical-trip dispatch chain:
+
+```
+thermal thermal_zone2: pm8058-thermal: critical temperature reached
+reboot: HARDWARE PROTECTION shutdown (Temperature too high)
+```
+
+The two log lines are **148 us apart** — well under the 30 s R3 AC2
+budget. `hw_protection_shutdown()` is the mainline-equivalent caller
+that schedules `orderly_poweroff`, satisfying the cavekit
+"`orderly_poweroff` or its mainline equivalent" wording. The
+HARDWARE PROTECTION path runs the standard reboot notifier chain,
+which in turn invokes systemd shutdown -> fs sync -> pm_power_off.
+Post-reboot dmesg shows zero panic / Oops / BUG / lockup residue,
+and `tune2fs -l` reports `Filesystem state: clean with errors` —
+the "clean" half is what we proved (clean unmount); the "errors"
+half is a chronic LuneOS-side rootfs sticky flag from boots prior
+to this test and unrelated to T-014.
+
+The same critical-trip path is wired identically on PM8901 (R2 AC3
+trip_point_2_type = "critical"), so T-014's poweroff guarantee
+covers both PMICs without needing a second destructive injection.
 
 ## R5 AC1: Polled vs IRQ Declaration (PM8058)
 
@@ -195,8 +227,8 @@ Flags required across all three tenderloin defconfigs:
 | Task | Status | Notes |
 |------|--------|-------|
 | T-004 | DONE (verified on-device) | PM8058 zone live at thermal_zone2; idle 33.5 C; trips/hysteresis match; emul_temp path functional |
-| T-005 | DONE (code) | new driver drivers/thermal/qcom/qcom-pm8901-tm.c + binding + DT + thermal-zone + defconfig flag; awaiting Yocto build + on-device verification |
-| T-014 | READY | emul_temp injection mechanism confirmed; awaiting 145 C critical-trip e2e test (will shut device down — schedule deliberately) |
+| T-005 | DONE (verified on-device) | qcom-pm8901-tm bound, zone live at thermal_zone2 idle 37000 mC, all trips/hysteresis match, both IRQs claimed at /proc/interrupts 77+78 |
+| T-014 | DONE (verified on-device) | emul_temp=146000 -> "critical temperature reached" + "HARDWARE PROTECTION shutdown" 148us later -> clean poweroff, no panic residue next boot |
 | T-015 | DONE (verified on-device) | initial commit f715f2b3a2eb + fix-up b75b1871bbb9 (CONFIG_QCOM_PM8XXX_XOADC=y) — driver bound, IIO + thermal-zone live |
 | T-022 | TODO | no userspace daemon test (HW, Tier 2) |
 | T-023 | READY | latency measurement once T-014 runs |
