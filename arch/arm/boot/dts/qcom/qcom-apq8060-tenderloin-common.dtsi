@@ -1030,50 +1030,32 @@
 					clocks = <&sleep_clk>, <&cxo_board>;
 					clock-names = "sleep", "ref";
 					/*
-					 * NB: we deliberately do NOT wire
-					 * `resets = <&usb1 0>` here even though
-					 * the apq8064/msm8960 mainline DTs do.
+					 * PHY POR reset supplied by the parent
+					 * USB controller's chipidea reset
+					 * controller (signal 0 =
+					 * HS_PHY_POR_ASSERT on HS_PHY_CTRL, see
+					 * drivers/usb/chipidea/ci_hdrc_msm.c
+					 * ci_hdrc_msm_por_reset). The matching
+					 * companion patch to
+					 * drivers/phy/qualcomm/phy-qcom-usb-hs.c
+					 * inserts a 100 ms settle delay after
+					 * the POR pulse, mirroring legacy
+					 * msm72k_otg otg_reset(), so the
+					 * vendor-init-seq writes (T-016) land on
+					 * a re-synced ULPI link.
 					 *
-					 * Asserting HS_PHY_POR_ASSERT via
-					 * ci_hdrc_msm_por_reset() (signal 0 of
-					 * the chipidea reset controller) during
-					 * qcom_usb_hs_phy_power_on() resets the
-					 * PHY core to silicon defaults, after
-					 * which the vendor-init-seq writes
-					 * (qcom,vendor-init-seq for T-016) land
-					 * on a PHY that has not yet re-synced
-					 * its ULPI link. On tenderloin this
-					 * leaves the controller in a state where
-					 * the gadget never enumerates -- nothing
-					 * shows up in the host's lsusb.
+					 * An earlier attempt (commit
+					 * cae1a8c571b9) added these properties
+					 * without the driver patch and broke
+					 * gadget enumeration. Re-added here
+					 * together with the driver fix.
 					 *
-					 * Verified on commit cae1a8c571b9 (which
-					 * added these properties): gadget broke
-					 * completely. Reverted in this commit;
-					 * gadget enumeration restored on first
-					 * boot at the cost of plug/unplug not
-					 * recovering through soft_connect.
-					 *
-					 * Possible follow-ups (not done here):
-					 *   a) Patch qcom_usb_hs_phy_power_on to
-					 *      insert a settle delay after
-					 *      reset_control_reset and before
-					 *      the ULPI writes, OR move the
-					 *      vendor-init-seq writes to a later
-					 *      hook that runs after the chipidea
-					 *      AHB_MODE / GENCONFIG / SESS_VLD
-					 *      bits are configured.
-					 *   b) Wire VBUS / ID detection via a
-					 *      PM8058 extcon driver so a real
-					 *      cable unplug/replug works without
-					 *      having to soft_connect-cycle.
-					 *   c) Investigate why apq8064/msm8960
-					 *      tolerate the same POR-then-writes
-					 *      pattern -- might be a board-level
-					 *      difference (clock topology, ULPI
-					 *      timing) rather than a software
-					 *      bug.
+					 * NOT &gcc USB_HS1_RESET -- that is the
+					 * *controller* core reset and the USB
+					 * controller already owns it.
 					 */
+					resets = <&usb1 0>;
+					reset-names = "por";
 					#phy-cells = <0>;
 				};
 			};

@@ -206,50 +206,84 @@ DT — `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
   values; `webos .../drivers/usb/otg/msm72k_otg.c:243-293` for the
   write-path semantics.
 
-### Failed experiment: PHY POR reset wiring
+### PHY POR reset + 100 ms settle (paired DT + driver fix)
 
-On-device test of soft_connect "disconnect" -> "connect" on kernel
-gb2dc29139bba showed the device failed to re-enumerate to the host
-(USB-net interface disappeared on host, never came back, manual power
-cycle required). Root-cause hypothesis: `usb_hs1_phy` DT node missing
-`resets`/`reset-names`, so `qcom_usb_hs_phy_power_on()` skipped
-`reset_control_reset()` and vendor-init-seq writes landed on stale
-ULPI state.
+Background: on-device test of soft_connect "disconnect" -> "connect"
+on kernel gb2dc29139bba showed the device failed to re-enumerate to
+the host (USB-net interface disappeared on host, never came back,
+manual power cycle required). Hypothesis: `usb_hs1_phy` DT node
+missing `resets`/`reset-names`, so `qcom_usb_hs_phy_power_on()`
+skipped `reset_control_reset()` and vendor-init-seq writes landed on
+stale ULPI state.
 
-Attempted fix in commit cae1a8c571b9: add `resets = <&usb1 0>;
+First attempt (commit cae1a8c571b9): add `resets = <&usb1 0>;
 reset-names = "por";` matching apq8064/msm8960 mainline pattern.
+**Regressed gadget enumeration completely** -- the POR pulse hit but
+the vendor-init-seq writes immediately afterwards (only `udelay(12)`
+later) landed on a PHY whose ULPI link was still re-syncing. Reverted
+in 0b1f7e6448c0.
 
-**Result: REGRESSION.** Gadget enumeration broke completely -- nothing
-shows up in the host's lsusb after the change. Reverted in a
-follow-up commit. Detailed comment retained in the DT node explaining
-why we cannot wire POR reset today and what would unblock it.
+Forensic reference -- legacy `webos .../drivers/usb/otg/msm72k_otg.c`
+otg_reset() at line 1474-1545 (the same driver that serves the same
+MSM8x60 USB OTG IP block legacy webOS uses) does:
 
-Hypothesis for the regression: with POR asserted via the chipidea
-reset_controller, the PHY core resets to silicon defaults. The
-subsequent `for (seq = uphy->vendor_init_seq; ...)` ULPI writes are
-issued through the chipidea ULPI viewport before the PHY has
-re-synced its ULPI link (POR deassert wait is only `udelay(12)` and
-the AHB_MODE / GENCONFIG / SESS_VLD bits in HS_PHY_CTRL have not yet
-been written -- those happen *after* `phy_power_on` returns). The
-ULPI writes silently fail or corrupt state, leaving the controller
-unable to bring up the bus.
+  msm_otg_phy_reset(dev)                 // PHY POR pulse
+  ulpi_write(0xFF, 0x0F)                 // INT_RISE_C: disable all
+  ulpi_write(0xFF, 0x12)                 // INT_FALL_C: disable all
+  msleep(100)                            // <<< 100 ms ULPI settle
+  writel(USBCMD_RESET, USB_USBCMD)       // link reset
+  ... wait ...
+  writel(0x80000000, USB_PORTSC)         // re-select ULPI
+  set_pre_emphasis_level / hsdrvslope    // ULPI write reg 0x32
+  set_cdr_auto_reset / se1_gating        // ULPI write reg 0x36
 
-Follow-up options (not done in this cavekit batch):
-  a) Patch `qcom_usb_hs_phy_power_on` to insert a settle delay after
-     `reset_control_reset` (e.g. `usleep_range(200, 500)`) and/or
-     move the vendor-init-seq write loop to a later hook that runs
-     after chipidea has configured AHB_MODE / GENCONFIG / SESS_VLD.
-  b) Wire VBUS / ID detection via a PM8058 extcon driver so cable
-     unplug/replug works without needing soft_connect-cycle.
-  c) Compare ULPI timing / clock topology between apq8064 and
-     tenderloin to identify a board-level difference (apq8064 and
-     msm8960 tolerate the same `<&usb1 0>` reference; tenderloin
-     does not, despite using the apq8064 PHY compatible).
+The chipidea `ci_hdrc_msm_por_reset` mainline implementation pulses
+POR for only `udelay(12)` (assert -> deassert), 8000x shorter than the
+100 ms the legacy code waits. The 100 ms settle is a hardware
+characteristic of this ULPI PHY family, not a kernel artifact.
 
-For now, plug/unplug-via-soft_connect is documented as a known
-limitation. T-016's "vendor-init-seq applied at first boot" path is
-not affected -- a cold boot still puts the PHY in silicon-POR state
-naturally so the writes succeed.
+Second attempt (this commit): pair the DT addition with a driver
+patch to `drivers/phy/qualcomm/phy-qcom-usb-hs.c
+qcom_usb_hs_phy_power_on` that inserts the legacy settle sequence
+immediately after `reset_control_reset` and before the vendor-init-seq
+writes:
+
+  ulpi_write(ulpi, ULPI_USB_INT_EN_RISE, 0);  // disable all rise ints
+  ulpi_write(ulpi, ULPI_USB_INT_EN_FALL, 0);  // disable all fall ints
+  msleep(100);                                // ULPI settle
+
+(Writing 0 to the *_EN base register is the mainline equivalent of
+the legacy `ulpi_write(0xFF, *_C)` writes -- same final state.)
+
+The 100 ms is only spent inside the `if (uphy->reset)` block, so
+boards without `resets` wired in DT (apq8064, msm8960 today) keep
+their existing zero-delay path. For boards that do declare the reset,
+the patch lets the PHY settle properly before vendor writes.
+
+Pairs with the DT change that re-adds:
+  resets = <&usb1 0>;
+  reset-names = "por";
+
+Expected outcome:
+  - First boot: gadget enumerates normally
+    (vendor-init-seq writes succeed on a settled PHY post-POR).
+  - soft_connect "disconnect" -> "connect" cycle: PHY POR runs on the
+    reconnect path through `ci_hdrc_gadget_connect(true) -> hw_device_reset
+    -> notify_event(RESET_EVENT) -> phy_power_on`, with the 100 ms
+    settle so the PHY can re-sync before vendor writes; host should
+    see the USB-net interface come back without losing access.
+
+If the patch works, this also implicitly addresses T-018's
+"verifiable from driver state" AC -- a successful round-trip through
+soft_connect proves the writes both apply and persist.
+
+Not done in this batch (still tracked as follow-ups):
+  - PM8058 extcon for ID-pin detection (not needed for plug/unplug --
+    legacy webOS itself does not wire PMIC ID detection on tenderloin
+    per board-tenderloin.c msm_hsusb_pmic_id_notif_init() returning
+    -ENOTSUPP for machine_is_tenderloin()).
+  - Full OTG host/device role-switch (requires GPIO/extcon ID source
+    + VBUS regulator wiring + dr_mode = "otg"; separate cavekit).
 
 ### Acceptance criteria coverage (R2)
 

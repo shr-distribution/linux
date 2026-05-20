@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2016 Linaro Ltd
  */
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/ulpi/driver.h>
 #include <linux/ulpi/regs.h>
@@ -159,6 +160,35 @@ static int qcom_usb_hs_phy_power_on(struct phy *phy)
 		ret = reset_control_reset(uphy->reset);
 		if (ret)
 			goto err_ulpi;
+
+		/*
+		 * Match the legacy webOS msm72k_otg.c otg_reset() recovery
+		 * sequence on MSM8x60-class hardware: after the chipidea
+		 * reset_controller pulses HS_PHY_POR_ASSERT, the ULPI link
+		 * needs about 100 ms to re-sync before further ULPI traffic
+		 * is safe. Without this delay the vendor-init-seq writes
+		 * below (and indirectly the controller's later AHB_MODE /
+		 * GENCONFIG / SESS_VLD writes) land on a PHY that is still
+		 * settling, leaving the device unable to enumerate -- as
+		 * observed on HP TouchPad (apq8060) where adding
+		 * "resets = <&usb1 0>" to the PHY DT node broke gadget
+		 * enumeration completely.
+		 *
+		 * Disable any PHY-side rise/fall interrupt enables first so
+		 * the ULPI core does not raise spurious events while the
+		 * link is renegotiating -- legacy code wrote 0xFF to the
+		 * INT_RISE_C / INT_FALL_C clear-registers (offsets 0x0F /
+		 * 0x12); writing 0 to the base INT_EN_RISE (0x0d) /
+		 * INT_EN_FALL (0x10) registers is the mainline equivalent
+		 * (same final state, simpler API).
+		 *
+		 * Reference: webos-linux-kernel-touchpad
+		 *   drivers/usb/otg/msm72k_otg.c:1474-1545 (otg_reset() the
+		 *   100ms delay sits between PHY POR and the link reset).
+		 */
+		ulpi_write(ulpi, ULPI_USB_INT_EN_RISE, 0);
+		ulpi_write(ulpi, ULPI_USB_INT_EN_FALL, 0);
+		msleep(100);
 	}
 
 	/*
