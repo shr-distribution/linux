@@ -1631,6 +1631,21 @@
 		bias-disable;
 	};
 
+	/*
+	 * GSBI3 I2C bus-recovery state — pins reassigned to TLMM GPIO so
+	 * the i2c-core generic SCL recovery can bit-bang them when a slave
+	 * (mpu3050 or isl29023) wedges SDA low. Selected via the "gpio"
+	 * pinctrl state on &gsbi3_i2c. Replicates the legacy webOS
+	 * board_i2c_recover() handler (gpiomux 43/44 -> GPIO out_high, 36
+	 * SCL clock cycles, manual START/STOP).
+	 */
+	gsbi3_i2c_gpio_pins: i2c3-gpio-state {
+		pins = "gpio43", "gpio44";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
 	gsbi4_i2c_pins: i2c4-state {
 		pins = "gpio47", "gpio48";
 		function = "gsbi4";
@@ -2412,8 +2427,22 @@
 &gsbi3_i2c {
 	status = "okay";
 	clock-frequency = <100000>;
-	pinctrl-names = "default";
+	pinctrl-names = "default", "gpio";
 	pinctrl-0 = <&gsbi3_i2c_pins>;
+	pinctrl-1 = <&gsbi3_i2c_gpio_pins>;
+
+	/*
+	 * Generic SCL bus recovery (i2c-core picks these up automatically
+	 * once i2c-qup registers an empty i2c_bus_recovery_info plus the
+	 * "gpio" pinctrl state above). Legacy webOS clocked 36 SCL cycles
+	 * via gpiomux GPIO43/44 in board_i2c_recover(); the i2c-core
+	 * generic helper clocks the spec-minimum 9 SCL cycles plus a
+	 * manual STOP, which is sufficient to release any in-flight 9-bit
+	 * slave state — see cavekit-sensor-i2c-recovery.md R3 and
+	 * impl-sensor-i2c-recovery.md for the cycle-count rationale.
+	 */
+	scl-gpios = <&tlmm 43 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&tlmm 44 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
 	mpu3050: mpu3050@68 {
 		/* Gyrometer */
