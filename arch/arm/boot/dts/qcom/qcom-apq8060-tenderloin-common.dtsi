@@ -1030,32 +1030,32 @@
 					clocks = <&sleep_clk>, <&cxo_board>;
 					clock-names = "sleep", "ref";
 					/*
-					 * PHY POR reset supplied by the parent
-					 * USB controller's chipidea reset
-					 * controller (signal 0 =
-					 * HS_PHY_POR_ASSERT on HS_PHY_CTRL, see
-					 * drivers/usb/chipidea/ci_hdrc_msm.c
-					 * ci_hdrc_msm_por_reset). The matching
-					 * companion patch to
-					 * drivers/phy/qualcomm/phy-qcom-usb-hs.c
-					 * inserts a 100 ms settle delay after
-					 * the POR pulse, mirroring legacy
-					 * msm72k_otg otg_reset(), so the
-					 * vendor-init-seq writes (T-016) land on
-					 * a re-synced ULPI link.
+					 * PHY POR reset intentionally NOT wired.
 					 *
-					 * An earlier attempt (commit
-					 * cae1a8c571b9) added these properties
-					 * without the driver patch and broke
-					 * gadget enumeration. Re-added here
-					 * together with the driver fix.
+					 * Two attempts to add resets/<&usb1 0>
+					 * both broke gadget enumeration:
 					 *
-					 * NOT &gcc USB_HS1_RESET -- that is the
-					 * *controller* core reset and the USB
-					 * controller already owns it.
+					 *  cae1a8c571b9 — POR only, no settle.
+					 *  ULPI writes landed on a re-syncing
+					 *  link. Reverted in 0b1f7e6448c0.
+					 *
+					 *  6c2eb508669d — POR + 100 ms settle
+					 *  (INT_EN_RISE/FALL = 0 + msleep(100))
+					 *  before vendor-init-seq. Still broke
+					 *  enumeration because the legacy
+					 *  otg_reset() sequence also requires a
+					 *  full USBCMD_RESET + PORTSC=0x80000000
+					 *  link reset between the PHY settle and
+					 *  the ULPI writes. That is a controller-
+					 *  level operation outside phy_power_on.
+					 *
+					 * Proper fix: patch
+					 * drivers/usb/chipidea/ci_hdrc_msm.c to
+					 * run the full legacy otg_reset() sequence
+					 * on CI_HDRC_CONTROLLER_RESET_EVENT:
+					 * POR -> settle -> USBCMD_RESET ->
+					 * PORTSC=0x80000000 -> ULPI vendor writes.
 					 */
-					resets = <&usb1 0>;
-					reset-names = "por";
 					#phy-cells = <0>;
 				};
 			};

@@ -206,7 +206,7 @@ DT — `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
   values; `webos .../drivers/usb/otg/msm72k_otg.c:243-293` for the
   write-path semantics.
 
-### PHY POR reset + 100 ms settle (paired DT + driver fix)
+### Failed experiment: PHY POR reset wiring (both attempts reverted)
 
 Background: on-device test of soft_connect "disconnect" -> "connect"
 on kernel gb2dc29139bba showed the device failed to re-enumerate to
@@ -216,66 +216,54 @@ missing `resets`/`reset-names`, so `qcom_usb_hs_phy_power_on()`
 skipped `reset_control_reset()` and vendor-init-seq writes landed on
 stale ULPI state.
 
-First attempt (commit cae1a8c571b9): add `resets = <&usb1 0>;
-reset-names = "por";` matching apq8064/msm8960 mainline pattern.
-**Regressed gadget enumeration completely** -- the POR pulse hit but
-the vendor-init-seq writes immediately afterwards (only `udelay(12)`
-later) landed on a PHY whose ULPI link was still re-syncing. Reverted
-in 0b1f7e6448c0.
-
-Forensic reference -- legacy `webos .../drivers/usb/otg/msm72k_otg.c`
-otg_reset() at line 1474-1545 (the same driver that serves the same
-MSM8x60 USB OTG IP block legacy webOS uses) does:
+**Forensic reference** — legacy `webos .../drivers/usb/otg/msm72k_otg.c`
+otg_reset() at line 1474-1545 (serves the same MSM8x60 USB OTG IP
+block) does:
 
   msm_otg_phy_reset(dev)                 // PHY POR pulse
   ulpi_write(0xFF, 0x0F)                 // INT_RISE_C: disable all
   ulpi_write(0xFF, 0x12)                 // INT_FALL_C: disable all
-  msleep(100)                            // <<< 100 ms ULPI settle
-  writel(USBCMD_RESET, USB_USBCMD)       // link reset
-  ... wait ...
-  writel(0x80000000, USB_PORTSC)         // re-select ULPI
+  msleep(100)                            // 100 ms ULPI settle
+  writel(USBCMD_RESET, USB_USBCMD)       // <<< LINK RESET
+  ... wait for RESET bit to clear ...
+  writel(0x80000000, USB_PORTSC)         // re-select ULPI transceiver
   set_pre_emphasis_level / hsdrvslope    // ULPI write reg 0x32
   set_cdr_auto_reset / se1_gating        // ULPI write reg 0x36
 
-The chipidea `ci_hdrc_msm_por_reset` mainline implementation pulses
-POR for only `udelay(12)` (assert -> deassert), 8000x shorter than the
-100 ms the legacy code waits. The 100 ms settle is a hardware
-characteristic of this ULPI PHY family, not a kernel artifact.
+**Attempt 1 (commit cae1a8c571b9):** add `resets = <&usb1 0>;
+reset-names = "por";` only (no settle delay).
+**Result: gadget enumeration completely broken.** The POR pulse hit
+but the vendor-init-seq writes immediately afterwards (only `udelay(12)`
+from chipidea's ci_hdrc_msm_por_reset) landed on a re-syncing ULPI
+link. Reverted in 0b1f7e6448c0.
 
-Second attempt (this commit): pair the DT addition with a driver
-patch to `drivers/phy/qualcomm/phy-qcom-usb-hs.c
-qcom_usb_hs_phy_power_on` that inserts the legacy settle sequence
-immediately after `reset_control_reset` and before the vendor-init-seq
-writes:
+**Attempt 2 (commit 6c2eb508669d):** pair the DT resets addition with a
+driver patch adding a 100 ms settle in `qcom_usb_hs_phy_power_on()`
+after `reset_control_reset`:
 
   ulpi_write(ulpi, ULPI_USB_INT_EN_RISE, 0);  // disable all rise ints
   ulpi_write(ulpi, ULPI_USB_INT_EN_FALL, 0);  // disable all fall ints
   msleep(100);                                // ULPI settle
 
-(Writing 0 to the *_EN base register is the mainline equivalent of
-the legacy `ulpi_write(0xFF, *_C)` writes -- same final state.)
+**Result: gadget enumeration still completely broken.** The 100 ms
+settle alone was not enough. The legacy sequence has a USBCMD_RESET
+link reset and PORTSC=0x80000000 transceiver re-select *after* the
+settle and *before* the ULPI vendor writes. Without that link reset the
+chipidea controller's ULPI engine does not re-sync.
+Reverted: DT resets lines removed, driver delay code removed.
 
-The 100 ms is only spent inside the `if (uphy->reset)` block, so
-boards without `resets` wired in DT (apq8064, msm8960 today) keep
-their existing zero-delay path. For boards that do declare the reset,
-the patch lets the PHY settle properly before vendor writes.
+**Root cause:** USBCMD_RESET is a controller-level operation that
+cannot be performed from inside `phy_power_on()` — the PHY driver has
+no access to the chipidea MMIO registers.
 
-Pairs with the DT change that re-adds:
-  resets = <&usb1 0>;
-  reset-names = "por";
-
-Expected outcome:
-  - First boot: gadget enumerates normally
-    (vendor-init-seq writes succeed on a settled PHY post-POR).
-  - soft_connect "disconnect" -> "connect" cycle: PHY POR runs on the
-    reconnect path through `ci_hdrc_gadget_connect(true) -> hw_device_reset
-    -> notify_event(RESET_EVENT) -> phy_power_on`, with the 100 ms
-    settle so the PHY can re-sync before vendor writes; host should
-    see the USB-net interface come back without losing access.
-
-If the patch works, this also implicitly addresses T-018's
-"verifiable from driver state" AC -- a successful round-trip through
-soft_connect proves the writes both apply and persist.
+**Correct fix path:** patch `drivers/usb/chipidea/ci_hdrc_msm.c` to
+run the full legacy otg_reset() sequence on
+`CI_HDRC_CONTROLLER_RESET_EVENT`:
+  POR pulse → INT_EN_RISE/FALL = 0 → msleep(100) → USBCMD_RESET →
+  wait → PORTSC=0x80000000 → ULPI vendor writes (reg 0x32, 0x36).
+This keeps the sequence atomic at the controller level where all the
+required MMIO is accessible. Tracked as a follow-up; not in this
+cavekit batch.
 
 Not done in this batch (still tracked as follow-ups):
   - PM8058 extcon for ID-pin detection (not needed for plug/unplug --
