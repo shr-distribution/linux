@@ -559,6 +559,18 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 	 * the per-instance PWRSAVE / datactrl_first / card-type combination
 	 * matters.
 	 */
+	if (variant->qcom_datactrl_delay) {
+		static DEFINE_RATELIMIT_STATE(rs, HZ, 3);
+
+		if (__ratelimit(&rs))
+			dev_info(mmc_dev(host->mmc),
+				 "set_clkreg: desired=%u clk_reg=0x%08x datactrl_first=%d card_type=%d pwrsave=%s\n",
+				 desired, clk,
+				 host->datactrl_first,
+				 host->mmc->card ? host->mmc->card->type : -1,
+				 (clk & MCI_CLK_PWRSAVE) ? "on" : "off");
+	}
+
 	mmci_write_clkreg(host, clk);
 
 	/*
@@ -1423,6 +1435,17 @@ int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 
 	*datactrl |= MCI_DPSM_DMAENABLE;
 
+	/*
+	 * One-shot diagnostic: log the first successful DMA submit so we
+	 * can confirm in dmesg that DMA actually engages for eMMC transfers
+	 * (vs. silently falling back to PIO). Subsequent submits are silent.
+	 */
+	if (!host->dma_engaged_once) {
+		host->dma_engaged_once = true;
+		dev_info(mmc_dev(host->mmc),
+			 "DMA submit OK (first transfer) — driver is using DMA path\n");
+	}
+
 	return 0;
 }
 
@@ -2071,6 +2094,11 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 	if (host->dma_issue_deferred) {
 		host->dma_issue_deferred = false;
 		if (host->ops && host->ops->dma_issue_pending) {
+			dev_info(mmc_dev(host->mmc),
+				"deferred DMA issue: cmd%d status=0x%08x resp=0x%08x\n",
+				cmd->opcode,
+				readl(host->base + MMCISTATUS),
+				cmd->resp[0]);
 			host->ops->dma_issue_pending(host);
 			/*
 			 * 500 ms is enough for any real DMA — typical SDIO

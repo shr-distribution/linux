@@ -172,15 +172,6 @@ struct adm_chan {
 	void (*exec_func)(void *exec_user);
 	void *exec_user;
 
-	/*
-	 * Result read by the hardirq, consumed by the completion
-	 * tasklet. The hardirq reads CH_RSLT (which acks the IRQ in
-	 * the device) and stashes the value here so the tasklet can
-	 * dispatch errors / vchan_cookie_complete / adm_start_dma
-	 * out of IRQ context. Cleared by the tasklet when read.
-	 */
-	u32 pending_result;
-
 	struct list_head node;
 
 	int error;
@@ -227,21 +218,6 @@ struct adm_device {
 	 * legacy webOS msm_dmov per-ADM spinlock behaviour.
 	 */
 	spinlock_t submit_lock;
-
-	/*
-	 * Completion tasklet. The hardirq stays lean (read
-	 * SD_IRQ_STATUS, read each completed channel's CH_RSLT to
-	 * ack at the device, stash result, schedule this tasklet);
-	 * the heavy per-channel work -- error logging, vchan
-	 * completion, kicking off the next descriptor via
-	 * adm_start_dma -- runs in softirq context where it can't
-	 * delay other GIC hardirqs. Matches legacy msm_dmov's
-	 * "hardirq calls complete_func which schedules a tasklet"
-	 * pattern: keeps the ADM IRQ off the critical path of
-	 * concurrent SDCC PIO refill IRQs on the same GIC.
-	 */
-	struct tasklet_struct completion_tasklet;
-	unsigned long pending_completion;	/* bit per chan needing work */
 };
 
 /**
@@ -492,6 +468,12 @@ static void *adm_process_fc_descriptors(struct adm_chan *achan, void *desc,
 		box_desc->num_rows = rows << 16 | rows;
 		box_desc->row_len = burst << 16 | burst;
 
+		dev_dbg(achan->adev->dev,
+			"ADM box: cmd=0x%x src=0x%x dst=0x%x row_len=0x%x num_rows=0x%x row_off=0x%x burst=%u dir=%d crci=%u\n",
+			box_desc->cmd, box_desc->src_addr, box_desc->dst_addr,
+			box_desc->row_len, box_desc->num_rows,
+			box_desc->row_offset, burst, direction, crci);
+
 		*incr_addr += burst * rows;
 		remainder -= burst * rows;
 		desc += sizeof(*box_desc);
@@ -604,6 +586,10 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 	} else {
 		burst = achan->slave.src_maxburst * achan->slave.src_addr_width;
 	}
+
+	dev_dbg(adev->dev,
+		"ADM prep_slave_sg: chan=%d device_fc=%d achan->crci=%d burst=%d dir=%d\n",
+		achan->id, achan->slave.device_fc, achan->crci, burst, direction);
 
 	/* if using flow control, validate burst and crci values */
 	if (achan->slave.device_fc) {
@@ -891,6 +877,10 @@ static void adm_start_dma(struct adm_chan *achan)
 		u32 crci_val = async_desc->mux | async_desc->blk_size;
 		writel(crci_val,
 		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
+		dev_dbg(adev->dev,
+			"ADM start_dma: CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=%d)\n",
+			async_desc->crci, crci_val,
+			async_desc->mux, async_desc->blk_size);
 	}
 
 	/* make sure IRQ enable doesn't get reordered */
@@ -904,6 +894,11 @@ static void adm_start_dma(struct adm_chan *achan)
 	 */
 	if (async_desc->exec_func)
 		async_desc->exec_func(async_desc->exec_user);
+
+	dev_dbg(adev->dev, "ADM start_dma: chan=%d crci=%d cmd_ptr=0x%08x len=%zu\n",
+		achan->id, async_desc->crci,
+		(u32)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
+		async_desc->length);
 
 	/* write next command list out to the CMD FIFO */
 	writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
@@ -934,91 +929,66 @@ static void adm_start_dma(struct adm_chan *achan)
 static irqreturn_t adm_dma_irq(int irq, void *data)
 {
 	struct adm_device *adev = data;
-	u32 srcs;
-	int i;
+	u32 srcs, i;
+	struct adm_async_desc *async_desc;
+	unsigned long flags;
 
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
-	if (!srcs)
-		return IRQ_NONE;
 
-	/*
-	 * Minimal hardirq path. For each channel that fired, read
-	 * STATUS + CH_RSLT (the RSLT read is what acks the IRQ in the
-	 * device); stash the result for the tasklet and remember
-	 * which channels to process. Heavy work -- error logging,
-	 * vchan_cookie_complete, next-descriptor adm_start_dma --
-	 * is deferred to the completion tasklet so it can't delay
-	 * other GIC hardirqs (notably the SDCC PIO refill IRQ).
-	 */
+	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
+
 	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
+		struct adm_chan *achan = &adev->channels[i];
 		u32 status, result;
 
-		if (!(srcs & BIT(i)))
-			continue;
+		if (srcs & BIT(i)) {
+			status = readl_relaxed(adev->regs +
+					       ADM_CH_STATUS_SD(i, adev->ee));
 
-		status = readl_relaxed(adev->regs +
-				       ADM_CH_STATUS_SD(i, adev->ee));
-		if (!(status & ADM_CH_STATUS_VALID))
-			continue;
+			/* if no result present, skip */
+			if (!(status & ADM_CH_STATUS_VALID))
+				continue;
 
-		result = readl_relaxed(adev->regs +
-				       ADM_CH_RSLT(i, adev->ee));
-		if (!(result & ADM_CH_RSLT_VALID))
-			continue;
+			result = readl_relaxed(adev->regs +
+				ADM_CH_RSLT(i, adev->ee));
 
-		adev->channels[i].pending_result = result;
-		set_bit(i, &adev->pending_completion);
+			/* no valid results, skip */
+			if (!(result & ADM_CH_RSLT_VALID))
+				continue;
+
+			/*
+			 * Flag error only if ERR bit is set (real hardware error).
+			 * Flush-only results are expected behavior - UART drivers
+			 * use dmaengine_terminate_all() to retrieve partial RX data.
+			 */
+			if (result & ADM_CH_RSLT_ERR) {
+				achan->error = 1;
+				dev_err(adev->dev,
+					"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
+					i, result,
+					!!(result & ADM_CH_RSLT_ERR),
+					!!(result & ADM_CH_RSLT_FLUSH),
+					!!(result & ADM_CH_RSLT_TPD));
+			}
+
+			spin_lock_irqsave(&achan->vc.lock, flags);
+			async_desc = achan->curr_txd;
+
+			achan->curr_txd = NULL;
+
+			if (async_desc) {
+				vchan_cookie_complete(&async_desc->vd);
+
+				/* kick off next DMA */
+				adm_start_dma(achan);
+			}
+
+			spin_unlock_irqrestore(&achan->vc.lock, flags);
+		}
 	}
 
-	tasklet_schedule(&adev->completion_tasklet);
 	return IRQ_HANDLED;
-}
-
-/**
- * adm_completion_tasklet_fn - process per-channel completions
- * @t: tasklet handle pointing at adm_device.completion_tasklet
- *
- * Runs in softirq context. Picks up the results the hardirq stashed
- * in each channel's pending_result, dispatches errors, completes the
- * vchan cookie, and kicks off the next descriptor via adm_start_dma.
- */
-static void adm_completion_tasklet_fn(struct tasklet_struct *t)
-{
-	struct adm_device *adev = from_tasklet(adev, t, completion_tasklet);
-	unsigned long pending;
-	int i;
-
-	pending = xchg(&adev->pending_completion, 0);
-
-	for_each_set_bit(i, &pending, ADM_MAX_CHANNELS) {
-		struct adm_chan *achan = &adev->channels[i];
-		struct adm_async_desc *async_desc;
-		unsigned long flags;
-		u32 result = achan->pending_result;
-
-		if (result & ADM_CH_RSLT_ERR) {
-			achan->error = 1;
-			dev_err(adev->dev,
-				"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
-				i, result,
-				!!(result & ADM_CH_RSLT_ERR),
-				!!(result & ADM_CH_RSLT_FLUSH),
-				!!(result & ADM_CH_RSLT_TPD));
-		}
-
-		spin_lock_irqsave(&achan->vc.lock, flags);
-		async_desc = achan->curr_txd;
-		achan->curr_txd = NULL;
-
-		if (async_desc) {
-			vchan_cookie_complete(&async_desc->vd);
-			/* kick off next DMA */
-			adm_start_dma(achan);
-		}
-
-		spin_unlock_irqrestore(&achan->vc.lock, flags);
-	}
 }
 
 /**
@@ -1172,14 +1142,6 @@ static int adm_dma_probe(struct platform_device *pdev)
 	 * Initialised early so adm_start_dma can always take it.
 	 */
 	spin_lock_init(&adev->submit_lock);
-
-	/*
-	 * Completion tasklet: hardirq stashes per-channel results and
-	 * schedules this; tasklet does the heavy per-channel processing
-	 * (vchan + adm_start_dma) in softirq context to keep hardirq
-	 * path minimal.
-	 */
-	tasklet_setup(&adev->completion_tasklet, adm_completion_tasklet_fn);
 
 	adev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(adev->regs))
@@ -1434,9 +1396,6 @@ static void adm_dma_remove(struct platform_device *pdev)
 	}
 
 	devm_free_irq(adev->dev, adev->irq, adev);
-
-	/* Drain any pending tasklet now that no new IRQs can fire. */
-	tasklet_kill(&adev->completion_tasklet);
 
 	/* Free descriptor pool */
 	adm_desc_pool_destroy(adev);
