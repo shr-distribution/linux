@@ -2203,6 +2203,15 @@ static struct clk_branch tv_enc_ahb_clk = {
 static struct clk_branch vcodec_ahb_clk = {
 	.halt_reg = 0x01dc,
 	.halt_bit = 10,
+	/*
+	 * The halt bit at 0x01dc[10] does not settle within the standard
+	 * 200 µs poll window when this branch is disabled (e.g. on VIDC
+	 * runtime suspend), producing "vcodec_ahb_clk status stuck at 'on'"
+	 * WARN traces with an EBUSY return.  Skip the halt check like
+	 * vfe_ahb_clk below — the AHB bus stays clocked while other MMSS
+	 * peripherals share it, so the halt bit can't be relied on.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0008,
 		.enable_mask = BIT(11),
