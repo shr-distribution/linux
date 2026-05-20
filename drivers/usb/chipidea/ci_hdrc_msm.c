@@ -262,6 +262,22 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 		break;
 	case CI_HDRC_CONTROLLER_STOPPED_EVENT:
 		dev_dbg(dev, "CI_HDRC_CONTROLLER_STOPPED_EVENT received\n");
+		/*
+		 * Clear session-valid-control before powering off the PHY.
+		 *
+		 * SESS_VLD_CTRL routes OTGSC_BSV through the ULPI PHY's
+		 * B-session-valid output.  With the PHY unpowered its BSV
+		 * output is stuck low, so OTGSC_BSV reads 0 even after VBUS
+		 * returns on the next cable plug-in.  BSVIS never fires and
+		 * reconnect never happens.
+		 *
+		 * Clearing both bits here hands VBUS detection back to the
+		 * internal comparator.  RESET_EVENT re-enables SESS_VLD_CTRL
+		 * after phy_power_on() brings the PHY back up.
+		 */
+		hw_write_id_reg(ci, HS_PHY_GENCONFIG_2,
+				HS_PHY_SESS_VLD_CTRL_EN, 0);
+		hw_write(ci, OP_USBCMD, HSPHY_SESS_VLD_CTRL, 0);
 		phy_power_off(ci->phy);
 		phy_exit(ci->phy);
 		break;
