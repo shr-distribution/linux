@@ -1770,11 +1770,16 @@ mmci_start_command(struct mmci_host *host, struct mmc_command *cmd, u32 c)
 	writel(cmd->arg, base + MMCIARGUMENT);
 
 	/*
-	 * Qualcomm SDCC requires a delay between ARGUMENT and COMMAND writes.
-	 * The legacy msm_sdcc driver uses msmsdcc_delay() here.
+	 * Qualcomm SDCC requires a clock-dependent delay between ARGUMENT and
+	 * COMMAND register writes.  Legacy msm_sdcc uses msmsdcc_delay():
+	 *   1 + 3000000 / clk_rate  (≈1 µs @ 48 MHz, ≈8.5 µs @ 400 kHz)
+	 * The short udelay(1) here was enough for most eMMC firmware, but
+	 * Samsung SEM32G fw-9.0 (PRV=0x90) returns an OTP-only EXT_CSD
+	 * (capacity = 0) with the 1 µs gap at the 400 kHz init clock.
+	 * Using the full formula restores the timing the hardware expects.
 	 */
 	if (host->variant->qcom_datactrl_delay)
-		udelay(1);
+		udelay(1 + 3000000 / (host->cclk ?: 1));
 
 	writel(c, base + MMCICOMMAND);
 }
