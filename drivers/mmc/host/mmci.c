@@ -2133,11 +2133,6 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 	if (host->dma_issue_deferred) {
 		host->dma_issue_deferred = false;
 		if (host->ops && host->ops->dma_issue_pending) {
-			dev_info(mmc_dev(host->mmc),
-				"deferred DMA issue: cmd%d status=0x%08x resp=0x%08x\n",
-				cmd->opcode,
-				readl(host->base + MMCISTATUS),
-				cmd->resp[0]);
 			host->ops->dma_issue_pending(host);
 			/*
 			 * 500 ms is enough for any real DMA — typical SDIO
