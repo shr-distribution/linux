@@ -695,21 +695,29 @@ static void mmci_get_next_data(struct mmci_host *host, struct mmc_data *data)
 
 /*
  * Decide whether a given (data) request qualifies for the
- * atomic-submission path: variant must declare support, transfer must
- * be a write, host must use datactrl_first sequencing, and the host
- * must be an SDIO host (the original race we're closing is on the
- * sdcc4 SDIO/WiFi DMA write path; eMMC datactrl_first writes go
- * through the immediate-issue path and have never shown the same
- * fabric-contention failure). Same predicate as the previous
- * "deferred via cmd_irq" fallback, which this replaces.
+ * atomic-submission path.
+ *
+ * Originally gated to sdcc4 SDIO writes (the visible race was BMI PIO
+ * vs concurrent eMMC DMA), but live-trace comparison with legacy
+ * webOS msm_sdcc on the same hardware (2026-05-20) showed legacy
+ * uses the equivalent of atomic-submit for ALL data paths: every
+ * DMA-flagged data transfer writes DATATIMER + DATALENGTH + DATACTRL
+ * + ARG + CMD inside the msm_dmov exec_func callback, immediately
+ * before the channel's CMD_PTR write.  The DPSM-armed-to-ADM-ready
+ * window is ~3 µs in legacy; in mainline's old "DATACTRL up front,
+ * DMA submit, CMD, ADM later" sequence it could grow to 50-100 µs+
+ * under fabric contention — which correlates with the boot-time
+ * DATACRCFAIL we see during systemd journal recovery on tenderloin.
+ *
+ * Drop the direction + SDIO_IRQ gates so eMMC reads, eMMC writes,
+ * and all SDIO data paths take the atomic-submit route, matching
+ * the legacy structural pattern.
  */
 static inline bool mmci_should_atomic_submit(struct mmci_host *host,
 					     struct mmc_data *data)
 {
 	return host->variant->qcom_dml_atomic_submit &&
-	       !(data->flags & MMC_DATA_READ) &&
-	       host->datactrl_first &&
-	       (host->mmc->caps & MMC_CAP_SDIO_IRQ);
+	       host->datactrl_first;
 }
 
 static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
