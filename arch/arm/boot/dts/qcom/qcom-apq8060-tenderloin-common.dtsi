@@ -91,6 +91,68 @@
 		};
 	};
 
+	/*
+	 * PM8058 die-temperature thermal zone.
+	 *
+	 * Replicates the legacy webOS pmic8058-tm 3-stage trip model
+	 * (105 / 125 / 145 deg C, 2 deg C hysteresis, software-override).
+	 * The xoadc die_temp channel already returns millicelsius via
+	 * SCALE_PMIC_THERM (qcom-vadc-common.c qcom_vadc_scale_die_temp),
+	 * so generic-adc-thermal can wrap it as a thermal sensor with no
+	 * lookup table.
+	 *
+	 * Polled — qcom-pm8xxx-xoadc does not expose IRQ-driven trip
+	 * crossings, and PM8058 has only one TEMP_ALARM IRQ. Worst-case
+	 * trip-to-shutdown latency is bounded by polling-delay-passive
+	 * once temperature is above the first trip, giving <= ~1 s in the
+	 * critical regime — comfortably inside the cavekit R5 5 s budget
+	 * for the polled approach.
+	 *
+	 * Cavekit: context/kits/cavekit-pmic-thermal.md R1 + R5 (AC1).
+	 */
+	pm8058_die_thermal: thermal-sensor-pm8058-die {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&pm8058_xoadc 0x00 0x0b>;
+		io-channel-names = "sensor-channel";
+	};
+
+	thermal-zones {
+		pm8058-thermal {
+			polling-delay-passive = <1000>;
+			polling-delay = <2000>;
+
+			thermal-sensors = <&pm8058_die_thermal>;
+
+			trips {
+				pm8058_alert0: trip-stage1 {
+					/* Legacy PM8058_TEMP_THRESH_MIN. */
+					temperature = <105000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				pm8058_alert1: trip-stage2 {
+					/* PM8058_TEMP_THRESH_MIN + STAGE_STEP. */
+					temperature = <125000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+
+				pm8058_crit: trip-stage3 {
+					/* PM8058_TEMP_THRESH_MIN + 2*STAGE_STEP.
+					 * Legacy webOS wired this as
+					 * THERMAL_TRIP_CRITICAL — invokes
+					 * orderly_poweroff() automatically.
+					 */
+					temperature = <145000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+		};
+	};
+
 	regulators {
 		compatible = "simple-bus";
 
