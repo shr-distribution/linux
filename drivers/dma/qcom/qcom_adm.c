@@ -883,8 +883,13 @@ static void adm_start_dma(struct adm_chan *achan)
 			async_desc->mux, async_desc->blk_size);
 	}
 
-	/* make sure IRQ enable doesn't get reordered */
-	wmb();
+	/*
+	 * Order the CRCI_CTL write before exec_func + CMD_PTR.  Full wmb()
+	 * (DSB on ARMv7) is overkill — these are MMIO writes via writel
+	 * which already emits dmb_st; dma_wmb is the lighter device-write
+	 * barrier and is sufficient here.
+	 */
+	dma_wmb();
 
 	/*
 	 * Peripheral pre-submit hook (legacy msm_dmov exec_func). Called
@@ -931,61 +936,72 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 	struct adm_device *adev = data;
 	u32 srcs, i;
 	struct adm_async_desc *async_desc;
-	unsigned long flags;
 
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
 
 	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
 
-	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
-		struct adm_chan *achan = &adev->channels[i];
+	/*
+	 * Iterate only the set channel bits in srcs.  Fixed 16-iteration
+	 * loop wasted ~14 branch checks per IRQ on tenderloin where only
+	 * 1-2 channels complete at a time.
+	 */
+	while (srcs) {
+		struct adm_chan *achan;
 		u32 status, result;
 
-		if (srcs & BIT(i)) {
-			status = readl_relaxed(adev->regs +
-					       ADM_CH_STATUS_SD(i, adev->ee));
+		i = __ffs(srcs);
+		srcs &= ~BIT(i);
+		achan = &adev->channels[i];
 
-			/* if no result present, skip */
-			if (!(status & ADM_CH_STATUS_VALID))
-				continue;
+		status = readl_relaxed(adev->regs +
+				       ADM_CH_STATUS_SD(i, adev->ee));
 
-			result = readl_relaxed(adev->regs +
-				ADM_CH_RSLT(i, adev->ee));
+		/* if no result present, skip */
+		if (!(status & ADM_CH_STATUS_VALID))
+			continue;
 
-			/* no valid results, skip */
-			if (!(result & ADM_CH_RSLT_VALID))
-				continue;
+		result = readl_relaxed(adev->regs +
+			ADM_CH_RSLT(i, adev->ee));
 
-			/*
-			 * Flag error only if ERR bit is set (real hardware error).
-			 * Flush-only results are expected behavior - UART drivers
-			 * use dmaengine_terminate_all() to retrieve partial RX data.
-			 */
-			if (result & ADM_CH_RSLT_ERR) {
-				achan->error = 1;
-				dev_err(adev->dev,
-					"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
-					i, result,
-					!!(result & ADM_CH_RSLT_ERR),
-					!!(result & ADM_CH_RSLT_FLUSH),
-					!!(result & ADM_CH_RSLT_TPD));
-			}
+		/* no valid results, skip */
+		if (!(result & ADM_CH_RSLT_VALID))
+			continue;
 
-			spin_lock_irqsave(&achan->vc.lock, flags);
-			async_desc = achan->curr_txd;
-
-			achan->curr_txd = NULL;
-
-			if (async_desc) {
-				vchan_cookie_complete(&async_desc->vd);
-
-				/* kick off next DMA */
-				adm_start_dma(achan);
-			}
-
-			spin_unlock_irqrestore(&achan->vc.lock, flags);
+		/*
+		 * Flag error only if ERR bit is set (real hardware error).
+		 * Flush-only results are expected behavior - UART drivers
+		 * use dmaengine_terminate_all() to retrieve partial RX data.
+		 */
+		if (result & ADM_CH_RSLT_ERR) {
+			achan->error = 1;
+			dev_err(adev->dev,
+				"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
+				i, result,
+				!!(result & ADM_CH_RSLT_ERR),
+				!!(result & ADM_CH_RSLT_FLUSH),
+				!!(result & ADM_CH_RSLT_TPD));
 		}
+
+		/*
+		 * Plain spin_lock — we are in hardirq, IRQs are already
+		 * disabled by the CPU; spin_lock_irqsave's save/restore is
+		 * wasted work here.
+		 */
+		spin_lock(&achan->vc.lock);
+		async_desc = achan->curr_txd;
+
+		achan->curr_txd = NULL;
+
+		if (async_desc) {
+			vchan_cookie_complete(&async_desc->vd);
+
+			/* kick off next DMA */
+			adm_start_dma(achan);
+		}
+
+		spin_unlock(&achan->vc.lock);
 	}
 
 	return IRQ_HANDLED;
