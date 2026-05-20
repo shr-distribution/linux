@@ -2239,37 +2239,46 @@ retry_chunk:
 				}
 			}
 
-			/* Wait for engine to finish processing AND drop back
-			 * to IDLE before reading CNTR.  ADM completion fires
-			 * when the last byte lands in memory, but the engine
-			 * may still be cycling FINAL_READ -> CTXT_CLEARING
-			 * -> UNLOCKING -> IDLE at that point.  Reading CNTR
-			 * mid-transition gives stale / partial state.
+			/* Wait for engine to drop back to IDLE -- but ONLY if
+			 * the next-chunk IV comes from a CNTR readback (i.e.
+			 * NOT CBC; CBC derives the next IV from dst_copy now).
 			 *
-			 * After STATUS reads IDLE we additionally settle for
-			 * a few us before reading CNTR0..3 -- empirically we
-			 * see occasional block-0 corruption in chunk N+1
-			 * that's consistent with reading CNTR exactly as the
-			 * engine's final write to those registers is in
-			 * flight from CTXT_CLEARING.  The state-machine bit
-			 * goes IDLE one cycle before the CNTR register
-			 * write fully commits to the readable bank on this
-			 * silicon.
+			 * On this silicon the engine never actually returns
+			 * to IDLE after a chunk -- it sits in PROCESSING with
+			 * DIN_ERR/DOUT_ERR/SW_ERR set indefinitely.  The
+			 * inter-chunk reset (clk cycle + SW_RST) brings it
+			 * back to IDLE for the next chunk; we don't need the
+			 * engine to self-settle here.
+			 *
+			 * For CBC the wait was pure overhead -- 1000 polls *
+			 * 10 us = ~10 ms per chunk burned waiting for an
+			 * event that never fires (~83 % of total time at
+			 * 256 KB).  Skip it.
+			 *
+			 * For CTR (and any future mode that reads CNTR back),
+			 * the wait + udelay(5) still matters: STATUS goes
+			 * "IDLE" one cycle before the engine's final write to
+			 * CNTR commits, so an immediate readl can return
+			 * stale state.  Short timeout (50 polls = 500 us) is
+			 * enough; the inter-chunk reset covers the long tail.
 			 */
-			for (timeout = 1000; timeout > 0; timeout--) {
-				status = readl_relaxed(qce->base +
-						       CE2_REG_STATUS);
-				if ((status & CE2_CRYPTO_STATE_MASK) == 0)
-					break;
-				udelay(10);
-			}
-			udelay(5);
+			if (!IS_ECB(flags) && !IS_CBC(flags) && enciv_words) {
+				for (timeout = 50; timeout > 0; timeout--) {
+					status = readl_relaxed(qce->base +
+							       CE2_REG_STATUS);
+					if ((status & CE2_CRYPTO_STATE_MASK) == 0)
+						break;
+					udelay(10);
+				}
+				udelay(5);
 
-			if (qce_ce2_chunk_debug) {
-				unsigned int chunk_idx = sg_off / max_chunk;
+				if (qce_ce2_chunk_debug) {
+					unsigned int chunk_idx = sg_off /
+								  max_chunk;
 
-				pr_info("CE2dbg chunk=%u status post-idle=%08x n_idle=%d\n",
-					chunk_idx, status, 1000 - timeout);
+					pr_info("CE2dbg chunk=%u status post-idle=%08x n_idle=%d\n",
+						chunk_idx, status, 50 - timeout);
+				}
 			}
 
 			/* Drain any residual DOUT FIFO dwords.  If even one
