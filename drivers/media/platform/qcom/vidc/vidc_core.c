@@ -499,6 +499,20 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
 	vidc_clear_interrupt(core);
 
+	/*
+	 * Clear RETURNED_CH_INST_ID (0x2000) — the channel-level response
+	 * ack handshake.  webOS calls vidc_1080p_clear_returned_channel_inst_id
+	 * at the top of EVERY response handler (SEQ_DONE @356, INIT_BUFFERS_DONE
+	 * @381, FRAME_DONE, ENC_COMPLETE, FLUSH_DONE, CLOSE_DONE in
+	 * vcd_ddl_interrupt_handler.c).  It writes the INIT_CH_INST_ID sentinel
+	 * (0xffff) telling the firmware "host consumed the previous response,
+	 * channel is idle".  Without this clear, the firmware keeps its
+	 * post-response channel-ID in the register (e.g. 0x0 after SEQ_DONE)
+	 * and refuses to process subsequent commands on that channel — the
+	 * next CH0_INST_ID trigger sits unread for the full timeout.
+	 */
+	vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID, VIDC_INIT_CH_INST_ID);
+
 	inst = core->curr_inst;
 
 	if (cmd != VIDC_RESP_EMPTY)
