@@ -1436,6 +1436,45 @@ static void qce_ce2_skc_dma_done(void *param)
 	complete(param);
 }
 
+/* Context for the GOPROC fire-after-issue_pending callback.  The
+ * callback runs inside qce_ce2_dma_inout_cipher() right after both
+ * ADM channels have been dma_async_issue_pending() and just before
+ * wait_for_completion().  Carries chunk identification only for the
+ * debug pr_info; the GOPROC writel itself needs no per-chunk state.
+ */
+struct qce_ce2_skc_goproc_ctx {
+	unsigned int sg_off;
+	unsigned int chunk_idx;
+};
+
+static void qce_ce2_skc_fire_goproc(struct qce_device *qce, void *arg)
+{
+	struct qce_ce2_skc_goproc_ctx *ctx = arg;
+	u32 st_pre, status;
+	int timeout;
+
+	st_pre = readl_relaxed(qce->base + CE2_REG_STATUS);
+
+	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+
+	/* Verify engine actually transitioned out of IDLE.  At the new
+	 * call site -- post both dma_async_issue_pending -- the engine
+	 * sees DIN data already flowing, so the transition is normally
+	 * instantaneous (n_leave=0).  A high n_leave or a hung-IDLE
+	 * STATUS would indicate a deeper engine wedge.
+	 */
+	for (timeout = 1000; timeout > 0; timeout--) {
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status & CE2_CRYPTO_STATE_MASK)
+			break;
+		udelay(10);
+	}
+
+	if (qce_ce2_chunk_debug)
+		pr_info("CE2dbg chunk=%u status pre-go=%08x post-go=%08x n_leave=%d\n",
+			ctx->chunk_idx, st_pre, status, 1000 - timeout);
+}
+
 /*
  * Dual-channel ADM DMA for CE2 cipher I/O.
  *
@@ -1529,13 +1568,17 @@ static int qce_ce2_dma_setup_cipher_chans(struct qce_device *qce,
 	return 0;
 }
 
+typedef void (*qce_ce2_post_issue_fn)(struct qce_device *qce, void *arg);
+
 static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 				    struct scatterlist *src,
 				    struct scatterlist *dst,
 				    unsigned int sg_offset,
 				    unsigned int nbytes,
 				    unsigned int block_dwords,
-				    struct qce_ce2_bounce *b)
+				    struct qce_ce2_bounce *b,
+				    qce_ce2_post_issue_fn post_issue,
+				    void *post_issue_arg)
 {
 	struct dma_chan *rx = qce->dma.rxchan;
 	struct dma_chan *tx = qce->dma.txchan;
@@ -1608,8 +1651,26 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		goto out_terminate;
 	}
 
-	dma_async_issue_pending(rx);
+	/* Arm output channel first so the engine's DOUT writes have
+	 * somewhere to land, then arm input so data starts flowing into
+	 * DIN.  Order matters for the "no-op chunk" stochastic failure:
+	 * GOPROC (fired by post_issue below) must see both ADM channels
+	 * already pumping or the engine occasionally fails to latch DIN
+	 * and produces nothing.
+	 */
 	dma_async_issue_pending(tx);
+	dma_async_issue_pending(rx);
+
+	/* GOPROC + wait-for-leave-IDLE moved here from the caller so it
+	 * happens AFTER the ADM channels are issued.  Previously GOPROC
+	 * fired BEFORE qce_ce2_dma_inout_cipher() so the engine sat in
+	 * LOCKED/GO waiting for DIN data while we still had hundreds of
+	 * microseconds of memcpy + byte-swap + prep + submit ahead -- a
+	 * window in which the engine occasionally aborted the op (the
+	 * out-equals-iv "no-op chunk" failure mode observed past ~2 KB).
+	 */
+	if (post_issue)
+		post_issue(qce, post_issue_arg);
 
 	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(1000))) {
 		dev_err(qce->dev, "CE2 cipher: DMA timeout (%u bytes)\n",
@@ -2094,47 +2155,30 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			dev_dbg(qce->dev, "CE2 skc chunk off=%u len=%u\n",
 				sg_off, chunk_len);
 
-			/* Status snapshots around GOPROC.  Captured
-			 * unconditionally; emitted as a single per-chunk
-			 * pr_info if ce2_chunk_debug is on.  Cheap (4 extra
-			 * readl_relaxed) and lets us correlate "out == iv"
-			 * no-op chunks with engine state transitions.
+			/* GOPROC now fires INSIDE qce_ce2_dma_inout_cipher
+			 * via the post_issue callback, after both ADM
+			 * channels have been dma_async_issue_pending().
+			 * That way the engine sees DIN data already
+			 * streaming when it transitions out of IDLE,
+			 * eliminating the ~0-100 us window in which the
+			 * engine sat in LOCKED/GO waiting for DIN and
+			 * occasionally aborted the op.
 			 */
 			{
-				u32 st_pre_go = readl_relaxed(qce->base +
-							      CE2_REG_STATUS);
+				struct qce_ce2_skc_goproc_ctx goproc_ctx = {
+					.sg_off = sg_off,
+					.chunk_idx = sg_off / max_chunk,
+				};
 
-				/* GOPROC + wait for engine to leave IDLE */
-				writel(BIT(CE2_GO_SHIFT),
-				       qce->base + CE2_REG_GOPROC);
-				for (timeout = 1000; timeout > 0; timeout--) {
-					status = readl_relaxed(qce->base +
-							       CE2_REG_STATUS);
-					if (status & CE2_CRYPTO_STATE_MASK)
-						break;
-					udelay(10);
-				}
-				if (timeout <= 0) {
-					dev_err(qce->dev,
-						"CE2 skc: engine never left IDLE; STATUS=0x%08x\n",
-						status);
-					qce_ce2_free_bounce(qce, &bounce);
-					return -ETIMEDOUT;
-				}
-
-				if (qce_ce2_chunk_debug) {
-					unsigned int chunk_idx = sg_off /
-								  max_chunk;
-
-					pr_info("CE2dbg chunk=%u status pre-go=%08x post-go=%08x n_leave=%d\n",
-						chunk_idx, st_pre_go, status,
-						1000 - timeout);
-				}
+				ret = qce_ce2_dma_inout_cipher(qce, req->src,
+							       req->dst,
+							       sg_off,
+							       chunk_len,
+							       burst,
+							       &bounce,
+							       qce_ce2_skc_fire_goproc,
+							       &goproc_ctx);
 			}
-
-			ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst,
-						       sg_off, chunk_len, burst,
-						       &bounce);
 			if (ret) {
 				dev_err(qce->dev,
 					"CE2 skc DMA failed at off=%u: ret=%d STATUS=0x%08x\n",
