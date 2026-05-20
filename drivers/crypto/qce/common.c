@@ -25,26 +25,10 @@
 #include "common.h"
 #include "core.h"
 #include "dma.h"
-#include <linux/moduleparam.h>
-
 #include "regs-v5.h"
 #include "regs-ce2.h"
 #include "sha.h"
 #include "aead.h"
-
-/*
- * Per-chunk skcipher debug: when enabled, the chunked AES path
- * pr_info()s the IV being fed into each chunk and the first / last
- * cipher block produced.  Lets us distinguish "bad IV propagation"
- * from "bad chunk output" at the 720-byte / chunk-15 silent
- * corruption pattern.  ~14 lines per chunk; 32 KB transfer = ~9.5K
- * lines, so leave disabled by default.  Toggle at runtime:
- *   echo 1 > /sys/module/qcrypto/parameters/ce2_chunk_debug
- */
-static bool qce_ce2_chunk_debug;
-module_param_named(ce2_chunk_debug, qce_ce2_chunk_debug, bool, 0644);
-MODULE_PARM_DESC(ce2_chunk_debug,
-		 "Log per-chunk CE2 skcipher IV/first/last block (default off)");
 
 /*
  * CE2 register offset translation
@@ -1436,31 +1420,24 @@ static void qce_ce2_skc_dma_done(void *param)
 	complete(param);
 }
 
-/* Context for the GOPROC fire-before-issue_pending callback.  Runs
- * inside qce_ce2_dma_inout_cipher() after all CPU prep work
- * (memcpy / byte-swap / dmaengine_prep + submit) is done but before
- * the dma_async_issue_pending() calls that start the ADM bursts.
- * Closes the GOPROC-to-DIN-streaming window the original layout
- * left open (hundreds of microseconds during which the engine sat
- * in LOCKED waiting for input -- and occasionally aborted the op).
+/* GOPROC fire callback invoked inside qce_ce2_dma_inout_cipher() AFTER
+ * all CPU prep work (memcpy / byte-swap / dmaengine_prep + submit) is
+ * done but BEFORE the dma_async_issue_pending() calls that start the
+ * ADM bursts.  Closes the GOPROC-to-DIN-streaming window the original
+ * layout left open: hundreds of microseconds during which the engine
+ * sat in LOCKED waiting for input -- and occasionally aborted the op,
+ * producing a no-op chunk (caught separately by the DOUT_SIZE_AVAIL
+ * post-DMA check).
  */
-struct qce_ce2_skc_goproc_ctx {
-	unsigned int sg_off;
-	unsigned int chunk_idx;
-};
-
 static void qce_ce2_skc_fire_goproc(struct qce_device *qce, void *arg)
 {
-	struct qce_ce2_skc_goproc_ctx *ctx = arg;
-	u32 st_pre, status;
+	u32 status;
 	int timeout;
-
-	st_pre = readl_relaxed(qce->base + CE2_REG_STATUS);
 
 	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
 
-	/* Verify engine actually transitioned out of IDLE; ADM
-	 * issue_pending will fire microseconds later.
+	/* Engine leaves IDLE within microseconds; ADM issue_pending
+	 * fires immediately after.
 	 */
 	for (timeout = 1000; timeout > 0; timeout--) {
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
@@ -1468,10 +1445,6 @@ static void qce_ce2_skc_fire_goproc(struct qce_device *qce, void *arg)
 			break;
 		udelay(10);
 	}
-
-	if (qce_ce2_chunk_debug)
-		pr_info("CE2dbg chunk=%u status pre-go=%08x post-go=%08x n_leave=%d\n",
-			ctx->chunk_idx, st_pre, status, 1000 - timeout);
 }
 
 /*
@@ -2126,20 +2099,6 @@ retry_chunk:
 					       k * 4);
 			}
 
-			if (qce_ce2_chunk_debug && !IS_ECB(flags) &&
-			    enciv_words) {
-				u8 ivbytes[QCE_MAX_IV_SIZE];
-				unsigned int chunk_idx = sg_off / max_chunk;
-
-				for (k = 0; k < enciv_words; k++)
-					put_unaligned_be32(
-						(__force u32)enciv[k],
-						ivbytes + k * 4);
-				pr_info("CE2dbg chunk=%u off=%u len=%u iv-in=%*phN\n",
-					chunk_idx, sg_off, chunk_len,
-					(int)(enciv_words * 4), ivbytes);
-			}
-
 			/* webOS register write order: SEG_CFG ->
 			 * ENCR_SEG_CFG -> SEG_SIZE -> CONFIG -> GOPROC.
 			 * Writing CONFIG before SEG_CFG empirically breaks
@@ -2166,21 +2125,11 @@ retry_chunk:
 			 * should eliminate the ~1.5%-per-chunk "engine
 			 * no-op" stochastic failure.
 			 */
-			{
-				struct qce_ce2_skc_goproc_ctx goproc_ctx = {
-					.sg_off = sg_off,
-					.chunk_idx = sg_off / max_chunk,
-				};
-
-				ret = qce_ce2_dma_inout_cipher(qce, req->src,
-							       req->dst,
-							       sg_off,
-							       chunk_len,
-							       burst,
-							       &bounce,
-							       qce_ce2_skc_fire_goproc,
-							       &goproc_ctx);
-			}
+			ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst,
+						       sg_off, chunk_len,
+						       burst, &bounce,
+						       qce_ce2_skc_fire_goproc,
+						       NULL);
 			if (ret) {
 				dev_err(qce->dev,
 					"CE2 skc DMA failed at off=%u: ret=%d STATUS=0x%08x\n",
@@ -2196,11 +2145,6 @@ retry_chunk:
 				unsigned int dout_avail =
 					(st_post_dma & CE2_DOUT_SIZE_AVAIL_MASK) >>
 					CE2_DOUT_SIZE_AVAIL_SHIFT;
-
-				if (qce_ce2_chunk_debug)
-					pr_info("CE2dbg chunk=%u status post-dma=%08x\n",
-						sg_off / max_chunk,
-						st_post_dma);
 
 				/* Engine no-op detection: on healthy chunks
 				 * the engine has produced all output and DOUT
@@ -2271,14 +2215,6 @@ retry_chunk:
 					udelay(10);
 				}
 				udelay(5);
-
-				if (qce_ce2_chunk_debug) {
-					unsigned int chunk_idx = sg_off /
-								  max_chunk;
-
-					pr_info("CE2dbg chunk=%u status post-idle=%08x n_idle=%d\n",
-						chunk_idx, status, 50 - timeout);
-				}
 			}
 
 			/* Drain any residual DOUT FIFO dwords.  If even one
@@ -2309,20 +2245,6 @@ retry_chunk:
 					dev_dbg(qce->dev,
 						"CE2 skc DOUT drained %d dword(s) post-chunk off=%u\n",
 						drain, sg_off);
-			}
-
-			if (qce_ce2_chunk_debug) {
-				unsigned int chunk_idx = sg_off / max_chunk;
-				int blocksz = (IS_DES(flags) || IS_3DES(flags)) ?
-					      8 : 16;
-				int last_off = (int)chunk_len - blocksz;
-
-				if (last_off < 0)
-					last_off = 0;
-				pr_info("CE2dbg chunk=%u out-first=%*phN out-last=%*phN\n",
-					chunk_idx,
-					blocksz, bounce.dst_copy,
-					blocksz, bounce.dst_copy + last_off);
 			}
 
 			/* Capture next-chunk IV.
