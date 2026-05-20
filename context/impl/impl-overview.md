@@ -12,7 +12,7 @@ last_edited: "2026-05-20"
 | soc-watchdog | 3 | 5 | T-001/T-008/T-010 done; T-011/T-021 HW verification pending |
 | usb-phy-tuning | 2 | 4 | T-006/T-016 done (driver patch + DT 3/4 legacy values; SE1 deferred); T-018 HW pending |
 | sensor-i2c-recovery | 2 | 4 | T-002/T-003 done (i2c-qup recovery wired, 9-cycle generic SCL); T-012/T-013 HW pending |
-| pmic-thermal | 2.5 | 6 | T-004/T-015 verified on-device (live zone, emul_temp works); T-005 PARTIAL (PM8901 needs driver port); T-014 READY (HW); T-022/T-023 HW pending |
+| pmic-thermal | 3 | 6 | T-004/T-015 verified on-device; T-005 code-DONE (qcom-pm8901-tm driver + DT + defconfig, awaiting build); T-014 READY (HW); T-022/T-023 HW pending |
 
 ## Current Work
 

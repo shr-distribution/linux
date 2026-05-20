@@ -29,12 +29,16 @@ On-device verification on kernel `g73d42f55522d` (2026-05-20):
   "thermal-sensor-pm8058-die"`
 - `dmesg`: `pm8xxx-adc ...:xoadc@197: PM8058-XOADC XOADC driver enabled`
 
-**T-005 PARTIAL** — PM8901 die-temperature monitoring is **not feasible
-without new driver code in mainline 6.18.** PM8901 has no IIO channel,
-no equivalent ADC driver, and the legacy `pmic8901-tm` direct-SSBI-read
-driver was never ported. PM8058 monitoring is the active protection;
-PM8901 protection deferred behind a driver port (see "PM8901 path
-forward" below). R2 cannot fully pass until that driver lands.
+**T-005 DONE (code), HW-verification pending** — new
+`drivers/thermal/qcom/qcom-pm8901-tm.c` driver landed; ports the legacy
+`pmic8901-tm` direct-SSBI register protocol to mainline conventions
+(devm_thermal_of_zone_register + platform driver + dev_get_regmap on
+parent). Threshold-set 0 (105 / 125 / 145 deg C) programmed at init,
+software override enabled, PWM gating at 8 Hz, both legacy IRQs wired
+(TEMP_ALARM = PM8901 IRQ 52 = alarm-stage; TEMP_HI_ALARM = IRQ 53 =
+hi-temp). Binding YAML, board DT node, thermal-zone, and Kconfig +
+defconfig flags all landed. Awaiting next Yocto build + on-device
+verification.
 
 ## R5 AC1: Polled vs IRQ Declaration (PM8058)
 
@@ -89,53 +93,79 @@ The IRQ-driven branch (R5 AC3 with 1 s budget) is not selected.
   +/- 0 mC tolerance.
 - AC4 hysteresis <= 2 000 mC: literal DT values match.
 
-## R2: PM8901 Thermal Zone — Blocked by Missing Driver
+## R2: PM8901 Thermal Zone — Mainline Port Landed
 
-### Why this is not in DT
+### Implementation
 
-PM8901 die-temperature is read via SSBI registers (legacy
-`webos .../drivers/thermal/pmic8901-tm.c:pm8901_tm_init_temp` /
-`pm8901_tm_update_temp`), not via an ADC channel. The mainline tree
-contains:
+New driver: `drivers/thermal/qcom/qcom-pm8901-tm.c` (~290 lines).
+Modelled on `drivers/thermal/qcom/qcom-spmi-temp-alarm.c` for the
+mainline pattern (platform driver + `devm_thermal_of_zone_register`
++ regmap-on-parent) but using the legacy PM8901 SSBI register
+protocol from
+`webos .../drivers/thermal/pmic8901-tm.c`:
 
-- `drivers/mfd/qcom-pm8xxx.c` — PM8901 MFD/IRQ entry only
-  (`drivers/mfd/qcom-pm8xxx.c:522`).
-- `drivers/pinctrl/qcom/pinctrl-ssbi-mpp.c` — PM8901 MPP pinctrl.
-- `drivers/regulator/qcom_rpm-regulator.c` — PM8901 regulators.
+- `dev_get_regmap(pdev->dev.parent, NULL)` retrieves the SSBI regmap
+  the `qcom-pm8xxx` MFD already attached to the PM8901 device.
+- CTRL register at offset 0x23 (status/threshold/override bits) and
+  PWM register at 0x24, exactly the legacy `SSBI_REG_TEMP_ALRM_CTRL`
+  / `SSBI_REG_TEMP_ALRM_PWM` addresses.
+- `pm8901_tm_init_hw()`:
+  - Sets `OVRD_ST3 | OVRD_ST2` (software override enabled — kernel
+    handles shutdown via the DT critical trip, PMIC does not auto-cut)
+  - Clears `THRESH_MASK` to programme threshold-set 0
+    (105 / 125 / 145 deg C — verbatim from legacy)
+  - Programmes the PWM register to 8 Hz gating
+    (`PWM_EN | PER_PRE=3 | PER_DIV=3`) — verbatim from legacy.
+- `pm8901_tm_get_temp()`:
+  - Reads CTRL, decodes `(stage, thresh)`, computes mC via the
+    legacy formula (rising-edge uses lower bound + hysteresis,
+    falling-edge uses upper bound - hysteresis, first read returns
+    `PM8901_TEMP_NO_ALARM = 37 000` when stage == 0).
+- Both legacy IRQs wired via `platform_get_irq_byname`:
+  - `alarm` (PM8901 IRQ 52 = block 6 bit 4 = TEMP_ALARM)
+  - `hi-alarm` (PM8901 IRQ 53 = block 6 bit 5 = TEMP_HI_ALARM)
+  - Both share `pm8901_tm_isr` which updates cached temp, clears any
+    latched `ST2_SD` / `ST3_SD` shutdown bits, and dispatches
+    `thermal_zone_device_update` so the thermal core can walk trips
+    and dispatch `orderly_poweroff` on a critical-trip cross.
+- `.remove` disables software override (best-effort revert).
 
-No PM8901 ADC, no PM8901 thermal monitor, no `#thermal-sensor-cells`
-provider with PM8901 as its source. Adding a thermal-zone whose
-`thermal-sensors` reference targets a non-existent node would either
-fail probe (best case) or panic (worst case).
+### Wiring
 
-### PM8901 path forward (recommended follow-up task)
-
-Port `webos .../drivers/thermal/pmic8901-tm.c` to mainline as a small
-PM8901-specific thermal driver that:
-
-1. Probes as an MFD child of `qcom,pm8901`.
-2. Reads PM8901 TEMP_STAGE_STATUS via the existing SSBI regmap exposed
-   by `qcom-pm8xxx`.
-3. Wires both legacy IRQs:
-   - `TEMP_ALARM` — stage-transition IRQ
-   - `TEMP_HI_ALARM` — hi-temp IRQ
-4. Registers as a thermal-zone-of provider with
-   `#thermal-sensor-cells = <0>`, enabling a board-level
-   `pm8901-thermal` zone analogous to the PM8058 one.
-
-Estimate: ~200 lines of driver, ~30 lines of DT. Not in scope for T-005
-in its current Tier-0 framing. Two-event equivalence (R2 AC5) is
-trivially met by such a driver since both IRQs are visible at the
-SSBI level.
+- Binding YAML: `Documentation/devicetree/bindings/thermal/qcom,pm8901-temp-alarm.yaml`
+- DT: `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
+  - `pm8901_temp: temp-alarm@23` child of `pm8901` (interrupts =
+    `<52 IRQ_TYPE_EDGE_RISING>, <53 IRQ_TYPE_EDGE_RISING>`,
+    `interrupt-names = "alarm", "hi-alarm"`,
+    `#thermal-sensor-cells = <0>`)
+  - `thermal-zones { pm8901-thermal { ... } }` with 3 trips at
+    105/125/145 mC, 2 mC hysteresis, stage 3 type = "critical".
+    `polling-delay = 0` (IRQ-driven — no polling needed because both
+    transition IRQs deliver stage changes promptly).
+- Kconfig: new `QCOM_PM8901_TEMP_ALARM` symbol in
+  `drivers/thermal/qcom/Kconfig`, depends `MFD_PM8XXX || COMPILE_TEST`
+  and `THERMAL_OF`.
+- Makefile: new obj line in `drivers/thermal/qcom/Makefile`.
+- Defconfig: `CONFIG_QCOM_PM8901_TEMP_ALARM=y` in all three tenderloin
+  defconfigs.
 
 ### Acceptance criteria coverage (R2)
 
-- AC1 zone exists for PM8901: **PARTIAL** — blocked on driver.
-- AC2 idle reading: **PARTIAL** — blocked on driver.
-- AC3 trips at 105/125/145 deg C: deferred (DT trivial once R2 unblocks).
-- AC4 hysteresis: deferred.
-- AC5 two-event equivalence: would be naturally met by the proposed
-  driver; until then, **PARTIAL**.
+- AC1 zone exists for PM8901: **DONE** (code) — `pm8901-thermal` zone
+  declared in DT, sensor = `&pm8901_temp` provided by the new driver.
+  Verification: post-Yocto-build `cat
+  /sys/class/thermal/thermal_zoneN/type` should return
+  `"pm8901-thermal"`.
+- AC2 idle reading 15-80 k mC: **DONE (code), HW-verify pending** —
+  driver returns `PM8901_TEMP_NO_ALARM = 37 000` mC when stage == 0
+  (idle), inside the AC band.
+- AC3 trips at 105 / 125 / 145 k mC: **DONE** — DT literal values
+  match cavekit exactly.
+- AC4 hysteresis ≤ 2 000 mC: **DONE** — DT trips all carry
+  `hysteresis = 2000`.
+- AC5 two-event equivalence: **DONE** — both legacy IRQs
+  (`TEMP_ALARM` + `TEMP_HI_ALARM`) are wired as distinct interrupt
+  cells and share the ISR. Mainline reaches both events.
 
 ## R3, R4, R5 AC2-4: Deferred to Tier 1
 
@@ -165,7 +195,7 @@ Flags required across all three tenderloin defconfigs:
 | Task | Status | Notes |
 |------|--------|-------|
 | T-004 | DONE (verified on-device) | PM8058 zone live at thermal_zone2; idle 33.5 C; trips/hysteresis match; emul_temp path functional |
-| T-005 | PARTIAL | DT cannot land — PM8901 needs new driver port (pmic8901-tm). Recommended follow-up task scope ~200 lines driver + minor DT |
+| T-005 | DONE (code) | new driver drivers/thermal/qcom/qcom-pm8901-tm.c + binding + DT + thermal-zone + defconfig flag; awaiting Yocto build + on-device verification |
 | T-014 | READY | emul_temp injection mechanism confirmed; awaiting 145 C critical-trip e2e test (will shut device down — schedule deliberately) |
 | T-015 | DONE (verified on-device) | initial commit f715f2b3a2eb + fix-up b75b1871bbb9 (CONFIG_QCOM_PM8XXX_XOADC=y) — driver bound, IIO + thermal-zone live |
 | T-022 | TODO | no userspace daemon test (HW, Tier 2) |

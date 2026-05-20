@@ -2337,6 +2337,7 @@ CONFIG_GENERIC_ADC_THERMAL=y
 # CONFIG_QCOM_TSENS is not set
 # CONFIG_QCOM_SPMI_ADC_TM5 is not set
 # CONFIG_QCOM_SPMI_TEMP_ALARM is not set
+CONFIG_QCOM_PM8901_TEMP_ALARM=y
 # CONFIG_QCOM_LMH is not set
 # end of Qualcomm thermal drivers
 
