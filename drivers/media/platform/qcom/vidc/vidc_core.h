@@ -325,6 +325,22 @@
 #define VIDC_REG_DPB_MV_BASE		0x0780	/* MV collocated data base */
 #define VIDC_MAX_DPB_BUFFERS		32
 
+/*
+ * H.264 decoder work buffer registers (programmed before INIT_BUFFERS).
+ * webOS vidc_1080p_set_h264_decode_buffers writes the >>11 fw-relative
+ * offset of two scratch buffers the firmware needs for slice decode:
+ *
+ *   0x068c (REG_931311) = vertical neighbour MV buffer (16 KB, sz_vert_nb_mv)
+ *   0x0690 (REG_16277)  = neighbour intra-prediction buffer (32 KB, sz_nb_ip)
+ *
+ * Sizes from webOS ddl_calc_dec_hw_buffers_size (vcd_ddl_helper.c).
+ * Without these the firmware accepts INIT_BUFFERS but never replies.
+ */
+#define VIDC_REG_H264_VERT_NB_MV	0x068c
+#define VIDC_REG_H264_NB_IP		0x0690
+#define VIDC_H264_VERT_NB_MV_SIZE	SZ_16K
+#define VIDC_H264_NB_IP_SIZE		SZ_32K
+
 /* Recon buffer registers (encode) */
 #define VIDC_REG_RECON_LUMA_0		0x0480
 #define VIDC_REG_RECON_CHROMA_0		0x0484
@@ -645,6 +661,18 @@ struct vidc_inst {
 	u32 dpb_mv_size;
 	u32 dpb_count;
 	bool dpb_inited;
+
+	/*
+	 * H.264 decoder work buffers programmed via VIDC_REG_H264_VERT_NB_MV
+	 * and VIDC_REG_H264_NB_IP before INIT_BUFFERS.  Allocated from the
+	 * VIDC device's SMIPOOL coherent DMA pool so the firmware can reach
+	 * them.  Zero when the instance is not H.264 or has not yet reached
+	 * vidc_init_buffers().
+	 */
+	void *h264_vert_nb_mv_vaddr;
+	dma_addr_t h264_vert_nb_mv_dma_addr;
+	void *h264_nb_ip_vaddr;
+	dma_addr_t h264_nb_ip_dma_addr;
 
 	/*
 	 * Async completion work. The IRQ handler can't sleep, but the

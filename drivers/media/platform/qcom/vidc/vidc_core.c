@@ -1541,6 +1541,53 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		 &inst->dpb_y_dma_addr);
 
 	/*
+	 * Allocate H.264 work buffers and program the two address registers.
+	 * webOS vidc_1080p_set_h264_decode_buffers writes these before every
+	 * INIT_BUFFERS.  Without them the firmware accepts INIT_BUFFERS but
+	 * never raises a response IRQ (INIT_BUFFERS timeout).
+	 *
+	 * Buffers land in the SMIPOOL coherent DMA pool (attached at probe
+	 * via of_reserved_mem_device_init_by_idx) so the firmware can fetch
+	 * them via DRAM_BASE_A-relative offsets.
+	 */
+	if (inst->codec == VIDC_CODEC_H264_DEC) {
+		dma_addr_t fw_off;
+
+		inst->h264_vert_nb_mv_vaddr = dma_alloc_coherent(core->dev,
+				VIDC_H264_VERT_NB_MV_SIZE,
+				&inst->h264_vert_nb_mv_dma_addr, GFP_KERNEL);
+		if (!inst->h264_vert_nb_mv_vaddr) {
+			dev_err(core->dev,
+				"H264 vert_nb_mv (%u bytes) alloc failed\n",
+				VIDC_H264_VERT_NB_MV_SIZE);
+			ret = -ENOMEM;
+			goto err_free_dma;
+		}
+
+		inst->h264_nb_ip_vaddr = dma_alloc_coherent(core->dev,
+				VIDC_H264_NB_IP_SIZE,
+				&inst->h264_nb_ip_dma_addr, GFP_KERNEL);
+		if (!inst->h264_nb_ip_vaddr) {
+			dev_err(core->dev, "H264 nb_ip (%u bytes) alloc failed\n",
+				VIDC_H264_NB_IP_SIZE);
+			ret = -ENOMEM;
+			goto err_free_vert_nb_mv;
+		}
+
+		fw_off = inst->h264_vert_nb_mv_dma_addr - core->fw_dma_addr;
+		vidc_write(core, VIDC_REG_H264_VERT_NB_MV,
+			   fw_off >> VIDC_ADDR_SHIFT);
+		fw_off = inst->h264_nb_ip_dma_addr - core->fw_dma_addr;
+		vidc_write(core, VIDC_REG_H264_NB_IP,
+			   fw_off >> VIDC_ADDR_SHIFT);
+
+		dev_info(core->dev,
+			 "H264 work bufs: vert_nb_mv at %pad, nb_ip at %pad\n",
+			 &inst->h264_vert_nb_mv_dma_addr,
+			 &inst->h264_nb_ip_dma_addr);
+	}
+
+	/*
 	 * Publish the per-slot buffer sizes via the shared-memory region.
 	 * The firmware reads these on INIT_BUFFERS to compute its own
 	 * per-slot strides; without them the legacy DDL trace shows the
@@ -1619,6 +1666,21 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	return 0;
 
 err_free_dma:
+	if (inst->h264_nb_ip_vaddr) {
+		dma_free_coherent(core->dev, VIDC_H264_NB_IP_SIZE,
+				  inst->h264_nb_ip_vaddr,
+				  inst->h264_nb_ip_dma_addr);
+		inst->h264_nb_ip_vaddr = NULL;
+		inst->h264_nb_ip_dma_addr = 0;
+	}
+err_free_vert_nb_mv:
+	if (inst->h264_vert_nb_mv_vaddr) {
+		dma_free_coherent(core->dev, VIDC_H264_VERT_NB_MV_SIZE,
+				  inst->h264_vert_nb_mv_vaddr,
+				  inst->h264_vert_nb_mv_dma_addr);
+		inst->h264_vert_nb_mv_vaddr = NULL;
+		inst->h264_vert_nb_mv_dma_addr = 0;
+	}
 	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
 			  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
 	inst->dpb_y_vaddr = NULL;
@@ -2235,11 +2297,30 @@ void vidc_free_buffers(struct vidc_inst *inst)
 			if (inst->dpb_mv_size)
 				vidc_write(core, VIDC_REG_DPB_MV_BASE + i * 4, 0);
 		}
+		if (inst->codec == VIDC_CODEC_H264_DEC) {
+			vidc_write(core, VIDC_REG_H264_VERT_NB_MV, 0);
+			vidc_write(core, VIDC_REG_H264_NB_IP, 0);
+		}
 	} else {
 		for (i = 0; i < inst->dpb_count; i++) {
 			vidc_write(core, VIDC_REG_RECON_LUMA_0 + i * 8, 0);
 			vidc_write(core, VIDC_REG_RECON_CHROMA_0 + i * 8, 0);
 		}
+	}
+
+	if (inst->h264_nb_ip_vaddr) {
+		dma_free_coherent(core->dev, VIDC_H264_NB_IP_SIZE,
+				  inst->h264_nb_ip_vaddr,
+				  inst->h264_nb_ip_dma_addr);
+		inst->h264_nb_ip_vaddr = NULL;
+		inst->h264_nb_ip_dma_addr = 0;
+	}
+	if (inst->h264_vert_nb_mv_vaddr) {
+		dma_free_coherent(core->dev, VIDC_H264_VERT_NB_MV_SIZE,
+				  inst->h264_vert_nb_mv_vaddr,
+				  inst->h264_vert_nb_mv_dma_addr);
+		inst->h264_vert_nb_mv_vaddr = NULL;
+		inst->h264_vert_nb_mv_dma_addr = 0;
 	}
 
 	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
