@@ -938,12 +938,14 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 			       min_t(u32, src_size, 40), false);
 
 		/*
-		 * Flush CPU write-combine/cache stores to DRAM after memmove.
-		 * The memmove modified the DMA-coherent buffer in-place.
-		 * dma_sync ensures the VIDC DMA engine sees the updated content.
+		 * No dma_sync needed.  vb2 buffers now come from the SMIPOOL
+		 * shared-dma-pool (no-map reserved memory at 0x38300000), which
+		 * is DMA-coherent — CPU writes are visible to the firmware
+		 * immediately.  Calling dma_sync_single_for_device on a no-map
+		 * region crashes with a paging fault in v7_dma_clean_range
+		 * because phys_to_virt(0x38300000) = 0x78300000 has no linear
+		 * mapping for the kernel cache helper to operate on.
 		 */
-		dma_sync_single_for_device(core->dev, src_addr,
-					   src_size, DMA_TO_DEVICE);
 	}
 submit:
 
