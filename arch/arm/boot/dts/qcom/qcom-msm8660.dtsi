@@ -37,30 +37,31 @@
 			qcom,saw = <&saw0>;
 			cpu-supply = <&saw0_reg>;
 			/*
-			 * Wire SPC only (not PC) so cpuidle-qcom-spm handles
-			 * idle via SPM. Bare arch_cpu_idle (plain wfi) on
-			 * Scorpion-MP has an IPI-from-WFI wake bug — IPIs
-			 * delivered while the core is in wfi sometimes don't
-			 * fire the GIC handler, so the CPU stays parked. Both
-			 * cores observed this independently: CPU1 at t=80s on
-			 * a kernel with deep cpuidle disabled, then CPU0 at
-			 * t=154s on the same kernel. SPM-managed idle (SPC)
-			 * works around it because SPM internally arms wake
-			 * sources at idle-entry and steers wake-up back into
-			 * the GIC SGI path on exit — bypassing whatever
-			 * silicon path drops the IPI when bare WFI is active.
+			 * cpuidle-qcom-spm handles deep idle via SPM. Bare
+			 * arch_cpu_idle (plain wfi) on Scorpion-MP has an
+			 * IPI-from-WFI wake bug — IPIs delivered while the
+			 * core is in wfi sometimes don't fire the GIC handler,
+			 * so the CPU stays parked. Both cores observed this
+			 * independently: CPU1 at t=80s on a kernel with deep
+			 * cpuidle disabled, then CPU0 at t=154s on the same
+			 * kernel. SPM-managed idle (SPC/PC) works around it
+			 * because SPM internally arms wake sources at
+			 * idle-entry and steers wake-up back into the GIC SGI
+			 * path on exit — bypassing whatever silicon path drops
+			 * the IPI when bare WFI is active.
 			 *
-			 * PC (full power collapse) intentionally NOT wired
-			 * because it needs MPM to keep wake interrupts armed
-			 * across the L2-off transition, and MPM is currently
-			 * disabled (project_mpm_enable_hangs_post_diagnostic).
-			 * Without MPM, PC entry would drop wake sources and
-			 * hang the core indefinitely. SPC keeps L1 cache and
-			 * L2 powered, so it works regardless of MPM state.
+			 * Both SPC (L2 on) and PC (L2 off, RPM-coordinated)
+			 * are wired. PC depends on MPM to keep wake interrupts
+			 * armed across the L2-off transition; MPM is now
+			 * functional on this SoC (drivers/irqchip/
+			 * irq-msm8660-mpm.c, commit 993a638936e4).
 			 *
-			 * Re-add `<&cpu_pc>` once MPM probe is wired.
+			 * The SCM TERMINATE_PC path doesn't work on the
+			 * MSM8x60 TZ blob, so cpuidle-qcom-spm uses the raw-WFI
+			 * collapse trigger gated on the SAW v1.0 reg_data flag
+			 * (commit dd38423263f1).
 			 */
-			cpu-idle-states = <&cpu_spc>;
+			cpu-idle-states = <&cpu_spc>, <&cpu_pc>;
 		};
 
 		cpu1: cpu@1 {
@@ -74,8 +75,8 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw1>;
 			cpu-supply = <&saw1_reg>;
-			/* See cpu0 above — SPC only, no PC until MPM works */
-			cpu-idle-states = <&cpu_spc>;
+			/* See cpu0 above — SPC + PC via SPM hardware. */
+			cpu-idle-states = <&cpu_spc>, <&cpu_pc>;
 		};
 
 		l2: l2-cache {
