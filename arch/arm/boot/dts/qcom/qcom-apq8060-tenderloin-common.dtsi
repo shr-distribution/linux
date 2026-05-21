@@ -2510,6 +2510,24 @@
 	keep-power-in-suspend;
 
 	/*
+	 * Declare the SDIO host as a wake source. mmc core then sets
+	 * MMC_PM_WAKE_SDIO_IRQ on the host, and during suspend the
+	 * MMC PM notifier calls enable_irq_wake() on the controller's
+	 * IRQ. The standard ath6kl WoWLAN path
+	 * (drivers/net/wireless/ath/ath6kl/sdio.c:ath6kl_sdio_suspend
+	 * → sdio_set_host_pm_flags(MMC_PM_KEEP_POWER) ) then keeps the
+	 * SDC4 controller powered, and DAT1 activity from the AR6003
+	 * raises the SDC4 IRQ which propagates through the standard
+	 * wake-IRQ path.
+	 *
+	 * Pairs with cap-sdio-irq + keep-power-in-suspend above to
+	 * satisfy cavekit-wifi-suspend-wake R2 (SDC4 DAT1 declared as
+	 * wakeup source) and unblocks R3 (WoWLAN via cfg80211) +
+	 * R4 (end-to-end inbound-packet wake).
+	 */
+	wakeup-source;
+
+	/*
 	 * WiFi Power Supplies (from legacy kernel tenderloin_wifi_power):
 	 *
 	 * vmmc (main 3.3V supply):

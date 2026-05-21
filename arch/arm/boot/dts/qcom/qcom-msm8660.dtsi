@@ -44,24 +44,27 @@
 			 * so the CPU stays parked. Both cores observed this
 			 * independently: CPU1 at t=80s on a kernel with deep
 			 * cpuidle disabled, then CPU0 at t=154s on the same
-			 * kernel. SPM-managed idle (SPC/PC) works around it
+			 * kernel. SPM-managed idle (SPC) works around it
 			 * because SPM internally arms wake sources at
 			 * idle-entry and steers wake-up back into the GIC SGI
 			 * path on exit — bypassing whatever silicon path drops
 			 * the IPI when bare WFI is active.
 			 *
-			 * Both SPC (L2 on) and PC (L2 off, RPM-coordinated)
-			 * are wired. PC depends on MPM to keep wake interrupts
-			 * armed across the L2-off transition; MPM is now
-			 * functional on this SoC (drivers/irqchip/
-			 * irq-msm8660-mpm.c, commit 993a638936e4).
+			 * SPC only (no PC). PC (full power collapse with L2
+			 * off) requires the cpuidle path to clean+invalidate
+			 * L2 before WFI; on TZ-supporting SoCs this is done
+			 * inside the SCM TERMINATE_PC call. Our SAW v1.0
+			 * bypass uses raw WFI (commit dd38423263f1), which
+			 * has no L2-flush step — entering PC with L2 dirty
+			 * corrupts on resume / hangs early boot. Re-add
+			 * `<&cpu_pc>` once the bypass path gains an explicit
+			 * L2 clean+invalidate before WFI.
 			 *
-			 * The SCM TERMINATE_PC path doesn't work on the
-			 * MSM8x60 TZ blob, so cpuidle-qcom-spm uses the raw-WFI
-			 * collapse trigger gated on the SAW v1.0 reg_data flag
-			 * (commit dd38423263f1).
+			 * MPM is now functional (drivers/irqchip/
+			 * irq-msm8660-mpm.c, commit 993a638936e4), so when
+			 * the L2-flush piece lands, PC entry will be safe.
 			 */
-			cpu-idle-states = <&cpu_spc>, <&cpu_pc>;
+			cpu-idle-states = <&cpu_spc>;
 		};
 
 		cpu1: cpu@1 {
@@ -75,8 +78,8 @@
 			operating-points-v2 = <&cpu_opp_table>;
 			qcom,saw = <&saw1>;
 			cpu-supply = <&saw1_reg>;
-			/* See cpu0 above — SPC + PC via SPM hardware. */
-			cpu-idle-states = <&cpu_spc>, <&cpu_pc>;
+			/* See cpu0 above — SPC only; PC needs L2 flush. */
+			cpu-idle-states = <&cpu_spc>;
 		};
 
 		l2: l2-cache {
