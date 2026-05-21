@@ -314,7 +314,23 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * yet, so the copy is safe.
 	 */
 	if (core->fw_vaddr && core->fw && core->fw->data) {
-		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
+		/*
+		 * webOS firmware blob (500140 B, LE-stored) needs swab32
+		 * per word; Yocto blob (605428 B) is already pre-swapped.
+		 * Match what vidc_load_firmware did — see size detection
+		 * there.
+		 */
+		if (core->fw_size == 500140) {
+			const u32 *src = (const u32 *)core->fw->data;
+			size_t words = core->fw_size / 4;
+			size_t i;
+
+			for (i = 0; i < words; i++)
+				iowrite32(swab32(src[i]),
+					  (void __iomem *)(core->fw_vaddr + i * 4));
+		} else {
+			memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
+		}
 		memset(core->fw_vaddr + core->fw_size, 0,
 		       core->fw_alloc_size - core->fw_size);
 		/* Verify that CPU writes actually land in SMI SRAM (check a non-zero offset) */
@@ -333,10 +349,12 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 			if (chk_off) {
 				u32 rb  = readl_relaxed(core->fw_vaddr + chk_off);
 				u32 exp = fw32[chk_off / 4];
+				u32 exp_swab = (core->fw_size == 500140) ?
+						swab32(exp) : exp;
 				printk(KERN_EMERG
-				       "VIDC: fw recopy rb[0x%x]=0x%08x exp=0x%08x %s\n",
-				       chk_off, rb, exp,
-				       rb == exp ? "OK" : "MISMATCH");
+				       "VIDC: fw recopy rb[0x%x]=0x%08x exp=0x%08x (raw=0x%08x) %s\n",
+				       chk_off, rb, exp_swab, exp,
+				       rb == exp_swab ? "OK" : "MISMATCH");
 			} else {
 				printk(KERN_EMERG "VIDC: fw recopy: first 1KB all zeros, cannot verify\n");
 			}
