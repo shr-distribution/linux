@@ -313,10 +313,8 @@ static void qcom_dma_issue_pending(struct mmci_host *host)
 {
 	struct device_node *np = host->mmc->parent->of_node;
 
-	if (qcom_dma_is_adm(np)) {
-		dev_info(mmc_dev(host->mmc), "QCOM-DIAG: issue_pending called\n");
+	if (qcom_dma_is_adm(np))
 		mmci_dmae_issue_pending(host);
-	}
 }
 
 static struct mmci_host_ops qcom_variant_ops = {

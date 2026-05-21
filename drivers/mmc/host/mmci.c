@@ -1460,17 +1460,14 @@ int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 	int ret;
 
 	if (!dmae->desc_current || !dmae->cur) {
-		dev_info(mmc_dev(host->mmc),
-			 "MMCI-DIAG: DMA submit without descriptor (desc=%p cur=%p), falling back to PIO\n",
-			 dmae->desc_current, dmae->cur);
+		dev_dbg(mmc_dev(host->mmc),
+			"DMA submit without descriptor, falling back to PIO\n");
 		return -EINVAL;
 	}
 
 	host->dma_in_progress = true;
 	ret = dma_submit_error(dmaengine_submit(dmae->desc_current));
 	if (ret < 0) {
-		dev_info(mmc_dev(host->mmc),
-			 "MMCI-DIAG: dmaengine_submit failed ret=%d\n", ret);
 		host->dma_in_progress = false;
 		return ret;
 	}
