@@ -80,13 +80,29 @@ static int vidc_clk_enable(struct vidc_core *core)
 		goto err_core_clk;
 	}
 
-	printk(KERN_EMERG "VIDC: clk_enable: core_clk=%lu Hz iface_clk=%lu Hz axi_clk=%lu Hz\n",
+	ret = clk_prepare_enable(core->axi_a_clk);
+	if (ret) {
+		dev_err(core->dev, "failed to enable axi_a clock: %d\n", ret);
+		goto err_axi_clk;
+	}
+
+	ret = clk_prepare_enable(core->axi_b_clk);
+	if (ret) {
+		dev_err(core->dev, "failed to enable axi_b clock: %d\n", ret);
+		goto err_axi_a_clk;
+	}
+
+	printk(KERN_EMERG "VIDC: clk_enable: core=%lu iface=%lu axi=%lu (axi_a/b on)\n",
 	       clk_get_rate(core->core_clk),
 	       clk_get_rate(core->iface_clk),
 	       clk_get_rate(core->axi_clk));
 
 	return 0;
 
+err_axi_a_clk:
+	clk_disable_unprepare(core->axi_a_clk);
+err_axi_clk:
+	clk_disable_unprepare(core->axi_clk);
 err_core_clk:
 	clk_disable_unprepare(core->core_clk);
 err_iface_clk:
@@ -96,6 +112,8 @@ err_iface_clk:
 
 static void vidc_clk_disable(struct vidc_core *core)
 {
+	clk_disable_unprepare(core->axi_b_clk);
+	clk_disable_unprepare(core->axi_a_clk);
 	clk_disable_unprepare(core->axi_clk);
 	clk_disable_unprepare(core->core_clk);
 	clk_disable_unprepare(core->iface_clk);
@@ -2552,6 +2570,18 @@ static int vidc_probe(struct platform_device *pdev)
 	if (IS_ERR(core->axi_clk)) {
 		dev_err(dev, "failed to get axi clock\n");
 		return PTR_ERR(core->axi_clk);
+	}
+
+	core->axi_a_clk = devm_clk_get(dev, "axi_a");
+	if (IS_ERR(core->axi_a_clk)) {
+		dev_err(dev, "failed to get axi_a clock\n");
+		return PTR_ERR(core->axi_a_clk);
+	}
+
+	core->axi_b_clk = devm_clk_get(dev, "axi_b");
+	if (IS_ERR(core->axi_b_clk)) {
+		dev_err(dev, "failed to get axi_b clock\n");
+		return PTR_ERR(core->axi_b_clk);
 	}
 
 	/* Set initial clock rate */

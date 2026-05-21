@@ -1685,10 +1685,24 @@
 			compatible = "qcom,msm8660-vidc";
 			reg = <0x04400000 0x100000>;
 			interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+			/*
+			 * Three independent AXI gates:
+			 *   axi   — top-level AXI gate
+			 *   axi_a — Port A (RISC firmware fetch / control)
+			 *   axi_b — Port B (decoder/encoder DATA path: pixel
+			 *           cache uses Port B for decoded frame
+			 *           writes to DRAM, see webOS
+			 *           VIDC_1080P_PIX_CACHE_PORT_B).
+			 * All three must be enabled or the firmware
+			 * acknowledges FRAME_DONE but no decoded data ever
+			 * lands in DPB (port B writes get gated off).
+			 */
 			clocks = <&mmcc VCODEC_CLK>,
 				 <&mmcc VCODEC_AHB_CLK>,
-				 <&mmcc VCODEC_AXI_CLK>;
-			clock-names = "core", "iface", "axi";
+				 <&mmcc VCODEC_AXI_CLK>,
+				 <&mmcc VCODEC_AXI_A_CLK>,
+				 <&mmcc VCODEC_AXI_B_CLK>;
+			clock-names = "core", "iface", "axi", "axi_a", "axi_b";
 			power-domains = <&mmcc VED_GDSC>;
 			/*
 			 * IOMMU intentionally omitted: the vidc_1080p.fw

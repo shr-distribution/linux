@@ -424,6 +424,15 @@ struct vidc_core {
 	struct clk *core_clk;
 	struct clk *iface_clk;
 	struct clk *axi_clk;
+	/*
+	 * Port A / Port B AXI gates.  Port A is used by the RISC for
+	 * firmware fetch + control; Port B is used by the decoder data
+	 * path (pixel cache writes decoded frames to DRAM via Port B).
+	 * Both must be on for decode output to reach DRAM — webOS enables
+	 * VCODEC_AXI_A_CLK and VCODEC_AXI_B_CLK alongside VCODEC_AXI_CLK.
+	 */
+	struct clk *axi_a_clk;
+	struct clk *axi_b_clk;
 
 	/* Power */
 	struct regulator *gdsc;
