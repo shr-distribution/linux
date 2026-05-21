@@ -3232,18 +3232,14 @@ static int mmci_probe(struct amba_device *dev,
 	mmc->caps |= MMC_CAP_CMD23;
 
 	/*
-	 * Qualcomm SDCC: tell mmc-core to use CMD14/CMD19 BUSTEST_W/R
-	 * (small known-pattern transfer) for bus-width verification
-	 * instead of mmc_compare_ext_csds() which re-reads the full
-	 * 512 B EXT_CSD at both 1-bit AND the target width.  On
-	 * tenderloin during a re-init after a DATACRCFAIL, the second
-	 * 512 B read at 8-bit under residual fabric contention CRC-fails
-	 * again → bus-width ladder falls all the way to 1-bit
-	 * irreversibly.  CMD14/CMD19 is a single small transfer, much
-	 * less exposed to the same race.
+	 * Attempted MMC_CAP_BUS_WIDTH_TEST on qcom variants — backed out:
+	 * the Samsung SEM32G fitted to tenderloin doesn't respond to
+	 * CMD19 BUSTEST_R, so enabling the cap caused eMMC re-init to
+	 * DATATIMEOUT on every bus-width verification step.  Fix A (SDCC
+	 * IP clk_reset on data error) is enough on its own — by the time
+	 * the bus-width ladder is reached we've already avoided the
+	 * cascade that re-init was triggering.
 	 */
-	if (host->variant->qcom_datactrl_delay)
-		mmc->caps |= MMC_CAP_BUS_WIDTH_TEST;
 
 	/*
 	 * Enable busy detection.
