@@ -1416,10 +1416,16 @@ static int ath6kl_upload_otp(struct ath6kl *ar)
 		return ret;
 	}
 
+	pr_info("ath6kl: post-OTP hi_app_start=0x%08x hw.app_start_override_addr(before)=0x%08x\n",
+		address, ar->hw.app_start_override_addr);
+
 	if (ar->hw.app_start_override_addr == 0) {
 		ar->hw.app_start_override_addr = address;
 		from_hw = true;
 	}
+
+	pr_info("ath6kl: app_start_override_addr=0x%08x (from_hw=%d)\n",
+		ar->hw.app_start_override_addr, from_hw);
 
 	ath6kl_dbg(ATH6KL_DBG_BOOT, "app_start_override_addr%s 0x%x\n",
 		   from_hw ? " (from hw)" : "",
@@ -1531,6 +1537,13 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	if (ar->target_type != TARGET_TYPE_AR6003 &&
 	    ar->target_type != TARGET_TYPE_AR6004)
 		return -EINVAL;
+
+	pr_info("ath6kl: init_upload ENTRY target_type=%d target_ver=0x%08x hw.name=%s\n",
+		ar->target_type, ar->version.target_ver,
+		ar->hw.name ? ar->hw.name : "?");
+	pr_info("ath6kl: init_upload hw.app_load_addr=0x%08x hw.app_start_override_addr=0x%08x board_ext=0x%08x reserved_ram=0x%x\n",
+		ar->hw.app_load_addr, ar->hw.app_start_override_addr,
+		ar->hw.board_ext_data_addr, ar->hw.reserved_ram_size);
 
 	/* temporarily disable system sleep */
 	address = MBOX_BASE_ADDRESS + LOCAL_SCRATCH_ADDRESS;
@@ -1651,29 +1664,36 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	 * behaviour on the same hardware.
 	 */
 
+	pr_info("ath6kl: init_upload: board file uploaded, calling upload_otp\n");
 	/* transfer One time Programmable data (or just execute it if skipped) */
 	status = ath6kl_upload_otp(ar);
 	if (status)
 		return status;
+	pr_info("ath6kl: init_upload: upload_otp ret=%d\n", status);
 
 	if (ath6kl_dt_skip_otp()) {
 		ath6kl_dbg(ATH6KL_DBG_BOOT,
 			   "skip-otp-upload: bypassing firmware and patch uploads\n");
+		pr_info("ath6kl: init_upload: skip-otp-upload set, bypassing fw+patch\n");
 	} else {
+		pr_info("ath6kl: init_upload: calling upload_firmware\n");
 		/* Download Target firmware */
 		status = ath6kl_upload_firmware(ar);
 		if (status)
 			return status;
 
+		pr_info("ath6kl: init_upload: calling upload_patch\n");
 		status = ath6kl_upload_patch(ar);
 		if (status)
 			return status;
 	}
 
+	pr_info("ath6kl: init_upload: calling upload_testscript\n");
 	/* Download the test script */
 	status = ath6kl_upload_testscript(ar);
 	if (status)
 		return status;
+	pr_info("ath6kl: init_upload: EXIT status=%d\n", status);
 
 	/* Restore system sleep */
 	address = RTC_BASE_ADDRESS + SYSTEM_SLEEP_ADDRESS;
@@ -1841,9 +1861,12 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 		goto err_power_off;
 
 	/* Do we need to finish the BMI phase */
+	pr_info("ath6kl: __ath6kl_init_hw_start: BMI done, about to call htc_wait_target\n");
 	ret = ath6kl_bmi_done(ar);
 	if (ret)
 		goto err_power_off;
+
+	pr_info("ath6kl: __ath6kl_init_hw_start: BMI returned, entering ath6kl_htc_wait_target\n");
 
 	/*
 	 * The reason we have to wait for the target here is that the
@@ -1851,6 +1874,7 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 	 * size.
 	 */
 	ret = ath6kl_htc_wait_target(ar->htc_target);
+	pr_info("ath6kl: __ath6kl_init_hw_start: htc_wait_target returned %d\n", ret);
 
 	if (ret == -ETIMEDOUT) {
 		/*

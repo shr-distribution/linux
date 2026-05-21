@@ -2260,16 +2260,26 @@ static struct htc_packet *htc_wait_for_ctrl_msg(struct htc_target *target)
 {
 	struct htc_packet *packet = NULL;
 	struct htc_frame_look_ahead look_ahead;
+	int poll_ret;
 
-	if (ath6kl_hif_poll_mboxmsg_rx(target->dev, &look_ahead.word,
-				       HTC_TARGET_RESPONSE_TIMEOUT))
+	pr_info("ath6kl: htc_wait_for_ctrl_msg: polling mbox for first HTC msg (timeout %d ms)\n",
+		HTC_TARGET_RESPONSE_TIMEOUT);
+
+	poll_ret = ath6kl_hif_poll_mboxmsg_rx(target->dev, &look_ahead.word,
+					      HTC_TARGET_RESPONSE_TIMEOUT);
+	pr_info("ath6kl: htc_wait_for_ctrl_msg: poll_mboxmsg_rx returned %d (look_ahead.word=0x%08x)\n",
+		poll_ret, look_ahead.word);
+	if (poll_ret)
 		return NULL;
 
 	ath6kl_dbg(ATH6KL_DBG_HTC,
 		   "htc rx wait ctrl look_ahead 0x%X\n", look_ahead.word);
 
-	if (look_ahead.eid != ENDPOINT_0)
+	if (look_ahead.eid != ENDPOINT_0) {
+		pr_info("ath6kl: htc_wait_for_ctrl_msg: eid=%d (expected ENDPOINT_0), bailing\n",
+			look_ahead.eid);
 		return NULL;
+	}
 
 	packet = htc_get_control_buf(target, false);
 

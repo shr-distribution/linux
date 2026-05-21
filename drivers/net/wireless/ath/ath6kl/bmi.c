@@ -34,6 +34,8 @@ int ath6kl_bmi_done(struct ath6kl *ar)
 
 	ar->bmi.done_sent = true;
 
+	pr_info("ath6kl: BMI_DONE — handing off to firmware\n");
+
 	ret = ath6kl_hif_bmi_write(ar, (u8 *)&cid, sizeof(cid));
 	if (ret) {
 		ath6kl_err("Unable to send bmi done: %d\n", ret);
@@ -78,10 +80,12 @@ int ath6kl_bmi_done(struct ath6kl *ar)
 
 		if (i == 5000) {
 			ath6kl_warn("post-BMI tight-poll didn't see chip respond in ~5000 iters; letting htc_wait_target try anyway\n");
+			pr_info("ath6kl: post-BMI poll FAILED — chip never responded to CMD52 after 5000 attempts\n");
 		} else {
 			ath6kl_dbg(ATH6KL_DBG_BMI,
 				   "post-BMI: chip responded after %d CMD52 polls\n",
 				   i + 1);
+			pr_info("ath6kl: post-BMI poll OK — chip responded after %d iters\n", i + 1);
 		}
 		/* Don't return ret; htc_wait_target has its own retry/timeout. */
 	}
@@ -157,6 +161,9 @@ int ath6kl_bmi_get_target_info(struct ath6kl *ar,
 
 	ath6kl_dbg(ATH6KL_DBG_BMI, "target info (ver: 0x%x type: 0x%x)\n",
 		   targ_info->version, targ_info->type);
+	pr_info("ath6kl: BMI target info ver=0x%08x type=0x%08x\n",
+		le32_to_cpu(targ_info->version),
+		le32_to_cpu(targ_info->type));
 
 	return 0;
 }
@@ -305,6 +312,7 @@ int ath6kl_bmi_execute(struct ath6kl *ar, u32 addr, u32 *param)
 
 	ath6kl_dbg(ATH6KL_DBG_BMI, "bmi execute: addr: 0x%x, param: %d)\n",
 		   addr, *param);
+	pr_info("ath6kl: BMI_EXECUTE addr=0x%08x param=0x%08x\n", addr, *param);
 
 	offset = 0;
 	memcpy(&(ar->bmi.cmd_buf[offset]), &cid, sizeof(cid));
@@ -351,6 +359,7 @@ int ath6kl_bmi_set_app_start(struct ath6kl *ar, u32 addr)
 	memset(ar->bmi.cmd_buf, 0, size);
 
 	ath6kl_dbg(ATH6KL_DBG_BMI, "bmi set app start: addr: 0x%x\n", addr);
+	pr_info("ath6kl: BMI_SET_APP_START addr=0x%08x\n", addr);
 
 	offset = 0;
 	memcpy(&(ar->bmi.cmd_buf[offset]), &cid, sizeof(cid));
@@ -407,6 +416,8 @@ int ath6kl_bmi_reg_read(struct ath6kl *ar, u32 addr, u32 *param)
 	}
 	memcpy(param, ar->bmi.cmd_buf, sizeof(*param));
 
+	pr_info("ath6kl: BMI_READ_SOC_REG addr=0x%08x -> 0x%08x\n", addr, *param);
+
 	return 0;
 }
 
@@ -432,6 +443,8 @@ int ath6kl_bmi_reg_write(struct ath6kl *ar, u32 addr, u32 param)
 	ath6kl_dbg(ATH6KL_DBG_BMI,
 		   "bmi write SOC reg: addr: 0x%x, param: %d\n",
 		    addr, param);
+	pr_info("ath6kl: BMI_WRITE_SOC_REG addr=0x%08x param=0x%08x\n",
+		addr, param);
 
 	offset = 0;
 	memcpy(&(ar->bmi.cmd_buf[offset]), &cid, sizeof(cid));
@@ -547,9 +560,13 @@ int ath6kl_bmi_fast_download(struct ath6kl *ar, u32 addr, u8 *buf, u32 len)
 	u32 last_word_offset = len & ~0x3;
 	u32 unaligned_bytes = len & 0x3;
 
+	pr_info("ath6kl: BMI_FAST_DOWNLOAD addr=0x%08x len=%u\n", addr, len);
+
 	ret = ath6kl_bmi_lz_stream_start(ar, addr);
-	if (ret)
+	if (ret) {
+		pr_info("ath6kl: BMI_FAST_DOWNLOAD lz_stream_start FAILED ret=%d\n", ret);
 		return ret;
+	}
 
 	if (unaligned_bytes) {
 		/* copy the last word into a zero padded buffer */
@@ -568,6 +585,7 @@ int ath6kl_bmi_fast_download(struct ath6kl *ar, u32 addr, u8 *buf, u32 len)
 		 * This serves mainly to flush Target caches. */
 		ret = ath6kl_bmi_lz_stream_start(ar, 0x00);
 	}
+	pr_info("ath6kl: BMI_FAST_DOWNLOAD done addr=0x%08x ret=%d\n", addr, ret);
 	return ret;
 }
 
