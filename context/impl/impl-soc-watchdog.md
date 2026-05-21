@@ -2,7 +2,7 @@
 domain: soc-watchdog
 created: "2026-05-20"
 last_updated: "2026-05-21"
-status: ramoops-wired-test-pending
+status: t021-partial-hwreset-ok-pstore-unverified
 ---
 
 # Implementation: SoC Hardware Watchdog (MSM8660)
@@ -174,7 +174,9 @@ Platform driver bind verified:
 ## Ramoops Region for T-021 (added 2026-05-21)
 
 Commit `be070d0aa35f` adds `reserved-memory ramoops@7f500000` (1 MB)
-at the top of System RAM bank 2. Placement rationale:
+at the top of System RAM bank 2. Commit `f33a66d9d1d7` drops the
+`no-map` property which was causing early-boot hang (see Dead Ends
+below). Placement rationale:
 
 - Inside confirmed-live DRAM (`/proc/iomem`: `0x48000000-0x7f5fffff`)
 - Above moboot's `MEMBASE=0x50000000` (4 MB) footprint
@@ -183,11 +185,65 @@ at the top of System RAM bank 2. Placement rationale:
   `herrie82/moboot arch/arm/crt0.S` `.L__do_bss` loop), so 0x7f500000
   contents survive a warm reboot through the watchdog reset path.
 
-Prior attempt (commit `94ca08c5ead8`, reverted) placed ramoops at
-`0x47000000` in the LPASS gap between RAM bank 1 and 2. That failed
-because the gap isn't backed by live System RAM in moboot's map —
-`memremap()` had nothing to map. New placement avoids this by sitting
-inside confirmed-live DRAM.
+On-device verification of ramoops registration (kernel
+`gf33a66d9d1d7+`, journalctl -b 0):
+
+```
+OF: reserved mem: 0x7f500000..0x7f5fffff (1024 KiB) map non-reusable ramoops@7f500000
+pstore: Using crash dump compression: deflate
+printk: legacy console [ramoops-1] enabled
+pstore: Registered ramoops as persistent store backend
+ramoops: using 0x100000@0x7f500000, ecc: 0
+```
+
+Platform device `7f500000.ramoops` bound to ramoops driver.
+
+## T-021 Test Attempts (2026-05-21)
+
+### Attempt 1: panic only (no /dev/watchdog hold)
+- `sysctl -w kernel.sysrq=1; sync; echo c > /proc/sysrq-trigger`
+- Panic captured via netconsole (full backtrace)
+- Device DID reboot (user observed Tux+login screen)
+- BUT: USB/network never came up post-reset; user manually rebooted
+- Manual reboot = power cycle = DRAM wiped = pstore empty on next boot
+- **Result: watchdog HW reset proven, pstore preservation unverified.**
+
+### Attempt 2: panic with userspace holding /dev/watchdog
+- `exec 9>/dev/watchdog0; sleep 2; echo c > /proc/sysrq-trigger`
+- Panic captured via netconsole
+- Device did NOT reboot at all; user manually rebooted
+- **Root cause:** kernel watchdog framework
+  (`drivers/watchdog/watchdog_dev.c:watchdog_worker_should_ping`)
+  returns `true` when `WDOG_ACTIVE` is set — which userspace open
+  sets. The kernel's kthread_worker keeps pinging the watchdog at
+  ~15 s intervals on behalf of userspace.
+- Verified with a 90 s `exec 9>/dev/watchdog0; sleep 90` hold
+  (no panic): device stayed responsive, kernel kept HW alive.
+- **Conclusion:** holding `/dev/watchdog` does NOT help unblock the
+  watchdog. Attempt 1's approach (no hold, just panic) is correct.
+
+### Outstanding work to close T-021
+
+1. Reproduce Attempt 1 (panic, no hold) and **wait patiently**
+   (3–5 min) for the post-reset boot to fully come up — do NOT
+   manually reboot. If USB/network doesn't come up on its own,
+   investigate the post-watchdog USB enumeration issue separately.
+2. Once SSH is back, verify:
+   - `wdctl /dev/watchdog0` shows `CARDRESET=1` → confirms watchdog
+     was the reset source (not e.g. brownout).
+   - `/sys/fs/pstore/` contains `dmesg-ramoops-0` with the panic
+     trace and `console-ramoops-0` with end of kmsg.
+
+## Dead Ends
+
+- `no-map` on the ramoops reserved-memory node (be070d0aa35f) caused
+  early-boot hang at moboot "Booting..." prompt before kernel
+  reached console. Fix: drop `no-map` (f33a66d9d1d7); use plain
+  `memblock_reserve()` form, matching mainline mako/klte convention.
+- Holding `/dev/watchdog` open from userspace to "force" the
+  watchdog to fire on panic — the kernel framework auto-pings the
+  HW watchdog as long as `WDOG_ACTIVE` is set (which open sets), so
+  this approach DOES NOT make the watchdog fire faster.
 
 ## Task Tracking
 
@@ -198,7 +254,7 @@ inside confirmed-live DRAM.
 | T-009 | N/A | won't-fix path not taken |
 | T-010 | DONE | `CONFIG_WATCHDOG=y` + `CONFIG_QCOM_WDT=y` added to all three tenderloin defconfigs |
 | T-011 | TODO | 5 cold boots + 30-min pet + orderly poweroff (HW). Pet via systemd `RuntimeWatchdogSec=` (currently `0`). |
-| T-021 | TODO | induced lockup → HW reset + pstore preservation (HW). ramoops DT wired in `be070d0aa35f`; pending Yocto rebuild + on-device test. |
+| T-021 | PARTIAL | Watchdog HW reset on panic proven (Attempt 1, device rebooted). ramoops DT wired (be070d0aa35f + f33a66d9d1d7), registers cleanly on every boot. pstore preservation across watchdog reset NOT YET verified — needs another panic test where we wait patiently for post-reset boot without manual intervention. See "T-021 Test Attempts" section above. |
 
 ## Cross-References
 
