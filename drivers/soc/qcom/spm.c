@@ -80,23 +80,6 @@ struct spm_reg_data {
 	u8 seq[MAX_SEQ_DATA];
 	u8 start_index[PM_SLEEP_MODE_NR];
 	bool no_seq_ram;	/* SAW v1.0: register-based mode, no sequence RAM */
-	/*
-	 * SAW v1.0 (MSM8660 / MSM8260 / APQ8060) power-collapses CPU cores
-	 * directly via the SPM hardware sequence triggered by WFI, with no
-	 * involvement from the Secure Monitor. The TouchPad's tz.mbn (and
-	 * the equivalent TrustZone blobs on other MSM8x60 variants) does
-	 * not implement the SCM_BOOT/TERMINATE_PC call: the SMC returns
-	 * without doing anything, which cpuidle interprets as a pending-
-	 * IRQ rejection and falls back to WFI. Set this flag to skip the
-	 * qcom_scm_cpu_power_down() call entirely and let SPM hardware
-	 * drive the collapse, matching the legacy 2.6.35-palm path
-	 * (arch/arm/mach-msm/idle-v7.S: msm_pm_collapse).
-	 *
-	 * The warm-boot vector is still installed via the standard
-	 * qcom_scm_set_warm_boot_addr() path, which IS supported by the
-	 * MSM8x60 TZ.
-	 */
-	bool no_scm_terminate;
 
 	/* MSM8660-specific init values (SAW v1.0 only) */
 	u32 spm_ctl_init;		/* Initial SPM_CTL value */
@@ -422,14 +405,6 @@ static const struct spm_reg_data spm_reg_8660_cpu = {
 	.spm_mpm_cfg = 0x00,		/* MPM config */
 
 	.no_seq_ram = true,
-	/*
-	 * MSM8660 / MSM8260 / APQ8060 TZ blob does not implement
-	 * SCM_BOOT/TERMINATE_PC. Drive power-collapse via SPM hardware
-	 * sequence (WFI handshake) instead of the SCM call. Matches the
-	 * legacy 2.6.35-palm msm_pm_collapse() path. See the field comment
-	 * in struct spm_reg_data for the full rationale.
-	 */
-	.no_scm_terminate = true,
 	.set_vdd = smp_set_vdd_8660,
 	.get_vdd = smp_get_vdd_8660,
 	.ranges = spm_8660_regulator_ranges,
@@ -568,31 +543,6 @@ struct spm_driver_data *spm_get_drv_by_cpu(unsigned int cpu)
 	return drv;
 }
 EXPORT_SYMBOL(spm_get_drv_by_cpu);
-
-/**
- * spm_collapse_via_scm() - whether to delegate power-collapse to TZ via SCM
- * @drv: SPM driver instance
- *
- * Most Qualcomm SoCs delegate the CPU power-collapse handshake to TrustZone
- * via the SCM_BOOT/TERMINATE_PC call (qcom_scm_cpu_power_down). A handful
- * of SAW v1.0 parts (MSM8660 / MSM8260 / APQ8060) ship with a TZ firmware
- * that does NOT implement that call: the SMC returns immediately without
- * powering down, which cpuidle interprets as a pending-IRQ rejection. On
- * those parts the collapse is instead driven by the SPM hardware sequence,
- * which is triggered from a raw WFI executed by the kernel.
- *
- * Callers (cpuidle, hotplug, suspend) check this and branch their
- * cpu_suspend() callback accordingly.
- *
- * Return: true if the TZ-based path should be used; false to use a raw WFI.
- */
-bool spm_collapse_via_scm(struct spm_driver_data *drv)
-{
-	if (!drv || !drv->reg_data)
-		return true;
-	return !drv->reg_data->no_scm_terminate;
-}
-EXPORT_SYMBOL_GPL(spm_collapse_via_scm);
 
 void spm_set_low_power_mode(struct spm_driver_data *drv,
 			    enum pm_sleep_mode mode)
