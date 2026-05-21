@@ -1975,17 +1975,28 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 		       16, 1, slot_c, 16, false);
 
 	/*
-	 * Scan the H.264 work bufs for any non-0xCC bytes — if firmware
-	 * writes its motion-vector scratch or neighbour-prediction data
-	 * here, we'll see real bytes amid the sentinel pattern.  Tells us
-	 * whether the firmware's MGEN2MAXI bus master can write to
-	 * SMIPOOL at all (different question from "where").
+	 * Full scan: walk the entire DPB pool + H.264 work bufs and count
+	 * non-0xCC bytes.  Firmware writes to vert_nb_mv (proven), so its
+	 * MGEN2MAXI master can reach SMIPOOL — but writes don't appear at
+	 * DPB slot offsets 0 / mid.  Scan all of DPB to find where (if
+	 * anywhere) the firmware actually writes decoded pixels.
 	 */
 	{
 		u8 *p;
 		size_t i;
-		size_t nb_mv_nonzero = 0, nb_ip_nonzero = 0;
+		size_t dpb_nonzero = 0, nb_mv_nonzero = 0, nb_ip_nonzero = 0;
+		size_t first_dpb_nonzero = SIZE_MAX;
+		size_t last_dpb_nonzero = 0;
 
+		p = inst->dpb_y_vaddr;
+		for (i = 0; i < inst->dpb_y_alloc_size; i++) {
+			if (p[i] != 0xcc) {
+				dpb_nonzero++;
+				if (first_dpb_nonzero == SIZE_MAX)
+					first_dpb_nonzero = i;
+				last_dpb_nonzero = i;
+			}
+		}
 		if (inst->h264_vert_nb_mv_vaddr) {
 			p = inst->h264_vert_nb_mv_vaddr;
 			for (i = 0; i < VIDC_H264_VERT_NB_MV_SIZE; i++)
@@ -1999,18 +2010,17 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 					nb_ip_nonzero++;
 		}
 		dev_info(core->dev,
-			 "scan: vert_nb_mv=%zu/%u modified, nb_ip=%zu/%u modified\n",
+			 "scan: DPB=%zu/%zu modified [first=0x%zx last=0x%zx]; vert_nb_mv=%zu/%u; nb_ip=%zu/%u\n",
+			 dpb_nonzero, (size_t)inst->dpb_y_alloc_size,
+			 first_dpb_nonzero == SIZE_MAX ? 0 : first_dpb_nonzero,
+			 last_dpb_nonzero,
 			 nb_mv_nonzero, VIDC_H264_VERT_NB_MV_SIZE,
 			 nb_ip_nonzero, VIDC_H264_NB_IP_SIZE);
-		if (inst->h264_vert_nb_mv_vaddr && nb_mv_nonzero) {
-			print_hex_dump(KERN_INFO, "vert_nb_mv[0:32]: ",
+		if (dpb_nonzero && first_dpb_nonzero != SIZE_MAX) {
+			print_hex_dump(KERN_INFO, "DPB first-change[0:32]: ",
 				       DUMP_PREFIX_NONE, 16, 1,
-				       inst->h264_vert_nb_mv_vaddr, 32, false);
-		}
-		if (inst->h264_nb_ip_vaddr && nb_ip_nonzero) {
-			print_hex_dump(KERN_INFO, "nb_ip[0:32]: ",
-				       DUMP_PREFIX_NONE, 16, 1,
-				       inst->h264_nb_ip_vaddr, 32, false);
+				       (u8 *)inst->dpb_y_vaddr + first_dpb_nonzero,
+				       32, false);
 		}
 	}
 
