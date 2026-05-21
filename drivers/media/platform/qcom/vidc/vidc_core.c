@@ -1160,6 +1160,22 @@ int vidc_boot_firmware(struct vidc_core *core)
 	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
 	dev_info(core->dev, "boot_fw: done, FW_VERSION=0x%08x\n",
 		 core->fw_version);
+
+	/*
+	 * Enable the pixel cache.  webOS does this from ddl_fw_init() right
+	 * after the firmware boots (vcd_ddl_vidc.c:66-77).  The cache sits
+	 * between the decoder's macroblock output and DRAM; without it the
+	 * firmware acknowledges FRAME_DONE but never actually writes pixel
+	 * data to the DPB slots (proven on tenderloin with a 0xCC sentinel
+	 * fill that survived 5 FRAME_DONE responses unchanged).
+	 *
+	 * webOS config: cache_enable=1, prefetch_en=1, port=B,
+	 * statistics_off (inverted, so on=0), page_size=1K → cfg=0x1a.
+	 */
+	vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
+		   VIDC_PIX_CACHE_CONFIG_DEFAULT);
+	dev_info(core->dev, "boot_fw: pix cache enabled (cfg=0x%x)\n",
+		 VIDC_PIX_CACHE_CONFIG_DEFAULT);
 	return 0;
 }
 

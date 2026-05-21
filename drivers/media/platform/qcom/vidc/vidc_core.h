@@ -42,6 +42,20 @@
 #define VIDC_REG_AXI_CTRL		0x80014  /* MGEN2MAXI base + 0x14 */
 #define VIDC_REG_AXI_STATUS		0x80018  /* MGEN2MAXI base + 0x18 */
 #define VIDC_REG_BURST_CONFIG		0x8003c  /* MGEN2MAXI base + 0x3c */
+
+/*
+ * Pixel-cache enable register.  ENHANCE block @ VIDC_BASE + 0xC0000,
+ * cache config register at offset 0x18.  webOS sets:
+ *   CACHE_EN=1 PREFETCH_EN=1 CACHE_PORT_SELECT=1(B) STATISTICS_OFF=0
+ *   PAGE_SIZE=0(1K) → cfg = 0x02 | 0x08 | 0x10 = 0x1a
+ *
+ * The decoded frame output goes through this cache on its way to DRAM.
+ * Without it, the firmware acknowledges FRAME_DONE for each frame but
+ * never actually writes pixel data to the DPB slots (DPB stays at
+ * whatever value the host pre-filled).
+ */
+#define VIDC_REG_PIX_CACHE_CONFIG	0xc0018
+#define VIDC_PIX_CACHE_CONFIG_DEFAULT	0x1a
 #define VIDC_REG_RETURNED_CH_INST_ID	0x2000
 #define VIDC_REG_CH0_INST_ID		0x2040
 #define VIDC_REG_CH1_INST_ID		0x2080
