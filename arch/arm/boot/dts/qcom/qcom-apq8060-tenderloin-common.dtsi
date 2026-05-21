@@ -4013,6 +4013,42 @@
 			reusable;
 			linux,cma-default;
 		};
+
+		/*
+		 * Ramoops persistent crash log region.
+		 *
+		 * Placed at the top of System RAM bank 2
+		 * (0x48000000-0x7f5fffff per /proc/iomem) where it is
+		 * guaranteed to be backed by live DRAM that survives a
+		 * warm reboot. The watchdog HW reset path keeps DRAM
+		 * powered, and moboot only clears its own BSS section
+		 * (verified in herrie82/moboot arch/arm/crt0.S) -- it
+		 * does not scrub the rest of DRAM. moboot itself lives
+		 * at MEMBASE=0x50000000 (4 MB) and stages the kernel at
+		 * SCRATCH_ADDR=0x70000000 (64 MB), both well below this
+		 * region.
+		 *
+		 * A prior attempt placed ramoops at 0x47000000 in the
+		 * LPASS gap between RAM bank 1 and 2 (see reverted commit
+		 * 94ca08c5ead8). That failed because the gap isn't backed
+		 * by live System RAM in moboot's memory map -- memremap()
+		 * had nothing to map. This placement avoids that by
+		 * sitting inside confirmed-live DRAM.
+		 *
+		 * 1 MB total, allocated to:
+		 *   record-size  128 KB -- single oops dump (multiple records
+		 *                          fit in the remaining space)
+		 *   console-size 512 KB -- captures end of kmsg
+		 *   pmsg-size    128 KB -- userspace messages
+		 */
+		ramoops@7f500000 {
+			compatible = "ramoops";
+			reg = <0x7f500000 0x100000>;
+			record-size = <0x20000>;
+			console-size = <0x80000>;
+			pmsg-size = <0x20000>;
+			no-map;
+		};
 	};
 };
 
