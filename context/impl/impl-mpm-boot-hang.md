@@ -1,13 +1,43 @@
 ---
 domain: mpm-boot-hang
 created: "2026-05-15"
-last_updated: "2026-05-15"
-status: investigating
+last_updated: "2026-05-21"
+status: msm8660-specific-driver-landed-pending-boot-test
 ---
 
 # Implementation: MPM Boot Hang Investigation
 
-## Status: BLOCKED - Early boot hang with MPM node
+## Status: MSM8660-specific driver landed (4397a0b20949), pending boot test
+
+After a deep dive on the legacy 2.6.35-palm MPM implementation
+(`reports/MPM-LEGACY-DEEPDIVE-2026-05-21.md`), a new MSM8660-specific
+platform driver was written (commit `4397a0b20949`) that replicates the
+legacy mechanism without using the mainline `qcom-mpm` driver's
+`IRQCHIP_DECLARE` machinery (which is fundamentally incompatible with
+MSM8660 — vMPM is inside the RPM control block; no IPCC mailbox; and
+the early init runs before platform devices exist).
+
+Files added:
+  - `drivers/soc/qcom/msm8660-mpm.c` — platform driver
+  - `include/soc/qcom/msm8660-mpm.h` — consumer API (with build stubs)
+  - `Documentation/devicetree/bindings/soc/qcom/qcom,msm8660-mpm.yaml`
+  - DT node in `qcom-apq8060-tenderloin-common.dtsi` (`&soc { msm8660-mpm { ... } }`)
+  - `CONFIG_QCOM_MSM8660_MPM=y` in all three tenderloin defconfigs
+
+Approach is "Option D" from the prior analysis below — a small,
+MSM8660-specific driver that:
+  - probes as a normal platform driver (no IRQCHIP_DECLARE),
+  - accesses RPM via syscon (non-exclusive, no DT overlap),
+  - uses two distinct register windows (req @ 0x9d8, status @ 0xdf8),
+  - triggers IPC via a second syscon to the GCC block,
+  - registers GIC SPI 20 as a wake source.
+
+**Pending:** on-device boot test once the next Yocto rebuild includes
+the new commit. After that, R1 of wifi-suspend-wake (MPM is functional
+as a wakeup-interrupt controller) should pass; R2 (SDC4 DAT1 wiring)
+is the follow-up.
+
+## Historical: Three Failed Mainline Attempts (kept for reference)
 
 PM-2 (cpuidle deep sleep) requires MPM for wake interrupt delivery, but enabling the MPM device tree node causes an early boot hang.
 
