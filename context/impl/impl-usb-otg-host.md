@@ -2,7 +2,7 @@
 domain: usb-otg-host
 created: "2026-05-21"
 last_updated: "2026-05-21"
-status: r1-investigation-done-implement
+status: r2-r3-code-complete-hw-pending
 ---
 
 # Implementation: USB OTG Host Mode
@@ -13,7 +13,9 @@ Build site: not yet in a tier (new kit, post-2026-05-19 batch).
 ## Status
 
 **R1 DONE — decision: IMPLEMENT (DT-only changes).**
-R2-R6: not started.
+**R2 code-complete, HW verification pending.**
+**R3 code-complete, HW verification pending.**
+R4-R6: pending Yocto rebuild + on-device testing.
 
 ## R1: Hardware-Feasibility Investigation
 
@@ -186,31 +188,98 @@ would also have failed — which it has not, per
       ID input.
 - [x] **AC5** Decision recorded: **implement** (DT-only).
 
-## R2-R6: not started
+## R2: 5V VBUS Supply Chain in DT
 
-Next step is **R2 (5V VBUS supply chain in DT)** which is now much
-smaller than originally scoped — the boost regulator already exists.
-Required changes:
+**Status: code-complete, HW verification pending.**
 
-1. Override `mvs_in-supply` from `pm8058_s3` (1.8 V — incorrect) to
-   `vdd50_boost` (5 V — correct).  Pre-existing miswiring; this
-   incidentally fixes any future HDMI 5V hot-plug detect work too.
-2. No new fixed-regulator needed (`vdd50_boost` already provides 5V
-   via GPIO 102).
-3. No new pinctrl needed (TLMM pinmux for GPIO 102 already
-   established by the existing `vdd50_boost` consumer).
+### Implementation summary
 
-Then R3:
+A single DT edit corrects a pre-existing miswiring in
+`arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
 
-4. `&usb1: dr_mode = "otg"` (was `"peripheral"`).
-5. `&usb1: vbus-supply = <&pm8901_mvs>`.
+```dts
+&pm8901-regulators {
+    /* was: mvs_in-supply = <&pm8058_s3>;  (1.8 V -- wrong) */
+    mvs_in-supply = <&vdd50_boost>;
+};
+```
 
-Then R4 hardware verification with OTG cable + USB keyboard / mass
-storage.
+No new fixed-regulator needed (`vdd50_boost` already in DT at line
+207-220, always-on, sized for the boost-EN load).  No new pinctrl
+needed (TLMM GPIO 102 already claimed by `vdd50_boost`).
 
-R5 regression bar: existing peripheral-mode plug/unplug (cycle test
-in `impl-usb-phy-tuning.md`) + BC 1.2 detection
-(`impl-usb-charger-detection.md`) must keep working.
+### Acceptance criteria coverage (R2)
+
+- [x] **AC1** 5 V boost regulator gated by GPIO 102 — pre-existing
+      `vdd50_boost` satisfies this with `regulator-always-on` (already
+      driving GPIO 102 HIGH at 16 mA per the R1 live-device check).
+- [x] **AC2** Pinctrl entry for GPIO 102 — N/A, `vdd50_boost`'s
+      `gpio = <&tlmm 102 GPIO_ACTIVE_HIGH>` claim is sufficient (TLMM
+      defaults to GPIO function 0 when claimed without an explicit
+      pinmux state).
+- [x] **AC3** `mvs_in-supply` corrected to a 5 V source — done.
+      `pm8901_mvs` now has the correct 5 V input it always needed,
+      both for the new OTG vbus-supply consumer and for the existing
+      `hdmi-mux-supply` consumer (HDMI was never going to work with
+      a 1.8 V hot-plug detect).
+- [ ] **AC4** Optional secondary load switch (PM8901 MPP1) — skipped
+      per R1 decision; revisit if R4 host-mode VBUS does not appear.
+- [x] **AC5** `dtbs_check` / DTB build clean — verified locally with
+      `make dtbs ARCH=arm` producing `qcom-apq8060-topaz.dtb` and
+      `qcom-apq8060-topaz-3g.dtb` without new warnings (only the
+      unrelated pre-existing HDMI graph-endpoint warning).
+
+## R3: chipidea Controller Switched to OTG Dual-Role
+
+**Status: code-complete, HW verification pending.**
+
+### Implementation summary
+
+Two added properties on the `&usb1` controller node:
+
+```dts
+&usb1 {
+    dr_mode = "otg";              /* was "peripheral" */
+    vbus-supply = <&pm8901_mvs>;  /* new -- gated by host role */
+    ...
+};
+```
+
+The chipidea core consumes `vbus-supply` automatically: when the OTG
+state machine transitions to host role (ID pin LOW), the framework
+enables the regulator; on transition back to device role (ID floats
+HIGH via the 100k pull-up to the PHY), the regulator is disabled.
+
+### Acceptance criteria coverage (R3)
+
+- [x] **AC1** `&usb1.dr_mode = "otg"` — done.
+- [x] **AC2** `vbus-supply = <&pm8901_mvs>` added — done.
+- [ ] **AC3** Boot completes without USB regression — pending Yocto
+      rebuild + boot test.  Expected outcome: identical to current
+      behaviour (regular USB cable → device mode, gadget + BC 1.2
+      detection unchanged), with the additional capability to switch
+      to host on OTG cable.
+- [ ] **AC4** No VBUS asserted on connector without cable — pending
+      hardware verification (multimeter at the micro-USB VBUS pin).
+
+## R4: Host-Mode Functional Verification
+
+**Status: not started — pending Yocto rebuild.**
+
+Will run with an OTG cable + USB keyboard / mass-storage as soon as
+the kernel with `4de4171f8f2e..` is built and deployed.
+
+## R5: Peripheral Mode Regression Guard
+
+**Status: not started — pending Yocto rebuild.**
+
+Will rerun the plug/unplug + charger detection matrix from
+`impl-usb-phy-tuning.md` and `impl-usb-charger-detection.md` to
+confirm `dr_mode = "otg"` did not regress the peripheral path.
+
+## R6: Won't-Fix Documentation
+
+**Status: N/A — R1 chose implement path.**
 
 ## Cross-References
 

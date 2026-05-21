@@ -574,7 +574,21 @@
 				lvs1_in-supply = <&pm8901_s4>;
 				lvs2_in-supply = <&pm8058_l0>;
 				lvs3_in-supply = <&pm8058_s2>;
-				mvs_in-supply = <&pm8058_s3>;
+				/*
+				 * pm8901_mvs is a 5 V switch (USB OTG VBUS gate,
+				 * also HDMI 5 V hot-plug detect supply).  Its input
+				 * MUST be 5 V -- the previous mvs_in-supply =
+				 * <&pm8058_s3> (1.8 V) was a long-standing
+				 * miswiring that prevented MVS from ever asserting a
+				 * usable voltage on the switched output.
+				 *
+				 * vdd50_boost is the always-on external 5 V boost
+				 * regulator (enabled by TLMM GPIO 102, defined in
+				 * the regulators section at the top of this DTSI).
+				 * Routing it here lets pm8901_mvs gate 5 V to the
+				 * micro-USB VBUS pin for OTG host mode.
+				 */
+				mvs_in-supply = <&vdd50_boost>;
 
 				pm8901_l0: l0 {
 					regulator-min-microvolt = <1200000>;
@@ -3705,7 +3719,17 @@
 
 &usb1 {
 	status = "okay";
-	dr_mode = "peripheral";
+	/*
+	 * OTG dual-role: chipidea + qcom-usb-hs PHY switch between host
+	 * and peripheral based on the ID pin state read by the PHY.  A
+	 * regular USB cable leaves ID floating (pulled high by R211 100k)
+	 * -> device mode (existing g_ether + BC 1.2 charger detection
+	 * keep working).  An OTG cable grounds ID -> host mode,
+	 * chipidea asks the framework to enable vbus-supply -> 5 V on
+	 * the connector via pm8901_mvs.
+	 */
+	dr_mode = "otg";
+	vbus-supply = <&pm8901_mvs>;
 	wakeup-source;
 	/*
 	 * PHY settle sequence for MSM8660 ULPI PHY, applied by
