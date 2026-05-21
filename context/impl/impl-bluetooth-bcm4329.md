@@ -2,7 +2,7 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-21"
-status: driver-mostly-implemented-module-deployment-blocker
+status: bcsp-sync-handshake-timeout
 ---
 
 # Implementation: Bluetooth BCM4329 (BCSP over GSBI6 UART)
@@ -90,76 +90,83 @@ Custom `palm,bcm4329-bcsp` compatible was needed because the generic
 `brcm,bcm4329-bt` matches `hci_bcm.c` (H4 protocol) which the chip
 doesn't speak.
 
-## Current blocker: module deployment
+## Current blocker: BCSP SYNC handshake timeout
 
-The BT subsystem on tenderloin is **built as kernel modules**:
-- `CONFIG_BT=m`
-- `CONFIG_BT_HCIUART=m`
-- `CONFIG_BT_HCIUART_BCSP=y` (compiled into hci_uart.ko per Makefile)
-- `CONFIG_BT_HCIUART_BCM=y` (also into hci_uart.ko)
+After deploying the `modules-tenderloin.tgz` tarball from Yocto's
+deploy/images/tenderloin/ directory and `modprobe`-ing bluetooth +
+hci_uart + btbcm, the BT subsystem comes up far enough that:
 
-On the running kernel (e.g. `gd15db9a7ce28`):
+| Check | Result |
+|-------|--------|
+| Modules loaded | ✅ `bluetooth`, `hci_uart`, `btbcm` |
+| `hci0` registered | ✅ `Type=Primary Bus=UART` |
+| GPIO 130 (BT_PWR) | ✅ OUT high — chip powered |
+| GPIO 131 (BT_WAKE) | ✅ OUT high — host wake-up asserted |
+| GPIO 138 (BT_RST_N) | ✅ OUT high — chip NOT in reset (active-low) |
+| GPIO 129 (HOST_WAKE) | ✅ IN low pull-down — chip-to-host input |
+| Driver bound | ✅ `hci_uart_bcsp` on `serial0-0` |
+| Probe info line | `BCM4329 BCSP Bluetooth, init-speed=115200` |
+| DT PSKEYs loaded | ✅ 13 PSKEYs + TX_POWER_LEVEL table |
+| DT BD addr | ✅ `00:1d:fe:85:64:a9` parsed |
+| Baud setup | ✅ 115200 |
+| Flow control | ✅ HW flow control enabled |
+| Initial sync TX | ✅ Sent — `BCSP: Sent initial sync to wake chip` |
+
+But:
 
 ```
-/lib/modules/  has dirs for many OTHER kernel builds (gfd0a8d27192a,
-gc49a03dba9ea both have bluetooth.ko.gz + hci_uart.ko.gz + btbcm.ko.gz)
-                BUT NOT for currently running kernel.
+Bluetooth: BCSP: Serdev mode - waiting for link establishment
+Bluetooth: BCSP: Timeout waiting for link establishment   (5 s later)
 ```
 
-So `modprobe bluetooth` and `modprobe hci_uart` both fail with
-"Module not found in directory /lib/modules/<uname>". The
-serdev framework therefore has no driver registered for the
-`palm,bcm4329-bcsp` compatible, the DT subnode is orphan, and
-nothing initialises. `hciconfig` returns
-"Address family not supported by protocol" because the BT core
-isn't loaded.
+RX byte counter is increasing (~1.4 KB / few seconds) so SOMETHING
+comes back from the chip — but the BCSP layer doesn't decode it as
+a valid `sync_resp`. The bring-up hangs at the BCSP link
+establishment phase.
 
-### Why modules aren't deployed
+`hciconfig hci0 up` returns `Connection timed out (110)` because
+the kernel never sees the chip transition to a usable HCI link.
 
-Open question — likely a Yocto image build / install path mismatch.
-On a deploy that built a new uImage but didn't rebuild + install the
-modules, /lib/modules ends up populated for the OLD kernel versions
-but not the CURRENT one.
+### Why modules weren't deployed initially
 
-This is a **build-system issue**, not a kernel issue.
+On first investigation `/lib/modules/<running_kernel>/` was empty
+on the device. The Yocto build had produced the modules
+(`modules-tenderloin.tgz` in `tmp-glibc/deploy/images/tenderloin/`)
+but they weren't being installed into the running image — separate
+deployment step. Once the tarball was scp'd to the device and
+extracted at `/`, the modules became loadable.
 
-## Two paths to unblock testing
+This is a **Yocto image-install issue**, separate from the kernel
+work. Tracked as a future item: confirm the recipe installs the
+modules at build time so manual scp+tar isn't needed.
 
-### Path A: Build BT in-tree (drop module flag)
+## Active investigation: BCSP SYNC
 
-```diff
-- CONFIG_BT=m
-+ CONFIG_BT=y
-- CONFIG_BT_HCIUART=m
-+ CONFIG_BT_HCIUART=y
+The recent commit stream (May 2026) shows the driver author
+iterating on exactly this issue:
+
+```
+fd0a8d27192a  hci_bcsp: Silence per-packet / per-timer-tick BT_INFO spam
+43a1c03149d3  hci_bcsp: Disable CRC for LE, enable flow control
+b8dec32adc48  hci_bcsp: Fix CRC and race condition for BCM4329
+0bb0406bbb56  hci_bcsp: Disable flow control for link establishment
+106a58cc063b  hci_bcsp: Disable CRC for Link Establishment packets
+fbdc9ec115b9  hci_bcsp: Fix serdev detection for PSKEY wait
+b5614230ff53  hci_bcsp: Fix DT node detection for palm,bcm4329-bcsp
+60cd700d771a  hci_bcsp: Enable CRC for all BCSP packets including LE
+e2c6227e0ac2  hci_bcsp: Enable hardware flow control for serdev
 ```
 
-Pros:
-- Works regardless of /lib/modules deployment
-- Kernel auto-binds serdev when bluetooth { ... } DT node appears
-- One-line defconfig change per file
+The pattern (CRC on/off cycle, flow-control on/off cycle) suggests
+the SYNC handshake interacts with serial framing in ways that
+weren't fully nailed down at the last commit. Next debugging step
+would be to enable `serdev_debug=1` modparam and add dynamic-debug
+for `hci_bcsp` to see the raw TX/RX bytes, then compare against
+webOS `bcattach`'s wire trace.
 
-Cons:
-- ~300-500 KB larger kernel image
-- Mainline upstream prefers modular; would need re-evaluation before
-  final submission
-
-Upstream-style mainline keeps BT modular; in-tree is a tactical
-choice for this specific port to remove the build-system blocker.
-
-### Path B: Fix Yocto module deployment
-
-Investigate why /lib/modules/<running_kernel> isn't populated for
-the current build. Likely in the meta-mainline kernel recipe or
-image install.
-
-Pros:
-- Keeps mainline-friendly modular config
-- Doesn't bloat kernel image
-
-Cons:
-- Yocto integration work
-- Out of kernel-tree scope
+This is **an in-flight driver effort**, not a fresh investigation
+to start from scratch. Continuing it requires understanding the
+existing commit chain.
 
 ## Recommendations
 
