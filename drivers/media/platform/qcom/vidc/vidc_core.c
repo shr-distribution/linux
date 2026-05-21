@@ -1731,6 +1731,30 @@ init_buf_done:
 	inst->dpb_hw_mask = (1u << inst->dpb_count) - 1;
 	dev_info(core->dev, "VIDC DPB initialised, %u slots active (hw_mask=0x%x)\n",
 		 inst->dpb_count, inst->dpb_hw_mask);
+
+	/*
+	 * SMIPOOL CPU R/W self-test: write known pattern to DPB slot 0
+	 * byte 0..15, then immediately read it back.  If the pattern is
+	 * preserved, CPU reads work and the all-zero readback after
+	 * FRAME_DONE means the firmware never wrote there.  If the pattern
+	 * is gone (reads back as 0 or other), CPU reads from SMIPOOL are
+	 * broken — same hw quirk as the on-chip SMI 3 MB region.
+	 */
+	{
+		u8 *p = inst->dpb_y_vaddr;
+		u8 saved[16], readback[16];
+		int i;
+
+		memcpy(saved, p, 16);
+		for (i = 0; i < 16; i++)
+			p[i] = 0xa5 ^ i;
+		/* Ensure the writes hit memory before the readback */
+		wmb();
+		memcpy(readback, p, 16);
+		memcpy(p, saved, 16);  /* restore */
+		print_hex_dump(KERN_INFO, "SMIPOOL self-test (expect a5/a4/a7/a6 ...): ",
+			       DUMP_PREFIX_NONE, 16, 1, readback, 16, false);
+	}
 	return 0;
 
 err_free_dma:
