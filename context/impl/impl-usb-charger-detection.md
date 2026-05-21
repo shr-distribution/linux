@@ -2,7 +2,7 @@
 domain: usb-charger-detection
 created: "2026-05-21"
 last_updated: "2026-05-21"
-status: r2-code-complete-hw-pending
+status: r2-r3-code-complete-hw-pending
 ---
 
 # Implementation: USB Charger Type Detection
@@ -14,7 +14,8 @@ Kit: `context/kits/cavekit-usb-charger-detection.md`.
 
 **R1 DONE** — investigation conclusion below.
 **R2 code-complete, HW verification pending** — see R2 section.
-R3–R5: not started.
+**R3 code-complete, HW verification pending** — see R3 section.
+R4-R5: not started.
 
 ## R1: Mainline Programming-Path Investigation
 
@@ -253,20 +254,140 @@ MAX8903B current limits via that driver's existing sysfs interfaces.
   OMTP) are deferred to R3; this R2 implementation collapses all
   D+/D- = both-high signatures into DCP at 1.5 A.
 
-## R3-R5: not started
+## R3: HP/Palm-Specific Charger Variants
 
-R3 will extend detection with HP-specific variants (Touchstone 10 W /
-2 A, HP Phone Adaptor 900 mA, OMTP 900 mA) gated on a separate
-`qcom,hp-charger-detect` DT property. Each HP variant gets a custom
-`current_max` value matching the legacy table:
-- Touchstone 10 W → 2000 mA (key user-visible distinction)
-- HP Phone Adaptor → 900 mA
-- OMTP → 900 mA
+**Status: code-complete, HW verification pending.**
 
-Plan: identify the HP variant by running additional D+/D- probes after
-the primary DCP detection (legacy `2-1-1-1` / `2-1-1-2` paths). Report
-variant identity via a vendor-specific sysfs node alongside the
-standard `current_max` differentiation.
+### Implementation summary
+
+Adds three extra probes layered on top of R2's standard BC 1.2
+detection, all gated by the new `qcom,hp-charger-detect` DT property
+(which itself requires `qcom,charger-detect`).
+
+1. **`ci_hdrc_msm_probe_dcp_variant()`** — called after R2's primary
+   probe returns DCP (D+/D- both high). Mirrors legacy paths 2-1-1-1
+   and 2-1-1-2:
+   - FUNCTION_CTRL = FS + termselect + **normal OpMode** + suspendM
+     (legacy raw 0x45; differs from R2's 0x4d only in OpMode field).
+   - OTG_CTRL_SET enables `DP_PULLDOWN` to actively pull D+ low.
+   - `msleep(10)`, re-read PORTSC[11:10]:
+     - **D- still high → HP Phone Adaptor 900 mA**
+     - **D- went low → HP Touchstone 10 W (2 A)**
+   - OTG_CTRL_CLR restores DP_PULLDOWN to default.
+
+2. **`ci_hdrc_msm_probe_omtp()`** — called *before* R2's CDP/SDP
+   secondary detection when D+/D- are both low. Mirrors legacy
+   path 2-2-1-x:
+   - ULPI reg 0x34 = 0x25 (OMTP-test current source on D+,
+     bit 0 distinguishes from R2's CDP/SDP-test value 0x24).
+   - `msleep(10)`, re-read line state:
+     - **D+ high, D- high → OMTP 900 mA** (D+/D- internally tied)
+     - **D+ high, D- low → Unknown 100 mA** (legacy 2-2-1-2)
+     - **D+ still low → fall through** to standard CDP/SDP test
+       (R2 path).
+
+3. **`vendor_charger_variant` sysfs attribute** — exposes the variant
+   string via a custom `attribute_group` attached to the
+   `power_supply` class device. Only present when
+   `qcom,hp-charger-detect` is set; absent on standard-BC-1.2-only
+   boards. Possible values:
+   - `""` (empty) — no HP-class variant detected
+   - `"hp-phone-900ma"`
+   - `"hp-touchstone-10w"`
+   - `"omtp-900ma"`
+
+### DT integration
+
+```dts
+&usb1 {
+    qcom,charger-detect;       /* enables R2 (required) */
+    qcom,hp-charger-detect;    /* enables R3 (HP-only) */
+};
+```
+
+Enabled on tenderloin in
+`arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`.
+
+### Userspace surface (R3 additions)
+
+```
+/sys/class/power_supply/ci_hdrc_usb/current_max          (updated by R3:
+   2000000 for Touchstone, 900000 for HP Phone / OMTP)
+/sys/class/power_supply/ci_hdrc_usb/vendor_charger_variant  (R3-only)
+```
+
+The `usb_type` property still reports `DCP` for HP variants — the
+standard BC 1.2 enum has no slot for HP-specific subtypes. The
+`current_max` value carries the bandwidth distinction (900 / 1500 /
+2000 mA), and the new `vendor_charger_variant` sysfs node names the
+variant explicitly for userspace that wants identity (e.g. Touchstone-
+specific charging profiles in `powerd`).
+
+### Acceptance criteria coverage (R3)
+
+- [ ] **AC1** HP Touchstone 10 W → "hp-touchstone-10w" + 2000000 uA —
+      pending HW test with Touchstone charger
+- [ ] **AC2** HP Phone Adaptor → "hp-phone-900ma" + 900000 uA — pending
+      HW test with HP-branded 900 mA charger
+- [ ] **AC3** OMTP-class 900 mA adaptor → "omtp-900ma" + 900000 uA —
+      pending HW test (rare; may not have a sample available)
+- [ ] **AC4** Current values match legacy table — code asserts the
+      mapping (Touchstone=2000, Phone=900, OMTP=900, generic DCP=1500,
+      CDP=1500, SDP=500, Unknown=100); legacy table at
+      `webos .../drivers/usb/gadget/msm72k_udc.c:536-593`
+- [ ] **AC5** Removing `qcom,hp-charger-detect` collapses HP variants
+      back to generic DCP — verifiable by booting two kernels (or
+      patching DT) with and without the property and observing the
+      `current_max` and `vendor_charger_variant` differences
+
+### Test plan
+
+Three charger types should produce distinct results. Capture from
+`/sys/class/power_supply/ci_hdrc_usb/`:
+
+| Charger | Expected `usb_type` | Expected `current_max` | Expected `vendor_charger_variant` |
+|---------|---------------------|------------------------|-----------------------------------|
+| USB host (laptop) | SDP / Standard Downstream | 500000 | "" |
+| CDP hub | CDP / Charging Downstream | 1500000 | "" |
+| HP Touchstone 10 W | DCP / Dedicated | 2000000 | hp-touchstone-10w |
+| HP Phone Adaptor 900 mA | DCP / Dedicated | 900000 | hp-phone-900ma |
+| Generic phone charger (DCP) | DCP / Dedicated | 900000 OR 2000000 (* see note) | hp-phone-900ma OR hp-touchstone-10w (* see note) |
+| OMTP 900 mA wall | DCP / Dedicated | 900000 | omtp-900ma |
+
+(*) Generic non-HP wall chargers may hit either the 2-1-1-1 or 2-1-1-2
+path depending on their internal D+/D- topology. Legacy webOS treated
+all chargers that pass the BC 1.2 DCP test as one of the HP variants;
+this implementation does the same. If R3 is too aggressive in
+classifying generic chargers as HP variants, the
+`qcom,hp-charger-detect` property can be removed at the DT level to
+return all DCP-class chargers to the generic 1.5 A classification.
+
+### Notes
+
+- The DCP-variant probe writes FUNCTION_CTRL = 0x45 (normal OpMode)
+  instead of R2's 0x4d (non-driving OpMode). In normal OpMode the PHY
+  actively drives D+/D- through the requested pull resistors, which is
+  what the legacy code does. The OTG_CTRL_SET DP_PULLDOWN write is what
+  actually pulls D+ low; without normal OpMode the pull-down would be
+  masked.
+- The OMTP-test ULPI reg 0x34 value 0x25 vs the CDP/SDP-test value
+  0x24 differ only in bit 0. These are vendor-opaque magic numbers
+  preserved verbatim from legacy; no datasheet is available to interpret
+  the bits in detail.
+- R3 adds ~10–20 ms to the detection budget (one extra `msleep(10)`
+  per HP probe). Total R2+R3 still well within the 2 s AC and the
+  BC 1.2 TDCD_TIMEOUT.
+- Misconfigured DT (`qcom,hp-charger-detect` without
+  `qcom,charger-detect`) emits a warning at probe time and disables
+  R3 — preventing silent no-op.
+
+## R4-R5: not started
+
+R4 (regression guard, 10 plug/unplug cycles, no enumeration slowdown)
+will be verified together with R2/R3 HW testing.
+
+R5 (won't-fix path) is not active — R2 and R3 are both achievable on
+mainline.
 
 ## Cross-References
 

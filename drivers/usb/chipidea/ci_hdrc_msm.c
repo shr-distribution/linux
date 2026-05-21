@@ -57,8 +57,30 @@
  */
 #define ULPI_CHG_DETECT			0x34
 #define ULPI_CHG_DETECT_CDP		BIT(4)	/* secondary detect: CDP=1, SDP=0 */
-#define ULPI_CHG_DETECT_DPSRC		0x24	/* apply current source on D+ */
+#define ULPI_CHG_DETECT_DPSRC		0x24	/* CDP/SDP secondary detect mode */
+#define ULPI_CHG_DETECT_OMTP_PROBE	0x25	/* OMTP-test current source on D+ */
 #define ULPI_CHG_DETECT_DISABLE		0x0f	/* clear all detection bits */
+
+/*
+ * HP/Palm vendor charger variants.  When qcom,hp-charger-detect is set,
+ * the detection routine runs additional probes after the standard BC 1.2
+ * test to identify these proprietary chargers and reports a matching
+ * current_max + variant-name sysfs string.  Without the DT property
+ * these all collapse into generic SDP/CDP/DCP at the standard currents.
+ */
+enum ci_hdrc_msm_chg_variant {
+	CI_HDRC_MSM_CHG_VARIANT_NONE = 0,
+	CI_HDRC_MSM_CHG_VARIANT_HP_PHONE,	/* HP Phone Adaptor 900 mA */
+	CI_HDRC_MSM_CHG_VARIANT_HP_TOUCHSTONE,	/* HP 10 W Touchstone 2 A   */
+	CI_HDRC_MSM_CHG_VARIANT_OMTP,		/* OMTP 900 mA              */
+};
+
+static const char *const ci_hdrc_msm_chg_variant_names[] = {
+	[CI_HDRC_MSM_CHG_VARIANT_NONE]		= "",
+	[CI_HDRC_MSM_CHG_VARIANT_HP_PHONE]	= "hp-phone-900ma",
+	[CI_HDRC_MSM_CHG_VARIANT_HP_TOUCHSTONE]	= "hp-touchstone-10w",
+	[CI_HDRC_MSM_CHG_VARIANT_OMTP]		= "omtp-900ma",
+};
 
 /*
  * USB HS bandwidth values for memory path.
@@ -124,8 +146,19 @@ struct ci_hdrc_msm {
 	 * detection path is skipped and no power_supply is registered.
 	 */
 	bool charger_detect_enabled;
+	/*
+	 * Optional HP/Palm vendor charger variant detection.  Gated by
+	 * the additional "qcom,hp-charger-detect" DT property; requires
+	 * "qcom,charger-detect" to also be set.  When enabled, the
+	 * detection routine runs extra D+/D- probes to identify HP
+	 * Touchstone 10 W, HP Phone Adaptor 900 mA, and OMTP 900 mA
+	 * chargers and publishes the variant name via the additional
+	 * power_supply sysfs attribute "vendor_charger_variant".
+	 */
+	bool hp_charger_detect_enabled;
 	struct power_supply *psy;
 	enum power_supply_usb_type usb_type;
+	enum ci_hdrc_msm_chg_variant chg_variant;
 	int current_max_ua;
 	bool charger_online;
 };
@@ -232,38 +265,127 @@ static void ci_hdrc_msm_phy_settle(struct ci_hdrc *ci,
 }
 
 /*
- * ci_hdrc_msm_detect_charger - BC 1.2 charger type detection
+ * ci_hdrc_msm_probe_dcp_variant - distinguish HP DCP variants
  *
- * Ports the legacy webOS msm72k_udc.c usb_multi_chg_detect() standard
- * SDP/CDP/DCP detection path.  HP-specific variants (Touchstone 10 W,
- * HP Phone 900 mA, OMTP) are deferred to R3 of cavekit-usb-charger-
- * detection.
+ * Only called when the primary D+/D- probe returns "both high" (DCP)
+ * and HP variant detection is enabled.  Switches the PHY out of
+ * non-driving mode and enables the internal D+ pull-down, then re-reads
+ * D-.  Mirrors legacy paths 2-1-1-1 and 2-1-1-2:
  *
- * Sequence:
+ *   D- still high  -> HP Phone Adaptor 900 mA (variant has its own
+ *                     D- pull-up topology that survives D+ being pulled
+ *                     low)
+ *   D- went low    -> HP Touchstone 10 W (D- was only high because D+
+ *                     was pulling it via the internal short; pull D+
+ *                     down and D- follows)
+ *
+ * Leaves the variant in *out_variant and returns the matching current
+ * limit in microamps.
+ */
+static int ci_hdrc_msm_probe_dcp_variant(struct ci_hdrc *ci,
+					 enum ci_hdrc_msm_chg_variant *out_variant)
+{
+	u32 portsc_ls;
+
+	/* Switch PHY to FS normal-OpMode (legacy raw 0x45) */
+	ulpi_write(ci->ulpi, ULPI_FUNC_CTRL,
+		   ULPI_FUNC_CTRL_FULL_SPEED |
+		   ULPI_FUNC_CTRL_TERMSELECT |
+		   ULPI_FUNC_CTRL_OPMODE_NORMAL |
+		   ULPI_FUNC_CTRL_SUSPENDM);
+
+	/* Enable internal D+ pull-down (OTG_CTRL_SET DP_PULLDOWN) */
+	ulpi_write(ci->ulpi, ULPI_SET(ULPI_OTG_CTRL),
+		   ULPI_OTG_CTRL_DP_PULLDOWN);
+	msleep(10);
+
+	portsc_ls = hw_read(ci, OP_PORTSC, PORTSC_LS_MASK);
+
+	/* Restore D+ pull-down state to default-off */
+	ulpi_write(ci->ulpi, ULPI_CLR(ULPI_OTG_CTRL),
+		   ULPI_OTG_CTRL_DP_PULLDOWN);
+
+	if (portsc_ls & PORTSC_LS_DM) {
+		*out_variant = CI_HDRC_MSM_CHG_VARIANT_HP_PHONE;
+		return 900000;
+	}
+	*out_variant = CI_HDRC_MSM_CHG_VARIANT_HP_TOUCHSTONE;
+	return 2000000;
+}
+
+/*
+ * ci_hdrc_msm_probe_omtp - test for OMTP-class charger before SDP/CDP
+ *
+ * Only called when the primary D+/D- probe returns "both low" and HP
+ * variant detection is enabled.  Applies the OMTP-test current source
+ * on D+ via ULPI reg 0x34 = 0x25 and re-reads D+/D-.  An OMTP charger
+ * has D+/D- internally tied; pushing current into D+ raises D- too.
+ *
+ * Returns true and fills out_current_ua + out_variant on a positive
+ * OMTP-class match (including the "Unknown 100 mA" sub-path of
+ * legacy 2-2-1-2).  Returns false to indicate the caller should fall
+ * through to the standard SDP/CDP secondary detection.
+ */
+static bool ci_hdrc_msm_probe_omtp(struct ci_hdrc *ci,
+				   enum ci_hdrc_msm_chg_variant *out_variant,
+				   int *out_current_ua,
+				   enum power_supply_usb_type *out_type)
+{
+	u32 portsc_ls;
+
+	ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_OMTP_PROBE);
+	msleep(10);
+
+	portsc_ls = hw_read(ci, OP_PORTSC, PORTSC_LS_MASK);
+
+	if (!(portsc_ls & PORTSC_LS_DP)) {
+		/* D+ still low -- not OMTP-class; caller falls through. */
+		return false;
+	}
+
+	if (portsc_ls & PORTSC_LS_DM) {
+		*out_variant = CI_HDRC_MSM_CHG_VARIANT_OMTP;
+		*out_current_ua = 900000;
+		*out_type = POWER_SUPPLY_USB_TYPE_DCP;
+	} else {
+		/* legacy 2-2-1-2: Unknown 100 mA adaptor */
+		*out_variant = CI_HDRC_MSM_CHG_VARIANT_NONE;
+		*out_current_ua = 100000;
+		*out_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	}
+	return true;
+}
+
+/*
+ * ci_hdrc_msm_detect_charger - BC 1.2 + HP variant charger detection
+ *
+ * Ports legacy webOS msm72k_udc.c usb_multi_chg_detect().  R2 covers
+ * standard BC 1.2 SDP/CDP/DCP.  R3 adds optional HP/Palm vendor variant
+ * detection when "qcom,hp-charger-detect" is set: HP Phone Adaptor
+ * 900 mA, HP Touchstone 10 W 2 A, and OMTP 900 mA.
+ *
+ * Primary probe sequence (always runs):
  *   1. Clear vendor charger-detect state (ULPI reg 0x34 = 0x0f).
- *   2. Put PHY into FS non-driving mode with termination enabled, so
- *      D+/D- voltage reflects external resistors only (FUNCTION_CTRL).
- *   3. Disable internal D+/D- pull-downs (OTG_CTRL_CLR) so the host /
- *      charger's pull-up/down is the only thing pulling each line.
- *   4. msleep(20) -- legacy comment notes this delay is mandatory.
- *   5. Read PORTSC line-state field (bits 11:10 = D+/D-):
- *        D+ high, D- high -> DCP  (D+/D- shorted on charger side)
- *        D+ low,  D- low  -> SDP/CDP, run secondary detection
- *        else             -> UNKNOWN
- *   6. Secondary detection (only for D+ low / D- low):
- *      a. Apply current source on D+ (reg 0x34 = 0x24).
- *      b. Read reg 0x34 bit 4: set => CDP, clear => SDP.
- *   7. Cleanup vendor charger-detect register.
+ *   2. Put PHY into FS non-driving mode with termination enabled
+ *      (FUNCTION_CTRL, legacy raw 0x4d) so D+/D- voltage reflects
+ *      external resistors only.  FS not HS: HS would activate 45 Ω
+ *      terminations and mask the external state.
+ *   3. Disable internal D+/D- pull-downs (OTG_CTRL_CLR).
+ *   4. msleep(20) -- mandatory per legacy.
+ *   5. Read PORTSC[11:10]:
+ *        both high -> DCP path (with HP variant probe if enabled)
+ *        both low  -> SDP/CDP path (with OMTP probe first if enabled)
+ *        else      -> UNKNOWN 100 mA
+ *   6. Cleanup vendor charger-detect register.
  *
- * Precondition: gadget controller has been stopped (USBCMD_RS=0) by
- * the previous STOPPED_EVENT, OR has not yet started after this VBUS
- * connect.  Either way the controller is not running while we
- * manipulate D+/D-.  After detection chipidea will run hw_device_reset
- * (USBCMD_RST) which clears our ULPI configuration -- that is fine,
- * we have already captured the detection result in msm_ci->usb_type.
+ * Precondition / postcondition same as R2: chipidea has not yet started
+ * the gadget controller; hw_device_reset (USBCMD_RST) will run after
+ * we return and clear our ULPI configuration; we keep only the
+ * captured result in msm_ci.
  *
- * Runs in process context from ci_hdrc_msm_notify_event() on
- * CI_HDRC_CONTROLLER_VBUS_EVENT; total budget ~50 ms.
+ * Total budget: ~50 ms (R2 path), ~70 ms (R3 path with HP probe).
+ * Both inside the BC 1.2 TDCD_TIMEOUT (900 ms) and outside the gadget
+ * enumeration window.
  */
 static void ci_hdrc_msm_detect_charger(struct ci_hdrc *ci,
 				       struct ci_hdrc_msm *msm_ci)
@@ -271,81 +393,77 @@ static void ci_hdrc_msm_detect_charger(struct ci_hdrc *ci,
 	u32 portsc_ls;
 	int reg34;
 	enum power_supply_usb_type chg = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	enum ci_hdrc_msm_chg_variant variant = CI_HDRC_MSM_CHG_VARIANT_NONE;
 	int current_max_ua = 100000;	/* safe default */
 
 	/* 1. Clear any prior vendor charger-detect state */
 	ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_DISABLE);
 	msleep(10);
 
-	/*
-	 * 2. FUNCTION_CTRL = FS + termselect + non-driving + suspendM.
-	 *    Legacy raw value 0x4d; encoded here from spec macros for
-	 *    readability.  FS mode (not HS) is intentional: HS would
-	 *    activate 45 Ω terminations on D+/D- and mask the external
-	 *    resistor states we're trying to read.
-	 */
+	/* 2. PHY -> FS non-driving + term + suspendM (legacy raw 0x4d) */
 	ulpi_write(ci->ulpi, ULPI_FUNC_CTRL,
 		   ULPI_FUNC_CTRL_FULL_SPEED |
 		   ULPI_FUNC_CTRL_TERMSELECT |
 		   ULPI_FUNC_CTRL_OPMODE_NONDRIVING |
 		   ULPI_FUNC_CTRL_SUSPENDM);
 
-	/* 3. Disable D+/D- pull-downs so external resistors win */
+	/* 3. Disable D+/D- pull-downs */
 	ulpi_write(ci->ulpi, ULPI_CLR(ULPI_OTG_CTRL),
 		   ULPI_OTG_CTRL_DP_PULLDOWN | ULPI_OTG_CTRL_DM_PULLDOWN);
 
-	/* 4. Settle delay (mandatory per legacy comment) */
+	/* 4. Settle */
 	msleep(20);
 
-	/* 5. Read PORTSC line-state field */
+	/* 5. Primary line-state read */
 	portsc_ls = hw_read(ci, OP_PORTSC, PORTSC_LS_MASK);
 
 	if ((portsc_ls & PORTSC_LS_MASK) == PORTSC_LS_MASK) {
-		/*
-		 * D+ high, D- high: DCP -- D+ and D- shorted via <= 200 Ω
-		 * resistor on the charger, both pulled high together.
-		 * BC 1.2 specifies 1.5 A as the maximum DCP current; the
-		 * legacy code reported 900 mA for the "HP Phone Adaptor"
-		 * variant of this path and 2 A for the Touchstone variant.
-		 * Those distinctions are R3 (HP-specific) and not made here.
-		 */
+		/* DCP path */
 		chg = POWER_SUPPLY_USB_TYPE_DCP;
-		current_max_ua = 1500000;
-	} else if ((portsc_ls & PORTSC_LS_MASK) == 0) {
-		/*
-		 * D+ low, D- low: SDP or CDP, run secondary detection.
-		 * Apply current source on D+ (reg 0x34 = 0x24) and read
-		 * bit 4 of the same register for the CDP/SDP indicator.
-		 */
-		ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_DPSRC);
-		msleep(10);
-		reg34 = ulpi_read(ci->ulpi, ULPI_CHG_DETECT);
-		if (reg34 >= 0 && (reg34 & ULPI_CHG_DETECT_CDP)) {
-			chg = POWER_SUPPLY_USB_TYPE_CDP;
-			current_max_ua = 1500000;	/* BC 1.2 CDP */
+		if (msm_ci->hp_charger_detect_enabled) {
+			current_max_ua =
+				ci_hdrc_msm_probe_dcp_variant(ci, &variant);
 		} else {
-			chg = POWER_SUPPLY_USB_TYPE_SDP;
-			current_max_ua = 500000;	/* USB 2.0 SDP */
+			current_max_ua = 1500000;	/* BC 1.2 DCP */
+		}
+	} else if ((portsc_ls & PORTSC_LS_MASK) == 0) {
+		/* SDP / CDP path -- and OMTP if HP detection enabled */
+		if (msm_ci->hp_charger_detect_enabled &&
+		    ci_hdrc_msm_probe_omtp(ci, &variant, &current_max_ua,
+					   &chg)) {
+			/* OMTP-class match (or Unknown 100 mA sub-path) */
+		} else {
+			/* Standard SDP/CDP secondary detection */
+			ulpi_write(ci->ulpi, ULPI_CHG_DETECT,
+				   ULPI_CHG_DETECT_DPSRC);
+			msleep(10);
+			reg34 = ulpi_read(ci->ulpi, ULPI_CHG_DETECT);
+			if (reg34 >= 0 && (reg34 & ULPI_CHG_DETECT_CDP)) {
+				chg = POWER_SUPPLY_USB_TYPE_CDP;
+				current_max_ua = 1500000;
+			} else {
+				chg = POWER_SUPPLY_USB_TYPE_SDP;
+				current_max_ua = 500000;
+			}
 		}
 	} else {
-		/*
-		 * D+ high && D- low, or D+ low && D- high: nonstandard.
-		 * Legacy reported these as "Unknown type Adaptor 100 mA".
-		 */
+		/* D+ high && D- low, or D+ low && D- high (legacy 100 mA) */
 		chg = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 		current_max_ua = 100000;
 	}
 
-	/* 7. Restore vendor charger-detect register */
+	/* 6. Cleanup vendor charger-detect register */
 	ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_DISABLE);
 
 	msm_ci->usb_type = chg;
+	msm_ci->chg_variant = variant;
 	msm_ci->current_max_ua = current_max_ua;
 	msm_ci->charger_online = true;
 
 	dev_info(ci->dev->parent,
-		 "USB charger detected: type=%d current_max=%d uA (portsc_ls=0x%x)\n",
-		 chg, current_max_ua, portsc_ls);
+		 "USB charger detected: type=%d variant=%s current_max=%d uA (portsc_ls=0x%x)\n",
+		 chg, ci_hdrc_msm_chg_variant_names[variant],
+		 current_max_ua, portsc_ls);
 }
 
 static enum power_supply_property ci_hdrc_msm_psy_props[] = {
@@ -375,6 +493,41 @@ static int ci_hdrc_msm_psy_get_property(struct power_supply *psy,
 	}
 	return 0;
 }
+
+/*
+ * Custom sysfs attribute exposing the HP vendor charger variant string,
+ * e.g. "hp-touchstone-10w" / "hp-phone-900ma" / "omtp-900ma".  Empty
+ * string when no HP variant was detected (or HP detection is disabled).
+ * Attached to the power_supply class device via attr_grp below.
+ */
+static ssize_t vendor_charger_variant_show(struct device *dev,
+					   struct device_attribute *attr,
+					   char *buf)
+{
+	struct power_supply *psy = to_power_supply(dev);
+	struct ci_hdrc_msm *msm_ci = power_supply_get_drvdata(psy);
+	enum ci_hdrc_msm_chg_variant v = msm_ci->chg_variant;
+
+	if (v >= ARRAY_SIZE(ci_hdrc_msm_chg_variant_names))
+		v = CI_HDRC_MSM_CHG_VARIANT_NONE;
+
+	return sysfs_emit(buf, "%s\n", ci_hdrc_msm_chg_variant_names[v]);
+}
+static DEVICE_ATTR_RO(vendor_charger_variant);
+
+static struct attribute *ci_hdrc_msm_psy_vendor_attrs[] = {
+	&dev_attr_vendor_charger_variant.attr,
+	NULL,
+};
+
+static const struct attribute_group ci_hdrc_msm_psy_vendor_group = {
+	.attrs = ci_hdrc_msm_psy_vendor_attrs,
+};
+
+static const struct attribute_group *ci_hdrc_msm_psy_attr_groups[] = {
+	&ci_hdrc_msm_psy_vendor_group,
+	NULL,
+};
 
 static const struct power_supply_desc ci_hdrc_msm_psy_desc = {
 	.name		= "ci_hdrc_usb",
@@ -489,6 +642,7 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 		} else {
 			msm_ci->charger_online = false;
 			msm_ci->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+			msm_ci->chg_variant = CI_HDRC_MSM_CHG_VARIANT_NONE;
 			msm_ci->current_max_ua = 0;
 			dev_info(dev, "USB charger removed\n");
 		}
@@ -655,7 +809,21 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 	 */
 	ci->charger_detect_enabled = of_property_read_bool(pdev->dev.of_node,
 							   "qcom,charger-detect");
+	/*
+	 * HP/Palm vendor variant detection is an opt-in on top of standard
+	 * BC 1.2 detection.  It implies qcom,charger-detect; warn if the
+	 * pair is misconfigured rather than silently doing nothing.
+	 */
+	ci->hp_charger_detect_enabled =
+		of_property_read_bool(pdev->dev.of_node,
+				      "qcom,hp-charger-detect");
+	if (ci->hp_charger_detect_enabled && !ci->charger_detect_enabled) {
+		dev_warn(&pdev->dev,
+			 "qcom,hp-charger-detect requires qcom,charger-detect; disabling HP variant detection\n");
+		ci->hp_charger_detect_enabled = false;
+	}
 	ci->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	ci->chg_variant = CI_HDRC_MSM_CHG_VARIANT_NONE;
 	ci->current_max_ua = 0;
 	ci->charger_online = false;
 
@@ -757,6 +925,14 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 			.drv_data = ci,
 			.fwnode = of_fwnode_handle(pdev->dev.of_node),
 		};
+
+		/*
+		 * Only advertise the vendor_charger_variant sysfs node when
+		 * HP variant detection is enabled.  Otherwise the attribute
+		 * would always read empty and confuse userspace.
+		 */
+		if (ci->hp_charger_detect_enabled)
+			psy_cfg.attr_grp = ci_hdrc_msm_psy_attr_groups;
 
 		ci->psy = devm_power_supply_register(&pdev->dev,
 						     &ci_hdrc_msm_psy_desc,

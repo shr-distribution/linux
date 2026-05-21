@@ -3733,6 +3733,20 @@
 	 * drive MAX8903B current selection.
 	 */
 	qcom,charger-detect;
+
+	/*
+	 * Enable HP/Palm-specific charger variant probes (legacy paths
+	 * 2-1-1-x and 2-2-1-x).  Distinguishes:
+	 *   hp-touchstone-10w (2 A)  -- 10 W Touchstone wireless charger
+	 *   hp-phone-900ma            -- HP Phone Adaptor 900 mA
+	 *   omtp-900ma                -- OMTP-class 900 mA wall adaptor
+	 * Variant name appears in /sys/class/power_supply/ci_hdrc_usb/
+	 * vendor_charger_variant; current_max reflects the variant value
+	 * instead of the generic BC 1.2 default.  Remove this property
+	 * to fall back to standard DCP (1.5 A) classification for all
+	 * wall chargers.
+	 */
+	qcom,hp-charger-detect;
 };
 &usb_hs1_phy {
 	v3p3-supply = <&pm8058_l6>;
