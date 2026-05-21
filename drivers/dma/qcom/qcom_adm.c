@@ -937,8 +937,13 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 	u32 srcs, i;
 	struct adm_async_desc *async_desc;
 
-	srcs = readl_relaxed(adev->regs +
-			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
+	/*
+	 * On MSM8660/APQ8060 (Tenderloin), reads at EE=1/2/3 return zeros.
+	 * The live IRQ status is only visible at EE=0. Force EE=0 read
+	 * regardless of adev->ee so the handler sees actual completions.
+	 * See also: probe diagnostic at line 1323 documenting this quirk.
+	 */
+	srcs = readl_relaxed(adev->regs + ADM_SEC_DOMAIN_IRQ_STATUS(0));
 
 	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
 
@@ -955,15 +960,17 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		srcs &= ~BIT(i);
 		achan = &adev->channels[i];
 
-		status = readl_relaxed(adev->regs +
-				       ADM_CH_STATUS_SD(i, adev->ee));
+		/*
+		 * Same EE=0 quirk: CH_STATUS_SD and CH_RSLT are only readable
+		 * at EE=0 on Tenderloin. Reads at adev->ee=1 return zeros.
+		 */
+		status = readl_relaxed(adev->regs + ADM_CH_STATUS_SD(i, 0));
 
 		/* if no result present, skip */
 		if (!(status & ADM_CH_STATUS_VALID))
 			continue;
 
-		result = readl_relaxed(adev->regs +
-			ADM_CH_RSLT(i, adev->ee));
+		result = readl_relaxed(adev->regs + ADM_CH_RSLT(i, 0));
 
 		/* no valid results, skip */
 		if (!(result & ADM_CH_RSLT_VALID))
