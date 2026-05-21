@@ -4028,12 +4028,20 @@
 		 * SCRATCH_ADDR=0x70000000 (64 MB), both well below this
 		 * region.
 		 *
-		 * A prior attempt placed ramoops at 0x47000000 in the
-		 * LPASS gap between RAM bank 1 and 2 (see reverted commit
-		 * 94ca08c5ead8). That failed because the gap isn't backed
-		 * by live System RAM in moboot's memory map -- memremap()
-		 * had nothing to map. This placement avoids that by
-		 * sitting inside confirmed-live DRAM.
+		 * Two prior attempts failed and both used `no-map`:
+		 *   - 0x47000000 in the LPASS gap (commit 94ca08c5ead8,
+		 *     reverted) -- gap isn't backed by live System RAM
+		 *     in moboot's memory map.
+		 *   - 0x7f500000 with no-map (commit be070d0aa35f,
+		 *     superseded by this one) -- early boot hung at
+		 *     "Booting..." before kernel reached console init.
+		 *
+		 * Mainline ramoops examples on apq8064-mako and
+		 * msm8974-klte do NOT use `no-map`. Following that
+		 * convention here: memblock_reserve() keeps the region
+		 * accounted in memblock (marked reserved, kept in the
+		 * linear map). This matches in-tree practice and avoids
+		 * the early-boot hang the `no-map` form triggered.
 		 *
 		 * 1 MB total, allocated to:
 		 *   record-size  128 KB -- single oops dump (multiple records
@@ -4047,7 +4055,6 @@
 			record-size = <0x20000>;
 			console-size = <0x80000>;
 			pmsg-size = <0x20000>;
-			no-map;
 		};
 	};
 };
