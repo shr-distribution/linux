@@ -656,12 +656,18 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		break;
 
 	case 0x120719:
+	case 0x110909:
 		/*
 		 * In recovery-mode boots (stale .data/.bss after GDSC cycle)
-		 * the firmware uses cmd=0x120719 (its own firmware version) as
-		 * a universal ACK for multiple commands: SYS_INIT_RET,
-		 * OPEN_CH_RET, CLOSE_CH_RET, and INIT_BUFFERS_RET all arrive
-		 * as 0x120719 instead of the normal cmd=8, cmd=1, cmd=2, cmd=15.
+		 * the firmware uses cmd=<FW_VERSION> as a universal ACK for
+		 * multiple commands: SYS_INIT_RET, OPEN_CH_RET, CLOSE_CH_RET,
+		 * and INIT_BUFFERS_RET all arrive as the version code instead
+		 * of the normal cmd=8, cmd=1, cmd=2, cmd=15.
+		 *
+		 * 0x120719 = Yocto/Sony Nozomi build (FW_VERSION=0x00121130
+		 *            family, but the cmd echo here is the alt-encoded
+		 *            short form the recovery stub puts on the bus)
+		 * 0x110909 = webOS doctor blob (FW_VERSION=0x00110909).
 		 *
 		 * We discriminate OPEN_CH from other commands by inst->state:
 		 *   VIDC_STATE_IDLE   → OPEN_CH ack   → read RETURNED_CH_INST_ID
@@ -677,7 +683,8 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		 * Note: SEQ_HEADER in recovery mode uses cmd=0 (EMPTY) instead;
 		 * that is handled by the VIDC_RESP_EMPTY case above.
 		 */
-		dev_info(core->dev, "Firmware recovery ACK (cmd=0x120719)\n");
+		dev_info(core->dev, "Firmware recovery ACK (cmd=0x%x)\n", cmd);
+		core->fw_recovery_mode = true;
 		complete(&core->sys_init_done);
 		if (inst) {
 			if (inst->state == VIDC_STATE_IDLE) {
