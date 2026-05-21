@@ -53,12 +53,30 @@ static int qcom_pm_collapse_l2_off(unsigned long int unused)
 	return -1;
 }
 
+/*
+ * SAW v1.0 (MSM8660 / MSM8260 / APQ8060) raw-WFI collapse path. The TZ
+ * blob on these SoCs does not implement SCM_BOOT/TERMINATE_PC; cpu_do_idle()
+ * here triggers the SPM hardware sequence that the kernel programmed via
+ * spm_set_low_power_mode(PM_SLEEP_MODE_SPC/PC). If a pending IRQ aborts
+ * the sequence, control returns and we report a failed entry (matches the
+ * SCM-path semantics so the cpuidle framework can fall back cleanly).
+ */
+static int qcom_pm_collapse_wfi(unsigned long int unused)
+{
+	cpu_do_idle();
+	return -1;
+}
+
 static int qcom_cpu_spc(struct spm_driver_data *drv)
 {
+	int (*collapse)(unsigned long);
 	int ret;
 
+	collapse = spm_collapse_via_scm(drv) ? qcom_pm_collapse_l2_on
+					     : qcom_pm_collapse_wfi;
+
 	spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC);
-	ret = cpu_suspend(0, qcom_pm_collapse_l2_on);
+	ret = cpu_suspend(0, collapse);
 	/*
 	 * ARM common code executes WFI without calling into our driver and
 	 * if the SPM mode is not reset, then we may accidentally power down the
@@ -80,6 +98,7 @@ static int qcom_cpu_spc(struct spm_driver_data *drv)
 
 static int qcom_cpu_pc(struct spm_driver_data *drv)
 {
+	int (*collapse)(unsigned long);
 	int ret;
 
 	/*
@@ -92,13 +111,21 @@ static int qcom_cpu_pc(struct spm_driver_data *drv)
 	 * for the duration of the cluster sleep, and the L2 cache itself is
 	 * powered off via the L2_OFF SCM call.
 	 *
+	 * On SAW v1.0 (MSM8660 / MSM8260 / APQ8060) the TZ firmware does
+	 * not implement TERMINATE_PC, so we drive the collapse with a raw
+	 * WFI and let the SPM hardware sequence handle the L2 power-down
+	 * via its programmed mode. Matches the legacy 2.6.35-palm path.
+	 *
 	 * This state is intended to be entered only by the last CPU online;
 	 * the cpuidle menu governor selects it based on the larger residency
 	 * window, but DT must mark it as the deeper state so it isn't picked
 	 * when shorter idle windows would suffice.
 	 */
+	collapse = spm_collapse_via_scm(drv) ? qcom_pm_collapse_l2_off
+					     : qcom_pm_collapse_wfi;
+
 	spm_set_low_power_mode(drv, PM_SLEEP_MODE_PC);
-	ret = cpu_suspend(0, qcom_pm_collapse_l2_off);
+	ret = cpu_suspend(0, collapse);
 	spm_set_low_power_mode(drv, PM_SLEEP_MODE_STBY);
 
 	if (ret)
