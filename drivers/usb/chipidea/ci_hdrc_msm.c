@@ -161,7 +161,20 @@ struct ci_hdrc_msm {
 	enum ci_hdrc_msm_chg_variant chg_variant;
 	int current_max_ua;
 	bool charger_online;
+	struct ci_hdrc *ci_ptr;
+	struct delayed_work chg_det_work;
 };
+
+/*
+ * Settle delay before charger detection runs.  The legacy webOS
+ * msm72k_udc.c uses USB_CHG_DET_DELAY = 1000 ms (msm72k_udc.c:148):
+ * the charger's D+/D- pull-up/short network needs time to stabilise
+ * after VBUS rise, and the controller/PHY also need time to leave
+ * whatever state the previous session left them in.  Without this
+ * delay, even a known-good 2 A wall charger reads as D+/D- both low
+ * and falls through to SDP misclassification.
+ */
+#define CI_HDRC_MSM_CHG_DET_DELAY_MS	1000
 
 static int
 ci_hdrc_msm_por_reset(struct reset_controller_dev *r, unsigned long id)
@@ -466,6 +479,29 @@ static void ci_hdrc_msm_detect_charger(struct ci_hdrc *ci,
 		 current_max_ua, portsc_ls);
 }
 
+/*
+ * Delayed-work entry point: re-checks vbus_active (might have unplugged
+ * during the 1 s settle) and runs the actual detection.  Always
+ * triggers power_supply_changed() so userspace sees the result.
+ */
+static void ci_hdrc_msm_chg_det_work(struct work_struct *w)
+{
+	struct ci_hdrc_msm *msm_ci = container_of(to_delayed_work(w),
+						  struct ci_hdrc_msm,
+						  chg_det_work);
+	struct ci_hdrc *ci = msm_ci->ci_ptr;
+
+	if (!ci || !ci->vbus_active) {
+		dev_dbg(&msm_ci->ci->dev,
+			"chg_det_work: VBUS gone before settle elapsed\n");
+		return;
+	}
+
+	ci_hdrc_msm_detect_charger(ci, msm_ci);
+	if (msm_ci->psy)
+		power_supply_changed(msm_ci->psy);
+}
+
 static enum power_supply_property ci_hdrc_msm_psy_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_USB_TYPE,
@@ -628,25 +664,48 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 		break;
 	case CI_HDRC_CONTROLLER_VBUS_EVENT:
 		/*
-		 * BC 1.2 charger detection runs here -- VBUS_EVENT fires
-		 * from ci_udc_vbus_session() before ci_hdrc_gadget_connect()
-		 * triggers hw_device_reset(), so the controller is not yet
-		 * running and our D+/D- manipulation will not be observed
-		 * by the host as enumeration traffic.  Gated by DT property
-		 * so non-MSM8660 boards skip the detection entirely.
+		 * BC 1.2 charger detection is scheduled (not run inline)
+		 * because the charger's D+/D- pull-up/short network and the
+		 * PHY's transition from the previous session's state both
+		 * need ~1 s to settle.  Running inline at VBUS_EVENT misreads
+		 * even known-good 2 A wall chargers as SDP -- confirmed on
+		 * HP 5.3V/2A charger 2026-05-21.  Match legacy webOS
+		 * msm72k_udc.c USB_CHG_DET_DELAY = 1000 ms.
+		 *
+		 * Stash the ci pointer so the work function can find it; the
+		 * msm_ci platform data is already retrievable from the device
+		 * tree of the parent (via dev_get_drvdata), but storing it
+		 * directly is simpler and matches the chipidea idioms.
 		 */
 		if (!msm_ci->charger_detect_enabled || !msm_ci->psy)
 			break;
+		msm_ci->ci_ptr = ci;
 		if (ci->vbus_active) {
-			ci_hdrc_msm_detect_charger(ci, msm_ci);
+			/*
+			 * Cancel any previous still-pending detect work --
+			 * a fast unplug/replug could otherwise leave stale
+			 * detection in flight.
+			 */
+			cancel_delayed_work(&msm_ci->chg_det_work);
+			schedule_delayed_work(&msm_ci->chg_det_work,
+				msecs_to_jiffies(CI_HDRC_MSM_CHG_DET_DELAY_MS));
+			dev_dbg(dev,
+				"VBUS connected; charger detection scheduled in %d ms\n",
+				CI_HDRC_MSM_CHG_DET_DELAY_MS);
 		} else {
+			/*
+			 * Synchronously cancel pending detect work so a slow
+			 * detect cannot publish stale results after the cable
+			 * has been pulled.
+			 */
+			cancel_delayed_work_sync(&msm_ci->chg_det_work);
 			msm_ci->charger_online = false;
 			msm_ci->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 			msm_ci->chg_variant = CI_HDRC_MSM_CHG_VARIANT_NONE;
 			msm_ci->current_max_ua = 0;
 			dev_info(dev, "USB charger removed\n");
+			power_supply_changed(msm_ci->psy);
 		}
-		power_supply_changed(msm_ci->psy);
 		break;
 	default:
 		dev_dbg(dev, "unknown ci_hdrc event\n");
@@ -826,6 +885,7 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 	ci->chg_variant = CI_HDRC_MSM_CHG_VARIANT_NONE;
 	ci->current_max_ua = 0;
 	ci->charger_online = false;
+	INIT_DELAYED_WORK(&ci->chg_det_work, ci_hdrc_msm_chg_det_work);
 
 	ci->base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(ci->base))
@@ -986,6 +1046,7 @@ static void ci_hdrc_msm_remove(struct platform_device *pdev)
 {
 	struct ci_hdrc_msm *ci = platform_get_drvdata(pdev);
 
+	cancel_delayed_work_sync(&ci->chg_det_work);
 	pm_runtime_disable(&pdev->dev);
 	ci_hdrc_remove_device(ci->ci);
 	if (ci->icc_path_dfab)
