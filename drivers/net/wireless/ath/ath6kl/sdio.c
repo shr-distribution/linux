@@ -161,13 +161,8 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 			  u8 *buf, u32 len)
 {
 	int ret = 0;
-	u32 orig_addr = addr;
 
 	sdio_claim_host(func);
-
-	pr_info("ath6kl: sdio_io ENTRY %s addr=0x%08x len=%u fixed=%d\n",
-		(request & HIF_WRITE) ? "WR" : "RD", addr, len,
-		!!(request & HIF_FIXED_ADDRESS));
 
 	if (request & HIF_WRITE) {
 		/* FIXME: looks like ugly workaround for something */
@@ -200,9 +195,6 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 	}
 
 	sdio_release_host(func);
-
-	pr_info("ath6kl: sdio_io EXIT %s orig_addr=0x%08x adj_addr=0x%08x len=%u ret=%d\n",
-		(request & HIF_WRITE) ? "WR" : "RD", orig_addr, addr, len, ret);
 
 	ath6kl_dbg(ATH6KL_DBG_SDIO, "%s addr 0x%x%s buf 0x%p len %d\n",
 		   request & HIF_WRITE ? "wr" : "rd", addr,

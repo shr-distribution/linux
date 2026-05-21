@@ -144,12 +144,8 @@ int ath6kl_hif_poll_mboxmsg_rx(struct ath6kl_device *dev, u32 *lk_ahd,
 	struct ath6kl_irq_proc_registers *rg;
 	int status = 0, i;
 	u8 htc_mbox = 1 << HTC_MAILBOX;
-	int start_i = timeout / ATH6KL_TIME_QUANTUM;
 
-	pr_info("ath6kl: poll_mboxmsg_rx: starting poll, max_iters=%d quantum=%dms timeout=%dms host_int_addr=0x%x\n",
-		start_i, ATH6KL_TIME_QUANTUM, timeout, HOST_INT_STATUS_ADDRESS);
-
-	for (i = start_i; i > 0; i--) {
+	for (i = timeout / ATH6KL_TIME_QUANTUM; i > 0; i--) {
 		/* this is the standard HIF way, load the reg table */
 		status = hif_read_write_sync(dev->ar, HOST_INT_STATUS_ADDRESS,
 					     (u8 *) &dev->irq_proc_reg,
@@ -158,18 +154,7 @@ int ath6kl_hif_poll_mboxmsg_rx(struct ath6kl_device *dev, u32 *lk_ahd,
 
 		if (status) {
 			ath6kl_err("failed to read reg table\n");
-			pr_info("ath6kl: poll_mboxmsg_rx: hif_read_write_sync failed at iter=%d ret=%d\n",
-				start_i - i, status);
 			return status;
-		}
-
-		/* Log the first read result + every 100th iteration */
-		if (i == start_i || (start_i - i) % 100 == 0) {
-			pr_info("ath6kl: poll_mboxmsg_rx: iter=%d host_int_status=0x%02x rx_lkahd_valid=0x%02x counter_int=0x%02x\n",
-				start_i - i,
-				dev->irq_proc_reg.host_int_status,
-				dev->irq_proc_reg.rx_lkahd_valid,
-				dev->irq_proc_reg.counter_int_status);
 		}
 
 		/* check for MBOX data and valid lookahead */
@@ -183,8 +168,6 @@ int ath6kl_hif_poll_mboxmsg_rx(struct ath6kl_device *dev, u32 *lk_ahd,
 				rg = &dev->irq_proc_reg;
 				*lk_ahd =
 					le32_to_cpu(rg->rx_lkahd[HTC_MAILBOX]);
-				pr_info("ath6kl: poll_mboxmsg_rx: got msg after %d iters lkahd=0x%08x\n",
-					start_i - i, *lk_ahd);
 				break;
 			}
 		}
@@ -196,11 +179,6 @@ int ath6kl_hif_poll_mboxmsg_rx(struct ath6kl_device *dev, u32 *lk_ahd,
 
 	if (i == 0) {
 		ath6kl_err("timeout waiting for recv message\n");
-		pr_info("ath6kl: poll_mboxmsg_rx: TIMEOUT after %d iters; last host_int_status=0x%02x rx_lkahd_valid=0x%02x counter_int=0x%02x\n",
-			start_i,
-			dev->irq_proc_reg.host_int_status,
-			dev->irq_proc_reg.rx_lkahd_valid,
-			dev->irq_proc_reg.counter_int_status);
 		status = -ETIME;
 		/* check if the target asserted */
 		if (dev->irq_proc_reg.counter_int_status &
