@@ -2,40 +2,75 @@
 domain: mpm-boot-hang
 created: "2026-05-15"
 last_updated: "2026-05-21"
-status: msm8660-specific-driver-landed-pending-boot-test
+status: RESOLVED-msm8660-mpm-driver-working-on-device
 ---
 
 # Implementation: MPM Boot Hang Investigation
 
-## Status: MSM8660-specific driver landed (4397a0b20949), pending boot test
+## Status: RESOLVED. MSM8660 MPM driver working on-device 2026-05-21.
 
-After a deep dive on the legacy 2.6.35-palm MPM implementation
-(`reports/MPM-LEGACY-DEEPDIVE-2026-05-21.md`), a new MSM8660-specific
-platform driver was written (commit `4397a0b20949`) that replicates the
-legacy mechanism without using the mainline `qcom-mpm` driver's
-`IRQCHIP_DECLARE` machinery (which is fundamentally incompatible with
-MSM8660 — vMPM is inside the RPM control block; no IPCC mailbox; and
-the early init runs before platform devices exist).
+The MPM boot-hang blocker is resolved. The active driver is
+`drivers/irqchip/irq-msm8660-mpm.c` (the existing `irq-msm8660-wakeup.c`
+was renamed and extended in commit `993a638936e4`).
 
-Files added:
-  - `drivers/soc/qcom/msm8660-mpm.c` — platform driver
-  - `include/soc/qcom/msm8660-mpm.h` — consumer API (with build stubs)
-  - `Documentation/devicetree/bindings/soc/qcom/qcom,msm8660-mpm.yaml`
-  - DT node in `qcom-apq8060-tenderloin-common.dtsi` (`&soc { msm8660-mpm { ... } }`)
-  - `CONFIG_QCOM_MSM8660_MPM=y` in all three tenderloin defconfigs
+### Origin of resolution
 
-Approach is "Option D" from the prior analysis below — a small,
-MSM8660-specific driver that:
-  - probes as a normal platform driver (no IRQCHIP_DECLARE),
-  - accesses RPM via syscon (non-exclusive, no DT overlap),
-  - uses two distinct register windows (req @ 0x9d8, status @ 0xdf8),
-  - triggers IPC via a second syscon to the GCC block,
-  - registers GIC SPI 20 as a wake source.
+The deep-dive in `reports/MPM-LEGACY-DEEPDIVE-2026-05-21.md` confirmed
+that the mainline `qcom-mpm` driver is fundamentally incompatible with
+MSM8660 for three reasons:
 
-**Pending:** on-device boot test once the next Yocto rebuild includes
-the new commit. After that, R1 of wifi-suspend-wake (MPM is functional
-as a wakeup-interrupt controller) should pass; R2 (SDC4 DAT1 wiring)
-is the follow-up.
+  1. vMPM lives inside the RPM control block (not a separate SRAM)
+  2. Wake notification is a raw GCC MMIO write (not IPCC mailbox)
+  3. `IRQCHIP_DECLARE` early init runs before platform devices exist
+
+The existing `irq-msm8660-wakeup.c` (commits `de8f2cabf6f1`,
+`b92823ef0859`, `23de1095f7d2` from May 16) already implemented the
+working approach — a regular platform driver accessing the vMPM via a
+syscon phandle to the RPM block. It just wasn't documented here.
+
+Commit `993a638936e4` then:
+  - Renamed the driver from `msm8660-wakeup` to `msm8660-mpm` (matches
+    mainline Qualcomm naming convention)
+  - Added a raw-pin API (`msm8660_mpm_set_pin_wake/enable_pin/
+    set_pin_type/get`) for wake sources without GIC IRQ mapping
+    (SDC3/4 DATx pins 21-24)
+  - Removed the duplicate driver attempt I had landed in `4397a0b20949`
+  - Removed the conflicting `qcom,msm8660-mpm` IRQCHIP_MATCH from
+    mainline `irq-qcom-mpm.c` so it doesn't race our platform driver
+
+### On-device verification (kernel `g993a638936e4`, 2026-05-21)
+
+```
+$ ls /sys/bus/platform/drivers/msm8660-mpm/
+soc:interrupt-controller          <-- driver bound to MPM DT node
+
+$ cat /proc/interrupts | grep mpm
+ 29:          0          0 GIC-0  34 Level     msm8660-mpm
+ 32:        997          0 msm8660-mpm 100 Level     ci_hdrc_msm
+                                              ^^^ USB1_HS routed
+                                                  through MPM irqdomain
+
+$ grep msm8660_mpm /proc/kallsyms
+T msm8660_mpm_enable_pin
+T msm8660_mpm_set_pin_wake
+T msm8660_mpm_set_pin_type
+T msm8660_mpm_get
+T msm8660_mpm_remove
+T msm8660_mpm_probe                <-- all consumer API exported
+```
+
+No `qcom_mpm` probe-failure noise in journal — the mainline driver
+no longer matches our compatible.
+
+### What this unblocks
+
+- **wifi-suspend-wake R1**: MPM is functional as wakeup-interrupt
+  controller. ✓
+- **wifi-suspend-wake R2**: SDC4 DAT1 wake-source registration can
+  now proceed; mmci shim or DT wiring to call
+  `msm8660_mpm_set_pin_wake(handle, MSM8660_MPM_PIN_SDC4_DAT1, true)`.
+- **spm-init PM-2**: cpuidle deep sleep (Power Collapse) wake-IRQ
+  delivery is now possible through MPM.
 
 ## Historical: Three Failed Mainline Attempts (kept for reference)
 

@@ -1,6 +1,6 @@
 ---
 created: "2026-05-11"
-last_edited: "2026-05-20"
+last_edited: "2026-05-21"
 ---
 
 # Implementation Overview
@@ -15,6 +15,7 @@ last_edited: "2026-05-20"
 | usb-otg-host | 5 | 6 | Software side DONE 2026-05-21. R1 investigation + R2 DT supply fix + R3 dr_mode=otg + R5 peripheral regression all verified on-device. R4 software-side proven (sysfs role-force triggered EHCI registration); hardware-side PARKED for lack of genuine OTG cable (test cable's ID pin not shorted to GND, confirmed via OTGSC_ID stuck at 1). R6 N/A |
 | sensor-i2c-recovery | 2 | 4 | T-002/T-003 done (i2c-qup recovery wired, 9-cycle generic SCL); T-012/T-013 HW pending |
 | pmic-thermal | 6 | 6 | ALL DONE on-device. T-004/T-005 (both zones live), T-014 (critical-trip -> poweroff 148us), T-015 (defconfig flags), T-022 (no userspace daemon -- path is kernel-only), T-023 (latency 148us == 33783x under polled budget, 6756x under IRQ budget) |
+| mpm-boot-hang | RESOLVED | n/a | irq-msm8660-mpm.c platform driver working on-device 2026-05-21 (commit 993a638936e4). USB1_HS routes through MPM, raw-pin API exported for SDC4 wake. impl-mpm-boot-hang.md updated. |
 
 ## Current Work
 
@@ -23,7 +24,10 @@ last_edited: "2026-05-20"
 usb-phy-tuning). Build site: `context/plans/build-site.md`.
 
 Background: SPM register initialization in testing phase (PM-1 complete,
-PM-2 blocked by MPM — see `impl-mpm-boot-hang.md`).
+PM-2 now unblocked — MPM driver working as of 2026-05-21).
+
+**Next:** wifi-suspend-wake R2-R4 (SDC4 DAT1 wake wiring) can now
+proceed — MPM blocker is gone.
 
 ## Testing Queue
 
