@@ -1007,7 +1007,7 @@
 			compatible = "qcom,ci-hdrc";
 			reg = <0x12500000 0x200>,
 			      <0x12500200 0x200>;
-			interrupt-parent = <&wakeup>;
+			interrupt-parent = <&msm8660_mpm>;
 			interrupts = <100 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&gcc USB_HS1_XCVR_CLK>,
 				 <&gcc USB_HS1_H_CLK>,
@@ -2587,36 +2587,11 @@
 	clock-names = "sleep";
 };
 
-&soc {
-	/*
-	 * MSM8660-specific MPM wake-source driver. The vMPM registers live
-	 * INSIDE the RPM control block on this SoC (request regs at
-	 * RPM_BASE + 0x9d8, status at RPM_BASE + 0xdf8). The mainline
-	 * irqchip/qcom-mpm driver assumes a dedicated SRAM region and a
-	 * mailbox controller — neither holds here, see
-	 * reports/MPM-LEGACY-DEEPDIVE-2026-05-21.md.
-	 *
-	 * The node has NO reg property: the actual register access goes
-	 * through a syscon phandle to the existing &rpm node (which is
-	 * already marked "syscon"-compatible in qcom-msm8660.dtsi). This
-	 * avoids the DT resource-overlap that hung previous attempts.
-	 *
-	 * IPC handshake: writing BIT(1) at offset 0x008 of the &l2cc
-	 * syscon (the legacy MSM_MPM_APPS_IPC register, at GCC + 0x008)
-	 * nudges MPM to re-read its request regs.
-	 *
-	 * Wake notification IRQ: GIC SPI 20 (legacy
-	 * RPM_SCSS_CPU0_GP_MEDIUM_IRQ).
-	 */
-	msm8660_mpm: msm8660-mpm {
-		compatible = "qcom,msm8660-mpm";
-		qcom,rpm-syscon = <&rpm>;
-		qcom,mpm-request-offset = <0x9d8>;
-		qcom,mpm-status-offset = <0xdf8>;
-		qcom,ipc = <&l2cc 0x8 1>;
-		interrupts = <GIC_SPI 20 IRQ_TYPE_EDGE_RISING>;
-	};
-};
+/*
+ * MSM8660 MPM wakeup interrupt controller node is defined in the base
+ * qcom-msm8660.dtsi (label &msm8660_mpm). It's already enabled there
+ * — no tenderloin-specific overrides needed.
+ */
 
 &gsbi3 {
 	status = "okay";
@@ -4164,12 +4139,7 @@
 	vdd-dig-supply = <&pm8058_s1>;
 };
 
-/* MSM8660 wakeup controller - platform driver version avoids
- * IRQCHIP_MATCH early init timing issues.
- */
-&wakeup {
-	status = "okay";
-};
+/* MSM8660 MPM is enabled in the base SoC dtsi; nothing to override here. */
 
 &gemini {
 	status = "okay";

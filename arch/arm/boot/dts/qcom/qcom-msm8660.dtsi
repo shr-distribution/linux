@@ -532,16 +532,32 @@
 
 		/*
 		 * MPM (MSM Power Manager) wakeup interrupt controller.
-		 * Uses direct reg property — driver maps via devm_ioremap
-		 * (non-exclusive) to avoid conflict with RPM memory region.
+		 *
+		 * The vMPM registers live INSIDE the RPM control block at
+		 * RPM_BASE + 0x9d8 (control regs) and RPM_BASE + 0xdf8
+		 * (status, == 0x9d8 + 0x420). Access goes through the &rpm
+		 * syscon — no `reg` property here so there is no DT
+		 * resource overlap with the RPM driver.
+		 *
+		 * Implemented as a platform driver (drivers/irqchip/
+		 * irq-msm8660-mpm.c), NOT via the mainline qcom-mpm driver
+		 * (which assumes a dedicated SRAM region + IPCC mailbox +
+		 * IRQCHIP_DECLARE early init — none of which holds on
+		 * MSM8660). See reports/MPM-LEGACY-DEEPDIVE-2026-05-21.md.
+		 *
+		 * gcc_ipc mailbox handle 1 corresponds to GCC + 0x008
+		 * bit 1, matching the legacy MSM_MPM_APPS_IPC_MPM
+		 * handshake.
+		 *
+		 * pin-map: MPM pins that map to GIC SPIs and can be routed
+		 * through the hierarchical irqdomain. Raw pins (SDC3/4
+		 * DATx, pins 21-24) are NOT in this table — consumers
+		 * (e.g. mmci for SDC4 wake) use the
+		 * msm8660_mpm_set_pin_wake() API to twiddle MPM enable
+		 * bits directly.
 		 */
-		/*
-		 * MSM8660 Wakeup interrupt controller.
-		 * Platform driver (not early IRQCHIP_MATCH) to allow proper
-		 * syscon/regmap initialization and RPM dependency handling.
-		 */
-		wakeup: interrupt-controller {
-			compatible = "qcom,msm8660-wakeup";
+		msm8660_mpm: interrupt-controller {
+			compatible = "qcom,msm8660-mpm";
 			qcom,rpm-syscon = <&rpm>;
 			qcom,mpm-offset = <0x9d8>;
 			interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;

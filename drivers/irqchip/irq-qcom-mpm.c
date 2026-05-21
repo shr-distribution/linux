@@ -619,7 +619,16 @@ remove_genpd:
 
 IRQCHIP_PLATFORM_DRIVER_BEGIN(qcom_mpm)
 IRQCHIP_MATCH("qcom,mpm", qcom_mpm_init)
-IRQCHIP_MATCH("qcom,msm8660-mpm", qcom_mpm_init)
+/*
+ * MSM8660 / APQ8060 are handled by drivers/irqchip/irq-msm8660-mpm.c,
+ * which uses a regular platform_driver and accesses the vMPM registers
+ * via a syscon phandle to the RPM block. The generic qcom-mpm code path
+ * is fundamentally incompatible with MSM8660: it assumes a dedicated
+ * MPM SRAM region (vMPM is inside the RPM block on MSM8660), an IPCC
+ * mailbox (MSM8660 uses a raw GCC MMIO write), and IRQCHIP_DECLARE
+ * early init (runs before platform devices exist). See
+ * reports/MPM-LEGACY-DEEPDIVE-2026-05-21.md.
+ */
 IRQCHIP_PLATFORM_DRIVER_END(qcom_mpm)
 MODULE_DESCRIPTION("Qualcomm Technologies, Inc. MSM Power Manager");
 MODULE_LICENSE("GPL v2");

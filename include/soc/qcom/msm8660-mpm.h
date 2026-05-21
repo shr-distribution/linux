@@ -2,10 +2,20 @@
 /*
  * Qualcomm MSM8660 / APQ8060 MPM wake-source consumer interface.
  *
- * Consumer drivers (e.g. mmci for SDC4 WiFi wake) obtain a handle via
- * msm8660_mpm_get() and use the helpers below to register wake sources
- * with the MPM hardware. The MPM driver itself lives in
- * drivers/soc/qcom/msm8660-mpm.c.
+ * The MPM driver lives at drivers/irqchip/irq-msm8660-mpm.c. It exposes
+ * TWO interfaces:
+ *
+ *  1. Hierarchical irqdomain (preferred). For wake sources that map to
+ *     GIC SPIs (USB1_HS, HDMI, ...). Consumers wire their IRQ through
+ *     the MPM via `interrupts-extended = <&msm8660_mpm ...>` in DT and
+ *     the IRQ subsystem manages enable / mask / set_type via the
+ *     irqdomain alloc path. No explicit C API call needed.
+ *
+ *  2. Raw-pin API (this header). For wake sources that do NOT have a
+ *     GIC IRQ mapping: SDC3_DAT1=21, SDC3_DAT3=22, SDC4_DAT1=23,
+ *     SDC4_DAT3=24. These are physical wake-signal lines that MPM
+ *     monitors directly. mmci (for SDC4 WiFi wake) obtains a handle
+ *     via msm8660_mpm_get() and uses the helpers below.
  */
 
 #ifndef __SOC_QCOM_MSM8660_MPM_H__
@@ -38,9 +48,6 @@ int msm8660_mpm_enable_pin(struct msm8660_mpm *mpm, unsigned int pin,
 int msm8660_mpm_set_pin_type(struct msm8660_mpm *mpm, unsigned int pin,
 			     unsigned int flow_type);
 
-void msm8660_mpm_enter_sleep(struct msm8660_mpm *mpm, bool from_idle);
-void msm8660_mpm_exit_sleep(struct msm8660_mpm *mpm, bool from_idle);
-
 #else /* !CONFIG_QCOM_MSM8660_MPM */
 
 static inline struct msm8660_mpm *
@@ -67,11 +74,6 @@ static inline int msm8660_mpm_set_pin_type(struct msm8660_mpm *mpm,
 {
 	return -ENODEV;
 }
-
-static inline void msm8660_mpm_enter_sleep(struct msm8660_mpm *mpm,
-					   bool from_idle) { }
-static inline void msm8660_mpm_exit_sleep(struct msm8660_mpm *mpm,
-					  bool from_idle) { }
 
 #endif /* CONFIG_QCOM_MSM8660_MPM */
 
