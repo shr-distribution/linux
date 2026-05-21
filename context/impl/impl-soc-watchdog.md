@@ -1,8 +1,8 @@
 ---
 domain: soc-watchdog
 created: "2026-05-20"
-last_updated: "2026-05-20"
-status: investigated-enable-path
+last_updated: "2026-05-21"
+status: ramoops-wired-test-pending
 ---
 
 # Implementation: SoC Hardware Watchdog (MSM8660)
@@ -149,6 +149,46 @@ clock-names = "sleep";
 - **R4 (real lock-recovery):** T-021 covers induced lockup → hardware
   reset → pstore-preserved previous boot log.
 
+## On-Device Verification (2026-05-21, kernel `g2f4f77242d2c`)
+
+`/dev/watchdog0` exists with `qcom_wdt` driver bound:
+
+```
+wdctl /dev/watchdog0
+Device:   /dev/watchdog0
+Identity: qcom_wdt [version 0]
+Timeout:  30 seconds
+```
+
+`CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y` keeps the kernel pinging until
+userspace opens the device. `CONFIG_WATCHDOG_SYSFS=n` so no
+`/sys/class/watchdog/watchdog0/{timeout,state,bootstatus}` entries —
+only `wdctl` works.
+
+Platform driver bind verified:
+```
+/sys/bus/platform/devices/2000000.timer/driver
+  -> ../../../../bus/platform/drivers/qcom_wdt
+```
+
+## Ramoops Region for T-021 (added 2026-05-21)
+
+Commit `be070d0aa35f` adds `reserved-memory ramoops@7f500000` (1 MB)
+at the top of System RAM bank 2. Placement rationale:
+
+- Inside confirmed-live DRAM (`/proc/iomem`: `0x48000000-0x7f5fffff`)
+- Above moboot's `MEMBASE=0x50000000` (4 MB) footprint
+- Above moboot's `SCRATCH_ADDR=0x70000000` (64 MB) kernel staging
+- moboot only zeros its own BSS (verified in
+  `herrie82/moboot arch/arm/crt0.S` `.L__do_bss` loop), so 0x7f500000
+  contents survive a warm reboot through the watchdog reset path.
+
+Prior attempt (commit `94ca08c5ead8`, reverted) placed ramoops at
+`0x47000000` in the LPASS gap between RAM bank 1 and 2. That failed
+because the gap isn't backed by live System RAM in moboot's map —
+`memremap()` had nothing to map. New placement avoids this by sitting
+inside confirmed-live DRAM.
+
 ## Task Tracking
 
 | Task | Status | Notes |
@@ -157,8 +197,8 @@ clock-names = "sleep";
 | T-008 | DONE | `apcs_timer:` label added to qcom-msm8660.dtsi timer@2000000; tenderloin-common.dtsi `&apcs_timer` override adds `clocks = <&sleep_clk>; clock-names = "sleep";` |
 | T-009 | N/A | won't-fix path not taken |
 | T-010 | DONE | `CONFIG_WATCHDOG=y` + `CONFIG_QCOM_WDT=y` added to all three tenderloin defconfigs |
-| T-011 | TODO | 5 cold boots + 30-min pet + orderly poweroff (HW) |
-| T-021 | TODO | induced lockup → HW reset + pstore preservation (HW) |
+| T-011 | TODO | 5 cold boots + 30-min pet + orderly poweroff (HW). Pet via systemd `RuntimeWatchdogSec=` (currently `0`). |
+| T-021 | TODO | induced lockup → HW reset + pstore preservation (HW). ramoops DT wired in `be070d0aa35f`; pending Yocto rebuild + on-device test. |
 
 ## Cross-References
 
