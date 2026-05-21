@@ -1996,6 +1996,33 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 
 		mmci_stop_data(host);
 
+		/*
+		 * Qualcomm SDCC: on data CRC/timeout, mirror legacy
+		 * msm_sdcc's msmsdcc_reset_and_restore() — clk_reset the
+		 * SDCC IP (wipes stale DPSM/CPSM state from the
+		 * half-finished transfer) then restore MMCICLOCK / MMCIPOWER
+		 * / MMCIMASK0 identically (same 8-bit/48 MHz settings).
+		 * Without this, the upcoming CMD12 / data->stop typically
+		 * CMDTIMEOUTs (CPSM is still in DATA-state response window),
+		 * mmc-core cascades through mmc_blk_reset → mmc_power_cycle
+		 * → mmc_init_card → mmc_select_bus_width's verification path
+		 * → second read CRC-fails under fabric contention → card
+		 * falls back to 1-bit irreversibly.
+		 *
+		 * Reset is 2 MMIO writes + udelay(2); cheap inside the data
+		 * IRQ path, and crucial that it happens BEFORE CMD12 below.
+		 */
+		if (data->error && host->variant->qcom_datactrl_delay &&
+		    host->rst) {
+			reset_control_assert(host->rst);
+			udelay(2);
+			reset_control_deassert(host->rst);
+			writel(host->clk_reg, host->base + MMCICLOCK);
+			writel(host->pwr_reg, host->base + MMCIPOWER);
+			writel(MCI_IRQENABLE | host->variant->start_err,
+			       host->base + MMCIMASK0);
+		}
+
 		if (!data->error)
 			/* The error clause is handled above, success! */
 			data->bytes_xfered = data->blksz * data->blocks;
@@ -3196,6 +3223,20 @@ static int mmci_probe(struct amba_device *dev,
 
 	/* We support these capabilities. */
 	mmc->caps |= MMC_CAP_CMD23;
+
+	/*
+	 * Qualcomm SDCC: tell mmc-core to use CMD14/CMD19 BUSTEST_W/R
+	 * (small known-pattern transfer) for bus-width verification
+	 * instead of mmc_compare_ext_csds() which re-reads the full
+	 * 512 B EXT_CSD at both 1-bit AND the target width.  On
+	 * tenderloin during a re-init after a DATACRCFAIL, the second
+	 * 512 B read at 8-bit under residual fabric contention CRC-fails
+	 * again → bus-width ladder falls all the way to 1-bit
+	 * irreversibly.  CMD14/CMD19 is a single small transfer, much
+	 * less exposed to the same race.
+	 */
+	if (host->variant->qcom_datactrl_delay)
+		mmc->caps |= MMC_CAP_BUS_WIDTH_TEST;
 
 	/*
 	 * Enable busy detection.

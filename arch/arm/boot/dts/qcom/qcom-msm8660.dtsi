@@ -1388,6 +1388,7 @@
 				interrupts = <GIC_SPI 104 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&gcc SDC1_CLK>, <&gcc SDC1_H_CLK>;
 				clock-names = "mclk", "apb_pclk";
+				resets = <&gcc SDC1_RESET>;
 				bus-width = <8>;
 				max-frequency = <48000000>;
 				non-removable;
