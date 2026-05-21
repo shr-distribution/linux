@@ -351,9 +351,45 @@ to revisit):
 
 ## R5: Controller-level settle sequence (ci_hdrc_msm.c)
 
-**Commit: 61eec9a8d6b8** — "usb: chipidea: msm: add PHY settle sequence for MSM8660 hardware"
+Three commits compose the full fix:
 
-**On-device confirmed WORKING** — plug/unplug recovery functional on mainline 6.18.
+| Commit | Purpose |
+|--------|---------|
+| 61eec9a8d6b8 | PHY settle sequence (POR + 100ms + USBCMD_RST + ULPI vendor writes) on each RESET_EVENT |
+| b9dfeab00cdd | Clear SESS_VLD_CTRL before phy_power_off on STOPPED_EVENT (later superseded but harmless) |
+| cc1a22f6e9bd | **Skip phy_power_off/phy_exit on STOPPED_EVENT** — keeps PHY alive for VBUS detection |
+
+**On-device confirmed WORKING on mainline 6.18** (kernel g9c79597ea77d, 2026-05-21).
+
+**6 consecutive plug/unplug cycles, all successful**:
+
+| # | STOPPED | RESET | Time to enumeration |
+|---|---------|-------|---------------------|
+| 1 | 404.097 | 406.129 | 2.71s |
+| 2 | 408.771 | 410.190 | 1.94s |
+| 3 | 412.416 | 413.918 | 2.01s |
+| 4 | 416.466 | 417.802 | 1.99s |
+| 5 | 421.754 | 423.138 | 1.89s |
+| 6 | 425.300 | 427.017 | 2.31s |
+
+Median ~2s from STOPPED_EVENT to fully enumerated USB at 480 Mbps.
+
+**Root cause for cc1a22f6e9bd:** MSM8660 has no extcon-based VBUS source.
+VBUS sensing requires PHY clocks (ref, sleep) and regulators (v1p8, v3p3)
+to be alive — either via SESS_VLD_CTRL routing PHY's BSV output, or via
+the controller's internal comparator. The original mainline pattern of
+`phy_power_off()` on STOPPED_EVENT killed VBUS sensing and BSVIS never
+fired on replug. Mirroring legacy webOS msm72k_otg.c (which never powers
+the PHY down between connect events) restores reliable replug.
+
+Three failed PHY-DT-level attempts before landing on the controller fix:
+1. cae1a8c571b9 — `resets = <&usb1 0>` only, no settle. Vendor writes
+   landed on re-syncing ULPI 12µs after POR → broke gadget.
+2. 6c2eb508669d — same + 100ms settle in `phy_power_on()`. Still broke
+   because the legacy sequence requires USBCMD_RST + PORTSC re-select
+   after settle, which can't be done from inside `phy_power_on()`.
+3. b9dfeab00cdd alone (SESS_VLD_CTRL clear before phy_power_off) — wasn't
+   enough; the internal comparator also needs PHY clocks alive.
 
 The vendor writes were moved from the PHY node (`qcom,vendor-init-seq` in
 `phy_power_on()`) to the controller node (`qcom,phy-settle-seq` in
