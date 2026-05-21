@@ -1006,6 +1006,23 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 			"DPB init failed: %d (channel unrecoverable)\n",
 			dpb_ret);
 
+	/*
+	 * Sentinel write: fill every DPB slot's Y/UV with 0xCC before any
+	 * FRAME_DATA is submitted.  If the firmware actually decodes into
+	 * the slots, the subsequent FRAME_DONE readback will show real
+	 * pixel data, NOT 0xCC.  If 0xCC is still there, the firmware
+	 * never wrote (it's processing FRAME_DATA but writing to a
+	 * different memory than our DPB slots).
+	 */
+	if (!dpb_ret && inst->dpb_y_vaddr) {
+		size_t total = inst->dpb_y_alloc_size;
+		memset(inst->dpb_y_vaddr, 0xcc, total);
+		wmb();
+		dev_info(core->dev,
+			 "SMIPOOL sentinel: filled %zu bytes of DPB with 0xCC\n",
+			 total);
+	}
+
 	v4l2_event_queue_fh(&inst->fh, &ev);
 
 	src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
