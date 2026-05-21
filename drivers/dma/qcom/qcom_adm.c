@@ -1058,12 +1058,20 @@ static enum dma_status adm_tx_status(struct dma_chan *chan, dma_cookie_t cookie,
 static void adm_issue_pending(struct dma_chan *chan)
 {
 	struct adm_chan *achan = to_adm_chan(chan);
+	struct adm_device *adev = achan->adev;
 	unsigned long flags;
+	bool vchan_pending;
 
 	spin_lock_irqsave(&achan->vc.lock, flags);
 
-	if (vchan_issue_pending(&achan->vc) && !achan->curr_txd)
+	vchan_pending = vchan_issue_pending(&achan->vc);
+	if (vchan_pending && !achan->curr_txd) {
 		adm_start_dma(achan);
+	} else {
+		dev_info(adev->dev,
+			 "ADM-DIAG: issue_pending ch=%d vchan_pending=%d curr_txd=%p (skipped start_dma)\n",
+			 achan->id, vchan_pending, achan->curr_txd);
+	}
 	spin_unlock_irqrestore(&achan->vc.lock, flags);
 }
 
