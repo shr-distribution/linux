@@ -58,6 +58,23 @@ config QCOM_KRYO_L2_ACCESSORS
 	bool
 	depends on (ARCH_QCOM || COMPILE_TEST) && ARM64
 
+config QCOM_MSM8660_MPM
+	tristate "Qualcomm MSM8660 MPM wake-source driver"
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on OF
+	select MFD_SYSCON
+	select REGMAP_MMIO
+	help
+	  Enables a wake-source helper for the MSM Power Manager (MPM)
+	  block on MSM8660 / APQ8060 SoCs. The MPM keeps a small set of
+	  wake interrupts alive while the application processor is powered
+	  down for cpuidle Power Collapse or suspend-to-RAM.
+
+	  On MSM8660 the vMPM registers live inside the RPM control block
+	  and the wake-notification handshake uses a raw MMIO write to the
+	  GCC block — neither matches the assumptions of the generic
+	  qcom-mpm driver. Say Y/m to use this MSM8660-specific path.
+
 config QCOM_MDT_LOADER
 	tristate
 	select QCOM_SCM
