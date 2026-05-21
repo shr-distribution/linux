@@ -184,6 +184,24 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 		else
 			ret = sdio_memcpy_toio(func, addr, buf, len);
 	} else {
+		/*
+		 * EXPERIMENT: apply the same "addr += MBOX_WIDTH - len"
+		 * adjustment as the WRITE path.  The AR6003 mailbox FIFO is
+		 * mapped at the END of the mailbox window; writes go to
+		 * (base + width - len) so the last byte lands at the EOM,
+		 * and reads may need the symmetric treatment so the host
+		 * starts draining from the same offset where the chip placed
+		 * the data.  Without this, our 128-byte BLOCK_FIX read at
+		 * 0x800 hangs in mmc_wait_for_req_done — the chip ack's the
+		 * CMD53 but doesn't clock data on DAT lines.
+		 */
+		if (addr >= HIF_MBOX_BASE_ADDR &&
+		    addr <= HIF_MBOX_END_ADDR)
+			addr += (HIF_MBOX_WIDTH - len);
+
+		if (addr == HIF_MBOX0_EXT_BASE_ADDR)
+			addr += HIF_MBOX0_EXT_WIDTH - len;
+
 		if (request & HIF_FIXED_ADDRESS)
 			ret = sdio_readsb(func, buf, addr, len);
 		else
