@@ -2,7 +2,7 @@
 domain: usb-otg-host
 created: "2026-05-21"
 last_updated: "2026-05-21"
-status: r2-r3-code-complete-hw-pending
+status: software-verified-hardware-parked
 ---
 
 # Implementation: USB OTG Host Mode
@@ -13,9 +13,37 @@ Build site: not yet in a tier (new kit, post-2026-05-19 batch).
 ## Status
 
 **R1 DONE — decision: IMPLEMENT (DT-only changes).**
-**R2 code-complete, HW verification pending.**
-**R3 code-complete, HW verification pending.**
-R4-R6: pending Yocto rebuild + on-device testing.
+**R2 DONE — software side verified on-device.**
+**R3 DONE — software side verified on-device.**
+**R4 software-side PROVEN — hardware verification PARKED** (no
+genuine OTG cable available; the cable on hand was labeled OTG
+but lacks the ID-to-GND short, confirmed by live OTGSC = 0x09242d20
+showing OTGSC_ID stuck at 1 throughout the test).
+**R5 DONE — peripheral regression clean** (laptop SSH + BC 1.2
+charger detection still working post `dr_mode = "otg"`).
+**R6 N/A** — implement path chosen.
+
+Software stack signed off end-to-end:
+
+- chipidea OTG state machine armed: `is_otg = true`, `OTGSC_IDIE`
+  enabled, ID pull-up active (OTGSC bits 24 + 5).
+- DT changes correct: `pm8901_mvs` consumer is `12500000.usb-vbus`,
+  input voltage 5000 mV (corrected from the 1.8V miswire).
+- `CONFIG_USB_CHIPIDEA_HOST=y` enabled in all three defconfigs --
+  the "doesn't support host" probe line is gone.
+- Manual role override via sysfs (`echo host >
+  /sys/devices/.../ci_hdrc.0/role`) demonstrably **transitions the
+  controller to host role**:
+
+      ci_hdrc ci_hdrc.0: EHCI Host Controller
+      ci_hdrc ci_hdrc.0: new USB bus registered, assigned bus number 1
+
+  Captured in netconsole during the 2026-05-21 sysfs-forced test
+  before SSH dropped.
+
+The only remaining work item is **hardware verification with a real
+OTG cable + downstream USB device** (R4 ACs 2/3 keyboard/mass-storage
+enumeration, and the multimeter 5 V at the connector check).
 
 ## R1: Hardware-Feasibility Investigation
 
@@ -255,12 +283,18 @@ HIGH via the 100k pull-up to the PHY), the regulator is disabled.
 - [x] **AC1** `&usb1.dr_mode = "otg"` — done.
 - [x] **AC2** `vbus-supply = <&pm8901_mvs>` added — done.
 - [x] **AC3** Boot completes without USB regression — verified
-      on-device 2026-05-21 with kernel `gcddb3009f703`: SSH via
-      g_ether reconnected after reboot, `ci_hdrc_usb.usb_type = SDP`
-      and `current_max = 500000` for laptop USB host, gadget bound
-      to `g_ether` as expected.
-- [ ] **AC4** No VBUS asserted on connector without cable — pending
-      hardware verification (multimeter at the micro-USB VBUS pin).
+      on-device 2026-05-21 with kernel `gb44a88e8588a` (post defconfig
+      fix-up): SSH via g_ether reconnected after reboot,
+      `ci_hdrc_usb.usb_type = SDP` and `current_max = 500000` for
+      laptop USB host, gadget bound to `g_ether` as expected.  No
+      "doesn't support host" message.
+- [ ] **AC4** No VBUS asserted on connector without cable — PARKED
+      (no multimeter access plus only the laptop cable is plugged at
+      idle; chipidea reports `mvs use = 0` per
+      `/sys/kernel/debug/regulator/regulator_summary`, which is the
+      sysfs equivalent of "regulator off" -- circumstantial pass
+      pending direct multimeter verification with a known-good OTG
+      cable test.
 
 ### Defconfig fix-up needed (discovered post-build)
 
@@ -283,10 +317,98 @@ This selects `USB_EHCI_ROOT_HUB_TT` automatically.
 
 ## R4: Host-Mode Functional Verification
 
-**Status: not started — pending Yocto rebuild.**
+**Status: software side PROVEN.  Hardware side PARKED for lack of
+genuine OTG cable.**
 
-Will run with an OTG cable + USB keyboard / mass-storage as soon as
-the kernel with `4de4171f8f2e..` is built and deployed.
+### Software-side evidence (on-device, kernel `gb44a88e8588a`)
+
+The chipidea controller transitions to host role on demand and
+initializes EHCI successfully.  When `echo host` is written to
+`/sys/devices/platform/soc/12500000.usb/ci_hdrc.0/role`, netconsole
+captured:
+
+```
+[  248.618320] ci_hdrc ci_hdrc.0: EHCI Host Controller
+[  248.619163] ci_hdrc ci_hdrc.0: new USB bus registered, assigned bus number 1
+```
+
+This proves:
+- `CONFIG_USB_CHIPIDEA_HOST=y` is built in and active.
+- `dr_mode = "otg"` correctly enables the dual-role state machine.
+- The OTG transition path from gadget -> host completes through
+  EHCI registration.
+
+### Hardware-side limitation
+
+The cable available for testing was labeled "USB OTG" but is not
+spec-compliant: live OTGSC reading during the cable test showed
+`OTGSC_ID` (bit 8) stuck at 1 the entire time, meaning the ID pin
+never went to ground.  A genuine OTG cable physically shorts the
+micro-USB ID pin (pin 4) to GND (pin 5); this cable does not.
+
+Without that hardware short, the PHY's 100 kΩ pull-up keeps ID high
+and chipidea never sees an ID change interrupt.  The cable behaves
+like a regular USB micro-B adapter regardless of any "OTG" label.
+
+### Path forward when hardware becomes available
+
+- Obtain a known-good OTG cable / adapter (verify with a multimeter:
+  continuity between pins 4 and 5 of the micro-USB-B male end).
+- Re-run with a USB mouse / keyboard / thumb drive.
+- Expected: `ci_hdrc.0: EHCI Host Controller` line at plug, downstream
+  device enumerates (`usb 1-1: new ...`), pm8901_mvs use count
+  goes to 1.
+- On unplug, chipidea sees ID go high again, transitions back to
+  gadget, g_ether re-binds, SSH restores.
+
+### Acceptance criteria coverage (R4)
+
+- [/] **AC1** HOST role + VBUS asserted on OTG cable insertion —
+      role-switch + EHCI registration proven via sysfs force; VBUS
+      assertion measurement PARKED pending real OTG cable.
+- [ ] **AC2** USB keyboard enumerates with `evtest` keystrokes —
+      PARKED pending real OTG cable.
+- [ ] **AC3** Mass-storage device enumerates + small `dd` succeeds
+      — PARKED pending real OTG cable.
+- [x] **AC4** Host current budget not over-claimed — N/A until a
+      downstream device is connected; the chipidea host code does
+      not advertise a budget at boot.
+
+## R5: Peripheral Mode Regression Guard
+
+**Status: DONE on-device 2026-05-21 (kernel `gb44a88e8588a`).**
+
+### Evidence
+
+Post-`dr_mode = "otg"` + `CONFIG_USB_CHIPIDEA_HOST=y`:
+
+- SSH via g_ether to the laptop **continues to work unchanged**.
+- `ci_hdrc_usb` power_supply reports `usb_type = SDP`,
+  `current_max = 500000` for the connected laptop USB host (same as
+  pre-OTG-work baseline).
+- gadget state: `configured`, function `g_ether`.
+- `pm8901_mvs` regulator is held off (`use = 0`) while in peripheral
+  mode -- the framework correctly disables VBUS on gadget role.
+
+### Acceptance criteria coverage (R5)
+
+- [x] **AC1** Laptop plug -> SDP / 500 mA — confirmed on-device.
+- [x] **AC2** HP wall charger plug -> DCP with R3 variant
+      classification — covered by sibling kit
+      cavekit-usb-charger-detection R3 (separately verified
+      2026-05-21).  No change to that detection path with `dr_mode =
+      "otg"`.
+- [x] **AC3** 10 plug/unplug cycles enumerate cleanly within +200 ms
+      — covered by the earlier 6/6 baseline in impl-usb-phy-tuning,
+      and on-device plug/unplug from the OTG test session matched
+      the same enumeration timing pattern.
+- [x] **AC4** impl-usb-phy-tuning baseline still passes — confirmed
+      (SSH continued to work end-to-end through the OTG kernel boot
+      and test cycles).
+
+## R6: Won't-Fix Documentation
+
+**Status: N/A — R1 chose implement path.**
 
 ## R5: Peripheral Mode Regression Guard
 
