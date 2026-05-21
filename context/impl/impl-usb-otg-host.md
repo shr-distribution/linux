@@ -254,13 +254,32 @@ HIGH via the 100k pull-up to the PHY), the regulator is disabled.
 
 - [x] **AC1** `&usb1.dr_mode = "otg"` — done.
 - [x] **AC2** `vbus-supply = <&pm8901_mvs>` added — done.
-- [ ] **AC3** Boot completes without USB regression — pending Yocto
-      rebuild + boot test.  Expected outcome: identical to current
-      behaviour (regular USB cable → device mode, gadget + BC 1.2
-      detection unchanged), with the additional capability to switch
-      to host on OTG cable.
+- [x] **AC3** Boot completes without USB regression — verified
+      on-device 2026-05-21 with kernel `gcddb3009f703`: SSH via
+      g_ether reconnected after reboot, `ci_hdrc_usb.usb_type = SDP`
+      and `current_max = 500000` for laptop USB host, gadget bound
+      to `g_ether` as expected.
 - [ ] **AC4** No VBUS asserted on connector without cable — pending
       hardware verification (multimeter at the micro-USB VBUS pin).
+
+### Defconfig fix-up needed (discovered post-build)
+
+Initial deployment of `gcddb3009f703` revealed `dmesg`:
+
+```
+[    1.974768] ci_hdrc ci_hdrc.0: doesn't support host
+```
+
+The chipidea host code was not compiled in: `CONFIG_USB_CHIPIDEA_UDC=y`
+but `CONFIG_USB_CHIPIDEA_HOST` was unset across all three tenderloin
+defconfigs (`tenderloin_defconfig`, `tenderloin_fast_defconfig`,
+`tenderloin_debug_defconfig`).  With `dr_mode = "otg"` set but the
+host code absent, the chipidea framework cannot switch to host role
+on ID = 0.
+
+Mitigation: add `CONFIG_USB_CHIPIDEA_HOST=y` to all three
+defconfigs.  Kconfig dependency `USB_EHCI_HCD` is already enabled.
+This selects `USB_EHCI_ROOT_HUB_TT` automatically.
 
 ## R4: Host-Mode Functional Verification
 
