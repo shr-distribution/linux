@@ -91,18 +91,31 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 {
 	struct mmci_host *host = exec_user;
 	void __iomem *base = host->base;
+	unsigned int delay_us;
+
+	/*
+	 * Use the same clock-dependent delay formula as legacy msm_sdcc's
+	 * msmsdcc_delay(): 1 + 3000000 / clk_rate (≈1 µs @ 48 MHz, ≈8.5 µs
+	 * @ 400 kHz init clock).  Commit 32870e59b8ad added this formula to
+	 * mmci_start_command, but mmci_start_command is a no-op stash when
+	 * atomic-submit is active — the actual ARG/CMD writes are HERE.
+	 * For the EXT_CSD READ (which happens at 400 kHz init clock with
+	 * atomic-submit active since reads are gated through this path),
+	 * the previous hardcoded udelay(1) was too short — Samsung PRV=0x90
+	 * occasionally returned an OTP-only EXT_CSD (capacity = 0 B) because
+	 * the SDCC sampled DATACTRL/ARG before the card's internal SRAM mux
+	 * had switched from the OTP block to the dynamic EXT_CSD block.
+	 */
+	delay_us = (host->variant->qcom_datactrl_delay) ?
+		(1 + 3000000 / (host->cclk ?: 1)) : 0;
 
 	writel_relaxed(host->atomic_submit.datactrl, base + MMCIDATACTRL);
-	/*
-	 * Qualcomm SDCC needs a brief delay between DATACTRL and CMD reg
-	 * writes. The legacy msm_sdcc driver uses msmsdcc_delay() here.
-	 */
-	if (host->variant->qcom_datactrl_delay)
-		udelay(1);
+	if (delay_us)
+		udelay(delay_us);
 
 	writel_relaxed(host->atomic_submit.cmd_arg, base + MMCIARGUMENT);
-	if (host->variant->qcom_datactrl_delay)
-		udelay(1);
+	if (delay_us)
+		udelay(delay_us);
 
 	writel(host->atomic_submit.cmd_reg, base + MMCICOMMAND);
 }

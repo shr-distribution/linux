@@ -2592,8 +2592,15 @@ static void __mmci_start_request(struct mmci_host *host,
 	if (mrq->data &&
 	    (host->datactrl_first || mrq->data->flags & MMC_DATA_READ)) {
 		mmci_start_data(host, mrq->data);
+		/*
+		 * Clock-dependent data-to-cmd settle.  Legacy msm_sdcc uses
+		 * msmsdcc_delay() = 1 + 3000000/clk_rate (≈1 µs @ 48 MHz,
+		 * ≈8.5 µs @ 400 kHz init clock).  The previous hardcoded
+		 * udelay(1) was too short at init clock — this is the path
+		 * that issues the EXT_CSD READ on Samsung PRV=0x90.
+		 */
 		if (host->variant->qcom_datactrl_delay)
-			udelay(1);
+			udelay(1 + 3000000 / (host->cclk ?: 1));
 	}
 
 	if (mrq->sbc)
