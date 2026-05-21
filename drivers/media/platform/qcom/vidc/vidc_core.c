@@ -1178,8 +1178,11 @@ int vidc_boot_firmware(struct vidc_core *core)
 	}
 	vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
 		   VIDC_PIX_CACHE_CONFIG_DEFAULT);
-	dev_info(core->dev, "boot_fw: pix cache enabled (cfg=0x%x)\n",
-		 VIDC_PIX_CACHE_CONFIG_DEFAULT);
+	dev_info(core->dev,
+		 "boot_fw: pix cache cfg=0x%x readback=0x%x sw_reset_reg=0x%x\n",
+		 VIDC_PIX_CACHE_CONFIG_DEFAULT,
+		 vidc_read(core, VIDC_REG_PIX_CACHE_CONFIG),
+		 vidc_read(core, VIDC_REG_PIX_CACHE_SW_RESET));
 	return 0;
 }
 
