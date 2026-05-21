@@ -143,6 +143,22 @@ int mmc_io_rw_extended(struct mmc_card *card, int write, unsigned fn,
 		cmd.arg |= 0x08000000 | blocks;		/* block mode */
 	cmd.flags = MMC_RSP_SPI_R5 | MMC_RSP_R5 | MMC_CMD_ADTC;
 
+	/*
+	 * AR6003 mailbox-read tracing — one-shot per CMD53 to mailbox
+	 * window (addr 0x800..0xfff on function 1). Narrow filter so eMMC
+	 * traffic on sdcc1 is untouched and the printk flood that caused
+	 * sdcc1 DATACRCFAIL last round doesn't recur. Compare against
+	 * legacy webOS trace in reports/ar6003-cmd53-trace/.
+	 */
+	if (fn == 1 && addr >= 0x800 && addr <= 0xfff)
+		dev_info(&card->dev,
+			 "AR6K-MAINLINE CMD53 arg=0x%08x %s addr=0x%03x blocks=%u blksz=%u mode=%s incr=%d\n",
+			 cmd.arg,
+			 write ? "WR" : "RD",
+			 addr, blocks, blksz,
+			 blocks ? "BLOCK" : "BYTE",
+			 incr_addr);
+
 	data.blksz = blksz;
 	/* Code in host drivers/fwk assumes that "blocks" always is >=1 */
 	data.blocks = blocks ? blocks : 1;
