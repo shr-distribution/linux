@@ -31,16 +31,10 @@
  * pre-tiled data or run a software/HW tile pass before QBUF.
  */
 static const struct vidc_format vidc_enc_fmts[] = {
-	/*
-	 * Output (raw input) format: NV12MT (tiled NV12 64x32 macroblocks).
-	 * The VIDC encoder reads Y and UV from separate physical addresses
-	 * (REG_CH0_Y_ADDR / REG_CH0_C_ADDR), so advertise as 2 planes.
-	 * GStreamer's v4l2 plugin rejects NV12_64Z32 with num_planes=1 —
-	 * "Device wants 1 planes" — because tiled NV12 is inherently 2-plane.
-	 */
+	/* Output formats (raw input) */
 	{
 		.pixfmt = V4L2_PIX_FMT_NV12MT,
-		.num_planes = 2,
+		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
 		.codec = 0, /* raw format */
 	},
@@ -194,23 +188,12 @@ static int vidc_enc_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	pixmp->flags = 0;
 
 	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		/*
-		 * Raw NV12MT input: two planes
-		 *   [0] = luma  Y, width*height-aligned
-		 *   [1] = chroma UV interleaved, width*height/2
-		 * Strides are 128-byte aligned to match the tile-NV12 layout
-		 * the encoder hardware reads.
-		 */
-		u32 stride = ALIGN(pixmp->width, 128);
-		u32 y_lines = ALIGN(pixmp->height, 32);
-		u32 c_lines = ALIGN(pixmp->height / 2, 32);
-
-		pixmp->plane_fmt[0].sizeimage = stride * y_lines;
-		pixmp->plane_fmt[0].bytesperline = stride;
-		pixmp->plane_fmt[1].sizeimage = stride * c_lines;
-		pixmp->plane_fmt[1].bytesperline = stride;
+		/* Raw input */
+		szimage = vidc_enc_get_framesize_raw(pixmp->width,
+						     pixmp->height);
+		pixmp->plane_fmt[0].sizeimage = szimage;
+		pixmp->plane_fmt[0].bytesperline = ALIGN(pixmp->width, 128);
 		pixmp->colorspace = V4L2_COLORSPACE_REC709;
-		szimage = pixmp->plane_fmt[0].sizeimage + pixmp->plane_fmt[1].sizeimage;
 	} else {
 		/* Compressed output */
 		szimage = vidc_enc_get_framesize_compressed(pixmp->width,
@@ -489,53 +472,30 @@ static int vidc_enc_queue_setup(struct vb2_queue *q,
 				struct device *alloc_devs[])
 {
 	struct vidc_inst *inst = vb2_get_drv_priv(q);
-	u32 want_planes;
-	u32 y_size = 0, c_size = 0;
 	u32 size;
 
 	dev_info(inst->core->dev, "queue_setup: type=%d num_buffers=%d\n", q->type, *num_buffers);
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		/*
-		 * Raw NV12MT input — 2 planes (Y plane + UV plane), matching
-		 * the encoder hardware's split CH0_Y_ADDR / CH0_C_ADDR
-		 * register pair.  See try_fmt for the per-plane sizing.
-		 */
-		u32 stride = ALIGN(inst->out_width, 128);
-		u32 y_lines = ALIGN(inst->out_height, 32);
-		u32 c_lines = ALIGN(inst->out_height / 2, 32);
-
-		y_size = stride * y_lines;
-		c_size = stride * c_lines;
-		want_planes = 2;
-		dev_info(inst->core->dev,
-			 "queue_setup: OUTPUT 2 planes Y=%u C=%u\n", y_size, c_size);
+		/* Raw input */
+		size = vidc_enc_get_framesize_raw(inst->out_width,
+						  inst->out_height);
+		dev_info(inst->core->dev, "queue_setup: OUTPUT size=%u\n", size);
 	} else {
+		/* Compressed output */
 		size = vidc_enc_get_framesize_compressed(inst->width,
 							 inst->height);
-		want_planes = 1;
 		dev_info(inst->core->dev, "queue_setup: CAPTURE size=%u\n", size);
 	}
 
 	if (*num_planes) {
-		if (*num_planes != want_planes)
+		if (*num_planes != 1 || sizes[0] < size)
 			return -EINVAL;
-		if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-			if (sizes[0] < y_size || sizes[1] < c_size)
-				return -EINVAL;
-		} else if (sizes[0] < size) {
-			return -EINVAL;
-		}
 		return 0;
 	}
 
-	*num_planes = want_planes;
-	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		sizes[0] = y_size;
-		sizes[1] = c_size;
-	} else {
-		sizes[0] = size;
-	}
+	*num_planes = 1;
+	sizes[0] = size;
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
 		*num_buffers = max(*num_buffers, 4U);

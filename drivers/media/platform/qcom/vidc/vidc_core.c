@@ -1843,18 +1843,6 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 			 y_offset, c_offset, y_offset + (u32)y_size);
 	}
 
-	/*
-	 * Diagnostic: dump first 16 bytes of luma + chroma straight from
-	 * SMIPOOL before memcpy.  If the firmware actually wrote decoded
-	 * data here, we see real pixel bytes; all zeros means either the
-	 * firmware didn't write (DPB slot mismatch?) or CPU reads from
-	 * SMIPOOL return 0 (same hw quirk as the SHM page).
-	 */
-	print_hex_dump(KERN_INFO, "DPB Y[0:16]: ", DUMP_PREFIX_NONE,
-		       16, 1, slot_y, 16, false);
-	print_hex_dump(KERN_INFO, "DPB C[0:16]: ", DUMP_PREFIX_NONE,
-		       16, 1, slot_c, 16, false);
-
 	memcpy(dst_vaddr, slot_y, y_size);
 	memcpy(dst_vaddr + y_size, slot_c, c_size);
 
