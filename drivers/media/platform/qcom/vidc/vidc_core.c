@@ -853,16 +853,36 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->fw_size = core->fw->size;
 
 	/*
-	 * The VIDC embedded RISC is big-endian. The firmware blob shipped by
-	 * the firmware-hp-tenderloin Yocto package (605 KB) is stored in
-	 * big-endian byte order — the same byte order the RISC reads. Copy
-	 * it verbatim with memcpy_toio; no byte-swapping needed.
+	 * The VIDC embedded RISC is big-endian.  Two known firmware blobs:
 	 *
-	 * (The 500 KB webOS-doctor blob uses little-endian storage and would
-	 * require swab32 per word, matching webOS ddl_fw_change_endian().
-	 * The Yocto blob is the one on the target device.)
+	 *   605428 B : Sony Nozomi / Yocto firmware-hp-tenderloin package.
+	 *              Already byte-swapped to match the RISC's BE read
+	 *              order — copy verbatim.  Firmware ABI 0x00121130.
+	 *              Boots and ACKs every command, but no decoded pixel
+	 *              data ever lands in DPB (firmware engages command
+	 *              stub but not actual decoder — likely wrong silicon).
+	 *
+	 *    500140 B : webOS doctor 3.0.5 untouched-rootfs blob.  Same
+	 *              vintage as the 8060 silicon.  Stored in LE bytes,
+	 *              needs swab32 per 32-bit word before loading
+	 *              (matches webOS ddl_fw_change_endian).
+	 *
+	 * Detect by exact file size and apply the appropriate transform.
 	 */
-	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw->size);
+	if (core->fw->size == 500140) {
+		const u32 *src = (const u32 *)core->fw->data;
+		size_t words = core->fw->size / 4;
+		size_t i;
+
+		dev_info(core->dev,
+			 "load_firmware: webOS 500 KB blob detected, swab32 + memcpy\n");
+		for (i = 0; i < words; i++)
+			iowrite32(swab32(src[i]),
+				  (void __iomem *)(core->fw_vaddr + i * 4));
+		/* Tail bytes (none for 500140, evenly divisible by 4) */
+	} else {
+		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw->size);
+	}
 
 	/* CPU reads from SMI return 0; readback is not meaningful. */
 	printk(KERN_EMERG "VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
@@ -1064,7 +1084,17 @@ int vidc_boot_firmware(struct vidc_core *core)
 	 * the image, identical to what vidc_load_firmware does on first
 	 * load. Desc buffer and SHM are zeroed for the same reason.
 	 */
-	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
+	if (core->fw_size == 500140) {
+		const u32 *src = (const u32 *)core->fw->data;
+		size_t words = core->fw_size / 4;
+		size_t i;
+
+		for (i = 0; i < words; i++)
+			iowrite32(swab32(src[i]),
+				  (void __iomem *)(core->fw_vaddr + i * 4));
+	} else {
+		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
+	}
 	/*
 	 * Zero everything after the firmware blob: alignment gap, context
 	 * pool, descriptor buffer, and SHM. The context pool in particular
@@ -1196,9 +1226,11 @@ int vidc_boot_firmware(struct vidc_core *core)
 		vidc_write(core, VIDC_REG_PIX_CACHE_SW_RESET,
 			   sw & ~VIDC_PIX_CACHE_SW_RESET_BIT);
 	}
-	vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG, 0);
+	vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
+		   VIDC_PIX_CACHE_CONFIG_DEFAULT);
 	dev_info(core->dev,
-		 "boot_fw: pix cache DISABLED (cfg=0) readback=0x%x sw_reset_reg=0x%x\n",
+		 "boot_fw: pix cache cfg=0x%x readback=0x%x sw_reset_reg=0x%x\n",
+		 VIDC_PIX_CACHE_CONFIG_DEFAULT,
 		 vidc_read(core, VIDC_REG_PIX_CACHE_CONFIG),
 		 vidc_read(core, VIDC_REG_PIX_CACHE_SW_RESET));
 	return 0;
