@@ -3722,6 +3722,17 @@
 	 * (webOS kernel trace 2026-05-20, cavekit-usb-phy-tuning.md).
 	 */
 	qcom,phy-settle-seq = /bits/ 8 <0x32 0x35>, /bits/ 8 <0x36 0x06>;
+
+	/*
+	 * Enable BC 1.2 charger detection: on every VBUS rise the driver
+	 * runs the legacy msm72k_udc.c usb_multi_chg_detect() standard
+	 * portion (SDP/CDP/DCP via D+/D- voltage + vendor reg 0x34
+	 * secondary detect) and publishes the result on
+	 * /sys/class/power_supply/ci_hdrc_usb/{online, usb_type,
+	 * current_max}.  Userspace (powerd/batteryd) consumes this to
+	 * drive MAX8903B current selection.
+	 */
+	qcom,charger-detect;
 };
 &usb_hs1_phy {
 	v3p3-supply = <&pm8058_l6>;

@@ -2,7 +2,7 @@
 domain: usb-charger-detection
 created: "2026-05-21"
 last_updated: "2026-05-21"
-status: r1-investigation-complete
+status: r2-code-complete-hw-pending
 ---
 
 # Implementation: USB Charger Type Detection
@@ -13,7 +13,8 @@ Kit: `context/kits/cavekit-usb-charger-detection.md`.
 ## Status
 
 **R1 DONE** — investigation conclusion below.
-R2–R5: not started.
+**R2 code-complete, HW verification pending** — see R2 section.
+R3–R5: not started.
 
 ## R1: Mainline Programming-Path Investigation
 
@@ -154,18 +155,118 @@ clean, in-tree, upstream-friendly route.
 - **AC4** Driver source citations: DONE — every claim cites file path
   and line number.
 
-## R2-R5: not started
+## R2: Standard BC 1.2 Detection (SDP/CDP/DCP)
 
-Implementation pending. R2 will:
-1. Add `struct power_supply` registration to `ci_hdrc_msm` probe.
-2. Add `CI_HDRC_CONTROLLER_VBUS_EVENT` handler that triggers ULPI-based
-   detection.
-3. Port the legacy `usb_multi_chg_detect()` BC 1.2 portion (D+/D- short
-   detection, CDP differentiation via reg 0x34 bit 4).
-4. Map detected type to `power_supply` properties.
+**Status: code-complete, HW verification pending.**
 
-R3 will extend the detection with HP variants (Touchstone, OMTP),
-DT-gated by a `qcom,hp-charger-detect` boolean property.
+### Implementation summary
+
+Three changes in `drivers/usb/chipidea/ci_hdrc_msm.c`:
+
+1. **`ci_hdrc_msm_detect_charger()`** — ULPI-based D+/D- voltage probe.
+   Sequence ports the standard portion of legacy
+   `webos .../drivers/usb/gadget/msm72k_udc.c:508-606`:
+   - Clear vendor reg 0x34
+   - `FUNCTION_CTRL` = FS + termselect + non-driving + suspendM
+     (legacy raw 0x4d, now encoded from `ULPI_FUNC_CTRL_*` macros)
+   - `OTG_CTRL_CLR` clears `DP_PULLDOWN | DM_PULLDOWN`
+   - `msleep(20)` settle
+   - Read `PORTSC[11:10]` line-state field:
+     - `0b11` → DCP (D+/D- shorted), 1.5 A
+     - `0b00` → SDP/CDP, run secondary detect:
+       - Write reg 0x34 = 0x24 (current source on D+)
+       - Read reg 0x34 bit 4: set → CDP (1.5 A), clear → SDP (500 mA)
+     - other → UNKNOWN, 100 mA
+   - Cleanup reg 0x34
+
+2. **`power_supply` registration** — `devm_power_supply_register()`
+   from probe, gated on new DT property `qcom,charger-detect`:
+   - `name = "ci_hdrc_usb"`
+   - `type = POWER_SUPPLY_TYPE_USB`
+   - `usb_types` bitmap covers UNKNOWN / SDP / CDP / DCP
+   - Properties: `ONLINE`, `USB_TYPE`, `CURRENT_MAX`
+
+3. **`CI_HDRC_CONTROLLER_VBUS_EVENT` handler** — fires before
+   `ci_hdrc_gadget_connect()` triggers `hw_device_reset`, so the
+   controller is not yet running and our D+/D- manipulation is invisible
+   to the host. On rise: run detection. On fall: clear state.
+   `power_supply_changed()` emits uevent for userspace.
+
+### DT integration
+
+New optional property on the USB controller node:
+
+```dts
+&usb1 {
+    qcom,charger-detect;
+};
+```
+
+Enabled on tenderloin in
+`arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`.
+Other Qualcomm platforms (apq8064, msm8960) are unaffected — the
+property is absent, the entire detection path is skipped, no
+`power_supply` is registered.
+
+### Userspace surface
+
+After kernel boot with cable connected:
+
+```
+/sys/class/power_supply/ci_hdrc_usb/online            → 0 or 1
+/sys/class/power_supply/ci_hdrc_usb/usb_type          → SDP|CDP|DCP|Unknown
+/sys/class/power_supply/ci_hdrc_usb/current_max       → 100000..1500000 (uA)
+```
+
+On every plug/unplug a `KOBJ_CHANGE` uevent fires with environment
+variables `POWER_SUPPLY_NAME=ci_hdrc_usb` and the property values.
+`powerd`/`batteryd` can react via systemd-udev triggers and drive
+MAX8903B current limits via that driver's existing sysfs interfaces.
+
+### Acceptance criteria coverage (R2)
+
+- [ ] **AC1** SDP detected on USB host attach — pending HW test with
+      laptop port
+- [ ] **AC2** CDP detected on charging downstream port — pending HW
+      test (most modern USB hubs are CDP-capable)
+- [ ] **AC3** DCP detected on wall charger — pending HW test with
+      standard 5V phone charger (D+/D- shorted)
+- [ ] **AC4** Detection completes within 2 seconds — measured budget
+      is ~50 ms (`10 ms init + 20 ms settle + 10 ms secondary`); should
+      easily satisfy 2 s
+- [ ] **AC5** Result exposed via the chosen interface
+      (`power_supply` per R1 conclusion, NOT `usb_phy->chg_type`) —
+      code wires `ci_hdrc_usb` power_supply with usb_type subtype +
+      current_max
+
+### Notes
+
+- Legacy uses FS mode (not HS) for detection — HS mode activates 45 Ω
+  terminations that would mask the external resistor states.
+  Mainline does the same.
+- Detection runs in process context (chipidea OTG workqueue), so
+  `msleep()` is safe.
+- The ~50 ms detection delay is well inside the BC 1.2 charger
+  detection timeout (TDCD_TIMEOUT = 900 ms) and outside the gadget
+  enumeration path (which only starts after `hw_device_reset` returns).
+- HP-specific charger variants (Touchstone 10 W, HP Phone 900 mA,
+  OMTP) are deferred to R3; this R2 implementation collapses all
+  D+/D- = both-high signatures into DCP at 1.5 A.
+
+## R3-R5: not started
+
+R3 will extend detection with HP-specific variants (Touchstone 10 W /
+2 A, HP Phone Adaptor 900 mA, OMTP 900 mA) gated on a separate
+`qcom,hp-charger-detect` DT property. Each HP variant gets a custom
+`current_max` value matching the legacy table:
+- Touchstone 10 W → 2000 mA (key user-visible distinction)
+- HP Phone Adaptor → 900 mA
+- OMTP → 900 mA
+
+Plan: identify the HP variant by running additional D+/D- probes after
+the primary DCP detection (legacy `2-1-1-1` / `2-1-1-2` paths). Report
+variant identity via a vendor-specific sysfs node alongside the
+standard `current_max` differentiation.
 
 ## Cross-References
 

@@ -15,6 +15,7 @@
 #include <linux/extcon.h>
 #include <linux/of.h>
 #include <linux/delay.h>
+#include <linux/power_supply.h>
 #include <linux/ulpi/driver.h>
 #include <linux/ulpi/regs.h>
 
@@ -37,6 +38,27 @@
 #define HS_PHY_SEC_CTRL			0x0078
 #define HS_PHY_DIG_CLAMP_N		BIT(16)
 #define HS_PHY_POR_ASSERT		BIT(0)
+
+/*
+ * PORTSC line-status field for BC 1.2 charger detection.
+ * Bits 11:10 of OP_PORTSC reflect the raw D+/D- voltage state when the
+ * PHY is in non-driving mode (per legacy msm_hsusb_hw.h:226).
+ */
+#define PORTSC_LS_DP			BIT(11)	/* D+ line voltage */
+#define PORTSC_LS_DM			BIT(10)	/* D- line voltage */
+#define PORTSC_LS_MASK			(PORTSC_LS_DP | PORTSC_LS_DM)
+
+/*
+ * HP/Palm ULPI vendor charger-detect control register.
+ * Legacy webOS msm72k_udc.c usb_multi_chg_detect() uses this register
+ * to apply a current source on D+ and read back the CDP indicator.
+ * Reg 0x34 is in the standard ULPI vendor range (0x30-0x3F) reachable
+ * by direct ulpi_write(ci->ulpi, ...).
+ */
+#define ULPI_CHG_DETECT			0x34
+#define ULPI_CHG_DETECT_CDP		BIT(4)	/* secondary detect: CDP=1, SDP=0 */
+#define ULPI_CHG_DETECT_DPSRC		0x24	/* apply current source on D+ */
+#define ULPI_CHG_DETECT_DISABLE		0x0f	/* clear all detection bits */
 
 /*
  * USB HS bandwidth values for memory path.
@@ -96,6 +118,16 @@ struct ci_hdrc_msm {
 	 * USB controller node (u8 addr/val pairs, raw ULPI addresses).
 	 */
 	struct ci_msm_ulpi_seq *settle_seq;
+	/*
+	 * Optional BC 1.2 charger detection.  Gated by the
+	 * "qcom,charger-detect" DT property; when absent, the entire
+	 * detection path is skipped and no power_supply is registered.
+	 */
+	bool charger_detect_enabled;
+	struct power_supply *psy;
+	enum power_supply_usb_type usb_type;
+	int current_max_ua;
+	bool charger_online;
 };
 
 static int
@@ -199,6 +231,163 @@ static void ci_hdrc_msm_phy_settle(struct ci_hdrc *ci,
 		ulpi_write(ci->ulpi, seq->addr, seq->val);
 }
 
+/*
+ * ci_hdrc_msm_detect_charger - BC 1.2 charger type detection
+ *
+ * Ports the legacy webOS msm72k_udc.c usb_multi_chg_detect() standard
+ * SDP/CDP/DCP detection path.  HP-specific variants (Touchstone 10 W,
+ * HP Phone 900 mA, OMTP) are deferred to R3 of cavekit-usb-charger-
+ * detection.
+ *
+ * Sequence:
+ *   1. Clear vendor charger-detect state (ULPI reg 0x34 = 0x0f).
+ *   2. Put PHY into FS non-driving mode with termination enabled, so
+ *      D+/D- voltage reflects external resistors only (FUNCTION_CTRL).
+ *   3. Disable internal D+/D- pull-downs (OTG_CTRL_CLR) so the host /
+ *      charger's pull-up/down is the only thing pulling each line.
+ *   4. msleep(20) -- legacy comment notes this delay is mandatory.
+ *   5. Read PORTSC line-state field (bits 11:10 = D+/D-):
+ *        D+ high, D- high -> DCP  (D+/D- shorted on charger side)
+ *        D+ low,  D- low  -> SDP/CDP, run secondary detection
+ *        else             -> UNKNOWN
+ *   6. Secondary detection (only for D+ low / D- low):
+ *      a. Apply current source on D+ (reg 0x34 = 0x24).
+ *      b. Read reg 0x34 bit 4: set => CDP, clear => SDP.
+ *   7. Cleanup vendor charger-detect register.
+ *
+ * Precondition: gadget controller has been stopped (USBCMD_RS=0) by
+ * the previous STOPPED_EVENT, OR has not yet started after this VBUS
+ * connect.  Either way the controller is not running while we
+ * manipulate D+/D-.  After detection chipidea will run hw_device_reset
+ * (USBCMD_RST) which clears our ULPI configuration -- that is fine,
+ * we have already captured the detection result in msm_ci->usb_type.
+ *
+ * Runs in process context from ci_hdrc_msm_notify_event() on
+ * CI_HDRC_CONTROLLER_VBUS_EVENT; total budget ~50 ms.
+ */
+static void ci_hdrc_msm_detect_charger(struct ci_hdrc *ci,
+				       struct ci_hdrc_msm *msm_ci)
+{
+	u32 portsc_ls;
+	int reg34;
+	enum power_supply_usb_type chg = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	int current_max_ua = 100000;	/* safe default */
+
+	/* 1. Clear any prior vendor charger-detect state */
+	ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_DISABLE);
+	msleep(10);
+
+	/*
+	 * 2. FUNCTION_CTRL = FS + termselect + non-driving + suspendM.
+	 *    Legacy raw value 0x4d; encoded here from spec macros for
+	 *    readability.  FS mode (not HS) is intentional: HS would
+	 *    activate 45 Ω terminations on D+/D- and mask the external
+	 *    resistor states we're trying to read.
+	 */
+	ulpi_write(ci->ulpi, ULPI_FUNC_CTRL,
+		   ULPI_FUNC_CTRL_FULL_SPEED |
+		   ULPI_FUNC_CTRL_TERMSELECT |
+		   ULPI_FUNC_CTRL_OPMODE_NONDRIVING |
+		   ULPI_FUNC_CTRL_SUSPENDM);
+
+	/* 3. Disable D+/D- pull-downs so external resistors win */
+	ulpi_write(ci->ulpi, ULPI_CLR(ULPI_OTG_CTRL),
+		   ULPI_OTG_CTRL_DP_PULLDOWN | ULPI_OTG_CTRL_DM_PULLDOWN);
+
+	/* 4. Settle delay (mandatory per legacy comment) */
+	msleep(20);
+
+	/* 5. Read PORTSC line-state field */
+	portsc_ls = hw_read(ci, OP_PORTSC, PORTSC_LS_MASK);
+
+	if ((portsc_ls & PORTSC_LS_MASK) == PORTSC_LS_MASK) {
+		/*
+		 * D+ high, D- high: DCP -- D+ and D- shorted via <= 200 Ω
+		 * resistor on the charger, both pulled high together.
+		 * BC 1.2 specifies 1.5 A as the maximum DCP current; the
+		 * legacy code reported 900 mA for the "HP Phone Adaptor"
+		 * variant of this path and 2 A for the Touchstone variant.
+		 * Those distinctions are R3 (HP-specific) and not made here.
+		 */
+		chg = POWER_SUPPLY_USB_TYPE_DCP;
+		current_max_ua = 1500000;
+	} else if ((portsc_ls & PORTSC_LS_MASK) == 0) {
+		/*
+		 * D+ low, D- low: SDP or CDP, run secondary detection.
+		 * Apply current source on D+ (reg 0x34 = 0x24) and read
+		 * bit 4 of the same register for the CDP/SDP indicator.
+		 */
+		ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_DPSRC);
+		msleep(10);
+		reg34 = ulpi_read(ci->ulpi, ULPI_CHG_DETECT);
+		if (reg34 >= 0 && (reg34 & ULPI_CHG_DETECT_CDP)) {
+			chg = POWER_SUPPLY_USB_TYPE_CDP;
+			current_max_ua = 1500000;	/* BC 1.2 CDP */
+		} else {
+			chg = POWER_SUPPLY_USB_TYPE_SDP;
+			current_max_ua = 500000;	/* USB 2.0 SDP */
+		}
+	} else {
+		/*
+		 * D+ high && D- low, or D+ low && D- high: nonstandard.
+		 * Legacy reported these as "Unknown type Adaptor 100 mA".
+		 */
+		chg = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+		current_max_ua = 100000;
+	}
+
+	/* 7. Restore vendor charger-detect register */
+	ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_DISABLE);
+
+	msm_ci->usb_type = chg;
+	msm_ci->current_max_ua = current_max_ua;
+	msm_ci->charger_online = true;
+
+	dev_info(ci->dev->parent,
+		 "USB charger detected: type=%d current_max=%d uA (portsc_ls=0x%x)\n",
+		 chg, current_max_ua, portsc_ls);
+}
+
+static enum power_supply_property ci_hdrc_msm_psy_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+};
+
+static int ci_hdrc_msm_psy_get_property(struct power_supply *psy,
+					enum power_supply_property psp,
+					union power_supply_propval *val)
+{
+	struct ci_hdrc_msm *msm_ci = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		val->intval = msm_ci->charger_online ? 1 : 0;
+		break;
+	case POWER_SUPPLY_PROP_USB_TYPE:
+		val->intval = msm_ci->usb_type;
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		val->intval = msm_ci->current_max_ua;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static const struct power_supply_desc ci_hdrc_msm_psy_desc = {
+	.name		= "ci_hdrc_usb",
+	.type		= POWER_SUPPLY_TYPE_USB,
+	.usb_types	= BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
+			  BIT(POWER_SUPPLY_USB_TYPE_SDP)     |
+			  BIT(POWER_SUPPLY_USB_TYPE_CDP)     |
+			  BIT(POWER_SUPPLY_USB_TYPE_DCP),
+	.properties	= ci_hdrc_msm_psy_props,
+	.num_properties	= ARRAY_SIZE(ci_hdrc_msm_psy_props),
+	.get_property	= ci_hdrc_msm_psy_get_property,
+};
+
 static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 {
 	struct device *dev = ci->dev->parent;
@@ -283,6 +472,27 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 		 * up while the cable is unplugged -- acceptable, since these
 		 * are tiny and the platform suspends as a whole anyway.
 		 */
+		break;
+	case CI_HDRC_CONTROLLER_VBUS_EVENT:
+		/*
+		 * BC 1.2 charger detection runs here -- VBUS_EVENT fires
+		 * from ci_udc_vbus_session() before ci_hdrc_gadget_connect()
+		 * triggers hw_device_reset(), so the controller is not yet
+		 * running and our D+/D- manipulation will not be observed
+		 * by the host as enumeration traffic.  Gated by DT property
+		 * so non-MSM8660 boards skip the detection entirely.
+		 */
+		if (!msm_ci->charger_detect_enabled || !msm_ci->psy)
+			break;
+		if (ci->vbus_active) {
+			ci_hdrc_msm_detect_charger(ci, msm_ci);
+		} else {
+			msm_ci->charger_online = false;
+			msm_ci->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+			msm_ci->current_max_ua = 0;
+			dev_info(dev, "USB charger removed\n");
+		}
+		power_supply_changed(msm_ci->psy);
 		break;
 	default:
 		dev_dbg(dev, "unknown ci_hdrc event\n");
@@ -436,6 +646,19 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 		}
 	}
 
+	/*
+	 * Optional BC 1.2 charger detection.  When "qcom,charger-detect"
+	 * is present in DT, register a power_supply that publishes the
+	 * detected charger type on each CI_HDRC_CONTROLLER_VBUS_EVENT.
+	 * Userspace reads the result from /sys/class/power_supply/
+	 * ci_hdrc_usb/ (online, usb_type, current_max).
+	 */
+	ci->charger_detect_enabled = of_property_read_bool(pdev->dev.of_node,
+							   "qcom,charger-detect");
+	ci->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	ci->current_max_ua = 0;
+	ci->charger_online = false;
+
 	ci->base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(ci->base))
 		return PTR_ERR(ci->base);
@@ -521,6 +744,35 @@ static int ci_hdrc_msm_probe(struct platform_device *pdev)
 		of_node_put(phy_node);
 	}
 	of_node_put(ulpi_node);
+
+	/*
+	 * Register the BC 1.2 charger detection power_supply before
+	 * adding the chipidea device.  The chipidea device, once added,
+	 * may immediately fire CI_HDRC_CONTROLLER_VBUS_EVENT if VBUS is
+	 * already present at boot -- our handler dereferences msm_ci->psy
+	 * so it must be valid before the event arrives.
+	 */
+	if (ci->charger_detect_enabled) {
+		struct power_supply_config psy_cfg = {
+			.drv_data = ci,
+			.fwnode = of_fwnode_handle(pdev->dev.of_node),
+		};
+
+		ci->psy = devm_power_supply_register(&pdev->dev,
+						     &ci_hdrc_msm_psy_desc,
+						     &psy_cfg);
+		if (IS_ERR(ci->psy)) {
+			ret = PTR_ERR(ci->psy);
+			ci->psy = NULL;
+			if (ret != -EPROBE_DEFER)
+				dev_err(&pdev->dev,
+					"power_supply_register failed: %d\n",
+					ret);
+			goto err_mux;
+		}
+		dev_info(&pdev->dev,
+			 "BC 1.2 charger detection enabled (power_supply: ci_hdrc_usb)\n");
+	}
 
 	plat_ci = ci_hdrc_add_device(&pdev->dev, pdev->resource,
 				     pdev->num_resources, &ci->pdata);
