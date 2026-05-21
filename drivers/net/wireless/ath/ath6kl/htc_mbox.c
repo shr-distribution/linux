@@ -1312,6 +1312,11 @@ static int ath6kl_htc_rx_packet(struct htc_target *target,
 		return -ENOMEM;
 	}
 
+	pr_info("ath6kl: htc_rx_packet ENTRY rx_len=%u padded_len=%u block_sz=%u htc_addr=0x%08x buf=%p buf_len=%d\n",
+		rx_len, padded_len, target->block_sz,
+		dev->ar->mbox_info.htc_addr,
+		packet->buf, packet->buf_len);
+
 	ath6kl_dbg(ATH6KL_DBG_HTC,
 		   "htc rx 0x%p hdr 0x%x len %d mbox 0x%x\n",
 		   packet, packet->info.rx.exp_hdr,
@@ -1321,6 +1326,9 @@ static int ath6kl_htc_rx_packet(struct htc_target *target,
 				     dev->ar->mbox_info.htc_addr,
 				     packet->buf, padded_len,
 				     HIF_RD_SYNC_BLOCK_FIX);
+
+	pr_info("ath6kl: htc_rx_packet EXIT status=%d padded_len=%u (rx_len=%u)\n",
+		status, padded_len, rx_len);
 
 	packet->status = status;
 
