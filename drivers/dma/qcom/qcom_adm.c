@@ -877,10 +877,16 @@ static void adm_start_dma(struct adm_chan *achan)
 		u32 crci_val = async_desc->mux | async_desc->blk_size;
 		writel(crci_val,
 		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
-		dev_dbg(adev->dev,
-			"ADM start_dma: CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=%d)\n",
-			async_desc->crci, crci_val,
-			async_desc->mux, async_desc->blk_size);
+		/*
+		 * Always log CRCI programming for WiFi ch5 to verify
+		 * block size matches what legacy uses (0 for sdcc4).
+		 */
+		if (achan->id == 5)
+			dev_info(adev->dev,
+				 "ADM-DIAG: ch5 CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=%d len=%zu)\n",
+				 async_desc->crci, crci_val,
+				 async_desc->mux, async_desc->blk_size,
+				 async_desc->length);
 	}
 
 	/*
