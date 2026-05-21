@@ -408,6 +408,29 @@ static void ci_hdrc_msm_detect_charger(struct ci_hdrc *ci,
 	enum power_supply_usb_type chg = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	enum ci_hdrc_msm_chg_variant variant = CI_HDRC_MSM_CHG_VARIANT_NONE;
 	int current_max_ua = 100000;	/* safe default */
+	bool was_running;
+
+	/*
+	 * 0. Stop the controller before any ULPI/PHY-config writes.
+	 *
+	 * Without this, an in-flight enumeration (HS chirp, FS J-state
+	 * driving, host bus-reset) corrupts the D+/D- voltage state we're
+	 * trying to read.  Confirmed on-device 2026-05-21: with the
+	 * controller running, plugging a laptop returned PORTSC line state
+	 * 0x800 (D+ high, D- low = FS J-state from mid-enumeration) and
+	 * misclassified as UNKNOWN 100 mA instead of SDP 500 mA.
+	 *
+	 * Mirrors legacy webOS msm72k_udc.c:518 which stops USBCMD_RS=0
+	 * before its first ULPI write and re-asserts at the end of the
+	 * SDP/CDP paths.  Restart unconditionally if it was running
+	 * before -- the brief disconnect causes the host to re-enumerate
+	 * the gadget which is acceptable for a once-per-VBUS-event probe.
+	 */
+	was_running = !!hw_read(ci, OP_USBCMD, USBCMD_RS);
+	if (was_running) {
+		hw_write(ci, OP_USBCMD, USBCMD_RS, 0);
+		msleep(10);
+	}
 
 	/* 1. Clear any prior vendor charger-detect state */
 	ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_DISABLE);
@@ -467,6 +490,16 @@ static void ci_hdrc_msm_detect_charger(struct ci_hdrc *ci,
 
 	/* 6. Cleanup vendor charger-detect register */
 	ulpi_write(ci->ulpi, ULPI_CHG_DETECT, ULPI_CHG_DETECT_DISABLE);
+
+	/*
+	 * 7. Restart the controller if we stopped it.  The host will see
+	 * a brief disconnect and re-enumerate the gadget -- acceptable
+	 * cost for a single-shot probe per VBUS event.  If we didn't stop
+	 * it (controller was already halted), leave it for the chipidea
+	 * framework to start via hw_device_state in its usual flow.
+	 */
+	if (was_running)
+		hw_write(ci, OP_USBCMD, USBCMD_RS, USBCMD_RS);
 
 	msm_ci->usb_type = chg;
 	msm_ci->chg_variant = variant;
