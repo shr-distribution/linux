@@ -1180,11 +1180,13 @@ int vidc_boot_firmware(struct vidc_core *core)
 		 core->fw_version);
 
 	/*
-	 * Enable the pixel cache.  Mirrors webOS ddl_vidc_core_init
-	 * (vcd_ddl_vidc.c:66-77): first pulse the cache SW_RESET, then
-	 * write the cache config (CACHE_EN | PREFETCH_EN | PORT_B,
-	 * PAGE_SIZE=1K → 0x1a).  Per-frame address programming happens
-	 * in vidc_dec_submit_frame before each FRAME_DATA trigger.
+	 * Pixel-cache experiment: webOS supports PIX_CACHE_DISABLE build
+	 * variant.  With axi_a/b clocks on, full cache config, sentinel
+	 * chroma slots, the firmware STILL doesn't write to DPB.  Disable
+	 * the cache entirely (cfg=0) so the decoder writes directly to
+	 * DRAM through Port B AXI.  If DPB now gets real pixel data,
+	 * the cache config was the issue; if still 0xCC, the firmware is
+	 * processing commands without actually engaging the decoder.
 	 */
 	{
 		u32 sw = vidc_read(core, VIDC_REG_PIX_CACHE_SW_RESET);
@@ -1194,11 +1196,9 @@ int vidc_boot_firmware(struct vidc_core *core)
 		vidc_write(core, VIDC_REG_PIX_CACHE_SW_RESET,
 			   sw & ~VIDC_PIX_CACHE_SW_RESET_BIT);
 	}
-	vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
-		   VIDC_PIX_CACHE_CONFIG_DEFAULT);
+	vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG, 0);
 	dev_info(core->dev,
-		 "boot_fw: pix cache cfg=0x%x readback=0x%x sw_reset_reg=0x%x\n",
-		 VIDC_PIX_CACHE_CONFIG_DEFAULT,
+		 "boot_fw: pix cache DISABLED (cfg=0) readback=0x%x sw_reset_reg=0x%x\n",
 		 vidc_read(core, VIDC_REG_PIX_CACHE_CONFIG),
 		 vidc_read(core, VIDC_REG_PIX_CACHE_SW_RESET));
 	return 0;
