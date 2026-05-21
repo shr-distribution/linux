@@ -934,11 +934,19 @@ static void adm_start_dma(struct adm_chan *achan)
 static irqreturn_t adm_dma_irq(int irq, void *data)
 {
 	struct adm_device *adev = data;
-	u32 srcs, i;
+	u32 srcs, srcs_ee0, i;
 	struct adm_async_desc *async_desc;
 
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
+	srcs_ee0 = readl_relaxed(adev->regs +
+			ADM_SEC_DOMAIN_IRQ_STATUS(0));
+
+	if (srcs || srcs_ee0) {
+		dev_info(adev->dev,
+			 "ADM-DIAG IRQ: srcs@EE%d=0x%08x srcs@EE0=0x%08x\n",
+			 adev->ee, srcs, srcs_ee0);
+	}
 
 	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
 
