@@ -821,12 +821,26 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 				vidc_write(core,
 					   VIDC_REG_PIX_CACHE_LUMA_BASE + i * 4,
 					   slot_phys);
+				/*
+				 * webOS passes NULL for chroma_offset which
+				 * makes vidc_pix_cache_init_luma_chroma_base_addr
+				 * write DPB_RESET_VALUE (0xFFFFFFF8) to every
+				 * chroma slot.  The cache derives chroma from
+				 * luma_base + frame_range internally.
+				 */
+				vidc_write(core,
+					   VIDC_REG_PIX_CACHE_CHROMA_BASE + i * 4,
+					   VIDC_PIX_CACHE_DPB_RESET);
 			}
-			/* Clear remaining unused luma slots (defensive) */
-			for (; i < VIDC_PIX_CACHE_MAX_DPB; i++)
+			/* Reset remaining unused slots to DPB_RESET (webOS does this) */
+			for (; i < VIDC_PIX_CACHE_MAX_DPB; i++) {
 				vidc_write(core,
 					   VIDC_REG_PIX_CACHE_LUMA_BASE + i * 4,
-					   0);
+					   VIDC_PIX_CACHE_DPB_RESET);
+				vidc_write(core,
+					   VIDC_REG_PIX_CACHE_CHROMA_BASE + i * 4,
+					   VIDC_PIX_CACHE_DPB_RESET);
+			}
 
 			frame_size = ((inst->seq_height & 0x7ff) << 16) |
 				     (inst->seq_width & 0x7ff);
