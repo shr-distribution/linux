@@ -22,6 +22,7 @@ explicitly stated otherwise.
 | wifi-suspend-wake | cavekit-wifi-suspend-wake.md | WiFi wake-from-suspend via SDC4 DAT1 routed through MPM (hard-gated on MPM) | draft |
 | usb-phy-tuning | cavekit-usb-phy-tuning.md | Investigate-then-conditional USB ULPI PHY signal-quality tuning replicating legacy values | draft |
 | usb-charger-detection | cavekit-usb-charger-detection.md | Detect USB charger type (SDP/CDP/DCP + HP Touchstone variants) and expose to userspace | draft |
+| usb-otg-host | cavekit-usb-otg-host.md | Enable USB host mode with OTG cable (ID-based role switch + 5V VBUS supply via GPIO 102 boost + PM8901 MVS) | draft |
 
 ## Out-of-Kit Tracked Items
 
@@ -50,6 +51,7 @@ state. They remain part of the port's outstanding work surface.
 | sensor-i2c-recovery | (none) | Independent |
 | usb-phy-tuning | (none) | Independent |
 | usb-charger-detection | usb-phy-tuning | Same regression-guard bar; ULPI plug/unplug infrastructure shared |
+| usb-otg-host | usb-phy-tuning, usb-charger-detection | Regression bar: peripheral plug/unplug + BC 1.2 detection must keep working after dr_mode = "otg"; shares the chipidea controller |
 
 ## Dependency Graph
 
@@ -66,16 +68,17 @@ sensor-i2c-recovery   (independent)
 pmic-thermal          (independent)
 usb-phy-tuning        (independent; R1 is investigation-only)
 usb-charger-detection (R1 is investigation-only; shares regression bar with usb-phy-tuning R3)
+usb-otg-host          (R1 is investigation-only; regression bar against usb-phy-tuning + usb-charger-detection R2-R3)
 ```
 
 ## Coverage Summary
 
-- Total kits: 7 (1 existing + 5 from 2026-05-19 batch + 1 from 2026-05-21)
+- Total kits: 8 (1 existing + 5 from 2026-05-19 batch + 2 from 2026-05-21)
 - New kits this batch: soc-watchdog, sensor-i2c-recovery, pmic-thermal,
   wifi-suspend-wake, usb-phy-tuning
-- New kit 2026-05-21: usb-charger-detection
+- New kits 2026-05-21: usb-charger-detection, usb-otg-host
 - Investigation-first kits (R1 = investigate, downstream R's conditional):
-  soc-watchdog, usb-phy-tuning, usb-charger-detection
+  soc-watchdog, usb-phy-tuning, usb-charger-detection, usb-otg-host
 - Hard-precondition kits: wifi-suspend-wake (gated on
   `impl-mpm-boot-hang.md`)
 - Originally planned but withdrawn: `rtc-writable` — see Out-of-Kit
