@@ -1787,6 +1787,15 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 		return -EINVAL;
 	}
 
+	/*
+	 * The firmware writes the ABSOLUTE physical address (>> 11) into
+	 * VIDC_REG_DEC_DISPLAY_Y / DISPLAY_C, NOT a fw-relative offset.
+	 * webOS confirms this in vcd_ddl_interrupt_handler.c:906 where it
+	 * uses (display_y_addr << 11) directly as the buffer physical.
+	 * Programming the DPB took a fw-relative offset (slot - DRAM_BASE)
+	 * but the FRAME_DONE response is absolute — the firmware internally
+	 * re-adds DRAM_BASE before writing the address back.
+	 */
 	y_offset = inst->display_y_raw << VIDC_ADDR_SHIFT;
 	c_offset = inst->display_c_raw << VIDC_ADDR_SHIFT;
 	y_size = inst->dpb_y_size;
@@ -1800,15 +1809,9 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 		return -ENOSPC;
 	}
 
-	/*
-	 * Translate fw-relative luma offset back to a DPB slot index.
-	 * slot_size matches the per-slot stride from vidc_init_buffers():
-	 *   ALIGN(y_size + c_size + mv_size, SZ_4K)
-	 * We re-derive it from dpb_y_alloc_size / dpb_count rather than
-	 * re-aligning so any future allocator change stays consistent.
-	 */
+	/* Translate absolute physical luma address to a DPB slot index. */
 	slot_size = inst->dpb_y_alloc_size / inst->dpb_count;
-	slot_phys = core->fw_dma_addr + y_offset;
+	slot_phys = y_offset;
 
 	if (slot_phys < inst->dpb_y_dma_addr ||
 	    slot_phys >= inst->dpb_y_dma_addr + inst->dpb_y_alloc_size) {
@@ -1831,9 +1834,8 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 
 	/*
 	 * Sanity-check the chroma offset matches the slot we picked.
-	 * If the firmware reported a chroma plane from a different slot
-	 * than the luma plane, something is very wrong — bail rather
-	 * than copy mismatched halves.
+	 * Both luma and chroma are absolute physical addresses; chroma sits
+	 * immediately after luma within the same DPB slot.
 	 */
 	if (c_offset != y_offset + y_size) {
 		dev_warn(core->dev,
