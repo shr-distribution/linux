@@ -11,7 +11,7 @@ last_edited: "2026-05-20"
 | spm-init | 5 | 5 | Testing - Implementation complete, device testing pending |
 | soc-watchdog | 3 | 5 | T-001/T-008/T-010 done; T-011/T-021 HW verification pending |
 | usb-phy-tuning | 4 | 4 | ALL DONE. T-006/T-016 (driver+DT), T-018 plug/unplug confirmed working on-device (61eec9a8d6b8) |
-| usb-charger-detection | 3 | 5 | R1-R3 code-complete (R1 investigation + R2 BC 1.2 SDP/CDP/DCP + R3 HP variants: Touchstone 10W, HP Phone 900mA, OMTP). HW verification pending across all 6 charger types. R4 regression / R5 won't-fix not started |
+| usb-charger-detection | 4 | 5 | R1-R4 DONE on-device 2026-05-21. R2 BC 1.2 SDP/CDP/DCP confirmed; R3 HP variants confirmed (hp-touchstone-10w + hp-phone-900ma observed; OMTP untested - no sample). R4 11/11 plug/unplug clean, +0.41s laptop reconnect under 200ms budget. R5 N/A (path exists) |
 | sensor-i2c-recovery | 2 | 4 | T-002/T-003 done (i2c-qup recovery wired, 9-cycle generic SCL); T-012/T-013 HW pending |
 | pmic-thermal | 6 | 6 | ALL DONE on-device. T-004/T-005 (both zones live), T-014 (critical-trip -> poweroff 148us), T-015 (defconfig flags), T-022 (no userspace daemon -- path is kernel-only), T-023 (latency 148us == 33783x under polled budget, 6756x under IRQ budget) |
 
