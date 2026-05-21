@@ -1843,6 +1843,22 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 			 y_offset, c_offset, y_offset + (u32)y_size);
 	}
 
+	/*
+	 * Diagnostic: dump 32 bytes from the start AND middle of luma + 16
+	 * bytes of chroma straight from the SMIPOOL DPB slot before memcpy.
+	 * The output JPEG is solid green (Y=U=V=0) — needed to know whether
+	 * a) firmware wrote real data and CPU reads return zeros (SMIPOOL
+	 *    hw quirk), or b) firmware never wrote (wrong DPB layout), or
+	 * c) we read the wrong location.  Sample two Y offsets to detect
+	 * partial writes (e.g. only top tiles populated).
+	 */
+	print_hex_dump(KERN_INFO, "DPB Y[0:32]: ", DUMP_PREFIX_NONE,
+		       16, 1, slot_y, 32, false);
+	print_hex_dump(KERN_INFO, "DPB Y[mid]: ", DUMP_PREFIX_NONE,
+		       16, 1, (u8 *)slot_y + y_size / 2, 32, false);
+	print_hex_dump(KERN_INFO, "DPB C[0:16]: ", DUMP_PREFIX_NONE,
+		       16, 1, slot_c, 16, false);
+
 	memcpy(dst_vaddr, slot_y, y_size);
 	memcpy(dst_vaddr + y_size, slot_c, c_size);
 
