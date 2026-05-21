@@ -364,6 +364,25 @@ static int lm8502_probe(struct i2c_client *client)
 			dev_err(dev, "Failed to enable vcc supply: %d\n", ret);
 			return ret;
 		}
+
+		/*
+		 * Request High Power Mode (100 mA budget) on the vcc rail.
+		 * The LM8502 internal boost converter plus ten LED outputs at
+		 * up to 9 mA each draw ~100 mA worst case. On RPM-managed PMIC
+		 * LDOs (e.g. PM8058_L16 on the HP TouchPad) the default Low
+		 * Power Mode caps the regulator at ~1 mA, which leaves the
+		 * chip current-starved: i2c reads return 0xff and writes get
+		 * NAK'd (-ENXIO) even though probe and brightness sysfs
+		 * writes don't surface any error.
+		 *
+		 * regulator_set_load() is a no-op on consumers whose supply
+		 * doesn't carry the `regulator-allow-set-load` DT property,
+		 * so this call is safe on platforms with simpler regulators.
+		 */
+		ret = regulator_set_load(priv->vcc, 100000);
+		if (ret)
+			dev_warn(dev, "regulator_set_load(100mA) failed: %d\n",
+				 ret);
 	}
 
 	/* Get enable GPIO */
@@ -415,9 +434,11 @@ static void lm8502_remove(struct i2c_client *client)
 	if (priv->enable_gpio)
 		gpiod_set_value_cansleep(priv->enable_gpio, 0);
 
-	/* Disable power supply */
-	if (priv->vcc)
+	/* Drop the high-power-mode load request, then disable */
+	if (priv->vcc) {
+		regulator_set_load(priv->vcc, 0);
 		regulator_disable(priv->vcc);
+	}
 }
 
 static int lm8502_suspend(struct device *dev)
@@ -441,8 +462,10 @@ static int lm8502_suspend(struct device *dev)
 	if (priv->enable_gpio)
 		gpiod_set_value_cansleep(priv->enable_gpio, 0);
 
-	if (priv->vcc)
+	if (priv->vcc) {
+		regulator_set_load(priv->vcc, 0);
 		regulator_disable(priv->vcc);
+	}
 
 	priv->suspended = true;
 
@@ -463,6 +486,10 @@ static int lm8502_resume(struct device *dev)
 			dev_err(dev, "Failed to enable vcc supply: %d\n", ret);
 			return ret;
 		}
+		ret = regulator_set_load(priv->vcc, 100000);
+		if (ret)
+			dev_warn(dev, "regulator_set_load(100mA) failed: %d\n",
+				 ret);
 	}
 
 	if (priv->enable_gpio)

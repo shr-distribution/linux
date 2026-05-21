@@ -825,11 +825,30 @@
 					 * authentic legacy AO rails (L16, L21, S3, S4,
 					 * PM8901_LVS0). Hardware-verified enabled on
 					 * running legacy webOS 2.6.35.
+					 *
+					 * regulator-allow-set-load lets the lm8502
+					 * driver request HPM (~100 mA) via the
+					 * regulator_set_load() consumer API once it
+					 * probes. Legacy uses LDO300HMIN (300 mA peak,
+					 * HPM mode) for L16; the lm8502 chip's boost
+					 * converter plus ten LED outputs at 9 mA each
+					 * draw ~100 mA worst case. Without HPM the LDO
+					 * stays in LPM (~1 mA cap) and the chip is
+					 * current-starved -- LEDs accept brightness
+					 * writes via sysfs but never light up because
+					 * the i2c writes get NAK'd at the chip side.
+					 *
+					 * Per `feedback_regulator_system_load_bootloop`,
+					 * use `regulator-allow-set-load` + driver-side
+					 * regulator_set_load() rather than DT-level
+					 * `regulator-system-load` (which bootloops on
+					 * tenderloin RPM).
 					 */
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
 					bias-pull-down;
 					regulator-always-on;
+					regulator-allow-set-load;
 				};
 				pm8058_l17: l17 {
 					/*
