@@ -263,23 +263,26 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 	case CI_HDRC_CONTROLLER_STOPPED_EVENT:
 		dev_dbg(dev, "CI_HDRC_CONTROLLER_STOPPED_EVENT received\n");
 		/*
-		 * Clear session-valid-control before powering off the PHY.
+		 * Do NOT power off the PHY on disconnect for MSM8660-class
+		 * hardware that uses qcom,phy-settle-seq.  These boards lack
+		 * an extcon-based VBUS source -- VBUS is sensed by the ULPI
+		 * PHY itself (routed to OTGSC_BSV via SESS_VLD_CTRL) and the
+		 * internal controller comparator also requires the PHY clocks
+		 * and regulators to be alive.  Powering off the PHY here
+		 * leaves OTGSC_BSV stuck at 0 forever -- the BSVIS interrupt
+		 * never fires on the next cable plug-in and reconnect dies.
 		 *
-		 * SESS_VLD_CTRL routes OTGSC_BSV through the ULPI PHY's
-		 * B-session-valid output.  With the PHY unpowered its BSV
-		 * output is stuck low, so OTGSC_BSV reads 0 even after VBUS
-		 * returns on the next cable plug-in.  BSVIS never fires and
-		 * reconnect never happens.
+		 * Confirmed on HP TouchPad (APQ8060) 2026-05-21: with the
+		 * phy_power_off() call active, gether_disconnect runs on
+		 * cable pull, STOPPED_EVENT fires, then dmesg goes silent
+		 * across 5 unplug/replug cycles -- BSVIS never re-fires.
 		 *
-		 * Clearing both bits here hands VBUS detection back to the
-		 * internal comparator.  RESET_EVENT re-enables SESS_VLD_CTRL
-		 * after phy_power_on() brings the PHY back up.
+		 * Mirrors legacy webOS msm72k_otg.c, which never disables the
+		 * PHY clocks/regulators between connect events.  The trade-off
+		 * is the ULPI ref/sleep clocks and v1p8/v3p3 regulators stay
+		 * up while the cable is unplugged -- acceptable, since these
+		 * are tiny and the platform suspends as a whole anyway.
 		 */
-		hw_write_id_reg(ci, HS_PHY_GENCONFIG_2,
-				HS_PHY_SESS_VLD_CTRL_EN, 0);
-		hw_write(ci, OP_USBCMD, HSPHY_SESS_VLD_CTRL, 0);
-		phy_power_off(ci->phy);
-		phy_exit(ci->phy);
 		break;
 	default:
 		dev_dbg(dev, "unknown ci_hdrc event\n");
