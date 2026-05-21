@@ -11,6 +11,7 @@ last_edited: "2026-05-20"
 | spm-init | 5 | 5 | Testing - Implementation complete, device testing pending |
 | soc-watchdog | 3 | 5 | T-001/T-008/T-010 done; T-011/T-021 HW verification pending |
 | usb-phy-tuning | 4 | 4 | ALL DONE. T-006/T-016 (driver+DT), T-018 plug/unplug confirmed working on-device (61eec9a8d6b8) |
+| usb-charger-detection | 1 | 5 | R1 investigation DONE — chosen option (b) ci_hdrc_msm VBUS_EVENT hook + power_supply framework. R2-R5 implementation pending |
 | sensor-i2c-recovery | 2 | 4 | T-002/T-003 done (i2c-qup recovery wired, 9-cycle generic SCL); T-012/T-013 HW pending |
 | pmic-thermal | 6 | 6 | ALL DONE on-device. T-004/T-005 (both zones live), T-014 (critical-trip -> poweroff 148us), T-015 (defconfig flags), T-022 (no userspace daemon -- path is kernel-only), T-023 (latency 148us == 33783x under polled budget, 6756x under IRQ budget) |
 
