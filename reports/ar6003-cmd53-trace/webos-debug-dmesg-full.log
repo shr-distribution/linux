@@ -1,0 +1,1149 @@
+008001ff
+[   43.192355] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.203462] AR6K-DBG mmc1 request_end t=43203444287 data_err=0 data_xfered=128 xfer_size=128
+[   43.203484] AR6K-DBG mmc1 request_end t=43203474954 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.204600] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43204544584
+[   43.204691] AR6K-DBG mmc1 pre-data t=43204654213 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.204776] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.204878] AR6K-DBG mmc1 irq t=43204864880 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   43.204900] AR6K-DBG mmc1 in-irq t=43204891843 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.205166] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.214234] AR6K-DBG mmc1 request_end t=43214216435 data_err=0 data_xfered=128 xfer_size=128
+[   43.214255] AR6K-DBG mmc1 request_end t=43214245621 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.215192] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43215134065
+[   43.215285] AR6K-DBG mmc1 pre-data t=43215247250 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.215367] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.215449] AR6K-DBG mmc1 irq t=43215436732 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   43.215474] AR6K-DBG mmc1 in-irq t=43215464880 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.216512] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.225811] AR6K-DBG mmc1 request_end t=43225793324 data_err=0 data_xfered=128 xfer_size=128
+[   43.225833] AR6K-DBG mmc1 request_end t=43225823398 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.234868] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43234812880
+[   43.234961] AR6K-DBG mmc1 pre-data t=43234923398 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.235047] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.235145] AR6K-DBG mmc1 irq t=43235133917 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   43.235167] AR6K-DBG mmc1 in-irq t=43235158954 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.235401] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.245158] AR6K-DBG mmc1 request_end t=43245144732 data_err=0 data_xfered=128 xfer_size=128
+[   43.245178] AR6K-DBG mmc1 request_end t=43245169769 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.254832] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43254778806
+[   43.254923] AR6K-DBG mmc1 pre-data t=43254886509 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.255008] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.255102] AR6K-DBG mmc1 irq t=43255091991 raw_status=0x0262a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   43.255123] AR6K-DBG mmc1 in-irq t=43255115250 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.272408] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.275439] AR6K-DBG mmc1 request_end t=43275430509 data_err=0 data_xfered=128 xfer_size=128
+[   43.275456] AR6K-DBG mmc1 request_end t=43275449176 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.289898] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43289840287
+[   43.289991] AR6K-DBG mmc1 pre-data t=43289953176 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.290075] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.297018] AR6K-DBG mmc1 irq t=43297004435 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.297037] AR6K-DBG mmc1 in-irq t=43297029769 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.304565] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.312850] AR6K-DBG mmc1 request_end t=43312835991 data_err=0 data_xfered=128 xfer_size=128
+[   43.312867] AR6K-DBG mmc1 request_end t=43312860139 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.320549] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43320531695
+[   43.320567] AR6K-DBG mmc1 pre-data t=43320560732 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.320585] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.320614] AR6K-DBG mmc1 irq t=43320607398 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   43.320631] AR6K-DBG mmc1 in-irq t=43320625472 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.327970] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.336547] AR6K-DBG mmc1 request_end t=43336532287 data_err=0 data_xfered=128 xfer_size=128
+[   43.336565] AR6K-DBG mmc1 request_end t=43336557324 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.337003] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43336943695
+[   43.337097] AR6K-DBG mmc1 pre-data t=43337058065 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.337183] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.350753] AR6K-DBG mmc1 irq t=43350738954 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.350771] AR6K-DBG mmc1 in-irq t=43350764139 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.364806] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.372434] AR6K-DBG mmc1 request_end t=43372420880 data_err=0 data_xfered=128 xfer_size=128
+[   43.372451] AR6K-DBG mmc1 request_end t=43372444435 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.380055] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43379995991
+[   43.380149] AR6K-DBG mmc1 pre-data t=43380110658 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.380233] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.386843] AR6K-DBG mmc1 irq t=43386833621 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.386861] AR6K-DBG mmc1 in-irq t=43386854509 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.394056] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.401566] AR6K-DBG mmc1 request_end t=43401553621 data_err=0 data_xfered=128 xfer_size=128
+[   43.401583] AR6K-DBG mmc1 request_end t=43401575991 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.415656] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43415598806
+[   43.415749] AR6K-DBG mmc1 pre-data t=43415711398 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.415834] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.429284] AR6K-DBG mmc1 irq t=43429274806 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.429302] AR6K-DBG mmc1 in-irq t=43429295695 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.429649] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.438068] AR6K-DBG mmc1 request_end t=43438055250 data_err=0 data_xfered=128 xfer_size=128
+[   43.438086] AR6K-DBG mmc1 request_end t=43438078361 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.445861] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43445805621
+[   43.445954] AR6K-DBG mmc1 pre-data t=43445916435 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.446039] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.452412] AR6K-DBG mmc1 irq t=43452402213 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.452430] AR6K-DBG mmc1 in-irq t=43452423250 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.459544] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.481820] AR6K-DBG mmc1 request_end t=43481806361 data_err=0 data_xfered=128 xfer_size=128
+[   43.481837] AR6K-DBG mmc1 request_end t=43481829917 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.482427] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43482371398
+[   43.482521] AR6K-DBG mmc1 pre-data t=43482483546 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.482606] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.495942] AR6K-DBG mmc1 irq t=43495931695 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.495959] AR6K-DBG mmc1 in-irq t=43495952880 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.503054] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.518450] AR6K-DBG mmc1 request_end t=43518436732 data_err=0 data_xfered=128 xfer_size=128
+[   43.518468] AR6K-DBG mmc1 request_end t=43518460287 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   43.526220] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=43526163546
+[   43.526312] AR6K-DBG mmc1 pre-data t=43526275546 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.526396] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.532447] AR6K-DBG mmc1 irq t=43532437176 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.532465] AR6K-DBG mmc1 in-irq t=43532458065 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   43.533920] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43533867250
+[   43.534011] AR6K-DBG mmc1 pre-data t=43533974954 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   43.534097] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.546241] AR6K-DBG mmc1 irq t=43546226509 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.546260] AR6K-DBG mmc1 in-irq t=43546253176 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.560064] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.567169] AR6K-DBG mmc1 post-dctrl-pio t=43567156732 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.567211] AR6K-DBG mmc1 request_end t=43567206213 data_err=0 data_xfered=24 xfer_size=24
+[   43.567227] AR6K-DBG mmc1 request_end t=43567220732 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.567552] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43567540287
+[   43.567570] AR6K-DBG mmc1 pre-data t=43567563695 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.567587] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.567621] AR6K-DBG mmc1 irq t=43567614361 raw_status=0x00482540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.567638] AR6K-DBG mmc1 in-irq t=43567632287 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.574884] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.581899] AR6K-DBG mmc1 post-dctrl-pio t=43581890065 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.581936] AR6K-DBG mmc1 request_end t=43581931250 data_err=0 data_xfered=24 xfer_size=24
+[   43.581952] AR6K-DBG mmc1 request_end t=43581945917 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.582261] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43582250213
+[   43.582278] AR6K-DBG mmc1 pre-data t=43582271991 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.582295] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.582324] AR6K-DBG mmc1 irq t=43582317176 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   43.582341] AR6K-DBG mmc1 in-irq t=43582335102 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.589547] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.596571] AR6K-DBG mmc1 post-dctrl-pio t=43596555250 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.596614] AR6K-DBG mmc1 request_end t=43596609028 data_err=0 data_xfered=24 xfer_size=24
+[   43.596630] AR6K-DBG mmc1 request_end t=43596623695 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.597011] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43596951991
+[   43.597105] AR6K-DBG mmc1 pre-data t=43597066213 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.597191] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.597271] AR6K-DBG mmc1 irq t=43597260583 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   43.597289] AR6K-DBG mmc1 in-irq t=43597282509 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.597503] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.611456] AR6K-DBG mmc1 post-dctrl-pio t=43611442954 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.611498] AR6K-DBG mmc1 request_end t=43611492583 data_err=0 data_xfered=24 xfer_size=24
+[   43.611514] AR6K-DBG mmc1 request_end t=43611507398 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.612953] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43612895843
+[   43.613045] AR6K-DBG mmc1 pre-data t=43613007843 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.613130] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.618528] AR6K-DBG mmc1 irq t=43618517621 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.618546] AR6K-DBG mmc1 in-irq t=43618539398 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.632285] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.639343] AR6K-DBG mmc1 post-dctrl-pio t=43639333472 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.639384] AR6K-DBG mmc1 request_end t=43639378954 data_err=0 data_xfered=24 xfer_size=24
+[   43.639399] AR6K-DBG mmc1 request_end t=43639393176 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.640075] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43640021028
+[   43.640166] AR6K-DBG mmc1 pre-data t=43640129621 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.640251] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.646436] AR6K-DBG mmc1 irq t=43646426954 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.646454] AR6K-DBG mmc1 in-irq t=43646447695 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.653509] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.660646] AR6K-DBG mmc1 post-dctrl-pio t=43660634213 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.660685] AR6K-DBG mmc1 request_end t=43660679398 data_err=0 data_xfered=24 xfer_size=24
+[   43.660700] AR6K-DBG mmc1 request_end t=43660693917 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.661171] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43661113621
+[   43.661263] AR6K-DBG mmc1 pre-data t=43661225472 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.661348] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.667954] AR6K-DBG mmc1 irq t=43667943991 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.667972] AR6K-DBG mmc1 in-irq t=43667966065 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.675106] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.695411] AR6K-DBG mmc1 post-dctrl-pio t=43695401472 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.695452] AR6K-DBG mmc1 request_end t=43695446806 data_err=0 data_xfered=24 xfer_size=24
+[   43.695468] AR6K-DBG mmc1 request_end t=43695461472 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.696111] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43696055102
+[   43.696203] AR6K-DBG mmc1 pre-data t=43696165176 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.696289] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.702799] AR6K-DBG mmc1 irq t=43702788880 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.702817] AR6K-DBG mmc1 in-irq t=43702810509 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.731138] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.738451] AR6K-DBG mmc1 post-dctrl-pio t=43738441324 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.738494] AR6K-DBG mmc1 request_end t=43738488435 data_err=0 data_xfered=24 xfer_size=24
+[   43.738509] AR6K-DBG mmc1 request_end t=43738502954 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.738767] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43738708880
+[   43.738860] AR6K-DBG mmc1 pre-data t=43738822509 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.738946] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.752087] AR6K-DBG mmc1 irq t=43752077917 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.752105] AR6K-DBG mmc1 in-irq t=43752099102 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.752400] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.766149] AR6K-DBG mmc1 post-dctrl-pio t=43766137621 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.766189] AR6K-DBG mmc1 request_end t=43766183695 data_err=0 data_xfered=24 xfer_size=24
+[   43.766205] AR6K-DBG mmc1 request_end t=43766198361 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.766844] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43766790361
+[   43.766935] AR6K-DBG mmc1 pre-data t=43766898361 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.767019] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.773173] AR6K-DBG mmc1 irq t=43773163250 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.773191] AR6K-DBG mmc1 in-irq t=43773184732 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.780596] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.787875] AR6K-DBG mmc1 post-dctrl-pio t=43787864583 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.787916] AR6K-DBG mmc1 request_end t=43787910658 data_err=0 data_xfered=24 xfer_size=24
+[   43.787931] AR6K-DBG mmc1 request_end t=43787925176 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.788173] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43788119843
+[   43.788265] AR6K-DBG mmc1 pre-data t=43788227843 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.788351] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.794982] AR6K-DBG mmc1 irq t=43794972583 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.794999] AR6K-DBG mmc1 in-irq t=43794993028 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.802511] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   43.816235] AR6K-DBG mmc1 post-dctrl-pio t=43816224732 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.816275] AR6K-DBG mmc1 request_end t=43816270213 data_err=0 data_xfered=24 xfer_size=24
+[   43.816291] AR6K-DBG mmc1 request_end t=43816284732 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.816654] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=43816599546
+[   43.816745] AR6K-DBG mmc1 pre-data t=43816708139 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   43.816829] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   43.829954] AR6K-DBG mmc1 irq t=43829944732 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   43.829972] AR6K-DBG mmc1 in-irq t=43829965769 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   43.830837] AR6K-DBG mmc1 post-dctrl-pio t=43830790361 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   43.836864] AR6K-DBG mmc1 request_end t=43836856435 data_err=0 data_xfered=24 xfer_size=24
+[   43.836879] AR6K-DBG mmc1 request_end t=43836873324 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   44.035626] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=44035565472
+[   44.035720] AR6K-DBG mmc1 pre-data t=44035682065 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   44.035804] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   44.042314] AR6K-DBG mmc1 irq t=44042304139 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   44.042332] AR6K-DBG mmc1 in-irq t=44042325324 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   44.062859] AR6K-DBG mmc1 request_end t=44062850509 data_err=0 data_xfered=128 xfer_size=128
+[   44.062876] AR6K-DBG mmc1 request_end t=44062869324 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   44.076783] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=44076729620
+[   44.076874] AR6K-DBG mmc1 pre-data t=44076837472 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   44.076959] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   44.083419] AR6K-DBG mmc1 irq t=44083410213 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   44.083437] AR6K-DBG mmc1 in-irq t=44083430657 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   44.803139] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   44.817114] AR6K-DBG mmc1 request_end t=44817104880 data_err=0 data_xfered=128 xfer_size=128
+[   44.817132] AR6K-DBG mmc1 request_end t=44817123991 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   44.824445] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=44824387250
+[   44.824541] AR6K-DBG mmc1 pre-data t=44824501620 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   44.824626] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   44.831394] AR6K-DBG mmc1 irq t=44831385176 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   44.831412] AR6K-DBG mmc1 in-irq t=44831405768 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   45.261218] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   45.270629] AR6K-DBG mmc1 request_end t=45270613917 data_err=0 data_xfered=128 xfer_size=128
+[   45.277814] AR6K-DBG mmc1 request_end t=45277798657 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   45.285943] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=45285880287
+[   45.329049] AR6K-DBG mmc1 pre-data t=45328999398 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.329138] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   45.336188] AR6K-DBG mmc1 irq t=45336172879 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   45.336207] AR6K-DBG mmc1 in-irq t=45336199991 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   45.343539] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   45.357975] AR6K-DBG mmc1 request_end t=45357961472 data_err=0 data_xfered=128 xfer_size=128
+[   45.357992] AR6K-DBG mmc1 request_end t=45357985176 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   45.358903] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=45358846657
+[   45.358995] AR6K-DBG mmc1 pre-data t=45358957472 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.359079] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   45.359174] AR6K-DBG mmc1 irq t=45359163250 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   45.359192] AR6K-DBG mmc1 in-irq t=45359185028 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   45.401481] AR6K-DBG mmc1 request_end t=45401465916 data_err=0 data_xfered=128 xfer_size=128
+[   45.401499] AR6K-DBG mmc1 request_end t=45401491102 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   45.415798] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=45415732731
+[   45.415893] AR6K-DBG mmc1 pre-data t=45415853768 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.415983] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   45.429742] AR6K-DBG mmc1 irq t=45429731250 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   45.429760] AR6K-DBG mmc1 in-irq t=45429753768 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   45.495967] AR6K-DBG mmc1 request_end t=45495950361 data_err=0 data_xfered=1536 xfer_size=1536
+[   45.495985] AR6K-DBG mmc1 request_end t=45495977176 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   45.496146] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=45496134509
+[   45.496164] AR6K-DBG mmc1 pre-data t=45496156879 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.496184] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   45.496218] AR6K-DBG mmc1 irq t=45496209028 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   45.496237] AR6K-DBG mmc1 in-irq t=45496229916 status=0x0260a440 cnt=363 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   45.496636] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=45496624287
+[   45.496654] AR6K-DBG mmc1 pre-data t=45496647546 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   45.496674] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   45.510394] AR6K-DBG mmc1 irq t=45510378361 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   45.510412] AR6K-DBG mmc1 in-irq t=45510405472 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   45.510848] AR6K-DBG mmc1 post-dctrl-pio t=45510836287 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   45.517815] AR6K-DBG mmc1 request_end t=45517800879 data_err=0 data_xfered=24 xfer_size=24
+[   45.517832] AR6K-DBG mmc1 request_end t=45517825028 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.517928] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=45517916435
+[   45.517947] AR6K-DBG mmc1 pre-data t=45517940287 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.517970] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   45.524967] AR6K-DBG mmc1 irq t=45524956879 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   45.524984] AR6K-DBG mmc1 in-irq t=45524977916 status=0x00400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   45.525464] AR6K-DBG mmc1 post-dctrl-pio t=45525452583 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   45.532227] AR6K-DBG mmc1 request_end t=45532215546 data_err=0 data_xfered=24 xfer_size=24
+[   45.532243] AR6K-DBG mmc1 request_end t=45532236287 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.568254] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=45568234953
+[   45.568274] AR6K-DBG mmc1 pre-data t=45568266953 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.568298] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   45.575256] AR6K-DBG mmc1 irq t=45575246361 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   45.575274] AR6K-DBG mmc1 in-irq t=45575267546 status=0x00400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   45.596851] AR6K-DBG mmc1 request_end t=45596836435 data_err=0 data_xfered=384 xfer_size=384
+[   45.596869] AR6K-DBG mmc1 request_end t=45596861620 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   45.597013] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=45597002213
+[   45.597031] AR6K-DBG mmc1 pre-data t=45597024435 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.597051] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   45.604204] AR6K-DBG mmc1 irq t=45604194509 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   45.604222] AR6K-DBG mmc1 in-irq t=45604214953 status=0x00400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   45.713540] AR6K-DBG mmc1 request_end t=45713524287 data_err=0 data_xfered=384 xfer_size=384
+[   45.713558] AR6K-DBG mmc1 request_end t=45713550213 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   45.713991] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=45713978805
+[   45.714010] AR6K-DBG mmc1 pre-data t=45714002657 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   45.714029] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   45.727897] AR6K-DBG mmc1 irq t=45727882657 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   45.727915] AR6K-DBG mmc1 in-irq t=45727908139 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   45.965430] AR6K-DBG mmc1 request_end t=45965415694 data_err=0 data_xfered=1536 xfer_size=1536
+[   45.972611] AR6K-DBG mmc1 request_end t=45972603250 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   45.982648] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=45982629472
+[   45.996894] AR6K-DBG mmc1 pre-data t=45996880731 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   46.004239] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   46.011439] AR6K-DBG mmc1 irq t=46011425176 raw_status=0x0060a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   46.025673] AR6K-DBG mmc1 in-irq t=46025658065 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   46.083463] AR6K-DBG mmc1 request_end t=46083448879 data_err=0 data_xfered=1536 xfer_size=1536
+[   46.091421] AR6K-DBG mmc1 request_end t=46091412287 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   46.099554] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=46099534509
+[   46.113807] AR6K-DBG mmc1 pre-data t=46113785768 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   46.113843] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   46.121749] AR6K-DBG mmc1 irq t=46121735842 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   46.121769] AR6K-DBG mmc1 in-irq t=46121761620 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   46.122646] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=46122622657
+[   46.122681] AR6K-DBG mmc1 pre-data t=46122667250 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   46.122715] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   46.129804] AR6K-DBG mmc1 irq t=46129793027 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   46.129824] AR6K-DBG mmc1 in-irq t=46129816435 status=0x00400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   46.130470] AR6K-DBG mmc1 post-dctrl-pio t=46130449768 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   46.145872] AR6K-DBG mmc1 request_end t=46145862953 data_err=0 data_xfered=24 xfer_size=24
+[   46.145890] AR6K-DBG mmc1 request_end t=46145882805 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   46.273947] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=46273884731
+[   46.361659] AR6K-DBG mmc1 pre-data t=46361608435 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   46.406053] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   46.449949] AR6K-DBG mmc1 irq t=46449927694 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   46.468595] AR6K-DBG mmc1 in-irq t=46468578509 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   46.483894] mdp_do_histogram wait_for_completion_killable_timeout failed 1.
+[   46.496199] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=46496120583
+[   46.496302] AR6K-DBG mmc1 pre-data t=46496261472 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   46.496404] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   46.564676] AR6K-DBG mmc1 irq t=46564641620 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   46.604949] AR6K-DBG mmc1 in-irq t=46604918805 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   46.626510] mdp_do_histogram: invalid hist buffer
+[   46.672981] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=46672934657
+[   46.693735] AR6K-DBG mmc1 pre-data t=46693698953 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   46.714209] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   46.734795] AR6K-DBG mmc1 irq t=46734768731 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   46.775432] AR6K-DBG mmc1 in-irq t=46775404435 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   46.800346] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=46800264879
+[   46.846593] AR6K-DBG mmc1 pre-data t=46846527694 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   46.892602] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   46.938236] AR6K-DBG mmc1 irq t=46938205620 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   46.978875] AR6K-DBG mmc1 in-irq t=46978854064 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   47.005567] mdp_do_histogram wait_for_completion_killable_timeout failed 1.
+[   47.006351] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=47006285620
+[   47.006452] AR6K-DBG mmc1 pre-data t=47006410805 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   47.006549] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   47.100844] AR6K-DBG mmc1 irq t=47100798657 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   47.147984] AR6K-DBG mmc1 in-irq t=47147939101 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   47.176825] AR6K-DBG mmc1 start_data RD addr=0x00800 len=256 blksz=256 blocks=1 arg=0x10100100 fixed=1 block=0 t=47176741324
+[   47.184750] mdp_do_histogram: invalid hist buffer
+[   47.270497] AR6K-DBG mmc1 pre-data t=47270443694 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   47.317187] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000100b ch=21
+[   47.363350] AR6K-DBG mmc1 irq t=47363333916 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   47.378749] AR6K-DBG mmc1 in-irq t=47378730953 status=0x02400540 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   47.392715] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=47392695694
+[   47.407926] AR6K-DBG mmc1 pre-data t=47407908583 status=0x02400400 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   47.415597] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   47.423225] AR6K-DBG mmc1 irq t=47423201472 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   47.448763] AR6K-DBG mmc1 in-irq t=47448742361 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   47.466531] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=47466508583
+[   47.477334] AR6K-DBG mmc1 pre-data t=47477310805 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   47.488045] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   47.498742] AR6K-DBG mmc1 irq t=47498712435 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   47.525051] AR6K-DBG mmc1 in-irq t=47525025768 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   47.542782] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=47542757916
+[   47.553844] AR6K-DBG mmc1 pre-data t=47553819249 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   47.564636] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   47.575434] AR6K-DBG mmc1 irq t=47575406805 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   47.601711] AR6K-DBG mmc1 in-irq t=47601690361 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   47.620383] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=47620355990
+[   47.631593] AR6K-DBG mmc1 pre-data t=47631568138 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   47.642749] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   47.653609] AR6K-DBG mmc1 irq t=47653585768 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   47.679359] AR6K-DBG mmc1 in-irq t=47679337768 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   47.695480] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=47695460583
+[   47.703427] AR6K-DBG mmc1 pre-data t=47703410953 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   47.711050] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   47.718736] AR6K-DBG mmc1 irq t=47718718212 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   47.734004] AR6K-DBG mmc1 in-irq t=47733990657 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   47.742315] AR6K-DBG mmc1 start_data RD addr=0x00800 len=256 blksz=256 blocks=1 arg=0x10100100 fixed=1 block=0 t=47742298657
+[   47.749979] AR6K-DBG mmc1 pre-data t=47749963990 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   47.757596] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000100b ch=21
+[   47.765197] AR6K-DBG mmc1 irq t=47765179249 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   47.780123] AR6K-DBG mmc1 in-irq t=47780108138 status=0x02400540 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   47.788723] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=47788703990
+[   47.796380] AR6K-DBG mmc1 pre-data t=47796366509 status=0x02400400 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   47.803909] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   47.811393] AR6K-DBG mmc1 irq t=47811381916 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   47.826286] AR6K-DBG mmc1 in-irq t=47826273620 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   47.834788] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=47834769916
+[   47.849811] AR6K-DBG mmc1 pre-data t=47849794212 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   47.857424] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   47.865027] AR6K-DBG mmc1 irq t=47865009323 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   47.879997] AR6K-DBG mmc1 in-irq t=47879980138 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   47.891800] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=47891776138
+[   47.901151] AR6K-DBG mmc1 pre-data t=47901131249 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   47.910440] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   47.919629] AR6K-DBG mmc1 irq t=47919609472 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   47.935259] AR6K-DBG mmc1 in-irq t=47935247546 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   47.947460] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   47.957513] AR6K-DBG mmc1 post-dctrl-pio t=47957493916 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   47.965574] AR6K-DBG mmc1 request_end t=47965565916 data_err=0 data_xfered=24 xfer_size=24
+[   47.973457] AR6K-DBG mmc1 request_end t=47973437472 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   47.981904] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=47981882064
+[   47.991139] AR6K-DBG mmc1 pre-data t=47991120583 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   48.000295] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   48.009410] AR6K-DBG mmc1 irq t=48009390805 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.025154] AR6K-DBG mmc1 in-irq t=48025133916 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   48.033915] AR6K-DBG mmc1 post-dctrl-pio t=48033896138 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   48.035323] channel hint set to 2447
+[   48.054225] AR6K-DBG mmc1 request_end t=48054206360 data_err=0 data_xfered=24 xfer_size=24
+[   48.062105] AR6K-DBG mmc1 request_end t=48062095397 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   48.072794] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=48072775101
+[   48.083006] AR6K-DBG mmc1 pre-data t=48082987694 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   48.093115] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   48.103181] AR6K-DBG mmc1 irq t=48103159990 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   48.117800] AR6K-DBG mmc1 in-irq t=48117786509 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   48.125863] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   48.135426] AR6K-DBG mmc1 request_end t=48135410657 data_err=0 data_xfered=128 xfer_size=128
+[   48.143122] AR6K-DBG mmc1 request_end t=48143105916 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   48.157406] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=48157382953
+[   48.167418] AR6K-DBG mmc1 pre-data t=48167407249 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   48.177657] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   48.187761] AR6K-DBG mmc1 irq t=48187745027 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.202322] AR6K-DBG mmc1 in-irq t=48202305768 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   48.210496] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   48.220286] AR6K-DBG mmc1 request_end t=48220269620 data_err=0 data_xfered=128 xfer_size=128
+[   48.227784] AR6K-DBG mmc1 request_end t=48227767397 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   48.235511] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=48235489175
+[   48.245376] AR6K-DBG mmc1 pre-data t=48245364434 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   48.245408] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   48.252868] AR6K-DBG mmc1 irq t=48252853027 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   48.252887] AR6K-DBG mmc1 in-irq t=48252880434 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   48.277789] AR6K-DBG mmc1 request_end t=48277772879 data_err=0 data_xfered=128 xfer_size=128
+[   48.277807] AR6K-DBG mmc1 request_end t=48277799101 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   48.278016] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=48278000138
+[   48.278043] AR6K-DBG mmc1 pre-data t=48278031546 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   48.278073] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   48.278116] AR6K-DBG mmc1 irq t=48278106805 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.278134] AR6K-DBG mmc1 in-irq t=48278127842 status=0x02602440 cnt=290 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.377903] AR6K-DBG mmc1 request_end t=48377888138 data_err=0 data_xfered=512 xfer_size=512
+[   48.384917] AR6K-DBG mmc1 request_end t=48384907546 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.392497] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=48392474508
+[   48.412908] AR6K-DBG mmc1 pre-data t=48412889027 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   48.423256] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   48.433517] AR6K-DBG mmc1 irq t=48433494953 raw_status=0x0060a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.447657] AR6K-DBG mmc1 in-irq t=48447641471 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   48.513683] AR6K-DBG mmc1 request_end t=48513666657 data_err=0 data_xfered=1536 xfer_size=1536
+[   48.520781] AR6K-DBG mmc1 request_end t=48520771546 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   48.528971] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=48528949620
+[   48.539359] AR6K-DBG mmc1 pre-data t=48539339397 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   48.549825] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   48.560205] AR6K-DBG mmc1 irq t=48560187990 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.574268] AR6K-DBG mmc1 in-irq t=48574250657 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.581889] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=48581867101
+[   48.592467] AR6K-DBG mmc1 pre-data t=48592448434 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.602913] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   48.613210] AR6K-DBG mmc1 irq t=48613194508 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.627303] AR6K-DBG mmc1 in-irq t=48627286212 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   48.634984] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=48634961471
+[   48.645625] AR6K-DBG mmc1 pre-data t=48645607694 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   48.656244] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   48.666697] AR6K-DBG mmc1 irq t=48666678805 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.681142] AR6K-DBG mmc1 in-irq t=48681123397 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.689659] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=48689643101
+[   48.696971] AR6K-DBG mmc1 pre-data t=48696958805 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.704228] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   48.711478] AR6K-DBG mmc1 irq t=48711459990 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.726102] AR6K-DBG mmc1 in-irq t=48726084434 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.737318] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=48737299694
+[   48.744741] AR6K-DBG mmc1 pre-data t=48744733323 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.752126] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   48.759454] AR6K-DBG mmc1 irq t=48759435842 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.773972] AR6K-DBG mmc1 in-irq t=48773963249 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.782096] AR6K-DBG mmc1 start_data RD addr=0x00800 len=512 blksz=512 blocks=1 arg=0x10100000 fixed=1 block=0 t=48782078064
+[   48.789662] AR6K-DBG mmc1 pre-data t=48789646508 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.797173] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000200b ch=21
+[   48.804634] AR6K-DBG mmc1 irq t=48804615694 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.819334] AR6K-DBG mmc1 in-irq t=48819325323 status=0x02400540 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.827413] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=48827394064
+[   48.842319] AR6K-DBG mmc1 pre-data t=48842303545 status=0x02400400 cnt=0 dctrl=0x0000200b dlen=512 mask0=0x008001ff
+[   48.849878] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   48.857371] AR6K-DBG mmc1 irq t=48857353027 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.872187] AR6K-DBG mmc1 in-irq t=48872178953 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   48.880936] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=48880917027
+[   48.888537] AR6K-DBG mmc1 pre-data t=48888521916 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   48.896110] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   48.903634] AR6K-DBG mmc1 irq t=48903617323 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.918969] AR6K-DBG mmc1 in-irq t=48918953027 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   48.927069] wmi_control_rx() : Unknown id 0x103b
+[   48.937738] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=48937718508
+[   48.945699] AR6K-DBG mmc1 pre-data t=48945682953 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   48.953325] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   48.960869] AR6K-DBG mmc1 irq t=48960851397 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   48.976044] AR6K-DBG mmc1 in-irq t=48976027101 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   48.989430] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   48.997214] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=48997199545
+[   49.004748] AR6K-DBG mmc1 pre-data t=49004741175 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   49.012227] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   49.019818] AR6K-DBG mmc1 irq t=49019800582 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   49.034673] AR6K-DBG mmc1 in-irq t=49034665768 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.042608] AR6K-DBG mmc1 start_data RD addr=0x00800 len=256 blksz=256 blocks=1 arg=0x10100100 fixed=1 block=0 t=49042589768
+[   49.050212] AR6K-DBG mmc1 pre-data t=49050196286 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.058007] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000100b ch=21
+[   49.065556] AR6K-DBG mmc1 irq t=49065538508 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   49.080429] AR6K-DBG mmc1 in-irq t=49080413175 status=0x02400540 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   49.088637] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=49088617619
+[   49.096399] AR6K-DBG mmc1 pre-data t=49096387249 status=0x02400400 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   49.104081] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   49.111875] AR6K-DBG mmc1 irq t=49111858212 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   49.127018] AR6K-DBG mmc1 in-irq t=49127002212 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.138621] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.146598] AR6K-DBG mmc1 post-dctrl-pio t=49146579397 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   49.154328] AR6K-DBG mmc1 request_end t=49154312582 data_err=0 data_xfered=24 xfer_size=24
+[   49.161937] AR6K-DBG mmc1 request_end t=49161927397 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.169913] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=49169891990
+[   49.177663] AR6K-DBG mmc1 pre-data t=49177646953 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.177688] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   49.185511] AR6K-DBG mmc1 irq t=49185492731 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   49.185531] AR6K-DBG mmc1 in-irq t=49185523397 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.185866] AR6K-DBG mmc1 post-dctrl-pio t=49185854508 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   49.185913] AR6K-DBG mmc1 request_end t=49185905471 data_err=0 data_xfered=24 xfer_size=24
+[   49.185929] AR6K-DBG mmc1 request_end t=49185922805 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.484014] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=49483986360
+[   49.494997] AR6K-DBG mmc1 pre-data t=49494972434 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.505872] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   49.516623] AR6K-DBG mmc1 irq t=49516595101 raw_status=0x02482540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   49.536603] AR6K-DBG mmc1 in-irq t=49536584286 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.549010] AR6K-DBG mmc1 request_end t=49548987397 data_err=0 data_xfered=128 xfer_size=128
+[   49.559085] AR6K-DBG mmc1 request_end t=49559073323 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.581991] AR6K-DBG mmc1 start_data RD addr=0x00800 len=256 blksz=256 blocks=1 arg=0x10100100 fixed=1 block=0 t=49581960434
+[   49.592905] AR6K-DBG mmc1 pre-data t=49592877916 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.603860] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000100b ch=21
+[   49.614907] AR6K-DBG mmc1 irq t=49614880582 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   49.635221] AR6K-DBG mmc1 in-irq t=49635194064 status=0x00400540 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   49.653084] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00001009 ch=21
+[   49.663680] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.674170] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.684142] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.694431] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.704359] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.714184] AR6K-DBG mmc1 request_end t=49714159249 data_err=0 data_xfered=128 xfer_size=128
+[   49.723441] AR6K-DBG mmc1 request_end t=49723417471 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   49.732679] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=49732656879
+[   49.744764] AR6K-DBG mmc1 pre-data t=49744735693 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.756614] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   49.768429] AR6K-DBG mmc1 irq t=49768401175 raw_status=0x00482540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   49.786329] AR6K-DBG mmc1 in-irq t=49786301767 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.796402] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.806369] AR6K-DBG mmc1 request_end t=49806346212 data_err=0 data_xfered=128 xfer_size=128
+[   49.815225] AR6K-DBG mmc1 request_end t=49815208582 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   49.828487] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=49828455397
+[   49.840263] AR6K-DBG mmc1 pre-data t=49840248582 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.852025] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   49.863573] AR6K-DBG mmc1 irq t=49863546805 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   49.880747] AR6K-DBG mmc1 in-irq t=49880729471 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.889918] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.896653] AR6K-DBG mmc1 request_end t=49896640138 data_err=0 data_xfered=128 xfer_size=128
+[   49.903010] AR6K-DBG mmc1 request_end t=49902999545 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   49.909765] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=49909749619
+[   49.916212] AR6K-DBG mmc1 pre-data t=49916195101 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.922620] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   49.928927] AR6K-DBG mmc1 irq t=49928908730 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   49.941404] AR6K-DBG mmc1 in-irq t=49941393619 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   49.948678] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   49.955810] AR6K-DBG mmc1 request_end t=49955795842 data_err=0 data_xfered=128 xfer_size=128
+[   49.962128] AR6K-DBG mmc1 request_end t=49962120582 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   49.969474] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=49969455693
+[   49.981997] AR6K-DBG mmc1 pre-data t=49981980286 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   49.988316] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   49.994578] AR6K-DBG mmc1 irq t=49994559397 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   50.007099] AR6K-DBG mmc1 in-irq t=50007088879 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   50.014711] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=50014691842
+[   50.021158] AR6K-DBG mmc1 pre-data t=50021150212 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   50.027560] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   50.033950] AR6K-DBG mmc1 irq t=50033932138 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   50.046518] AR6K-DBG mmc1 in-irq t=50046506212 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   50.055159] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   50.063552] AR6K-DBG mmc1 post-dctrl-pio t=50063536879 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   50.070405] AR6K-DBG mmc1 request_end t=50070390804 data_err=0 data_xfered=24 xfer_size=24
+[   50.077199] AR6K-DBG mmc1 request_end t=50077186953 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.086844] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=50086819249
+[   50.098735] AR6K-DBG mmc1 pre-data t=50098712138 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.110614] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   50.122433] AR6K-DBG mmc1 irq t=50122414212 raw_status=0x00482540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   50.136467] AR6K-DBG mmc1 in-irq t=50136452582 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   50.147216] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   50.174425] AR6K-DBG mmc1 post-dctrl-pio t=50174407101 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   50.181716] AR6K-DBG mmc1 request_end t=50181702953 data_err=0 data_xfered=24 xfer_size=24
+[   50.188814] AR6K-DBG mmc1 request_end t=50188797175 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.196078] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=50196055545
+[   50.208072] AR6K-DBG mmc1 pre-data t=50208049619 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.220039] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   50.231974] AR6K-DBG mmc1 irq t=50231955841 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   50.246162] AR6K-DBG mmc1 in-irq t=50246147101 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   50.256474] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   50.266009] AR6K-DBG mmc1 post-dctrl-pio t=50265991101 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   50.273245] AR6K-DBG mmc1 request_end t=50273234953 data_err=0 data_xfered=24 xfer_size=24
+[   50.280342] AR6K-DBG mmc1 request_end t=50280327693 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.291975] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=50291948582
+[   50.305063] AR6K-DBG mmc1 pre-data t=50305041027 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.318051] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   50.330946] AR6K-DBG mmc1 irq t=50330929027 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   50.345202] AR6K-DBG mmc1 in-irq t=50345186508 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   50.375881] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=50375854212
+[   50.388961] AR6K-DBG mmc1 pre-data t=50388939101 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   50.401997] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   50.415011] AR6K-DBG mmc1 irq t=50414992582 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   50.429344] AR6K-DBG mmc1 in-irq t=50429330508 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   50.438058] AR6K-DBG mmc1 post-dctrl-pio t=50438033767 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   50.453451] AR6K-DBG mmc1 request_end t=50453435990 data_err=0 data_xfered=24 xfer_size=24
+[   50.460737] AR6K-DBG mmc1 request_end t=50460721471 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.727353] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=50727327545
+[   50.755742] AR6K-DBG mmc1 pre-data t=50755720138 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.770138] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   50.784450] AR6K-DBG mmc1 irq t=50784433915 raw_status=0x00482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   50.798674] AR6K-DBG mmc1 in-irq t=50798666212 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   50.891700] AR6K-DBG mmc1 request_end t=50891684138 data_err=0 data_xfered=1536 xfer_size=1536
+[   50.900483] AR6K-DBG mmc1 request_end t=50900472730 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   50.909773] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=50909744138
+[   50.948824] AR6K-DBG mmc1 pre-data t=50948794952 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   50.968786] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   50.988504] AR6K-DBG mmc1 irq t=50988484582 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   51.006097] AR6K-DBG mmc1 in-irq t=51006081619 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.032643] msm_fb: Layers from : fb0
+[   51.032669] msm_fb: invalid to switch layer fb0 on
+[   51.033295] msm_fb: Layers from : fb0
+[   51.033324] msm_fb:  invalid to switch layer fb1 off 
+[   51.056027] AR6K-DBG mmc1 request_end t=51056007989 data_err=0 data_xfered=1536 xfer_size=1536
+[   51.064922] AR6K-DBG mmc1 request_end t=51064911693 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.074531] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=51074498952
+[   51.114103] AR6K-DBG mmc1 pre-data t=51114071101 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   51.134733] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   51.155261] AR6K-DBG mmc1 irq t=51155235989 raw_status=0x0060a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   51.175310] AR6K-DBG mmc1 in-irq t=51175290804 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.188457] AR6K-DBG mmc1 request_end t=51188436730 data_err=0 data_xfered=1536 xfer_size=1536
+[   51.198630] AR6K-DBG mmc1 request_end t=51198618212 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.210876] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=51210836434
+[   51.255574] AR6K-DBG mmc1 pre-data t=51255542804 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   51.278335] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   51.289990] AR6K-DBG mmc1 irq t=51289968434 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   51.290020] AR6K-DBG mmc1 in-irq t=51290008138 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.336692] AR6K-DBG mmc1 request_end t=51336666656 data_err=0 data_xfered=1536 xfer_size=1536
+[   51.348396] AR6K-DBG mmc1 request_end t=51348382656 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.360656] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=51360623693
+[   51.405913] AR6K-DBG mmc1 pre-data t=51405877767 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   51.429005] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   51.452013] AR6K-DBG mmc1 irq t=51451985175 raw_status=0x0260a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   51.475165] AR6K-DBG mmc1 in-irq t=51475139693 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.503308] AR6K-DBG mmc1 request_end t=51503282508 data_err=0 data_xfered=1536 xfer_size=1536
+[   51.516238] AR6K-DBG mmc1 request_end t=51516208582 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.531350] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=51531298212
+[   51.577435] AR6K-DBG mmc1 pre-data t=51577398508 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   51.577489] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   51.590268] AR6K-DBG mmc1 irq t=51590243989 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   51.590299] AR6K-DBG mmc1 in-irq t=51590287100 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.824352] AR6K-DBG mmc1 request_end t=51824326508 data_err=0 data_xfered=1536 xfer_size=1536
+[   51.837102] AR6K-DBG mmc1 request_end t=51837073026 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   51.849891] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=51849848878
+[   51.895162] AR6K-DBG mmc1 pre-data t=51895126804 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   51.895214] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   51.895286] AR6K-DBG mmc1 irq t=51895266063 raw_status=0x0262a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   51.895318] AR6K-DBG mmc1 in-irq t=51895305323 status=0x0060a440 cnt=647 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   52.001086] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00001809 ch=21
+[   52.055677] AR6K-DBG mmc1 request_end t=52055651545 data_err=0 data_xfered=384 xfer_size=384
+[   52.068155] AR6K-DBG mmc1 request_end t=52068141471 status=0x02400400 cnt=0 dctrl=0x00001809 dlen=384 mask0=0x008001ff
+[   52.080949] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=52080905619
+[   52.126092] AR6K-DBG mmc1 pre-data t=52126055545 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   52.126144] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   52.138760] AR6K-DBG mmc1 irq t=52138736730 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   52.138792] AR6K-DBG mmc1 in-irq t=52138779397 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   52.155723] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=52155678508
+[   52.155777] AR6K-DBG mmc1 pre-data t=52155755693 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   52.155826] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   52.162971] AR6K-DBG mmc1 irq t=52162952878 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   52.163001] AR6K-DBG mmc1 in-irq t=52162989323 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   52.165497] AR6K-DBG mmc1 post-dctrl-pio t=52165457471 status=0x00482400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   52.165580] AR6K-DBG mmc1 request_end t=52165564878 data_err=0 data_xfered=24 xfer_size=24
+[   52.165607] AR6K-DBG mmc1 request_end t=52165595249 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   52.368607] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=52368587841
+[   52.376023] AR6K-DBG mmc1 pre-data t=52376006952 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   52.383386] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   52.390889] AR6K-DBG mmc1 irq t=52390870952 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   52.405398] AR6K-DBG mmc1 in-irq t=52405381174 status=0x00400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   52.515972] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00001809 ch=21
+[   52.525347] AR6K-DBG mmc1 request_end t=52525333619 data_err=0 data_xfered=384 xfer_size=384
+[   52.532613] AR6K-DBG mmc1 request_end t=52532604730 status=0x02400400 cnt=0 dctrl=0x00001809 dlen=384 mask0=0x008001ff
+[   52.541412] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=52541394804
+[   52.548648] AR6K-DBG mmc1 pre-data t=52548640878 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   52.555820] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   52.563036] AR6K-DBG mmc1 irq t=52563026508 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   52.577351] AR6K-DBG mmc1 in-irq t=52577342508 status=0x00400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   52.684511] mdp4_mixer_blend_setup: Error: no bg_pipe mixer_num: 0 mixer_stage: 2
+[   52.684529] mdp_bus_scale_update_request: Setting bus scaling index 1
+[   52.722202] msm_kgsl: initialized dev=0 mmu=on per_process_pagetable=on
+[   52.769718] AR6K-DBG mmc1 request_end t=52769703545 data_err=0 data_xfered=384 xfer_size=384
+[   52.777056] AR6K-DBG mmc1 request_end t=52777043693 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   52.785116] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=52785097471
+[   52.799831] AR6K-DBG mmc1 pre-data t=52799815841 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   52.807234] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   52.814715] AR6K-DBG mmc1 irq t=52814701174 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   52.829051] AR6K-DBG mmc1 in-irq t=52829038211 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   52.837188] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=52837170656
+[   52.845029] AR6K-DBG mmc1 pre-data t=52845020582 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   52.852876] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   52.860083] AR6K-DBG mmc1 irq t=52860066804 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   52.860101] AR6K-DBG mmc1 in-irq t=52860094359 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   52.860772] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=52860758359
+[   52.860793] AR6K-DBG mmc1 pre-data t=52860785174 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   52.860813] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   52.881578] AR6K-DBG mmc1 irq t=52881565915 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   52.881595] AR6K-DBG mmc1 in-irq t=52881589026 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   52.882165] AR6K-DBG mmc1 post-dctrl-pio t=52882152582 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   52.896096] AR6K-DBG mmc1 request_end t=52896087693 data_err=0 data_xfered=24 xfer_size=24
+[   52.896113] AR6K-DBG mmc1 request_end t=52896106211 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   52.962368] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=52962349322
+[   52.969593] AR6K-DBG mmc1 pre-data t=52969578359 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   52.976669] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   52.983761] AR6K-DBG mmc1 irq t=52983747841 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   52.997835] AR6K-DBG mmc1 in-irq t=52997823545 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   53.043225] AR6K-DBG mmc1 request_end t=53043208434 data_err=0 data_xfered=128 xfer_size=128
+[   53.052089] AR6K-DBG mmc1 request_end t=53052080137 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   53.062561] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=53062542211
+[   53.076692] AR6K-DBG mmc1 pre-data t=53076683248 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   53.083820] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   53.091047] AR6K-DBG mmc1 irq t=53091029767 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   53.105373] AR6K-DBG mmc1 in-irq t=53105356730 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   53.267047] AR6K-DBG mmc1 request_end t=53267030656 data_err=0 data_xfered=1536 xfer_size=1536
+[   53.274365] AR6K-DBG mmc1 request_end t=53274352433 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   53.289620] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=53289600433
+[   53.304148] AR6K-DBG mmc1 pre-data t=53304133619 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   53.311630] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   53.318961] AR6K-DBG mmc1 irq t=53318945174 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   53.318980] AR6K-DBG mmc1 in-irq t=53318973174 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   53.387299] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   53.394953] AR6K-DBG mmc1 request_end t=53394937026 data_err=0 data_xfered=128 xfer_size=128
+[   53.402397] AR6K-DBG mmc1 request_end t=53402380137 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   53.423450] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=53423431248
+[   53.432747] AR6K-DBG mmc1 pre-data t=53432730804 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   53.440077] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   53.447416] AR6K-DBG mmc1 irq t=53447402508 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   53.447435] AR6K-DBG mmc1 in-irq t=53447428137 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   53.483738] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   53.493617] AR6K-DBG mmc1 request_end t=53493600433 data_err=0 data_xfered=128 xfer_size=128
+[   53.500870] AR6K-DBG mmc1 request_end t=53500858211 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   53.508874] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=53508856137
+[   53.516165] AR6K-DBG mmc1 pre-data t=53516148582 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   53.516190] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   53.523483] AR6K-DBG mmc1 irq t=53523465026 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   53.523502] AR6K-DBG mmc1 in-irq t=53523494804 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   53.638991] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   53.647576] AR6K-DBG mmc1 request_end t=53647560878 data_err=0 data_xfered=128 xfer_size=128
+[   53.654770] AR6K-DBG mmc1 request_end t=53654753026 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   53.663337] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=53663320285
+[   53.672267] AR6K-DBG mmc1 pre-data t=53672249470 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   53.680979] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   53.689778] AR6K-DBG mmc1 irq t=53689759545 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   53.705273] AR6K-DBG mmc1 in-irq t=53705260878 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   53.722690] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   53.731091] AR6K-DBG mmc1 request_end t=53731075693 data_err=0 data_xfered=128 xfer_size=128
+[   53.738893] AR6K-DBG mmc1 request_end t=53738874507 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   53.776180] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=53776159396
+[   53.791927] AR6K-DBG mmc1 pre-data t=53791909174 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   53.799733] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   53.807640] AR6K-DBG mmc1 irq t=53807624582 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   53.823100] AR6K-DBG mmc1 in-irq t=53823086507 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   53.850789] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=53850772285
+[   53.858632] AR6K-DBG mmc1 pre-data t=53858623248 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   53.866412] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   53.874279] AR6K-DBG mmc1 irq t=53874265174 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   53.889755] AR6K-DBG mmc1 in-irq t=53889742656 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   53.900172] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=53900151248
+[   53.908083] AR6K-DBG mmc1 pre-data t=53908073915 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   53.915937] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   53.923843] AR6K-DBG mmc1 irq t=53923829026 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   53.939310] AR6K-DBG mmc1 in-irq t=53939292433 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   53.950900] AR6K-DBG mmc1 post-dctrl-pio t=53950882359 status=0x00402400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   53.958886] AR6K-DBG mmc1 request_end t=53958877470 data_err=0 data_xfered=24 xfer_size=24
+[   53.966714] AR6K-DBG mmc1 request_end t=53966706804 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   54.001900] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=54001879989
+[   54.001930] AR6K-DBG mmc1 pre-data t=54001921174 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   54.001955] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   54.001998] AR6K-DBG mmc1 irq t=54001986359 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   54.002023] AR6K-DBG mmc1 in-irq t=54002015841 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   54.004718] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   54.004973] AR6K-DBG mmc1 request_end t=54004964730 data_err=0 data_xfered=128 xfer_size=128
+[   54.004994] AR6K-DBG mmc1 request_end t=54004986063 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   54.005180] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=54005167248
+[   54.005207] AR6K-DBG mmc1 pre-data t=54005198507 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   54.005230] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   54.005271] AR6K-DBG mmc1 irq t=54005260137 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   54.005295] AR6K-DBG mmc1 in-irq t=54005287693 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   54.231258] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00001009 ch=21
+[   54.639550] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   54.643386] AR6K-DBG mmc1 request_end t=54643349026 data_err=0 data_xfered=128 xfer_size=128
+[   54.643447] AR6K-DBG mmc1 request_end t=54643424137 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   54.643919] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=54643889767
+[   54.643981] AR6K-DBG mmc1 pre-data t=54643961322 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   54.644040] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   54.644140] AR6K-DBG mmc1 irq t=54644118211 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   54.644201] AR6K-DBG mmc1 in-irq t=54644180581 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   54.823140] AR6K-DBG mmc1 request_end t=54823094655 data_err=0 data_xfered=128 xfer_size=128
+[   54.823243] AR6K-DBG mmc1 request_end t=54823203396 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   54.823589] AR6K-DBG mmc1 start_data RD addr=0x00800 len=256 blksz=256 blocks=1 arg=0x10100100 fixed=1 block=0 t=54823577915
+[   54.823612] AR6K-DBG mmc1 pre-data t=54823604878 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   54.823633] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000100b ch=21
+[   54.823745] AR6K-DBG mmc1 irq t=54823701026 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   54.823855] AR6K-DBG mmc1 in-irq t=54823817618 status=0x00400540 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   54.824240] IPT_PACKET_DROPPED_NO_MATCH: IN=eth0 OUT= MAC=ff:ff:ff:ff:ff:ff:cc:28:aa:a1:45:80:08:00:45:00:00:68:cc:1e:40:00:40:11:88:15:c0:a8:32:01:c0:a8:32:ff:b3:a6:1e:6c:00:54:bb:14:00:00:00:05:00:00:00:40:80:fb:2b:25:55:07:e1:0f:6c:86:c9:85 SRC=192.168.50.1 DST=192.168.50.255 LEN=104 TOS=0x00 PREC=0x00 TTL=64 ID=52254 DF PROTO=UDP SPT=45990 DPT=7788 LEN=84 
+[   55.071722] msm_timer_set_next_event(12) clock dg_timer, alarm already expired, now 162835a4, alarm 162835a6, late -2
+[   55.111439] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   55.113838] AR6K-DBG mmc1 request_end t=55113797766 data_err=0 data_xfered=128 xfer_size=128
+[   55.113941] AR6K-DBG mmc1 request_end t=55113898803 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   55.114462] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=55114429174
+[   55.114526] AR6K-DBG mmc1 pre-data t=55114505915 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   55.114583] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   55.114695] AR6K-DBG mmc1 irq t=55114652729 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   55.114810] AR6K-DBG mmc1 in-irq t=55114771841 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   55.115319] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=55115289322
+[   55.115382] AR6K-DBG mmc1 pre-data t=55115361915 status=0x02400400 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   55.115440] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   55.115550] AR6K-DBG mmc1 irq t=55115508137 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   55.115663] AR6K-DBG mmc1 in-irq t=55115626211 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   55.116655] AR6K-DBG mmc1 post-dctrl-pio t=55116624137 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   55.118930] AR6K-DBG mmc1 request_end t=55118881322 data_err=0 data_xfered=24 xfer_size=24
+[   55.119032] AR6K-DBG mmc1 request_end t=55118994211 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   55.447468] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=55447397915
+[   55.447592] AR6K-DBG mmc1 pre-data t=55447551840 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   55.447697] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   55.447859] AR6K-DBG mmc1 irq t=55447819248 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   55.447970] AR6K-DBG mmc1 in-irq t=55447933174 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   55.476843] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   55.488491] AR6K-DBG mmc1 request_end t=55488477470 data_err=0 data_xfered=128 xfer_size=128
+[   55.488514] AR6K-DBG mmc1 request_end t=55488506211 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   55.488707] AR6K-DBG mmc1 start_data RD addr=0x00800 len=256 blksz=256 blocks=1 arg=0x10100100 fixed=1 block=0 t=55488697470
+[   55.488728] AR6K-DBG mmc1 pre-data t=55488722063 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   55.488749] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000100b ch=21
+[   55.488785] AR6K-DBG mmc1 irq t=55488778507 raw_status=0x02482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   55.488806] AR6K-DBG mmc1 in-irq t=55488799248 status=0x00400540 cnt=0 dctrl=0x0000100b dlen=256 mask0=0x008001ff
+[   55.547485] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   55.553938] AR6K-DBG mmc1 request_end t=55553925322 data_err=0 data_xfered=128 xfer_size=128
+[   55.553960] AR6K-DBG mmc1 request_end t=55553952729 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   55.554126] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=55554116285
+[   55.554147] AR6K-DBG mmc1 pre-data t=55554140729 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   55.554168] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   55.554204] AR6K-DBG mmc1 irq t=55554197470 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   55.554225] AR6K-DBG mmc1 in-irq t=55554218952 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.251531] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00001009 ch=21
+[   57.254775] AR6K-DBG mmc1 request_end t=57254730655 data_err=0 data_xfered=256 xfer_size=256
+[   57.254876] AR6K-DBG mmc1 request_end t=57254835692 status=0x02400400 cnt=0 dctrl=0x00001009 dlen=256 mask0=0x008001ff
+[   57.255191] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57255179099
+[   57.255213] AR6K-DBG mmc1 pre-data t=57255206655 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.255234] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.255312] AR6K-DBG mmc1 irq t=57255272136 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.255421] AR6K-DBG mmc1 in-irq t=57255384285 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.255887] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.294597] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00001009 ch=21
+[   57.302538] AR6K-DBG mmc1 request_end t=57302492877 data_err=0 data_xfered=256 xfer_size=256
+[   57.302640] AR6K-DBG mmc1 request_end t=57302600433 status=0x02400400 cnt=0 dctrl=0x00001009 dlen=256 mask0=0x008001ff
+[   57.303075] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57303025618
+[   57.303181] AR6K-DBG mmc1 pre-data t=57303145766 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.303275] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.303421] AR6K-DBG mmc1 irq t=57303383988 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.303528] AR6K-DBG mmc1 in-irq t=57303492433 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.346326] AR6K-DBG mmc1 request_end t=57346281025 data_err=0 data_xfered=128 xfer_size=128
+[   57.346430] AR6K-DBG mmc1 request_end t=57346390359 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.346915] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57346863544
+[   57.347022] AR6K-DBG mmc1 pre-data t=57346986210 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.347120] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.347266] AR6K-DBG mmc1 irq t=57347229618 raw_status=0x00482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.347374] AR6K-DBG mmc1 in-irq t=57347337766 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.350005] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.350602] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57350548285
+[   57.350710] AR6K-DBG mmc1 pre-data t=57350673914 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.350806] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.351059] AR6K-DBG mmc1 irq t=57351021025 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.351171] AR6K-DBG mmc1 in-irq t=57351134359 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.352461] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.352779] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57352731099
+[   57.352886] AR6K-DBG mmc1 pre-data t=57352850507 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.352980] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.353126] AR6K-DBG mmc1 irq t=57353090803 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.353233] AR6K-DBG mmc1 in-irq t=57353197322 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.353661] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.353971] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57353922359
+[   57.354078] AR6K-DBG mmc1 pre-data t=57354042062 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.354172] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.354319] AR6K-DBG mmc1 irq t=57354284285 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.354427] AR6K-DBG mmc1 in-irq t=57354391248 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.354877] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.355183] AR6K-DBG mmc1 post-dctrl-pio t=57355142951 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.355333] AR6K-DBG mmc1 request_end t=57355306062 data_err=0 data_xfered=24 xfer_size=24
+[   57.355421] AR6K-DBG mmc1 request_end t=57355386507 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.358111] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57358053025
+[   57.358221] AR6K-DBG mmc1 pre-data t=57358185173 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.358315] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.358458] AR6K-DBG mmc1 irq t=57358422210 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.358565] AR6K-DBG mmc1 in-irq t=57358529470 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.359099] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.359484] AR6K-DBG mmc1 start_data RD addr=0x00800 len=384 blksz=384 blocks=1 arg=0x10100180 fixed=1 block=0 t=57359435544
+[   57.359591] AR6K-DBG mmc1 pre-data t=57359554507 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.359685] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000180b ch=21
+[   57.359832] AR6K-DBG mmc1 irq t=57359796877 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.359939] AR6K-DBG mmc1 in-irq t=57359903544 status=0x02400540 cnt=0 dctrl=0x0000180b dlen=384 mask0=0x008001ff
+[   57.360760] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.361072] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57361024581
+[   57.361179] AR6K-DBG mmc1 pre-data t=57361143840 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.361272] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.361416] AR6K-DBG mmc1 irq t=57361382062 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.361523] AR6K-DBG mmc1 in-irq t=57361487840 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.361977] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.362428] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57362377470
+[   57.362536] AR6K-DBG mmc1 pre-data t=57362499544 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.362631] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.362778] AR6K-DBG mmc1 irq t=57362742951 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.362885] AR6K-DBG mmc1 in-irq t=57362849914 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.365137] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.365464] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57365414507
+[   57.365571] AR6K-DBG mmc1 pre-data t=57365535544 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.365664] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.365810] AR6K-DBG mmc1 irq t=57365774210 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.365917] AR6K-DBG mmc1 in-irq t=57365881618 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.366414] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.366714] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57366666507
+[   57.366821] AR6K-DBG mmc1 pre-data t=57366784729 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.366914] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.367058] AR6K-DBG mmc1 irq t=57367023099 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.367165] AR6K-DBG mmc1 in-irq t=57367129470 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.368423] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.368738] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57368689766
+[   57.368844] AR6K-DBG mmc1 pre-data t=57368808729 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.368938] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.369082] AR6K-DBG mmc1 irq t=57369047840 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.369189] AR6K-DBG mmc1 in-irq t=57369153914 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.369658] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.369955] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57369909025
+[   57.370060] AR6K-DBG mmc1 pre-data t=57370024877 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.370153] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.370371] AR6K-DBG mmc1 irq t=57370332729 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.370477] AR6K-DBG mmc1 in-irq t=57370441618 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.371845] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.372160] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57372112136
+[   57.372266] AR6K-DBG mmc1 pre-data t=57372230803 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.372359] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.372505] AR6K-DBG mmc1 irq t=57372469173 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.372612] AR6K-DBG mmc1 in-irq t=57372576729 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.373072] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.373369] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57373321914
+[   57.373475] AR6K-DBG mmc1 pre-data t=57373439396 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.373567] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.373711] AR6K-DBG mmc1 irq t=57373676877 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.373818] AR6K-DBG mmc1 in-irq t=57373782803 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.374209] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.374523] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57374473025
+[   57.374629] AR6K-DBG mmc1 pre-data t=57374593618 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.374723] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.374867] AR6K-DBG mmc1 irq t=57374832581 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.374974] AR6K-DBG mmc1 in-irq t=57374938655 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.376565] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.376881] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57376833025
+[   57.376988] AR6K-DBG mmc1 pre-data t=57376952136 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.377081] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.377226] AR6K-DBG mmc1 irq t=57377190507 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.377333] AR6K-DBG mmc1 in-irq t=57377297470 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.377741] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.378044] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57377995692
+[   57.378150] AR6K-DBG mmc1 pre-data t=57378114359 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.378243] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.378387] AR6K-DBG mmc1 irq t=57378351840 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.378494] AR6K-DBG mmc1 in-irq t=57378458359 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.401595] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.402013] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57401960136
+[   57.402129] AR6K-DBG mmc1 pre-data t=57402084877 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.402241] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.402393] AR6K-DBG mmc1 irq t=57402358210 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.402507] AR6K-DBG mmc1 in-irq t=57402465618 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.403262] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.403612] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57403547247
+[   57.403731] AR6K-DBG mmc1 pre-data t=57403692136 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.403826] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.403990] AR6K-DBG mmc1 irq t=57403939247 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.404121] AR6K-DBG mmc1 in-irq t=57404075840 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.405493] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.405947] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57405881766
+[   57.406058] AR6K-DBG mmc1 pre-data t=57406020433 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.406153] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.406315] AR6K-DBG mmc1 irq t=57406269914 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.406449] AR6K-DBG mmc1 in-irq t=57406397470 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.407064] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.418694] AR6K-DBG mmc1 start_data RD addr=0x00800 len=6144 blksz=128 blocks=48 arg=0x18100030 fixed=1 block=1 t=57418627544
+[   57.418823] AR6K-DBG mmc1 pre-data t=57418774655 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.418952] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.419133] AR6K-DBG mmc1 irq t=57419083099 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.419265] AR6K-DBG mmc1 in-irq t=57419216729 status=0x00482440 cnt=2667 dctrl=0x0000080b dlen=6144 mask0=0x008001ff
+[   57.422224] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.422597] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.422942] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.432173] AR6K-DBG mmc1 post-dctrl-pio t=57432104581 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.432358] AR6K-DBG mmc1 request_end t=57432316433 data_err=0 data_xfered=24 xfer_size=24
+[   57.432453] AR6K-DBG mmc1 request_end t=57432415247 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.432675] AR6K-DBG mmc1 start_data RD addr=0x00800 len=12288 blksz=128 blocks=96 arg=0x18100060 fixed=1 block=1 t=57432613766
+[   57.432827] AR6K-DBG mmc1 pre-data t=57432764433 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.432985] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.433171] AR6K-DBG mmc1 irq t=57433119988 raw_status=0x0060a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.433305] AR6K-DBG mmc1 in-irq t=57433253322 status=0x0060a440 cnt=8971 dctrl=0x0000080b dlen=12288 mask0=0x008001ff
+[   57.434853] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.435238] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.435594] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.435950] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.439022] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.439547] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.439877] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.440634] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.440971] AR6K-DBG mmc1 post-dctrl-pio t=57440919840 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.441141] AR6K-DBG mmc1 request_end t=57441107840 data_err=0 data_xfered=24 xfer_size=24
+[   57.441233] AR6K-DBG mmc1 request_end t=57441195396 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.441512] AR6K-DBG mmc1 start_data RD addr=0x00800 len=9216 blksz=128 blocks=72 arg=0x18100048 fixed=1 block=1 t=57441443544
+[   57.441667] AR6K-DBG mmc1 pre-data t=57441602803 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.441820] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.442005] AR6K-DBG mmc1 irq t=57441953322 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.442118] AR6K-DBG mmc1 in-irq t=57442080433 status=0x00602440 cnt=6016 dctrl=0x0000080b dlen=9216 mask0=0x008001ff
+[   57.443202] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.443584] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.444138] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.444703] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.446250] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.446949] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.447893] AR6K-DBG mmc1 post-dctrl-pio t=57447819396 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.448089] AR6K-DBG mmc1 request_end t=57448049173 data_err=0 data_xfered=24 xfer_size=24
+[   57.448212] AR6K-DBG mmc1 request_end t=57448155840 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.448453] AR6K-DBG mmc1 start_data RD addr=0x00800 len=7680 blksz=128 blocks=60 arg=0x1810003c fixed=1 block=1 t=57448399544
+[   57.448575] AR6K-DBG mmc1 pre-data t=57448531692 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.448704] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.448867] AR6K-DBG mmc1 irq t=57448831544 raw_status=0x00482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.448975] AR6K-DBG mmc1 in-irq t=57448939099 status=0x00602440 cnt=4992 dctrl=0x0000080b dlen=7680 mask0=0x008001ff
+[   57.452178] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.453765] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.454125] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.454467] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.454806] AR6K-DBG mmc1 post-dctrl-pio t=57454760136 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.454961] AR6K-DBG mmc1 request_end t=57454931099 data_err=0 data_xfered=24 xfer_size=24
+[   57.455067] AR6K-DBG mmc1 request_end t=57455020433 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.455329] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57455265025
+[   57.455479] AR6K-DBG mmc1 pre-data t=57455419840 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.455608] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.455781] AR6K-DBG mmc1 irq t=57455737173 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.455894] AR6K-DBG mmc1 in-irq t=57455855099 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.456213] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.456562] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57456504433
+[   57.456685] AR6K-DBG mmc1 pre-data t=57456637766 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.456802] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.456967] AR6K-DBG mmc1 irq t=57456925618 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.457090] AR6K-DBG mmc1 in-irq t=57457045618 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.457402] AR6K-DBG mmc1 post-dctrl-pio t=57457349322 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.457566] AR6K-DBG mmc1 request_end t=57457529618 data_err=0 data_xfered=24 xfer_size=24
+[   57.457683] AR6K-DBG mmc1 request_end t=57457628136 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.457935] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57457870507
+[   57.458088] AR6K-DBG mmc1 pre-data t=57458020433 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.458212] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.458396] AR6K-DBG mmc1 irq t=57458343396 raw_status=0x0060a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.458509] AR6K-DBG mmc1 in-irq t=57458472877 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.460048] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.461860] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57461786062
+[   57.462022] AR6K-DBG mmc1 pre-data t=57461956581 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.462149] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.462337] AR6K-DBG mmc1 irq t=57462294507 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.462449] AR6K-DBG mmc1 in-irq t=57462412581 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.463675] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.464015] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57463961914
+[   57.464154] AR6K-DBG mmc1 pre-data t=57464090359 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.464276] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.464573] AR6K-DBG mmc1 irq t=57464523247 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.464697] AR6K-DBG mmc1 in-irq t=57464655840 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.466008] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.466367] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57466318655
+[   57.466482] AR6K-DBG mmc1 pre-data t=57466439544 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.466600] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.466783] AR6K-DBG mmc1 irq t=57466735099 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.466907] AR6K-DBG mmc1 in-irq t=57466865470 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.468580] AR6K-DBG mmc1 start_data RD addr=0x00800 len=6144 blksz=128 blocks=48 arg=0x18100030 fixed=1 block=1 t=57468512581
+[   57.468715] AR6K-DBG mmc1 pre-data t=57468665025 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.468844] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.469031] AR6K-DBG mmc1 irq t=57468973025 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.469151] AR6K-DBG mmc1 in-irq t=57469108285 status=0x00602440 cnt=2810 dctrl=0x0000080b dlen=6144 mask0=0x008001ff
+[   57.472196] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.475045] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.475401] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.475732] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.476022] AR6K-DBG mmc1 post-dctrl-pio t=57475980729 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.476185] AR6K-DBG mmc1 request_end t=57476151988 data_err=0 data_xfered=24 xfer_size=24
+[   57.476276] AR6K-DBG mmc1 request_end t=57476240285 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.476552] AR6K-DBG mmc1 start_data RD addr=0x00800 len=12288 blksz=128 blocks=96 arg=0x18100060 fixed=1 block=1 t=57476481173
+[   57.476662] AR6K-DBG mmc1 pre-data t=57476626062 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.476785] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.476957] AR6K-DBG mmc1 irq t=57476910655 raw_status=0x00482440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.477069] AR6K-DBG mmc1 in-irq t=57477030210 status=0x00602440 cnt=9344 dctrl=0x0000080b dlen=12288 mask0=0x008001ff
+[   57.480379] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.480734] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.481059] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.481368] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.481669] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.481972] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.482273] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.482576] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.482867] AR6K-DBG mmc1 post-dctrl-pio t=57482824433 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.483016] AR6K-DBG mmc1 request_end t=57482988729 data_err=0 data_xfered=24 xfer_size=24
+[   57.483105] AR6K-DBG mmc1 request_end t=57483069914 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.484787] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57484728285
+[   57.484897] AR6K-DBG mmc1 pre-data t=57484861470 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.484995] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.485141] AR6K-DBG mmc1 irq t=57485104581 raw_status=0x02400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.485248] AR6K-DBG mmc1 in-irq t=57485212433 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.485493] AR6K-DBG mmc1 start_data RD addr=0x00800 len=1536 blksz=128 blocks=12 arg=0x1810000c fixed=1 block=1 t=57485447099
+[   57.485598] AR6K-DBG mmc1 pre-data t=57485562951 status=0x02400400 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.485688] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.485822] AR6K-DBG mmc1 irq t=57485788136 raw_status=0x00602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.485928] AR6K-DBG mmc1 in-irq t=57485892729 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=1536 mask0=0x008001ff
+[   57.490933] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.491260] AR6K-DBG mmc1 start_data RD addr=0x00800 len=2688 blksz=128 blocks=21 arg=0x18100015 fixed=1 block=1 t=57491210655
+[   57.491370] AR6K-DBG mmc1 pre-data t=57491333322 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.491467] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.491615] AR6K-DBG mmc1 irq t=57491580433 raw_status=0x0060a440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.491721] AR6K-DBG mmc1 in-irq t=57491685914 status=0x02400540 cnt=0 dctrl=0x0000080b dlen=2688 mask0=0x008001ff
+[   57.495570] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.495897] AR6K-DBG mmc1 post-dctrl-pio t=57495853914 status=0x02400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.496048] AR6K-DBG mmc1 request_end t=57496020285 data_err=0 data_xfered=24 xfer_size=24
+[   57.496137] AR6K-DBG mmc1 request_end t=57496101470 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.496759] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57496708285
+[   57.496867] AR6K-DBG mmc1 pre-data t=57496830951 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.496962] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.497104] AR6K-DBG mmc1 irq t=57497067099 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.497211] AR6K-DBG mmc1 in-irq t=57497175692 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.497937] AR6K-DBG mmc1 post-dctrl-pio t=57497890062 status=0x00400400 cnt=24 dctrl=0x00000183 dlen=24 mask0=0x00a081ff
+[   57.498087] AR6K-DBG mmc1 request_end t=57498059840 data_err=0 data_xfered=24 xfer_size=24
+[   57.498176] AR6K-DBG mmc1 request_end t=57498141025 status=0x00400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.555212] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57555131247
+[   57.555377] AR6K-DBG mmc1 pre-data t=57555308433 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.555509] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.555698] AR6K-DBG mmc1 irq t=57555637766 raw_status=0x00400540 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=1 progdone=0
+[   57.555829] AR6K-DBG mmc1 in-irq t=57555783396 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.557208] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.772703] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.777591] AR6K-DBG mmc1 request_end t=57777575544 data_err=0 data_xfered=128 xfer_size=128
+[   57.777614] AR6K-DBG mmc1 request_end t=57777606359 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.777804] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57777794507
+[   57.777826] AR6K-DBG mmc1 pre-data t=57777819247 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.777846] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.777882] AR6K-DBG mmc1 irq t=57777875099 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.777903] AR6K-DBG mmc1 in-irq t=57777896284 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.780527] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
+[   57.862348] AR6K-DBG mmc1 request_end t=57862332433 data_err=0 data_xfered=128 xfer_size=128
+[   57.862376] AR6K-DBG mmc1 request_end t=57862366507 status=0x02400400 cnt=0 dctrl=0x00000809 dlen=128 mask0=0x008001ff
+[   57.862641] AR6K-DBG mmc1 start_data RD addr=0x00800 len=128 blksz=128 blocks=1 arg=0x10100080 fixed=1 block=0 t=57862628729
+[   57.862663] AR6K-DBG mmc1 pre-data t=57862657025 status=0x02400400 cnt=0 dctrl=0x00000183 dlen=24 mask0=0x008001ff
+[   57.862686] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x0000080b ch=21
+[   57.862721] AR6K-DBG mmc1 irq t=57862714359 raw_status=0x02602440 startbiterr=0 datacrcfail=0 datatimeout=0 dataend=0 progdone=0
+[   57.862743] AR6K-DBG mmc1 in-irq t=57862736581 status=0x00400540 cnt=0 dctrl=0x0000080b dlen=128 mask0=0x008001ff
+[   57.862955] AR6K-DBG mmc1 start_data DMA path datactrl-stashed=0x00000809 ch=21
