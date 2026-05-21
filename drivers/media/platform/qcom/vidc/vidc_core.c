@@ -2024,6 +2024,23 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 		}
 	}
 
+	/*
+	 * Sample slot bytes at fixed offsets — tells us whether the slot
+	 * picked by display_y_raw has been written with real pixel data
+	 * yet, or is still mostly sentinel.  Helps distinguish "GStreamer
+	 * captured an early sentinel frame" from "we're reading wrong
+	 * slot".
+	 */
+	{
+		u8 *p = slot_y;
+		dev_info(core->dev,
+			 "slot_y bytes @+0x000: %02x %02x %02x %02x  @+0x1000: %02x %02x %02x %02x  @+0x4000: %02x %02x %02x %02x  @+0x10000: %02x %02x %02x %02x\n",
+			 p[0], p[1], p[2], p[3],
+			 p[0x1000], p[0x1001], p[0x1002], p[0x1003],
+			 p[0x4000], p[0x4001], p[0x4002], p[0x4003],
+			 p[0x10000], p[0x10001], p[0x10002], p[0x10003]);
+	}
+
 	memcpy(dst_vaddr, slot_y, y_size);
 	memcpy(dst_vaddr + y_size, slot_c, c_size);
 
