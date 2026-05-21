@@ -874,19 +874,27 @@ static void adm_start_dma(struct adm_chan *achan)
 
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
-		u32 crci_val = async_desc->mux | async_desc->blk_size;
-		writel(crci_val,
-		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
+		u32 crci_val;
 		/*
-		 * Always log CRCI programming for WiFi ch5 to verify
-		 * block size matches what legacy uses (0 for sdcc4).
+		 * EXPERIMENT 2026-05-21: Force CRCI block size to 0 for WiFi
+		 * ch5 (sdcc4) to match legacy webOS msm_dmov behavior. Legacy
+		 * always uses DMOV_CRCI_DEFAULT_CONF which sets blk_size=0.
+		 * Mainline was programming data->blksz (2 for 52B BMI, 128 for
+		 * HTC body reads) which caused BMI polling loops to hang.
+		 * Hypothesis: AR6003 SDIO expects CRCI block size 0.
 		 */
-		if (achan->id == 5)
+		if (achan->id == 5) {
+			crci_val = async_desc->mux | 0;  /* Force blk_size=0 for WiFi */
 			dev_info(adev->dev,
-				 "ADM-DIAG: ch5 CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=%d len=%zu)\n",
+				 "ADM-DIAG: ch5 CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=0 FORCED, was %d, len=%zu)\n",
 				 async_desc->crci, crci_val,
 				 async_desc->mux, async_desc->blk_size,
 				 async_desc->length);
+		} else {
+			crci_val = async_desc->mux | async_desc->blk_size;
+		}
+		writel(crci_val,
+		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
 	}
 
 	/*
