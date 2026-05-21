@@ -44,18 +44,36 @@
 #define VIDC_REG_BURST_CONFIG		0x8003c  /* MGEN2MAXI base + 0x3c */
 
 /*
- * Pixel-cache enable register.  ENHANCE block @ VIDC_BASE + 0xC0000,
- * cache config register at offset 0x18.  webOS sets:
- *   CACHE_EN=1 PREFETCH_EN=1 CACHE_PORT_SELECT=1(B) STATISTICS_OFF=0
- *   PAGE_SIZE=0(1K) → cfg = 0x02 | 0x08 | 0x10 = 0x1a
+ * Pixel-cache (ENHANCE block @ VIDC_BASE + 0xC0000) — the decoder's
+ * macroblock writes flow through this cache on the way to DRAM.
+ * Without programming the cache's per-slot DPB Y/C addresses, frame
+ * dimensions, and tile range AND clearing the tags before each
+ * FRAME_DATA, the firmware acknowledges FRAME_DONE but no pixel data
+ * lands in the DPB pool (host's 0xCC sentinel survives unchanged).
  *
- * The decoded frame output goes through this cache on its way to DRAM.
- * Without it, the firmware acknowledges FRAME_DONE for each frame but
- * never actually writes pixel data to the DPB slots (DPB stays at
- * whatever value the host pre-filled).
+ * webOS init order (ddl_vidc_core_init in vcd_ddl_vidc.c:30-77):
+ *   vidc_pix_cache_sw_reset()          REG_169013, +0x14
+ *   vidc_pix_cache_init_config(0x1a)   REG_22756,  +0x18
+ *
+ * webOS per-FRAME_DATA setup (ddl_vidc_decode_frame_run +
+ * vidc_pix_cache_*):
+ *   vidc_pix_cache_init_luma_chroma_base_addr   REG_804925, +0x24+4*i
+ *   vidc_pix_cache_set_frame_size               REG_951731, +0x1c
+ *   vidc_pix_cache_set_frame_range              REG_905239, +0x20
+ *   vidc_pix_cache_clear_cache_tags             REG_22756[bit0] toggle
  */
+#define VIDC_REG_PIX_CACHE_SW_RESET	0xc0014
 #define VIDC_REG_PIX_CACHE_CONFIG	0xc0018
+#define VIDC_REG_PIX_CACHE_FRAME_SIZE	0xc001c
+#define VIDC_REG_PIX_CACHE_FRAME_RANGE	0xc0020
+#define VIDC_REG_PIX_CACHE_LUMA_BASE	0xc0024	/* +4*n, max 19 slots */
+#define VIDC_REG_PIX_CACHE_CHROMA_BASE	0xc0070	/* +4*n */
+
 #define VIDC_PIX_CACHE_CONFIG_DEFAULT	0x1a
+#define VIDC_PIX_CACHE_TAG_CLEAR_BIT	BIT(0)
+#define VIDC_PIX_CACHE_SW_RESET_BIT	BIT(0)
+#define VIDC_PIX_CACHE_TILE_FACTOR	8192	/* VIDC_TILE_MULTIPLY_FACTOR */
+#define VIDC_PIX_CACHE_MAX_DPB		19
 #define VIDC_REG_RETURNED_CH_INST_ID	0x2000
 #define VIDC_REG_CH0_INST_ID		0x2040
 #define VIDC_REG_CH1_INST_ID		0x2080

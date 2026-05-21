@@ -795,6 +795,57 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	if (op == VIDC_OP_FRAME_DATA) {
 		vidc_write(core, VIDC_REG_CH0_DPB_RELEASE, inst->dpb_hw_mask);
 		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
+
+		/*
+		 * Pixel-cache per-frame setup — webOS ddl_vidc_decode_frame_run
+		 * (vcd_ddl_vidc.c:840-853).  Decoded macroblocks flow through
+		 * the pix cache on the way to DRAM; without telling the cache
+		 * where to write (per-slot luma addrs), how big each frame is,
+		 * and clearing the tags before each frame, no pixel data
+		 * reaches the DPB slots.
+		 *
+		 * Luma addresses written here are ABSOLUTE physical addresses,
+		 * not fw-relative offsets (matches webOS dec_pic_buffers
+		 * [i].vcd_frm.physical).
+		 */
+		{
+			u32 slot_size = inst->dpb_y_alloc_size / inst->dpb_count;
+			u32 fw, slot_count = min_t(u32, inst->dpb_count,
+						   VIDC_PIX_CACHE_MAX_DPB);
+			u32 frame_size, frame_range;
+			u32 i;
+
+			for (i = 0; i < slot_count; i++) {
+				u32 slot_phys = inst->dpb_y_dma_addr +
+						i * slot_size;
+				vidc_write(core,
+					   VIDC_REG_PIX_CACHE_LUMA_BASE + i * 4,
+					   slot_phys);
+			}
+			/* Clear remaining unused luma slots (defensive) */
+			for (; i < VIDC_PIX_CACHE_MAX_DPB; i++)
+				vidc_write(core,
+					   VIDC_REG_PIX_CACHE_LUMA_BASE + i * 4,
+					   0);
+
+			frame_size = ((inst->seq_height & 0x7ff) << 16) |
+				     (inst->seq_width & 0x7ff);
+			vidc_write(core, VIDC_REG_PIX_CACHE_FRAME_SIZE,
+				   frame_size);
+
+			frame_range =
+				(((inst->dpb_y_size / VIDC_PIX_CACHE_TILE_FACTOR) & 0xff) << 8) |
+				((inst->dpb_c_size / VIDC_PIX_CACHE_TILE_FACTOR) & 0xff);
+			vidc_write(core, VIDC_REG_PIX_CACHE_FRAME_RANGE,
+				   frame_range);
+
+			/* Clear cache tags: set bit 0, then clear it */
+			fw = vidc_read(core, VIDC_REG_PIX_CACHE_CONFIG);
+			vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
+				   fw | VIDC_PIX_CACHE_TAG_CLEAR_BIT);
+			vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
+				   fw & ~VIDC_PIX_CACHE_TAG_CLEAR_BIT);
+		}
 	}
 
 	dev_info(core->dev,
