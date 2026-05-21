@@ -1082,10 +1082,18 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 	if (!dpb_ret && inst->dpb_y_vaddr) {
 		size_t total = inst->dpb_y_alloc_size;
 		memset(inst->dpb_y_vaddr, 0xcc, total);
+		if (inst->h264_vert_nb_mv_vaddr)
+			memset(inst->h264_vert_nb_mv_vaddr, 0xcc,
+			       VIDC_H264_VERT_NB_MV_SIZE);
+		if (inst->h264_nb_ip_vaddr)
+			memset(inst->h264_nb_ip_vaddr, 0xcc,
+			       VIDC_H264_NB_IP_SIZE);
 		wmb();
 		dev_info(core->dev,
-			 "SMIPOOL sentinel: filled %zu bytes of DPB with 0xCC\n",
-			 total);
+			 "SMIPOOL sentinel: filled %zu+%u+%u bytes (DPB+vert_nb_mv+nb_ip) with 0xCC\n",
+			 total,
+			 VIDC_H264_VERT_NB_MV_SIZE,
+			 VIDC_H264_NB_IP_SIZE);
 	}
 
 	v4l2_event_queue_fh(&inst->fh, &ev);

@@ -1974,6 +1974,46 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 	print_hex_dump(KERN_INFO, "DPB C[0:16]: ", DUMP_PREFIX_NONE,
 		       16, 1, slot_c, 16, false);
 
+	/*
+	 * Scan the H.264 work bufs for any non-0xCC bytes — if firmware
+	 * writes its motion-vector scratch or neighbour-prediction data
+	 * here, we'll see real bytes amid the sentinel pattern.  Tells us
+	 * whether the firmware's MGEN2MAXI bus master can write to
+	 * SMIPOOL at all (different question from "where").
+	 */
+	{
+		u8 *p;
+		size_t i;
+		size_t nb_mv_nonzero = 0, nb_ip_nonzero = 0;
+
+		if (inst->h264_vert_nb_mv_vaddr) {
+			p = inst->h264_vert_nb_mv_vaddr;
+			for (i = 0; i < VIDC_H264_VERT_NB_MV_SIZE; i++)
+				if (p[i] != 0xcc)
+					nb_mv_nonzero++;
+		}
+		if (inst->h264_nb_ip_vaddr) {
+			p = inst->h264_nb_ip_vaddr;
+			for (i = 0; i < VIDC_H264_NB_IP_SIZE; i++)
+				if (p[i] != 0xcc)
+					nb_ip_nonzero++;
+		}
+		dev_info(core->dev,
+			 "scan: vert_nb_mv=%zu/%u modified, nb_ip=%zu/%u modified\n",
+			 nb_mv_nonzero, VIDC_H264_VERT_NB_MV_SIZE,
+			 nb_ip_nonzero, VIDC_H264_NB_IP_SIZE);
+		if (inst->h264_vert_nb_mv_vaddr && nb_mv_nonzero) {
+			print_hex_dump(KERN_INFO, "vert_nb_mv[0:32]: ",
+				       DUMP_PREFIX_NONE, 16, 1,
+				       inst->h264_vert_nb_mv_vaddr, 32, false);
+		}
+		if (inst->h264_nb_ip_vaddr && nb_ip_nonzero) {
+			print_hex_dump(KERN_INFO, "nb_ip[0:32]: ",
+				       DUMP_PREFIX_NONE, 16, 1,
+				       inst->h264_nb_ip_vaddr, 32, false);
+		}
+	}
+
 	memcpy(dst_vaddr, slot_y, y_size);
 	memcpy(dst_vaddr + y_size, slot_c, c_size);
 
