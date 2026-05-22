@@ -1322,9 +1322,19 @@ static void mmci_qcom_dma_read_complete(void *param)
 	data = host->data;
 	if (!data) {
 		/* Already completed (DATAEND raced in, or error path ran) */
+		trace_printk("MMCI-DMA-CB: mmc%u callback LATE (DATAEND already completed)\n",
+			     host->mmc->index);
 		spin_unlock_irqrestore(&host->lock, flags);
 		return;
 	}
+
+	/*
+	 * host->data still pending => the SDCC did NOT raise DATAEND and this
+	 * callback is what actually completes the read. Logging the index
+	 * tells us whether eMMC (mmc0) shares the WiFi (mmc1) no-DATAEND path.
+	 */
+	trace_printk("MMCI-DMA-CB: mmc%u callback COMPLETES read (no DATAEND) blksz=%u blocks=%u\n",
+		     host->mmc->index, data->blksz, data->blocks);
 
 	if (host->variant->qcom_datactrl_delay)
 		cancel_delayed_work(&host->qcom_dma_timeout_work);
@@ -2077,6 +2087,17 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		dev_err(mmc_dev(host->mmc), "stray MCI_DATABLOCKEND interrupt\n");
 
 	if (status & MCI_DATAEND || data->error) {
+		/*
+		 * Tag DATAEND-driven completion of READS (low volume) so we can
+		 * contrast against the mmci_qcom_dma_read_complete callback path
+		 * and see whether eMMC (mmc0) gets DATAEND on DMA reads where
+		 * WiFi (mmc1) does not.
+		 */
+		if ((data->flags & MMC_DATA_READ) && host->dma_in_progress)
+			trace_printk("MMCI-DATAEND-RD: mmc%u completes read via DATAEND status=0x%08x blksz=%u blocks=%u err=%d\n",
+				     host->mmc->index, status, data->blksz,
+				     data->blocks, data->error);
+
 		if (host->variant->qcom_datactrl_delay)
 			cancel_delayed_work(&host->qcom_dma_timeout_work);
 
