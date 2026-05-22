@@ -57,7 +57,23 @@ static int do_attach(const char *tty)
 	if (ioctl(fd, HCIUARTSETFLAGS, flags) < 0)
 		perror("HCIUARTSETFLAGS (non-fatal)");
 	if (ioctl(fd, HCIUARTSETPROTO, proto) < 0) { perror("HCIUARTSETPROTO"); return -1; }
-	printf("attach: BCSP ldisc set on %s (RESET_ON_INIT flag=%lu)\n", tty, flags);
+	/*
+	 * Assert RTS (RFR/gpio56) — webOS drives it low (asserted) during the
+	 * BCSP handshake; RFR is the chip's CTS input and the chip won't send
+	 * CONF/SYNC-RSP unless it sees CTS asserted.
+	 */
+	{
+		int mbits = 0;
+		ioctl(fd, 0x5415 /*TIOCMGET*/, &mbits);
+		printf("attach: modem before RTS-assert = 0x%x\n", mbits);
+		mbits = 0x004; /* TIOCM_RTS */
+		if (ioctl(fd, 0x5416 /*TIOCMBIS*/, &mbits) < 0)
+			perror("TIOCMBIS RTS");
+		mbits = 0;
+		ioctl(fd, 0x5415 /*TIOCMGET*/, &mbits);
+		printf("attach: modem after  RTS-assert = 0x%x\n", mbits);
+	}
+	printf("attach: BCSP ldisc set on %s (RESET_ON_INIT flag=%lu, RTS asserted)\n", tty, flags);
 	fflush(stdout);
 	return fd;   /* caller must keep this open */
 }
