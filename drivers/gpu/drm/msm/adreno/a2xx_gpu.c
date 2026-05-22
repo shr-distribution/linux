@@ -4,6 +4,7 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/interconnect.h>
+#include <linux/moduleparam.h>
 #include <linux/pm_opp.h>
 
 #include <drm/drm_file.h>
@@ -14,6 +15,24 @@
 #include "msm_mmu.h"
 
 extern bool hang_debug;
+
+/*
+ * SQ_GPR_MANAGEMENT value written at a2xx hw_init. Default 0x00040400
+ * matches the legacy KGSL (VTX=64, PIX=64, static). Exposed as a
+ * runtime-tweakable module param to investigate the A220 period-8 render
+ * cycle: this register controls SQ GPR / parameter-cache banking, so
+ * different values may change the 8-way wavefront-slot rotation that the
+ * period-8 cycle appears to ride on. Change via
+ *   /sys/module/<msm-module>/parameters/a2xx_sq_gpr_management
+ * then force a GPU hw_init to apply (let the GPU idle -> autosuspend ->
+ * next submit resumes + re-runs hw_init, or trigger the debugfs reset).
+ * webOS's binning prelude used 0x0007f010 (VTX=127, PIX=1).
+ */
+static uint a2xx_sq_gpr_management = 0x00040400;
+module_param(a2xx_sq_gpr_management, uint, 0644);
+MODULE_PARM_DESC(a2xx_sq_gpr_management,
+	"SQ_GPR_MANAGEMENT value written at a2xx hw_init "
+	"(default 0x00040400; applied on next GPU hw_init/resume)");
 
 /*
  * Track the last user IB1 across submits for forensic dump on MMU
@@ -312,8 +331,11 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	 *
 	 * KGSL writes 0x00040400 (VTX=64, PIX=64, static). Without proper
 	 * init, random power-on values could starve one shader type of GPRs.
+	 * Value is a runtime module param (a2xx_sq_gpr_management) so the
+	 * GPR/param-cache banking can be swept while chasing the period-8
+	 * cycle; see the param declaration near the top of this file.
 	 */
-	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x00040400);
+	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, a2xx_sq_gpr_management);
 
 	/* note: gsl doesn't set this */
 	gpu_write(gpu, REG_A2XX_RBBM_DEBUG, 0x00080000);
