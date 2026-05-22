@@ -18,6 +18,7 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/klog.h>
 
 #define N_HCI            15
 #define HCIUARTSETPROTO  _IOW('U', 200, int)
@@ -77,9 +78,23 @@ static int do_up(void)
 	return 0;
 }
 
+/* Dump the kernel ring buffer via klogctl (no eMMC binary needed). */
+static int do_klog(void)
+{
+	static char buf[256 * 1024];
+	int n = klogctl(3 /* SYSLOG_ACTION_READ_ALL */, buf, sizeof(buf) - 1);
+	if (n < 0) { perror("klogctl"); return -1; }
+	buf[n] = 0;
+	fwrite(buf, 1, n, stdout);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
-	if (argc < 2) { fprintf(stderr, "usage: btup attach|up|attachup <tty>\n"); return 2; }
+	if (argc < 2) { fprintf(stderr, "usage: btup attach|up|attachup|klog <tty>\n"); return 2; }
+
+	if (!strcmp(argv[1], "klog"))
+		return do_klog() == 0 ? 0 : 1;
 
 	if (!strcmp(argv[1], "up"))
 		return do_up() == 0 ? 0 : 1;
