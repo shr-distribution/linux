@@ -1450,6 +1450,19 @@ static int vidc_dec_close(struct file *file)
 	cancel_work_sync(&inst->seq_done_work);
 	cancel_work_sync(&inst->frame_done_work);
 
+	/*
+	 * Clear core->curr_inst if it still points at this instance — an IRQ
+	 * arriving on a future session's boot dereferences curr_inst and
+	 * crashes the kernel if it points at freed memory.
+	 */
+	{
+		unsigned long flags;
+		spin_lock_irqsave(&core->irqlock, flags);
+		if (core->curr_inst == inst)
+			core->curr_inst = NULL;
+		spin_unlock_irqrestore(&core->irqlock, flags);
+	}
+
 	mutex_lock(&core->lock);
 	list_del(&inst->list);
 	core->num_instances--;

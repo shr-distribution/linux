@@ -686,7 +686,16 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		dev_info(core->dev, "Firmware recovery ACK (cmd=0x%x)\n", cmd);
 		core->fw_recovery_mode = true;
 		complete(&core->sys_init_done);
-		if (inst) {
+		/*
+		 * Only touch inst if firmware has finished booting (fw_running
+		 * is set at the end of vidc_boot_firmware).  During the
+		 * boot-phase SYS_INIT wait, cmd=<FW_VERSION> is the SYS_INIT
+		 * recovery ack — there is no per-instance command in flight,
+		 * and core->curr_inst may be a stale pointer from a previously
+		 * closed session.  Dereferencing it crashed the kernel (oops
+		 * at virtual address fffffffc) on session 2 boot.
+		 */
+		if (core->fw_running && inst) {
 			if (inst->state == VIDC_STATE_IDLE) {
 				inst->inst_id = arg1;
 				dev_info(core->dev,
@@ -1522,6 +1531,17 @@ int vidc_close_channel(struct vidc_inst *inst)
 	inst->seq_width = 0;
 	inst->seq_height = 0;
 	inst->min_dpb_count = 0;
+
+	/*
+	 * Clear core->curr_inst if it still points at this instance.  An IRQ
+	 * arriving on a future session's boot (e.g. a cmd=<FW_VERSION>
+	 * recovery ack during SYS_INIT) reads curr_inst; a stale pointer to
+	 * a freed inst causes kernel oops at fffffffc.
+	 */
+	spin_lock_irqsave(&core->irqlock, flags);
+	if (core->curr_inst == inst)
+		core->curr_inst = NULL;
+	spin_unlock_irqrestore(&core->irqlock, flags);
 
 	dev_dbg(core->dev, "VIDC channel closed\n");
 	return inst->error;
