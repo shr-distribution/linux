@@ -192,12 +192,37 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * clean restart matching the cold-boot path.
 	 */
 	if (sw_reset != (VIDC_RESET_NONE & ~VIDC_RESET_RISC)) {
-		printk(KERN_EMERG "VIDC: hw_reset: normalizing 0x%08x -> 0x000 -> 0x3fe\n",
+		printk(KERN_EMERG "VIDC: hw_reset: normalizing 0x%08x -> 0x3fe -> 0x000 -> 0x3fe\n",
 		       sw_reset);
-		/* All blocks into reset (clean slate) */
+		/*
+		 * Three-step pulse so EVERY block sees a clean 1→0 reset edge
+		 * regardless of entry state.
+		 *
+		 *   Step 1: write 0x3fe — bring all blocks (except RISC) into
+		 *           the "released" state.  Any block that was previously
+		 *           in reset (bit=0) goes to released (bit=1) here.
+		 *           This is the only step that can produce a 0→1 edge,
+		 *           which doesn't reset anything by itself but is
+		 *           necessary so the next step can produce 1→0.
+		 *   Step 2: write 0x000 — drive every block into reset.  This
+		 *           is the 1→0 edge every internal block needs to
+		 *           actually clear its state.
+		 *   Step 3: write 0x3fe — release everything except RISC,
+		 *           leaving the standard "RISC held, others active"
+		 *           state for stage-1 RMW below.
+		 *
+		 * Previous version did only 0x000 → 0x3fe.  That works when the
+		 * entry state has the block bits set (e.g. 0x3fb), but on
+		 * session 2+ where entry can be 0x33 (most blocks already in
+		 * reset = bit 0), the 0x000 write was a no-op for those bits
+		 * and no 1→0 edge was generated, leaving the firmware to boot
+		 * cmd=51 recovery instead of cmd=9 clean.
+		 */
+		vidc_write(core, VIDC_REG_SW_RESET,
+			   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
+		msleep(1);
 		vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_ALL);
 		msleep(1);
-		/* Release everything except RISC */
 		vidc_write(core, VIDC_REG_SW_RESET,
 			   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
 		msleep(1);
