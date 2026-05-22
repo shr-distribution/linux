@@ -826,7 +826,7 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	       host->base + MMCIMASK0);
 
 	/* Trace mask setup for WiFi SDCC4 debugging */
-	if (host->mmc->index == 3)
+	if (host->mmc->index == 1)
 		trace_printk("MMCI-DMA-START: MASK0=0x%08x (enabled DATAENDMASK) blksz=%u blocks=%u\n",
 			     readl(host->base + MMCIMASK0), data->blksz, data->blocks);
 
@@ -859,7 +859,7 @@ static void
 mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 {
 	/* Trace request end for WiFi SDCC4 debugging */
-	if (host->mmc->index == 3 && mrq && mrq->data)
+	if (host->mmc->index == 1 && mrq && mrq->data)
 		trace_printk("MMCI-REQ-END: cmd=%u blksz=%u blocks=%u\n",
 			     mrq->cmd->opcode, mrq->data->blksz, mrq->data->blocks);
 
@@ -1944,7 +1944,7 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		return;
 
 	/* Trace data IRQ for WiFi SDCC4 debugging */
-	if (host->mmc->index == 3)
+	if (host->mmc->index == 1)
 		trace_printk("MMCI-DATA-IRQ: status=0x%08x blksz=%u blocks=%u\n",
 			     status, data->blksz, data->blocks);
 
@@ -2510,7 +2510,7 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 		raw_status = status;
 
 		/* Trace IRQ entry for WiFi SDCC4 debugging */
-		if (host->mmc->index == 3 && status)
+		if (host->mmc->index == 1 && status)
 			trace_printk("MMCI-IRQ: status=0x%08x mask0=0x%08x\n",
 				     status, readl(host->base + MMCIMASK0));
 
