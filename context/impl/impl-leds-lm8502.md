@@ -2,10 +2,55 @@
 domain: leds-lm8502
 created: "2026-05-22"
 last_updated: "2026-05-22"
-status: chip-silent-on-i2c-multiple-attempted-fixes-pushed-pending-rebuild
+status: RESOLVED-leds-light-from-boot-via-deferred-chip-init
 ---
 
 # Implementation: LM8502 LED controller (HP TouchPad navi LEDs)
+
+## ✅ RESOLVED 2026-05-22 — fix `58c3e5d96904`
+
+Both HP TouchPad navi LEDs now light up cleanly from a fresh boot.
+Verified on-device with the Knight-Rider animation (left/right
+ping-pong + sync fade via `/sys/class/leds/`), brightness gradation
+(128 = visible half-lit), and the kernel boot log:
+
+```
+lm8502 2-0033: LM8502 LED controller registered with 2 LEDs (chip_init deferred 3 s)
+lm8502 2-0033: Sending software reset to LM8502
+lm8502 2-0033: Deferred chip_init complete; brightness writes now active
+```
+
+**Root cause:** `regmap_write()` calls issued by `chip_init()` at
+probe time (~2 s into boot) silently don't reach the chip — the
+mainline i2c-qup driver does not propagate NACK on writes, so probe
+thinks the init succeeded but the bytes never landed. The exact
+same init sequence done via raw `I2C_RDWR` ioctl ~30 s+ into boot
+DOES wake the chip; once awake the regmap path is fine. Likely the
+QUP controller / RPM HPM transition / something else isn't fully
+settled at probe time.
+
+**Fix:** defer `chip_init()` to a `delayed_work` scheduled 3 s after
+probe (retry 5 s on failure). `brightness_set()` returns `-EAGAIN`
+until init completes instead of swallowing writes silently.
+Companion userspace tools dropped at `tools/lm8502/`:
+- `lm-wake.py` — manual wake via I2C_RDWR ioctl
+- `lm-knight-rider.sh` — left/right ping-pong + fade demo
+
+**Caveats / known cosmetics:**
+- The "After init: ENGINE_CNTRL1=0xff" log lines are still noisy
+  because mainline i2c-qup returns 0xff (bus pull-up) without
+  errno on reads when the chip doesn't ACK. Writes still get
+  through, so this is purely cosmetic. Future cleanup: convert
+  the diagnostic block to `i2c_transfer` direct, or just remove.
+- If you ever unbind the lm8502 driver, regulator l16 drops back
+  to LPM (~1 mA), the chip dies, and the kernel can't wake it
+  again without a fresh power cycle. `tools/lm8502/lm-wake.py` is
+  a workaround in that case. Mostly only matters for development.
+
+See memory note `project_lm8502_deferred_init.md` for the long-form
+diagnosis trail.
+
+## Historical investigation (kept for reference)
 
 ## Status: Chip not responding on mainline; webOS confirms HW is alive
 

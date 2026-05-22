@@ -1,6 +1,6 @@
 ---
 created: "2026-05-11"
-last_edited: "2026-05-21"
+last_edited: "2026-05-22"
 ---
 
 # Implementation Overview
@@ -16,6 +16,7 @@ last_edited: "2026-05-21"
 | sensor-i2c-recovery | 2 | 4 | T-002/T-003 done (i2c-qup recovery wired, 9-cycle generic SCL); T-012/T-013 HW pending |
 | pmic-thermal | 6 | 6 | ALL DONE on-device. T-004/T-005 (both zones live), T-014 (critical-trip -> poweroff 148us), T-015 (defconfig flags), T-022 (no userspace daemon -- path is kernel-only), T-023 (latency 148us == 33783x under polled budget, 6756x under IRQ budget) |
 | mpm-boot-hang | RESOLVED | n/a | irq-msm8660-mpm.c platform driver working on-device 2026-05-21 (commit 993a638936e4). USB1_HS routes through MPM, raw-pin API exported for SDC4 wake. impl-mpm-boot-hang.md updated. |
+| leds-lm8502 | RESOLVED | n/a | HP TouchPad navi LEDs working from boot 2026-05-22 (commit 58c3e5d96904). Root cause: regmap_write at probe (~2 s) silently fails to wake the chip on mainline; deferred chip_init via delayed_work 3 s after probe lands cleanly. Knight Rider animation + brightness gradation visually verified. impl-leds-lm8502.md and project_lm8502_deferred_init.md memory note for full diagnosis trail. |
 
 ## Current Work
 
