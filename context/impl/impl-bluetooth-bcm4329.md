@@ -2,7 +2,65 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: crc-on-LE-fix-pushed-pending-yocto-rebuild (flow-control was a red herring)
+status: CRC fix verified (TX byte-perfect) but chip RX still dead; reset-pulse+1s-settle fix pushed (8054d7305229) pending rebuild
+---
+
+## 2026-05-22 (evening): CRC fix VERIFIED working at TX level; chip RX still dead → reset-timing fix (8054d7305229)
+
+Rebuilt with CRC fix (kernel g196cf9e5f841, includes 3a7ac6dd0f58).
+On-device: our SYNC is now `c0 40 41 00 7e da dc ed ed a9 7a c0` —
+**byte-identical to the chip's SYNC and to webOS bcattach's**. The CRC
+fix worked. But the chip STILL only streams SYNC, never SYNC-RSP.
+
+**Exhaustive on-device verification — everything on our side is correct:**
+- GPIOs (TLMM io regs via devmem): BT_POWER(130)=high, BT_WAKE(131)=high
+  (asserted, ctl_reg 0x2C0 = GPIO mode + OE + 8mA), BT_RST_N(138)=high
+  (not in reset), HOST_WAKE(129)=low.
+- GSBI6 UART (devmem 0x16540000): MR1=0x34 → CTS_CTL(bit6)=0, no hardware
+  flow-control gating. MR2=0x34 → 8N1. SR=0xAC → TXRDY+TXEMT (TX FIFO and
+  shifter EMPTY = our bytes physically clocked out the pin).
+- 1902/1902 RX payloads = `da dc ed ed` (SYNC), ZERO framing/checksum/
+  short/unknown errors. We are not dropping anything; the chip simply
+  sends nothing but SYNC.
+
+So: chip TX healthy, our TX byte-perfect and physically transmitted, no
+flow-control gating, RX clean — yet the chip's UART RX never acts on our
+bytes. flow-control falsified (again), CRC confirmed-but-insufficient.
+
+**Remaining difference from webOS = the bring-up sequence.** webOS
+bcattach (webOS-ports/utilities tenderloin-halium/bcattach/main.c):
+- reset: write 0 (assert), `usleep(100000)` (100 ms hold), write 1
+  (deassert), `usleep(1000000)` (**1 s settle**), THEN start UART traffic.
+- UART flags=0x9 (0x4 flow-control bit clear → no flow control).
+- no wake bytes; goes straight to SYNC after the 1 s.
+
+Our `bcsp_serdev_set_power(true)` deasserted reset with NO hold (asserted
+at devm_gpiod_get, released ~µs later) and waited only msleep(100) before
+`hci_uart_register_device()` → bcsp_open queued the first SYNC. So the
+chip got essentially no reset pulse AND we transmitted during its boot
+window. Either under-resets the chip / corrupts its early RX framing,
+leaving RX dead while the ROM SYNC TX runs autonomously — matches the
+symptom and its determinism.
+
+**Fix (8054d7305229):** set_power(true) now does power-on → assert reset
+100 ms → deassert → msleep(1000) before returning. Initial SYNC is queued
+only after set_power completes, so we stay silent for ~1 s during boot,
+matching webOS.
+
+Caveat: a UART normally resyncs framing after idle, so "premature SYNC
+corrupts RX forever" has a weakness; the under-reset (µs pulse) angle is
+the stronger mechanism. If this fix doesn't work, next suspects:
+msm_serial GSBI6 TX-path vs the webOS hsuart driver (confirm msm_serial
+TX is proven on another GSBI UART), and the hsuart flags=0x9 / RXLAT
+specifics.
+
+Expected next-state after rebuild: chip emits SYNC-RSP (`ac af ef ee`) →
+`sync_rsp received, moving to INIT` → conf → `Link established` → PSKEY/
+BDADDR/WARM_RESET → HCI Reset OK → `hciconfig hci0 up`.
+
+### Cheap check (still BLOCKED on link-up) — psmemtype / chiprev / psget 0x01f9
+Unchanged; needs a working BCSP link to send BCCMDs.
+
 ---
 
 ## 2026-05-22 (later): flow-control was a red herring — real blocker is CRC on LE packets (3a7ac6dd0f58)
