@@ -80,27 +80,58 @@ static int vidc_clk_enable(struct vidc_core *core)
 		goto err_core_clk;
 	}
 
-	ret = clk_prepare_enable(core->axi_a_clk);
-	if (ret) {
-		dev_err(core->dev, "failed to enable axi_a clock: %d\n", ret);
-		goto err_axi_clk;
+	/*
+	 * axi_a/b: enable once on first resume (when GDSC is up), never
+	 * disable until driver removal.
+	 */
+	if (!core->axi_ab_persistent_enabled) {
+		ret = clk_prepare_enable(core->axi_a_clk);
+		if (ret) {
+			dev_err(core->dev, "failed to enable axi_a clock: %d\n", ret);
+			goto err_axi_clk;
+		}
+		ret = clk_prepare_enable(core->axi_b_clk);
+		if (ret) {
+			dev_err(core->dev, "failed to enable axi_b clock: %d\n", ret);
+			clk_disable_unprepare(core->axi_a_clk);
+			goto err_axi_clk;
+		}
+		core->axi_ab_persistent_enabled = true;
 	}
 
-	ret = clk_prepare_enable(core->axi_b_clk);
-	if (ret) {
-		dev_err(core->dev, "failed to enable axi_b clock: %d\n", ret);
-		goto err_axi_a_clk;
-	}
+	/*
+	 * NOTE: vcodec_axi_a_clk and vcodec_axi_b_clk are NOT toggled in
+	 * the runtime PM path.  They are prepared+enabled once on the
+	 * first vidc_clk_enable (when GDSC is up) and stay on across all
+	 * runtime suspend/resume cycles.
+	 *
+	 * Why: cycling axi_a/b per session reliably triggers a
+	 * "vcodec_axi_b_clk status stuck at 'on'" clk_branch_disable WARN
+	 * at end of session because the VIDC hardware still has pending
+	 * AXI master transactions when the host yanks the clock.  When the
+	 * branch then auto-collapses the clock anyway, the VIDC hardware
+	 * ends in a half-state, and the next session's firmware boot
+	 * detects "I came back from a crashed state" and emits cmd=51
+	 * (recovery) instead of cmd=9 (clean).  In recovery mode, FRAME_DATA
+	 * submissions never produce ENC_COMPLETE / FRAME_DONE — the encoder
+	 * is permanently broken for the rest of that boot.
+	 *
+	 * HTC's reference msm8660 driver
+	 * (refs/htc-msm8660/.../vcd_res_tracker.c) confirms the right
+	 * pattern: it only cycles vcodec_clk and vcodec_pclk in its
+	 * runtime path and never touches axi_a/b.  GDSC collapse handles
+	 * the actual hardware power-down of those clocks; the software
+	 * "enabled" count stays high so the kernel clock framework doesn't
+	 * try to gate them out from under VIDC.
+	 */
 
-	printk(KERN_EMERG "VIDC: clk_enable: core=%lu iface=%lu axi=%lu (axi_a/b on)\n",
+	printk(KERN_EMERG "VIDC: clk_enable: core=%lu iface=%lu axi=%lu (axi_a/b managed at probe)\n",
 	       clk_get_rate(core->core_clk),
 	       clk_get_rate(core->iface_clk),
 	       clk_get_rate(core->axi_clk));
 
 	return 0;
 
-err_axi_a_clk:
-	clk_disable_unprepare(core->axi_a_clk);
 err_axi_clk:
 	clk_disable_unprepare(core->axi_clk);
 err_core_clk:
@@ -112,8 +143,7 @@ err_iface_clk:
 
 static void vidc_clk_disable(struct vidc_core *core)
 {
-	clk_disable_unprepare(core->axi_b_clk);
-	clk_disable_unprepare(core->axi_a_clk);
+	/* axi_a/b are NOT cycled here — see vidc_clk_enable() comment. */
 	clk_disable_unprepare(core->axi_clk);
 	clk_disable_unprepare(core->core_clk);
 	clk_disable_unprepare(core->iface_clk);
@@ -2716,6 +2746,13 @@ void vidc_core_deinit(struct vidc_core *core)
 {
 	vidc_unload_firmware(core);
 	vidc_clk_disable(core);
+	/* axi_a/b are enabled once on first resume and stay on across
+	 * the driver's runtime — release them only here on remove. */
+	if (core->axi_ab_persistent_enabled) {
+		clk_disable_unprepare(core->axi_b_clk);
+		clk_disable_unprepare(core->axi_a_clk);
+		core->axi_ab_persistent_enabled = false;
+	}
 }
 
 static int vidc_probe(struct platform_device *pdev)

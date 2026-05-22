@@ -469,6 +469,7 @@ struct vidc_core {
 	size_t fw_phys_size;		/* SMI reserved region size */
 	phys_addr_t smipool_phys_base;	/* SMIPOOL reserved region physical base */
 	size_t smipool_phys_size;	/* SMIPOOL reserved region size */
+	bool axi_ab_persistent_enabled;	/* axi_a/b enabled once, left on */
 	dma_addr_t fw_dma_addr;		/* 128KB-aligned phys for DRAM_BASE */
 	void *fw_vaddr;			/* ioremap_wc() virtual address */
 	size_t fw_size;			/* firmware blob size */
