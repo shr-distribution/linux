@@ -2578,18 +2578,36 @@ static const struct hci_uart_proto bcsp = {
 static int bcsp_serdev_set_power(struct bcsp_serdev *bdev, bool powered)
 {
 	if (powered) {
-		/* Power on sequence */
+		/*
+		 * Power-on + reset sequence matching webOS bcattach
+		 * (webOS-ports/utilities tenderloin-halium/bcattach/main.c):
+		 * power on, hold reset asserted (low) for 100 ms, deassert,
+		 * then wait a FULL SECOND for the CSR BlueCore to finish
+		 * booting before any UART traffic.
+		 *
+		 * The previous code deasserted reset with no hold (a ~µs pulse)
+		 * and waited only 100 ms. On-device that left the chip with a
+		 * working autonomous SYNC transmitter but a dead/uninitialised
+		 * UART receiver: it streamed SYNC (da dc ed ed) forever and
+		 * never parsed our SYNC/SYNC-RSP, so BCSP link establishment
+		 * never completed. A proper 100 ms reset pulse + 1 s settle (and
+		 * staying silent until the chip is up) matches webOS.
+		 */
 		if (bdev->shutdown_gpio)
 			gpiod_set_value_cansleep(bdev->shutdown_gpio, 1);
 
-		if (bdev->reset_gpio)
-			gpiod_set_value_cansleep(bdev->reset_gpio, 0); /* Deassert reset */
+		/* Hold reset asserted (active-low) for 100 ms, then release */
+		if (bdev->reset_gpio) {
+			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* assert */
+			msleep(100);
+			gpiod_set_value_cansleep(bdev->reset_gpio, 0); /* deassert */
+		}
 
 		if (bdev->device_wakeup)
 			gpiod_set_value_cansleep(bdev->device_wakeup, 1);
 
-		/* Wait for chip to stabilize */
-		msleep(100);
+		/* Wait for the chip to fully boot before talking to it */
+		msleep(1000);
 	} else {
 		/* Power off sequence */
 		if (bdev->device_wakeup)
