@@ -1907,11 +1907,23 @@
 		drive-strength = <16>;
 		bias-disable;
 	};
+	/*
+	 * GSBI8 I2C (SDA/SCL).
+	 *
+	 * Legacy webOS gpiomux uses `GPIOMUX_CFG(GPIOMUX_FUNC_1, 0, 0)`
+	 * for these pins — function 1 (GSBI8), default drive (~2 mA),
+	 * no internal pull. External 2.2 kΩ pull-ups bring the lines high.
+	 *
+	 * Our previous setting of 16 mA was excessive for an open-drain
+	 * I2C bus. The QUP I2C controller drives SDA/SCL low; with
+	 * 16 mA the falling edge is overly sharp, risking ringing /
+	 * undershoot that some slaves (suspected LM8502) mis-decode.
+	 */
 	gsbi8_i2c_pins: gsbi8_i2c-state {
 		pins = "gpio64", "gpio65";
 		function = "gsbi8";
-		drive-strength = <16>;
-		/* These have external pull-up 2.2kOhm to 1.8V */
+		drive-strength = <2>;
+		/* External pull-up 2.2kOhm to 1.8V */
 		bias-disable;
 	};
 
@@ -3316,9 +3328,13 @@
 	pinctrl-0 = <&headphone_uart_pins>;
 };
 
-&gsbi12_i2c {
-	status = "okay";
-};
+/*
+ * Do NOT enable &gsbi12_i2c — GSBI12 is configured as UART above
+ * (qcom,mode = GSBI_PROT_UART_W_FC). The i2c_qup driver would still
+ * bind to i2c@19c80000 if status="okay", registering a phantom Linux
+ * i2c bus whose hardware is in UART mode (and was emitting "using
+ * default clock-frequency 100000" because no clock-frequency was set).
+ */
 
 &gsbi7 {
 	status = "okay";
