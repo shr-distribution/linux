@@ -48,7 +48,27 @@
 static bool txcrc = true;
 static bool hciextn = true;
 static char *bdaddr;
-static bool skip_pskeys;  /* Skip PSKEY/WARM_RESET for debugging */
+/*
+ * Default to SKIPPING the PSKEY/WARM_RESET configuration.
+ *
+ * The PSKEY id #defines below (PSKEY_ANA_FREQ, PSKEY_HOST_INTERFACE, etc.)
+ * are SCRAMBLED — they map the correct values to the WRONG CSR PSKEY ids.
+ * On-wire capture proved the driver writes ANA_FREQ(0x01FE)=0x0001
+ * (crystal set to 1) and UART_BAUDRATE(0x01BE)=0x0000 (baud 0). The
+ * WARM_RESET then applies these and bricks the chip's clock/UART — it can
+ * only emit BCSP SYNC afterwards and never completes link establishment
+ * or HCI. The damage lands in volatile psram, so it persists until a true
+ * cold power-cycle of the chip.
+ *
+ * The chip works fine from its factory EEPROM defaults (it boots, sends
+ * SYNC at 115200, links, and answers HCI). So sending NO PSKEYs is
+ * strictly safer than sending garbage. Re-enable (skip_pskeys=0) only
+ * after the PSKEY id<->value mapping is corrected against the webOS
+ * CsrTmBlueCore bootstrap (canonical CSR ids: ANA_FREQ=0x01FE,
+ * ANA_FTRIM=0x01F6, HOST_INTERFACE=0x01F9, UART_BAUDRATE=0x01BE,
+ * LC_MAX_TX_POWER=0x0011, LC_DEFAULT_TX_POWER=0x0013).
+ */
+static bool skip_pskeys = true;  /* Skip PSKEY/WARM_RESET (scrambled ids brick chip) */
 
 #define BCSP_TXWINSIZE	4
 
