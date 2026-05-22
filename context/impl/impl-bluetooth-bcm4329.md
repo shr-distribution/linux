@@ -2,7 +2,43 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: STUCK at link establishment — TX byte-perfect but chip never RX; narrowed to physical TX path / msm_serial-vs-hsuart (see 2026-05-22 night)
+status: BREAKTHROUGH — TX physically works (BREAK test); ldisc/hciattach worked per record, serdev stuck → serdev-specific. Decision point.
+---
+
+## 2026-05-22 (night-2): TX pad PROVEN working; isolated to serdev (not TX/HW)
+
+Two decisive results today:
+
+1. **UART BREAK test:** `devmem 0x16540010 32 0x50` (START_BREAK) drove
+   gpio53 (TX) from high→LOW; `0x60` (STOP_BREAK) restored it. The UART
+   **physically drives the TX pad.** Combined with byte-perfect content +
+   correct baud, our SYNC is genuinely on the wire. The earlier "TX not
+   reaching chip" framing was WRONG.
+
+2. **RFR forced asserted** (`devmem 0x16540010 32 0xD0` SET_RFR; gpio56
+   went high→low) did NOT help — chip still only SYNCs. Flow control fully
+   ruled out (both directions).
+
+**The linchpin:** the report's "Verified Working Output" was
+**mainline** `hciattach /dev/ttyMSM1 bcsp 115200` → `hci0 UP RUNNING`,
+`events:46`, `Manufacturer: Cambridge Silicon Radio`. So the
+**line-discipline path worked on the same mainline msm_serial UART/pins**,
+while **serdev is stuck**. → the bug is **serdev-specific**, not HW/TX/
+content/baud. (serdev was developed later; may never have fully worked.)
+
+Note: the CRC `(chan!=1)` fix (3a7ac6dd0f58) is in shared hci_bcsp.c, so
+it benefits ldisc too — ldisc should work even better now.
+
+**Decision point / next experiment:** expose /dev/ttyMSM1 by disabling the
+`bluetooth { }` serdev subnode under &gsbi6_serial (DT change + rebuild),
+keep bt_pin muxing 130/131/138 as GPIO, power the chip from userspace
+(`/sys/class/gpio` export 642/643/650 like webOS bcattach), then
+`hciattach /dev/ttyMSM1 bcsp 115200`. If it links → serdev confirmed as
+the culprit; choose ldisc (proven) vs fixing serdev open path.
+hciattach IS present on device (/usr/bin/hciattach).
+
+Full analysis: memory [[bcm4329-tx-not-reaching-chip]].
+
 ---
 
 ## 2026-05-22 (night): reset-timing FALSIFIED too; narrowed to physical TX path
