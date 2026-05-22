@@ -2864,6 +2864,43 @@ static void vidc_remove(struct platform_device *pdev)
 static int vidc_runtime_suspend(struct device *dev)
 {
 	struct vidc_core *core = dev_get_drvdata(dev);
+	u32 axi_status;
+	int timeout;
+
+	/*
+	 * Drain the VIDC AXI master before cutting clocks. If we just call
+	 * vidc_clk_disable() with a transaction still outstanding on Port B
+	 * (e.g. the decoder finished a frame but the bus interface hasn't
+	 * idled yet), clk_branch_disable for vcodec_axi_b_clk fires a
+	 * "status stuck at 'on'" WARN and forces the clock off anyway. The
+	 * hardware then re-enters with garbage SW_RESET (=0x0) and the
+	 * firmware boots into recovery mode (cmd=51) on the next session
+	 * instead of clean mode (cmd=9).
+	 *
+	 * Issue the AXI halt + reset pulse that vidc_hw_reset() uses, but
+	 * best-effort — if the halt-ack never arrives (5 ms timeout) we
+	 * still proceed with clk_disable because there's nothing better we
+	 * can do, and the next hw_reset will re-pulse the AXI path anyway.
+	 *
+	 * Only do this when firmware is actually running. On first
+	 * resume-then-suspend without a probe-time fw boot, the MMIO path
+	 * may not be safe to touch yet.
+	 */
+	if (core->fw_running) {
+		vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
+		for (timeout = 100; timeout > 0; timeout--) {
+			axi_status = vidc_read(core, VIDC_REG_AXI_STATUS);
+			if ((axi_status & VIDC_AXI_HALT_ACK_MASK) == 0x3)
+				break;
+			udelay(50);
+		}
+		if (timeout == 0)
+			dev_warn(dev,
+				 "runtime_suspend: AXI halt timeout, status=0x%08x — proceeding anyway\n",
+				 axi_status);
+		vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_RESET);
+		vidc_write(core, VIDC_REG_AXI_CTRL, 0);
+	}
 
 	vidc_clk_disable(core);
 
