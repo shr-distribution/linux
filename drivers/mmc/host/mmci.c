@@ -1560,20 +1560,27 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		goto unmap_exit;
 
 	/*
-	 * WiFi (sdcc4 = mmc1) ONLY: the AR6003 SDIO path misses MCI_DATAEND
-	 * from the SDCC DPSM, so those transfers cannot depend on
+	 * WiFi (sdcc4 = mmc1) READS ONLY: the AR6003 SDIO read path misses
+	 * MCI_DATAEND from the SDCC DPSM, so reads cannot depend on
 	 * mmci_data_irq() to complete. Wire a dmaengine completion callback
 	 * (invoked by qcom_adm from its IRQ handler) to finish the request
 	 * when the ADM reports the descriptor done.
 	 *
-	 * Deliberately NOT applied to eMMC (mmc0): eMMC gets DATAEND reliably
-	 * and the normal mmci_data_irq() path is correct for it. Completing
-	 * eMMC transfers on the DMA-done edge raced ahead of the SDCC's own
-	 * completion and destabilised the eMMC data path (DATACRCFAIL cascade
-	 * / boot-time rootfs journal hangs). Keep this workaround scoped to
-	 * the controller that actually needs it.
+	 * Deliberately NOT applied to:
+	 *  - eMMC (mmc0): gets DATAEND reliably; completing on the DMA-done
+	 *    edge raced the SDCC and destabilised the eMMC data path.
+	 *  - WRITES (any controller): for a write, ADM descriptor-done only
+	 *    means the data was pushed to the FIFO/card — the card still owes
+	 *    its CRC status token (PROG_DONE), which is exactly what
+	 *    MCI_DATAEND waits for. Completing on the DMA-done edge calls
+	 *    mmci_stop_data() before PROG_DONE, truncating the write and
+	 *    wedging the SDCC data path, so the NEXT command (e.g. the
+	 *    WMI-CONTROL connect's follow-up reg-table read) fails. WiFi
+	 *    writes DO get DATAEND, so they complete correctly via
+	 *    mmci_data_irq() with no callback needed.
 	 */
-	if (host->variant->qcom_dml && host->mmc->index == 1) {
+	if (host->variant->qcom_dml && host->mmc->index == 1 &&
+	    (data->flags & MMC_DATA_READ)) {
 		desc->callback = mmci_qcom_dma_complete;
 		desc->callback_param = host;
 	}
