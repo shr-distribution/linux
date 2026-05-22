@@ -855,6 +855,10 @@ static void mmci_dma_error(struct mmci_host *host)
 static void __mmci_start_request(struct mmci_host *host,
 				 struct mmc_request *mrq);
 
+/* Forward declaration: used by mmci_qcom_dma_read_complete() for data->stop. */
+static void mmci_start_command(struct mmci_host *host,
+			       struct mmc_command *cmd, u32 c);
+
 static void
 mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 {
