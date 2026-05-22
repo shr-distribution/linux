@@ -723,11 +723,15 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
 
-	/* DEBUG: dump first 40 bytes of the stream the firmware will read */
+	/* DEBUG: dump first 40 bytes of the stream the firmware will read.
+	 * DEBUG-only: at loglevel=8 over the 115200 serial console this
+	 * per-frame dump (plus the other per-frame logs) throttles decode
+	 * to ~1 s/frame.  Use print_hex_dump_debug so it compiles out unless
+	 * dynamic debug is enabled. */
 	if (inst->src_buf) {
 		const u8 *kva = vb2_plane_vaddr(&inst->src_buf->vb2_buf, 0);
 		if (kva)
-			print_hex_dump(KERN_INFO, "vidc stream[0:40]: ",
+			print_hex_dump_debug("vidc stream[0:40]: ",
 				       DUMP_PREFIX_NONE, 16, 1, kva, 40, false);
 	}
 
@@ -862,7 +866,7 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		}
 	}
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x payload=%u buf_sz=%u desc_addr=0x%x meta_addr=0x%x\n",
 		 op, inst->inst_id, &src_addr,
 		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
@@ -1305,7 +1309,7 @@ static void vidc_dec_device_run(void *priv)
 	dst_addr = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
 	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
 
-	dev_info(inst->core->dev,
+	dev_dbg(inst->core->dev,
 		 "device_run: FRAME_DATA src=0x%pad size=%u seq_parsed=%d\n",
 		 &src_addr, src_size, inst->seq_parsed);
 	inst->error = 0;

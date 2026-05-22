@@ -623,7 +623,14 @@ static irqreturn_t vidc_isr(int irq, void *data)
 
 	inst = core->curr_inst;
 
-	if (cmd != VIDC_RESP_EMPTY)
+	if (cmd == VIDC_RESP_FRAME_DONE)
+		/* Per-frame: keep off the (slow, 115200) console — at
+		 * loglevel=8 this single line throttles decode to ~1 s/frame.
+		 * Visible via dynamic debug when needed. */
+		dev_dbg(core->dev,
+			"VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
+			cmd, arg1, arg2, inst);
+	else if (cmd != VIDC_RESP_EMPTY)
 		dev_info(core->dev,
 			 "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
 			 cmd, arg1, arg2, inst);
@@ -2101,7 +2108,7 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 	if (out_payload)
 		*out_payload = frame_size;
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "copy_dpb_to_dst: slot=%u y=%zu c=%zu total=%zu\n",
 		 slot_idx, y_size, c_size, frame_size);
 
