@@ -1500,14 +1500,35 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		return -EINVAL;
 
 	/*
-	 * If less than or equal to the DMA threshold, use PIO instead.
-	 * The threshold defaults to fifosize but can be overridden per
-	 * variant to force PIO for larger transfers when DMA is unreliable
-	 * for certain transfer patterns (e.g. SDIO firmware upload).
+	 * Qualcomm SDCC + ADM: replicate legacy webOS msm_sdcc validate_dma()
+	 * EXACTLY. The vendor driver only hands a transfer to the ADM when it
+	 * is >= one FIFO (64 B) AND an exact multiple of the FIFO size; every
+	 * other transfer (sub-FIFO, or non-FIFO-aligned) goes through PIO.
+	 *
+	 * This matters because the ADM box/CRCI handshake is built around
+	 * whole-FIFO rows. Feeding it a sub-FIFO transfer (e.g. the 52/44-byte
+	 * AR6003 BMI control transfers) builds a single non-box descriptor
+	 * whose CRCI pacing does not drain the FIFO on a row boundary, leaving
+	 * the SDCC data path in a state that makes the NEXT DMA transfer (e.g.
+	 * the 128-byte HTC mailbox read) latch RXOVERRUN/DATACRCFAIL —
+	 * "error during DMA transfer". The earlier dma_threshold=32 override
+	 * (to "route BMI through DMA") diverged from the vendor driver, which
+	 * in fact PIOs those small transfers. DMA still carries the bulk path
+	 * (large, FIFO-aligned data frames) exactly as webOS does.
 	 */
-	if (data->blksz * data->blocks <=
-	    (variant->dma_threshold ?: variant->fifosize))
+	if (host->variant->qcom_dml) {
+		unsigned int len = data->blksz * data->blocks;
+
+		if (len < variant->fifosize || (len % variant->fifosize))
+			return -EINVAL;
+	} else if (data->blksz * data->blocks <=
+		   (variant->dma_threshold ?: variant->fifosize)) {
+		/*
+		 * Non-qcom variants: original behaviour — PIO at/below the
+		 * DMA threshold (defaults to fifosize, overridable per variant).
+		 */
 		return -EINVAL;
+	}
 
 	/*
 	 * This is necessary to get SDIO working on the Ux500. We do not yet
