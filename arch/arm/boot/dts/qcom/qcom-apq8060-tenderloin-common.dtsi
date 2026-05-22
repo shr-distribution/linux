@@ -1844,7 +1844,17 @@
 	gsbi6_uart_pins: uart6-state {
 		pins = "gpio53", "gpio54", "gpio55", "gpio56";
 		function = "gsbi6";
-		drive-strength = <16>;
+		/*
+		 * 8 mA to match webOS exactly (legacy gpiomux UART1DM_*_ACTIVE
+		 * = GPIOMUX_DRV_8MA). We previously used 16 mA; on-device the
+		 * CSR chip never decoded our TX (only-SYNCs) while webOS's TX on
+		 * the same pins works, and TX byte-packing/baud/NCF are identical
+		 * between msm_serial and webOS hsuart — so the remaining
+		 * difference is physical. Over-driving (16 mA) can ring/overshoot
+		 * and corrupt the chip's bit sampling on TX while leaving our RX
+		 * (chip-driven) fine. Match webOS at 8 mA.
+		 */
+		drive-strength = <8>;
 		bias-disable;
 	};
 
