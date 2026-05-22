@@ -2,7 +2,7 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: root-cause-found-sync-handshake-not-needed
+status: skip-sync-patch-landed-pending-on-device-verification
 ---
 
 # Implementation: Bluetooth BCM4329 (BCSP over GSBI6 UART)
@@ -231,6 +231,60 @@ webOS `bcattach`'s wire trace.
 This is **an in-flight driver effort**, not a fresh investigation
 to start from scratch. Continuing it requires understanding the
 existing commit chain.
+
+## 2026-05-22: Skip-SYNC patch + DT opt-in
+
+webOS hsuart wire trace confirms the host never sends a BCSP SYNC
+packet — it issues HCI traffic immediately and the chip ACKs. BT
+on/off cycles also skip SYNC; only a WARM_RESET BCCMD is sent.
+
+Conclusion: the BCM4329 ships with `PSKEY_HOST_INTERFACE = BCSP`
+persistently in EEPROM, and the chip starts in BCSP-operational
+state (txseq=0/rxack=0) at every power-on. Driving SYNC from the
+host confuses the chip → our mainline driver times out at link
+establishment.
+
+Implemented:
+
+- `drivers/bluetooth/hci_bcsp.c`:
+  - New `skip_sync` bool in `bcsp_struct`.
+  - `bcsp_read_pskeys_from_dt()` reads `qcom,bcsp-skip-sync` from
+    the BCSP node and sets `skip_sync`.
+  - `bcsp_open()` reordered: PSKEY DT load now happens before the
+    sync packet would be queued. When `skip_sync` is set, the driver
+    forces `link_state = BCSP_LINK_ACTIVE`, marks `link_established`,
+    signals `link_up`, and does **not** arm `tbcsp` or queue a sync
+    frame. `bcsp_setup()` (which waits on `link_up`) proceeds
+    straight to the PSKEY replay path.
+  - `bcsp_timed_event()` defensively bails on sync/conf TX when
+    `skip_sync` is set (stale timer protection).
+  - `bcsp_setup()` PENDING-path: after WARM_RESET, when `skip_sync`
+    is in effect we explicitly call `bcsp_serdev_power_cycle()` +
+    reset seq numbers/queues. The chip-SYNC-after-reset path that
+    normally triggers this won't fire because the chip stays in
+    BCSP-operational state across WARM_RESET.
+
+- `arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin-common.dtsi`:
+  added `qcom,bcsp-skip-sync;` on the `bluetooth { compatible =
+  "palm,bcm4329-bcsp"; }` subnode.
+
+PSKEY replay path is unchanged — the existing in-driver sequence
+(Common + Palm Platform + TX power table + BD address + WARM_RESET)
+already mirrors the libPmBtBsaif boot sequence. The webOS
+BT-off/on trace captured a *different* set of PSKEYs (0x17/0x1d/
+0x21/0x27-2b/0x31/0x39/0x3a/0xb3/0xb6/0xba/0xbf/0xc7/0xca/0xe1/
+0xf7/0xf8), but those run on top of the boot configuration that
+the legacy ROM flashes once at first power-on — not at every
+chip wakeup. Mainline replays the cold-boot sequence; the on/off
+delta can be layered later if needed.
+
+Expected next state on-device:
+- No `BCSP: Timeout waiting for link establishment` error.
+- `BCSP: skip-sync — link forced ACTIVE, no SYNC sent` in dmesg.
+- PSKEY+WARM_RESET sent.
+- `bdaddr_state = BCSP_BDADDR_DONE` reached.
+- HCI core issues HCI Reset / Read Local Version → chip responds.
+- `/sys/class/bluetooth/hci0` appears, `hciconfig hci0 up` works.
 
 ## Recommendations
 

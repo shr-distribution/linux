@@ -2911,6 +2911,21 @@
 		status = "okay";  /* Enable serdev for debugging */
 
 		/*
+		 * Skip BCSP link-establishment SYNC handshake.
+		 *
+		 * The TouchPad's BCM4329 ships with PSKEY_HOST_INTERFACE = BCSP
+		 * in EEPROM, so the chip starts in BCSP-operational state
+		 * (txseq=0/rxack=0) at every power-on. The webOS hsuart wire
+		 * trace shows the host never sends sync/conf — it goes straight
+		 * to HCI traffic on channel 5 and the chip ACKs.
+		 *
+		 * With SYNC enabled, our driver times out waiting for sync_rsp
+		 * because the chip ignores link-establishment frames once it's
+		 * already operational. See context/impl/impl-bluetooth-bcm4329.md.
+		 */
+		qcom,bcsp-skip-sync;
+
+		/*
 		 * Bluetooth Device Address (BD_ADDR)
 		 * Read from webOS /dev/tokens/BToADDR: 00:1D:FE:85:64:A9
 		 * DT format is little-endian: [A9 64 85 FE 1D 00]

@@ -372,6 +372,21 @@ struct bcsp_struct {
 	/* Link establishment completion for serdev mode */
 	struct completion link_up;	/* Signaled when BCSP link is established */
 	bool	link_established;	/* True after first successful handshake */
+
+	/*
+	 * Skip BCSP link-establishment SYNC handshake.
+	 *
+	 * The HP TouchPad's BCM4329 ships with PSKEY_HOST_INTERFACE = BCSP
+	 * in EEPROM, and the chip's BCSP link starts in operational state
+	 * (txseq=0/rxack=0) at every power-on. The webOS hsuart wire trace
+	 * confirms the host never sends sync/conf — it issues HCI traffic
+	 * immediately on channel 5 and the chip ACKs. Driving SYNC here
+	 * confuses the chip and times out the link.
+	 *
+	 * Enable via DT property "qcom,bcsp-skip-sync" on the
+	 * palm,bcm4329-bcsp node.
+	 */
+	bool	skip_sync;
 };
 
 /* Forward declaration for serdev power cycle */
@@ -1861,6 +1876,39 @@ static int bcsp_setup(struct hci_uart *hu)
 			BT_INFO("BCSP: Serdev mode - waiting for chip restart...");
 			/* Wait longer in serdev mode to allow sync detection */
 			msleep(1000);
+
+			/*
+			 * skip_sync mode: the chip won't send SYNC after WARM_RESET
+			 * (EEPROM keeps it in BCSP-operational state), so the sync
+			 * handler's auto-power-cycle path won't fire. Do it here
+			 * explicitly so our sequence numbers/queues track the chip's
+			 * fresh post-reset state.
+			 */
+#ifdef CONFIG_SERIAL_DEV_BUS
+			if (bcsp->skip_sync && bcsp->warm_reset_sent &&
+			    bcsp->serdev_bdev) {
+				struct bcsp_serdev *bdev = bcsp->serdev_bdev;
+
+				BT_INFO("BCSP: skip-sync — explicit power cycle after WARM_RESET");
+				bcsp_serdev_power_cycle(bdev);
+				bcsp->warm_reset_sent = false;
+
+				/* Reset sequence state to mirror the chip's fresh boot */
+				bcsp->rxseq_txack = 0;
+				bcsp->msgq_txseq = 0;
+				skb_queue_purge(&bcsp->unack);
+				skb_queue_purge(&bcsp->rel);
+				skb_queue_purge(&bcsp->unrel);
+				if (bcsp->rx_skb) {
+					kfree_skb(bcsp->rx_skb);
+					bcsp->rx_skb = NULL;
+				}
+				bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
+				bcsp->rx_count = 0;
+				bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
+				bcsp->link_state = BCSP_LINK_ACTIVE;
+			}
+#endif
 		} else {
 			msleep(500);
 			BT_INFO("BCSP: PSKEYs + BDADDR applied. Restart hciattach for fresh connection.");
@@ -2075,14 +2123,17 @@ static void bcsp_timed_event(struct timer_list *t)
 	 * When the chip receives our sync, it responds with sync_rsp.
 	 * When we receive sync_rsp, we move to INIT state.
 	 * Meanwhile, we also respond to chip's sync with our sync_rsp.
+	 *
+	 * When skip_sync is in effect, the chip is already in operational
+	 * state; never inject sync/conf frames or the chip will reject them.
 	 */
-	if (bcsp->link_state == BCSP_LINK_UNINIT) {
+	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_UNINIT) {
 		BT_DBG("BCSP: timer sending sync (link_state=%d)", bcsp->link_state);
 		bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
 	}
 
 	/* Send conf packets in INIT state */
-	if (bcsp->link_state == BCSP_LINK_INIT) {
+	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_INIT) {
 		BT_DBG("BCSP: timer sending conf (link_state=%d)", bcsp->link_state);
 		bcsp_send_link_pkt(bcsp, conf_pkt, sizeof(conf_pkt));
 	}
@@ -2172,6 +2223,15 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 	if (!np) {
 		BT_INFO("BCSP: No DT node found, using Palm defaults");
 		return;
+	}
+
+	/*
+	 * BCM4329 on TouchPad ships in BCSP-operational state — no SYNC
+	 * handshake is needed (or accepted). Honour DT opt-in.
+	 */
+	if (of_property_read_bool(np, "qcom,bcsp-skip-sync")) {
+		bcsp->skip_sync = true;
+		BT_INFO("BCSP: skip-sync enabled via DT (chip already operational)");
 	}
 
 	/* Read TX power table from DT (overrides Palm default) */
@@ -2368,11 +2428,31 @@ static int bcsp_open(struct hci_uart *hu)
 	init_completion(&bcsp->link_up);
 	bcsp->link_established = false;
 
+	if (txcrc)
+		bcsp->use_crc = 1;
+
 	/*
-	 * Send one initial sync packet to wake the chip.
-	 * The chip will respond with sync, and we'll respond with sync_rsp.
+	 * Load PSKEY table and skip-sync flag from device tree before
+	 * deciding how to drive the BCSP link.
 	 */
-	{
+	bcsp_read_pskeys_from_dt(bcsp);
+
+	if (bcsp->skip_sync) {
+		/*
+		 * Chip is already in BCSP operational state from EEPROM.
+		 * Don't queue a SYNC packet, don't arm the link-establishment
+		 * timer — just signal the link as up so bcsp_setup() can
+		 * proceed straight to PSKEY replay.
+		 */
+		bcsp->link_state = BCSP_LINK_ACTIVE;
+		bcsp->link_established = true;
+		complete(&bcsp->link_up);
+		BT_INFO("BCSP: skip-sync — link forced ACTIVE, no SYNC sent");
+	} else {
+		/*
+		 * Send one initial sync packet to wake the chip.
+		 * The chip will respond with sync, and we'll respond with sync_rsp.
+		 */
 		static const u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
 		struct sk_buff *skb = alloc_skb(4, GFP_KERNEL);
 		if (skb) {
@@ -2381,16 +2461,10 @@ static int bcsp_open(struct hci_uart *hu)
 			skb_queue_tail(&bcsp->unrel, skb);
 			BT_INFO("BCSP: Sent initial sync to wake chip");
 		}
+
+		/* Start timer for retransmissions and conf sending */
+		mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
 	}
-
-	/* Start timer for retransmissions and conf sending */
-	mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
-
-	if (txcrc)
-		bcsp->use_crc = 1;
-
-	/* Load TX power table from device tree */
-	bcsp_read_pskeys_from_dt(bcsp);
 
 	/*
 	 * Initialize BD address configuration state.
