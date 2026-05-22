@@ -1059,6 +1059,12 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			if (async_desc->vd.tx.callback) {
 				callback = async_desc->vd.tx.callback;
 				callback_param = async_desc->vd.tx.callback_param;
+				if (i == 5)
+					trace_printk("ADM-IRQ: ch5 callback=%p param=%p len=%zu\n",
+						     callback, callback_param, async_desc->length);
+			} else if (i == 5) {
+				trace_printk("ADM-IRQ: ch5 NO CALLBACK len=%zu\n",
+					     async_desc->length);
 			}
 
 			/* Return pooled descriptor immediately without vchan */
@@ -1082,8 +1088,12 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 
 			/* Invoke callback after starting next DMA */
 			if (callback) {
+				if (i == 5)
+					trace_printk("ADM-IRQ: ch5 CALLING callback\n");
 				spin_unlock(&achan->vc.lock);
 				callback(callback_param);
+				if (i == 5)
+					trace_printk("ADM-IRQ: ch5 callback RETURNED\n");
 				spin_lock(&achan->vc.lock);
 			}
 		}
