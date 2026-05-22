@@ -1288,6 +1288,65 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 	dmae->desc_current = NULL;
 }
 
+/*
+ * Qualcomm SDCC ADM-DMA read completion callback.
+ *
+ * On MSM8660/APQ8060 (Tenderloin) the SDCC Data Path State Machine does
+ * NOT reliably raise MCI_DATAEND after the ADM drains the RX FIFO for a
+ * DMA read — only MCI_DATABLOCKEND fires (and that is masked out of
+ * MMCIMASK0). mmci_data_irq() only completes a transfer on MCI_DATAEND,
+ * so DMA reads otherwise hang forever in mmc_wait_for_req_done()
+ * (observed: AR6003 HTC mailbox 128-byte read never returns, modprobe
+ * blocked >600 s).
+ *
+ * Legacy webOS msm_sdcc completes DMA transfers from the msm_dmov
+ * complete_func (coordinated with DATAEND). We replicate that: when the
+ * ADM signals the descriptor done (RESULT=success ⇒ all bytes moved),
+ * finish the request here. The qcom_adm IRQ handler invokes this from
+ * hardirq with achan->vc.lock dropped, so taking host->lock is safe.
+ *
+ * Writes are unaffected: they still complete via the MCI_DATAEND path in
+ * mmci_data_irq() (plus the qcom_dma_timeout_work watchdog); this
+ * callback is only wired for reads. Whichever path grabs host->lock and
+ * finds host->data first wins; the loser sees host->data == NULL and
+ * bails, so there is no double-completion.
+ */
+static void mmci_qcom_dma_read_complete(void *param)
+{
+	struct mmci_host *host = param;
+	unsigned long flags;
+	struct mmc_data *data;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	data = host->data;
+	if (!data) {
+		/* Already completed (DATAEND raced in, or error path ran) */
+		spin_unlock_irqrestore(&host->lock, flags);
+		return;
+	}
+
+	if (host->variant->qcom_datactrl_delay)
+		cancel_delayed_work(&host->qcom_dma_timeout_work);
+
+	/* ADM RESULT=success means the full transfer landed in memory */
+	mmci_dma_finalize(host, data);
+	mmci_stop_data(host);
+
+	if (!data->error)
+		data->bytes_xfered = data->blksz * data->blocks;
+
+	if (!data->stop) {
+		mmci_request_end(host, data->mrq);
+	} else if (host->mrq->sbc && !data->error) {
+		mmci_request_end(host, data->mrq);
+	} else {
+		mmci_start_command(host, data->stop, 0);
+	}
+
+	spin_unlock_irqrestore(&host->lock, flags);
+}
+
 /* prepares DMA channel and DMA descriptor, returns non-zero on failure */
 static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 				struct dma_chan **dma_chan,
@@ -1419,6 +1478,19 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 					    conf.direction, flags);
 	if (!desc)
 		goto unmap_exit;
+
+	/*
+	 * Qualcomm SDCC ADM-DMA reads do not get a reliable MCI_DATAEND from
+	 * the SDCC DPSM, so they cannot complete via mmci_data_irq(). Wire a
+	 * dmaengine completion callback (invoked by qcom_adm from its IRQ
+	 * handler) to finish the request when the ADM reports the descriptor
+	 * done. See mmci_qcom_dma_read_complete() for the full rationale.
+	 * Writes keep the conventional DATAEND + watchdog completion path.
+	 */
+	if (host->variant->qcom_dml && (data->flags & MMC_DATA_READ)) {
+		desc->callback = mmci_qcom_dma_read_complete;
+		desc->callback_param = host;
+	}
 
 	*dma_chan = chan;
 	*dma_desc = desc;
