@@ -786,6 +786,21 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	       bcsp->rx_skb->data[4], bcsp->rx_skb->data[5],
 	       bcsp->rx_skb->data[6], bcsp->rx_skb->data[7]);
 
+	/*
+	 * skip_sync mode: the chip is supposed to be in BCSP-operational
+	 * state from EEPROM — any inbound SYNC/CONF link-establishment
+	 * packet is either chip-boot noise after WARM_RESET or a spurious
+	 * decode. Reacting (power-cycling, sending sync_rsp) races with
+	 * bcsp_setup()'s deterministic post-WARM_RESET power-cycle path
+	 * and leaves the chip + driver state inconsistent. Drop them.
+	 */
+	if (bcsp->skip_sync) {
+		BT_DBG("BCSP: skip-sync — ignoring LE packet %02x %02x %02x %02x",
+		       bcsp->rx_skb->data[4], bcsp->rx_skb->data[5],
+		       bcsp->rx_skb->data[6], bcsp->rx_skb->data[7]);
+		return;
+	}
+
 	/* Handle sync packet - device is starting link establishment */
 	if (!memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
 		struct sk_buff *nskb;
@@ -1863,34 +1878,40 @@ static int bcsp_setup(struct hci_uart *hu)
 		BT_INFO("BCSP: WARM_RESET sent, chip will reset...");
 
 		/*
-		 * After WARM_RESET, the chip resets and the BCSP link breaks.
+		 * After WARM_RESET, the chip resets and reloads PSKEYs from
+		 * PSRAM (the volatile store we just programmed). The BCSP
+		 * sequence numbers in the chip are reset to 0.
 		 *
-		 * In serdev mode: We have GPIO control and can power cycle the chip.
-		 * The sync packet handler will detect the chip restart and trigger
-		 * a power cycle for clean re-initialization.
+		 * In serdev mode: Wait for chip restart, then resync our
+		 * driver state to match. Do NOT hard-power-cycle here —
+		 * that would clear PSRAM and undo everything we just configured.
 		 *
 		 * In line discipline mode: Let hciattach restart with a fresh
 		 * connection to the now-configured chip.
 		 */
 		if (bcsp->is_serdev) {
-			BT_INFO("BCSP: Serdev mode - waiting for chip restart...");
-			/* Wait longer in serdev mode to allow sync detection */
-			msleep(1000);
+			BT_INFO("BCSP: Serdev mode - waiting for chip restart after WARM_RESET...");
+			/*
+			 * Wait for the chip to complete its WARM_RESET cycle.
+			 * The chip restarts and re-loads PSKEYs from PSRAM
+			 * (which we just programmed). 1.5s matches what webOS
+			 * waits between WARM_RESET BCCMD and the next HCI traffic.
+			 */
+			msleep(1500);
 
 			/*
-			 * skip_sync mode: the chip won't send SYNC after WARM_RESET
-			 * (EEPROM keeps it in BCSP-operational state), so the sync
-			 * handler's auto-power-cycle path won't fire. Do it here
-			 * explicitly so our sequence numbers/queues track the chip's
-			 * fresh post-reset state.
+			 * skip_sync mode: WARM_RESET has restarted the chip with
+			 * the PSKEYs we sent. The chip's BCSP sequence numbers are
+			 * reset to 0; reset OUR sequence state to match.
+			 *
+			 * Do NOT hard-power-cycle here. A hard power cycle (via
+			 * GPIO) clears volatile PSRAM and wipes the PSKEYs we
+			 * just programmed — defeating the entire configuration
+			 * sequence. WARM_RESET via BCCMD is the legacy/webOS path
+			 * and keeps PSRAM intact.
 			 */
-#ifdef CONFIG_SERIAL_DEV_BUS
-			if (bcsp->skip_sync && bcsp->warm_reset_sent &&
-			    bcsp->serdev_bdev) {
-				struct bcsp_serdev *bdev = bcsp->serdev_bdev;
-
-				BT_INFO("BCSP: skip-sync — explicit power cycle after WARM_RESET");
-				bcsp_serdev_power_cycle(bdev);
+			if (bcsp->skip_sync) {
+				BT_INFO("BCSP: skip-sync — resyncing driver state after WARM_RESET");
 				bcsp->warm_reset_sent = false;
 
 				/* Reset sequence state to mirror the chip's fresh boot */
@@ -1908,7 +1929,6 @@ static int bcsp_setup(struct hci_uart *hu)
 				bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
 				bcsp->link_state = BCSP_LINK_ACTIVE;
 			}
-#endif
 		} else {
 			msleep(500);
 			BT_INFO("BCSP: PSKEYs + BDADDR applied. Restart hciattach for fresh connection.");
@@ -2062,18 +2082,36 @@ static int bcsp_setup(struct hci_uart *hu)
 		BT_INFO("BCSP: WARM_RESET sent, chip will reset...");
 
 		/*
-		 * After WARM_RESET, the chip resets and the BCSP link breaks.
+		 * After WARM_RESET, the chip resets and reloads PSKEYs from
+		 * PSRAM (volatile store). The BCSP sequence numbers reset to 0.
 		 *
-		 * In serdev mode: We have GPIO control and can power cycle the chip.
-		 * The sync packet handler will detect the chip restart and trigger
-		 * a power cycle for clean re-initialization.
-		 *
-		 * In line discipline mode: Let hciattach restart with a fresh
-		 * connection to the now-configured chip.
+		 * In serdev mode: Wait for chip restart, then resync driver
+		 * state to match. Do NOT hard-power-cycle — that would clear
+		 * PSRAM and undo the PSKEYs we just programmed.
 		 */
 		if (bcsp->is_serdev) {
-			BT_INFO("BCSP: Serdev mode - waiting for chip restart...");
-			msleep(1000);
+			BT_INFO("BCSP: Serdev mode - waiting for chip restart after WARM_RESET...");
+			msleep(1500);
+
+			if (bcsp->skip_sync) {
+				BT_INFO("BCSP: skip-sync — resyncing driver state after WARM_RESET");
+				bcsp->warm_reset_sent = false;
+
+				/* Reset sequence state to mirror the chip's fresh boot */
+				bcsp->rxseq_txack = 0;
+				bcsp->msgq_txseq = 0;
+				skb_queue_purge(&bcsp->unack);
+				skb_queue_purge(&bcsp->rel);
+				skb_queue_purge(&bcsp->unrel);
+				if (bcsp->rx_skb) {
+					kfree_skb(bcsp->rx_skb);
+					bcsp->rx_skb = NULL;
+				}
+				bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
+				bcsp->rx_count = 0;
+				bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
+				bcsp->link_state = BCSP_LINK_ACTIVE;
+			}
 		} else {
 			msleep(500);
 			BT_INFO("BCSP: PSKEYs applied. Restart hciattach for fresh connection.");
