@@ -32,6 +32,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/pm.h>
+#include <linux/workqueue.h>
 
 /* LM8502 Register Map */
 #define LM8502_ENGINE_CNTRL1		0x00
@@ -134,6 +135,8 @@ struct lm8502_data {
 	struct lm8502_led leds[LM8502_MAX_LEDS];
 	int num_leds;
 	bool suspended;
+	bool initialized;             /* chip_init has run successfully */
+	struct delayed_work init_work; /* deferred chip_init */
 };
 
 static bool lm8502_volatile_reg(struct device *dev, unsigned int reg)
@@ -161,6 +164,17 @@ static int lm8502_brightness_set(struct led_classdev *cdev,
 	int ret;
 
 	mutex_lock(&priv->lock);
+
+	/*
+	 * If the deferred chip_init hasn't run yet, brightness writes
+	 * silently disappear (the chip won't ACK at this point in boot).
+	 * Refuse with -EAGAIN so userspace can retry, instead of pretending
+	 * the write succeeded.
+	 */
+	if (!priv->initialized) {
+		mutex_unlock(&priv->lock);
+		return -EAGAIN;
+	}
 
 	/*
 	 * Just write to the current control register.
@@ -369,6 +383,30 @@ static int lm8502_parse_dt(struct lm8502_data *priv)
 	return 0;
 }
 
+static void lm8502_chip_init_work(struct work_struct *w)
+{
+	struct lm8502_data *priv = container_of(to_delayed_work(w),
+						struct lm8502_data, init_work);
+	struct device *dev = &priv->client->dev;
+	int ret;
+
+	mutex_lock(&priv->lock);
+	if (priv->initialized) {
+		mutex_unlock(&priv->lock);
+		return;
+	}
+	ret = lm8502_chip_init(priv);
+	if (ret) {
+		dev_err(dev, "Deferred chip_init failed: %d (retrying in 5 s)\n", ret);
+		mutex_unlock(&priv->lock);
+		schedule_delayed_work(&priv->init_work, msecs_to_jiffies(5000));
+		return;
+	}
+	priv->initialized = true;
+	mutex_unlock(&priv->lock);
+	dev_info(dev, "Deferred chip_init complete; brightness writes now active\n");
+}
+
 static int lm8502_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -475,11 +513,19 @@ static int lm8502_probe(struct i2c_client *client)
 
 	i2c_set_clientdata(client, priv);
 
-	ret = lm8502_chip_init(priv);
-	if (ret) {
-		dev_err(dev, "Failed to initialize chip: %d\n", ret);
-		goto err_disable_vcc;
-	}
+	/*
+	 * DO NOT run chip_init synchronously here. At this point in boot
+	 * (~2 s on Tenderloin) the I2C-QUP controller / RPM / clock
+	 * subsystem isn't fully settled yet, and regmap_write calls
+	 * silently fail to reach the chip (the QUP driver doesn't report
+	 * the NAK on writes; brightness writes appear to succeed but the
+	 * chip never sees the bytes). Running the same init sequence via
+	 * raw I2C_RDWR ioctl ~30 s into boot DOES wake the chip.
+	 *
+	 * Defer chip_init to a delayed_work so it runs after the bus has
+	 * stabilized. brightness_set returns -EAGAIN until init runs.
+	 */
+	INIT_DELAYED_WORK(&priv->init_work, lm8502_chip_init_work);
 
 	ret = lm8502_parse_dt(priv);
 	if (ret) {
@@ -487,7 +533,10 @@ static int lm8502_probe(struct i2c_client *client)
 		goto err_disable_vcc;
 	}
 
-	dev_info(dev, "LM8502 LED controller initialized with %d LEDs\n",
+	/* Schedule deferred chip_init ~3 s after probe. */
+	schedule_delayed_work(&priv->init_work, msecs_to_jiffies(3000));
+
+	dev_info(dev, "LM8502 LED controller registered with %d LEDs (chip_init deferred 3 s)\n",
 		 priv->num_leds);
 
 	return 0;
@@ -501,6 +550,8 @@ err_disable_vcc:
 static void lm8502_remove(struct i2c_client *client)
 {
 	struct lm8502_data *priv = i2c_get_clientdata(client);
+
+	cancel_delayed_work_sync(&priv->init_work);
 
 	/* Disable the chip */
 	if (priv->enable_gpio)
