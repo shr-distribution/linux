@@ -1066,38 +1066,20 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->fw_running = false;
 
 	/*
-	 * Zero the SMIPOOL region before firmware boot.  V4L2 capture
-	 * buffers (DPB content, encoded bitstreams, etc.) from a previous
-	 * session may still be sitting there since dma_alloc_coherent
-	 * from a reserved-memory pool doesn't zero on alloc.  The firmware
-	 * may sample SMIPOOL content at boot to decide cmd=9 (clean) vs
-	 * cmd=51 (recovery); we've eliminated SMI working-region state as
-	 * a cause (we recopy the firmware blob fresh every session), so
-	 * SMIPOOL is the next candidate.
-	 *
-	 * The reserved region is no-map so we can't memset via kernel
-	 * linear mapping — temporarily ioremap and memset_io.
-	 */
-	if (core->smipool_phys_base && core->smipool_phys_size) {
-		void __iomem *smipool_map = ioremap(core->smipool_phys_base,
-						    core->smipool_phys_size);
-		if (smipool_map) {
-			memset_io(smipool_map, 0, core->smipool_phys_size);
-			iounmap(smipool_map);
-			dev_info(core->dev,
-				 "SMIPOOL zeroed: 0x%08x size 0x%zx\n",
-				 (u32)core->smipool_phys_base,
-				 core->smipool_phys_size);
-		} else {
-			dev_warn(core->dev,
-				 "SMIPOOL ioremap failed for pre-boot zero\n");
-		}
-	}
-
-	/*
 	 * Boot the on-chip RISC from the just-loaded DRAM buffer.
 	 * Split out so vidc_runtime_resume() can re-issue it when the
 	 * GDSC drop has wiped the firmware boot state.
+	 *
+	 * NOTE: previously we zeroed all of SMIPOOL here to test whether
+	 * leftover V4L2 buffer state from a prior session was triggering
+	 * the firmware's cmd=51 recovery boot.  That broke the decoder:
+	 * by the time vidc_load_firmware runs (called from open_channel
+	 * during STREAMON), the user has already QBUF'd the input
+	 * bitstream into a buffer allocated from SMIPOOL.  Zeroing
+	 * SMIPOOL wipes that bitstream and the firmware errors with
+	 * 0x34 (HEADER_NOT_FOUND or similar).  The SMIPOOL-leftover
+	 * hypothesis can't be tested at this hook point — the V4L2
+	 * lifecycle puts QBUF before STREAMON.
 	 */
 	ret = vidc_boot_firmware(core);
 	if (ret)
