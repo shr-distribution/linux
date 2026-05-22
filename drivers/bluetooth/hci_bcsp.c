@@ -786,21 +786,6 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 	       bcsp->rx_skb->data[4], bcsp->rx_skb->data[5],
 	       bcsp->rx_skb->data[6], bcsp->rx_skb->data[7]);
 
-	/*
-	 * skip_sync mode: the chip is supposed to be in BCSP-operational
-	 * state from EEPROM — any inbound SYNC/CONF link-establishment
-	 * packet is either chip-boot noise after WARM_RESET or a spurious
-	 * decode. Reacting (power-cycling, sending sync_rsp) races with
-	 * bcsp_setup()'s deterministic post-WARM_RESET power-cycle path
-	 * and leaves the chip + driver state inconsistent. Drop them.
-	 */
-	if (bcsp->skip_sync) {
-		BT_DBG("BCSP: skip-sync — ignoring LE packet %02x %02x %02x %02x",
-		       bcsp->rx_skb->data[4], bcsp->rx_skb->data[5],
-		       bcsp->rx_skb->data[6], bcsp->rx_skb->data[7]);
-		return;
-	}
-
 	/* Handle sync packet - device is starting link establishment */
 	if (!memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
 		struct sk_buff *nskb;
@@ -809,53 +794,14 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		       bcsp->warm_reset_sent ? " (after WARM_RESET)" : "");
 
 		/*
-		 * In serdev mode after WARM_RESET: The chip has restarted
-		 * and is sending sync to re-establish the link. We can power
-		 * cycle for a completely clean state, since we have GPIO control.
+		 * The chip enters BCSP link-establishment state on every boot
+		 * AND after every WARM_RESET — it sends SYNC continuously
+		 * until we ACK with SYNC_RSP. We must not hard-power-cycle
+		 * here (PSKEYs live in volatile PSRAM and would be wiped);
+		 * just reset our driver-side state to match the chip's fresh
+		 * sequence numbers, then respond with SYNC_RSP to advance the
+		 * handshake.
 		 */
-#ifdef CONFIG_SERIAL_DEV_BUS
-		if (bcsp->is_serdev && bcsp->warm_reset_sent && bcsp->serdev_bdev) {
-			struct bcsp_serdev *bdev = bcsp->serdev_bdev;
-
-			BT_INFO("BCSP: Serdev mode - power cycling for clean restart");
-
-			/*
-			 * Power cycle the chip. This gives us a completely
-			 * fresh start with the newly configured PSKEYs.
-			 */
-			bcsp_serdev_power_cycle(bdev);
-
-			/* Clear the warm reset flag */
-			bcsp->warm_reset_sent = false;
-
-			/*
-			 * Reset ALL state for clean link establishment.
-			 * After power cycle, we're starting completely fresh.
-			 */
-
-			/* Reset sequence numbers */
-			bcsp->rxseq_txack = 0;
-			bcsp->msgq_txseq = 0;
-
-			/* Purge all queues */
-			skb_queue_purge(&bcsp->unack);
-			skb_queue_purge(&bcsp->rel);
-			skb_queue_purge(&bcsp->unrel);
-
-			/* Reset RX state machine - chip may send garbage on boot */
-			if (bcsp->rx_skb) {
-				kfree_skb(bcsp->rx_skb);
-				bcsp->rx_skb = NULL;
-			}
-			bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
-			bcsp->rx_count = 0;
-			bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
-
-			/* The chip will send a new sync after power cycle */
-			BT_INFO("BCSP: Waiting for chip to send sync after power cycle...");
-			return;
-		}
-#endif
 
 		/*
 		 * Reset sequence numbers - the chip has reset (e.g., after
@@ -869,6 +815,18 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		skb_queue_purge(&bcsp->unack);
 		skb_queue_purge(&bcsp->rel);
 		skb_queue_purge(&bcsp->unrel);
+
+		/*
+		 * If this SYNC is post-WARM_RESET, mark the link back to
+		 * UNINIT so the timer/handshake state machine re-engages
+		 * before HCI traffic is allowed.
+		 */
+		if (bcsp->warm_reset_sent) {
+			bcsp->link_state = BCSP_LINK_UNINIT;
+			bcsp->link_established = false;
+			reinit_completion(&bcsp->link_up);
+			BT_INFO("BCSP: post-WARM_RESET sync — link returned to UNINIT");
+		}
 
 		/* Clear warm reset flag */
 		bcsp->warm_reset_sent = false;
@@ -1862,6 +1820,15 @@ static int bcsp_setup(struct hci_uart *hu)
 		bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
 		msleep(50);
 
+		/*
+		 * The chip will restart and re-emit SYNC after WARM_RESET, so
+		 * we need link_up to be re-armable. Reinit it BEFORE flipping
+		 * warm_reset_sent, otherwise the wait below can race with the
+		 * sync handler's reinit and miss the completion.
+		 */
+		reinit_completion(&bcsp->link_up);
+		bcsp->link_established = false;
+
 		/* WARM_RESET to apply all PSKEYs */
 		bcsp_send_warm_reset(hu);
 		bcsp->warm_reset_sent = true;
@@ -1890,45 +1857,29 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * connection to the now-configured chip.
 		 */
 		if (bcsp->is_serdev) {
+			unsigned long timeout;
+
 			BT_INFO("BCSP: Serdev mode - waiting for chip restart after WARM_RESET...");
-			/*
-			 * Wait for the chip to complete its WARM_RESET cycle.
-			 * The chip restarts and re-loads PSKEYs from PSRAM
-			 * (which we just programmed). 1.5s matches what webOS
-			 * waits between WARM_RESET BCCMD and the next HCI traffic.
-			 */
-			msleep(1500);
 
 			/*
-			 * skip_sync mode: WARM_RESET has restarted the chip with
-			 * the PSKEYs we sent. The chip's BCSP sequence numbers are
-			 * reset to 0; reset OUR sequence state to match.
+			 * The chip restarts in BCSP link-establishment state and
+			 * will send SYNC packets until we ACK them. The sync
+			 * handler resets our seq numbers + sets link_state back
+			 * to UNINIT + reinits link_up. The CONF handler will
+			 * complete(link_up) once the handshake finishes.
 			 *
-			 * Do NOT hard-power-cycle here. A hard power cycle (via
-			 * GPIO) clears volatile PSRAM and wipes the PSKEYs we
-			 * just programmed — defeating the entire configuration
-			 * sequence. WARM_RESET via BCCMD is the legacy/webOS path
-			 * and keeps PSRAM intact.
+			 * Wait up to 5 s for the re-handshake to complete. Without
+			 * this wait, bcsp_setup() returns before the link is
+			 * actually usable, and the very first HCI command (HCI
+			 * Reset, 0x0c03) times out.
 			 */
-			if (bcsp->skip_sync) {
-				BT_INFO("BCSP: skip-sync — resyncing driver state after WARM_RESET");
-				bcsp->warm_reset_sent = false;
-
-				/* Reset sequence state to mirror the chip's fresh boot */
-				bcsp->rxseq_txack = 0;
-				bcsp->msgq_txseq = 0;
-				skb_queue_purge(&bcsp->unack);
-				skb_queue_purge(&bcsp->rel);
-				skb_queue_purge(&bcsp->unrel);
-				if (bcsp->rx_skb) {
-					kfree_skb(bcsp->rx_skb);
-					bcsp->rx_skb = NULL;
-				}
-				bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
-				bcsp->rx_count = 0;
-				bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
-				bcsp->link_state = BCSP_LINK_ACTIVE;
+			timeout = wait_for_completion_timeout(&bcsp->link_up,
+							      msecs_to_jiffies(5000));
+			if (!timeout) {
+				BT_ERR("BCSP: Timeout waiting for re-handshake after WARM_RESET");
+				return -ETIMEDOUT;
 			}
+			BT_INFO("BCSP: Link re-established after WARM_RESET");
 		} else {
 			msleep(500);
 			BT_INFO("BCSP: PSKEYs + BDADDR applied. Restart hciattach for fresh connection.");
@@ -2066,6 +2017,10 @@ static int bcsp_setup(struct hci_uart *hu)
 		}
 		msleep(50);
 
+		/* Re-arm link_up before WARM_RESET (see PSKEY path comment) */
+		reinit_completion(&bcsp->link_up);
+		bcsp->link_established = false;
+
 		/* WARM_RESET to apply PSKEYs */
 		bcsp_send_warm_reset(hu);
 		bcsp->warm_reset_sent = true;
@@ -2090,28 +2045,23 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * PSRAM and undo the PSKEYs we just programmed.
 		 */
 		if (bcsp->is_serdev) {
-			BT_INFO("BCSP: Serdev mode - waiting for chip restart after WARM_RESET...");
-			msleep(1500);
+			unsigned long timeout;
 
-			if (bcsp->skip_sync) {
-				BT_INFO("BCSP: skip-sync — resyncing driver state after WARM_RESET");
-				bcsp->warm_reset_sent = false;
+			BT_INFO("BCSP: Serdev mode - waiting for re-handshake after WARM_RESET...");
 
-				/* Reset sequence state to mirror the chip's fresh boot */
-				bcsp->rxseq_txack = 0;
-				bcsp->msgq_txseq = 0;
-				skb_queue_purge(&bcsp->unack);
-				skb_queue_purge(&bcsp->rel);
-				skb_queue_purge(&bcsp->unrel);
-				if (bcsp->rx_skb) {
-					kfree_skb(bcsp->rx_skb);
-					bcsp->rx_skb = NULL;
-				}
-				bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
-				bcsp->rx_count = 0;
-				bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
-				bcsp->link_state = BCSP_LINK_ACTIVE;
+			/*
+			 * After WARM_RESET the chip restarts in handshake state
+			 * and emits SYNCs; sync handler resets driver state and
+			 * advances toward LINK_ACTIVE. Wait for the link to come
+			 * back up before allowing HCI traffic.
+			 */
+			timeout = wait_for_completion_timeout(&bcsp->link_up,
+							      msecs_to_jiffies(5000));
+			if (!timeout) {
+				BT_ERR("BCSP: Timeout waiting for re-handshake after WARM_RESET");
+				return -ETIMEDOUT;
 			}
+			BT_INFO("BCSP: Link re-established after WARM_RESET");
 		} else {
 			msleep(500);
 			BT_INFO("BCSP: PSKEYs applied. Restart hciattach for fresh connection.");
