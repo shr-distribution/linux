@@ -882,22 +882,21 @@ static void adm_start_dma(struct adm_chan *achan)
 		u32 blk_size = async_desc->blk_size;
 
 		/*
-		 * SDCC CRCIs must use the legacy webOS msm_dmov block size, NOT
-		 * a value derived from the DMA burst. On MSM8660/APQ8060 the
-		 * legacy adm1_crci_conf[] hardcodes DMOV_CRCI_CONF(sd=1,blk=1)
-		 * for the SDCC CRCIs — eMMC sdcc1 = CRCI 1, WiFi sdcc4 = CRCI 5
-		 * (qcom,sdcc-crci in DT). blk_size=1 is half-FIFO (32 B)
-		 * granularity, matching the SDCC's half-full FIFO CRCI trigger.
+		 * WiFi sdcc4 = CRCI 5 ONLY: use the legacy webOS msm_dmov block
+		 * size of 1 (half-FIFO, 32 B), matching adm1_crci_conf[5] =
+		 * DMOV_CRCI_CONF(sd=1, blk=1). The half-FIFO granularity matches
+		 * the SDCC raising CRCI at its half-full FIFO threshold; mainline
+		 * deriving it from the 64 B burst (adm_get_blksize -> 2) or an
+		 * earlier force-to-0 mis-paces the handshake and latches
+		 * RXOVERRUN/DATACRCFAIL on the AR6003 128 B HTC mailbox read.
 		 *
-		 * Mainline's adm_get_blksize() instead maps the 64 B burst to 2
-		 * (full FIFO), and an earlier experiment forced WiFi to 0 — both
-		 * mis-pace the CRCI handshake against the FIFO, which on reads
-		 * latches RXOVERRUN/DATACRCFAIL (the AR6003 128 B HTC mailbox
-		 * read "error during DMA transfer", and eMMC large multi-block
-		 * read DATACRCFAIL). Match legacy exactly for these two CRCIs;
-		 * all other CRCIs (crypto, etc.) keep the computed value.
+		 * eMMC sdcc1 = CRCI 1 is deliberately LEFT on the computed value
+		 * (its prior behaviour). Forcing eMMC's CRCI block size as part of
+		 * the WiFi work destabilised the eMMC data path; keep this scoped
+		 * to the controller that needs it. All other CRCIs (crypto CE,
+		 * etc.) likewise keep the computed value.
 		 */
-		if (async_desc->crci == 1 || async_desc->crci == 5)
+		if (async_desc->crci == 5)
 			blk_size = 1;
 
 		crci_val = async_desc->mux | blk_size;

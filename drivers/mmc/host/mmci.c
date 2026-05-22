@@ -1516,7 +1516,8 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	 * in fact PIOs those small transfers. DMA still carries the bulk path
 	 * (large, FIFO-aligned data frames) exactly as webOS does.
 	 */
-	if (host->variant->qcom_dml) {
+	if (host->variant->qcom_dml && host->mmc->index == 1) {
+		/* WiFi (sdcc4) ONLY — see note above. */
 		unsigned int len = data->blksz * data->blocks;
 
 		if (len < variant->fifosize || (len % variant->fifosize))
@@ -1524,8 +1525,9 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	} else if (data->blksz * data->blocks <=
 		   (variant->dma_threshold ?: variant->fifosize)) {
 		/*
-		 * Non-qcom variants: original behaviour — PIO at/below the
-		 * DMA threshold (defaults to fifosize, overridable per variant).
+		 * eMMC and non-qcom variants: original behaviour — PIO at/below
+		 * the DMA threshold (defaults to fifosize, overridable per
+		 * variant). eMMC is left exactly as it was before the WiFi work.
 		 */
 		return -EINVAL;
 	}
@@ -1558,15 +1560,20 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		goto unmap_exit;
 
 	/*
-	 * Qualcomm SDCC ADM-DMA transfers (reads AND writes) do not get a
-	 * reliable MCI_DATAEND from the SDCC DPSM, so they cannot depend on
+	 * WiFi (sdcc4 = mmc1) ONLY: the AR6003 SDIO path misses MCI_DATAEND
+	 * from the SDCC DPSM, so those transfers cannot depend on
 	 * mmci_data_irq() to complete. Wire a dmaengine completion callback
 	 * (invoked by qcom_adm from its IRQ handler) to finish the request
-	 * when the ADM reports the descriptor done — matching legacy msm_sdcc
-	 * which completes both directions from its DMA complete_func. See
-	 * mmci_qcom_dma_complete() for why this is also safe for writes.
+	 * when the ADM reports the descriptor done.
+	 *
+	 * Deliberately NOT applied to eMMC (mmc0): eMMC gets DATAEND reliably
+	 * and the normal mmci_data_irq() path is correct for it. Completing
+	 * eMMC transfers on the DMA-done edge raced ahead of the SDCC's own
+	 * completion and destabilised the eMMC data path (DATACRCFAIL cascade
+	 * / boot-time rootfs journal hangs). Keep this workaround scoped to
+	 * the controller that actually needs it.
 	 */
-	if (host->variant->qcom_dml) {
+	if (host->variant->qcom_dml && host->mmc->index == 1) {
 		desc->callback = mmci_qcom_dma_complete;
 		desc->callback_param = host;
 	}
