@@ -467,6 +467,8 @@ struct vidc_core {
 	const struct firmware *fw;
 	phys_addr_t fw_phys_base;	/* SMI reserved region physical base */
 	size_t fw_phys_size;		/* SMI reserved region size */
+	phys_addr_t smipool_phys_base;	/* SMIPOOL reserved region physical base */
+	size_t smipool_phys_size;	/* SMIPOOL reserved region size */
 	dma_addr_t fw_dma_addr;		/* 128KB-aligned phys for DRAM_BASE */
 	void *fw_vaddr;			/* ioremap_wc() virtual address */
 	size_t fw_size;			/* firmware blob size */

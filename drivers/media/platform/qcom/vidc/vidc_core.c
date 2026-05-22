@@ -1066,6 +1066,35 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->fw_running = false;
 
 	/*
+	 * Zero the SMIPOOL region before firmware boot.  V4L2 capture
+	 * buffers (DPB content, encoded bitstreams, etc.) from a previous
+	 * session may still be sitting there since dma_alloc_coherent
+	 * from a reserved-memory pool doesn't zero on alloc.  The firmware
+	 * may sample SMIPOOL content at boot to decide cmd=9 (clean) vs
+	 * cmd=51 (recovery); we've eliminated SMI working-region state as
+	 * a cause (we recopy the firmware blob fresh every session), so
+	 * SMIPOOL is the next candidate.
+	 *
+	 * The reserved region is no-map so we can't memset via kernel
+	 * linear mapping — temporarily ioremap and memset_io.
+	 */
+	if (core->smipool_phys_base && core->smipool_phys_size) {
+		void __iomem *smipool_map = ioremap(core->smipool_phys_base,
+						    core->smipool_phys_size);
+		if (smipool_map) {
+			memset_io(smipool_map, 0, core->smipool_phys_size);
+			iounmap(smipool_map);
+			dev_info(core->dev,
+				 "SMIPOOL zeroed: 0x%08x size 0x%zx\n",
+				 (u32)core->smipool_phys_base,
+				 core->smipool_phys_size);
+		} else {
+			dev_warn(core->dev,
+				 "SMIPOOL ioremap failed for pre-boot zero\n");
+		}
+	}
+
+	/*
 	 * Boot the on-chip RISC from the just-loaded DRAM buffer.
 	 * Split out so vidc_runtime_resume() can re-issue it when the
 	 * GDSC drop has wiped the firmware boot state.
@@ -2846,6 +2875,31 @@ static int vidc_probe(struct platform_device *pdev)
 		} else {
 			dev_err(dev, "no memory-region specified; firmware cannot be placed in SMI\n");
 			return -EINVAL;
+		}
+
+		/*
+		 * Also record SMIPOOL phys+size so vidc_load_firmware can
+		 * zero it pre-boot.  The firmware may sample SMIPOOL state
+		 * to decide cmd=9 (clean) vs cmd=51 (recovery) — zeroing
+		 * removes the ambiguity.
+		 */
+		{
+			struct device_node *pool_node;
+			struct resource pr;
+
+			pool_node = of_parse_phandle(dev->of_node,
+						    "memory-region", 1);
+			if (pool_node) {
+				if (of_address_to_resource(pool_node, 0, &pr) == 0) {
+					core->smipool_phys_base = pr.start;
+					core->smipool_phys_size = resource_size(&pr);
+					dev_info(dev,
+						"SMIPOOL region: 0x%08x size 0x%zx\n",
+						(u32)core->smipool_phys_base,
+						core->smipool_phys_size);
+				}
+				of_node_put(pool_node);
+			}
 		}
 
 		/*
