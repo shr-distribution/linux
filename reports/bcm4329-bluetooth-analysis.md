@@ -3,6 +3,48 @@
 **Date:** March 2026
 **Status:** Testing with TX_POWER_LEVEL PSKEY added
 
+> ## ⚠️ Corrections (2026-05-22)
+>
+> Later investigation found several factual errors in this report. The
+> original text is preserved below for the historical record; the
+> corrections are summarized here and also flagged inline with **[CORRECTED]**.
+>
+> 1. **The BT silicon is CSR BlueCore, NOT Broadcom.** "BCM4329" is a
+>    misnomer carried through the port. HCI `Read_Local_Version`
+>    manufacturer = *Cambridge Silicon Radio* (see "Verified Working
+>    Output"); the default BD addr `00:02:5B:00:A5:A5` is the CSR default;
+>    init uses `CsrTmBlueCore*` BCCMD/PSKEY. (WiFi on this device is
+>    Atheros AR6003 — neither radio is Broadcom.) `hci_bcm.c` therefore
+>    can never drive it (it sends Broadcom VSCs the CSR chip rejects →
+>    `Frame reassembly failed -84`).
+>
+> 2. **PSKEY labels were shifted; the IDs+values are consistent once
+>    relabeled to canonical CSR names** (BlueZ `tools/csr.h`). Proof is in
+>    the values themselves:
+>    - `0x01FE` ← `0x6590` (26000) = 26 MHz crystal = **PSKEY_ANA_FREQ**
+>      (report mislabeled "HOST_INTERFACE")
+>    - `0x01F6` ← `0x0019` (25) = crystal fine trim = **PSKEY_ANA_FTRIM**
+>      (report mislabeled "ANA_FREQ"; matches `setBootstrapFtrim(0x19)`)
+>    - `0x01F9` ← `0x0001` = **PSKEY_HOST_INTERFACE = BCSP**
+>      (report mislabeled "XTAL_FTRIM"). HOST_INTERFACE is **0x01F9**,
+>      never 0x01FE.
+>
+> 3. **PS payload field order in the BCCMD examples is swapped.** The real
+>    layout is `[PSKEY, length-in-words, store-mask, data...]`. In the
+>    BDADDR packet `04 00` is the length (4 words) and `08 00` is the
+>    **store mask = 0x0008 = psram (volatile)** — not "Stores=4 / Length=8
+>    bytes". This confirms webOS writes PSKEYs to volatile psram every
+>    boot (lost on power/cold reset), so the chip must be reconfigured on
+>    every cold boot.
+>
+> 4. **On-device root cause (2026-05-22):** BCSP link establishment hung
+>    because `bcsp_open()` enabled CRTSCTS hardware flow control, which
+>    gated host TX (the chip holds CTS deasserted until talked to). webOS
+>    ran the GSBI6 UART with `HSUART_MODE_FLOW_CTRL_NONE`. Fixed in commit
+>    `3149a6f9c1ab` (disable flow control). The serdev `palm,bcm4329-bcsp`
+>    driver path also superseded the manual-`hciattach` workflow described
+>    below.
+
 ## Current Implementation Status
 
 ### What Works
@@ -47,17 +89,17 @@ from webOS libPmBtBsaif.so via Ghidra decompilation.
 // Standard chips get 14 PSKEYs
 
 // Core PSKEYs sent in order:
-CsrTmBlueCoreBuildBccmdPsSetMsg(0x1fe, ...);  // HOST_INTERFACE
-CsrTmBlueCoreBuildBccmdPsSetMsg(0x1be, ...);  // PCM_MIN_CPU_CLOCK (if HOST_IF=1 or 7)
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1fe, ...);  // ANA_FREQ (26MHz crystal)  [CORRECTED: was "HOST_INTERFACE"; 0x01FE=ANA_FREQ]
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1be, ...);  // UART_BAUDRATE / PCM_MIN_CPU_CLOCK
 CsrTmBlueCoreBuildBccmdPsSetMsg(0x1ab, ...);  // H_HC_FC_MAX_ACL
 CsrTmBlueCoreBuildBccmdPsSetMsg(0x1b0, ...);  // H_HC_FC_MAX_SCO
 CsrTmBlueCoreBuildBccmdPsSetMsg(0x1b9, ...);  // PCM_SAMPLE_SIZE
-CsrTmBlueCoreBuildBccmdPsSetMsg(0x1f6, ...);  // ANA_FREQ (26MHz crystal)
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1f6, ...);  // ANA_FTRIM (crystal fine trim)  [CORRECTED: was "ANA_FREQ"; 0x01F6=ANA_FTRIM]
 CsrTmBlueCoreBuildBccmdPsSetMsg(0x11, ...);   // LC_MAX_TX_POWER
 CsrTmBlueCoreBuildBccmdPsSetMsg(0x13, ...);   // LC_DEFAULT_TX_POWER
 CsrTmBlueCoreBuildBccmdPsSetMsg(0x24d, ...);  // LC_MAX_TX_POWER_NO_RSSI
 CsrTmBlueCoreBuildBccmdPsSetMsg(0xe, ...);    // ENC_KEY_LMIN
-CsrTmBlueCoreBuildBccmdPsSetMsg(0x1f9, ...);  // XTAL_FTRIM
+CsrTmBlueCoreBuildBccmdPsSetMsg(0x1f9, ...);  // HOST_INTERFACE (=0x0001 BCSP)  [CORRECTED: was "XTAL_FTRIM"; 0x01F9=HOST_INTERFACE]
 CsrTmBlueCoreBuildBccmdPsSetMsg(0x25d, ...);  // LC_DEFAULT_TX_POWER_NO_RSSI
 CsrTmBlueCoreBuildBccmdPsSetMsg(1, ...);      // BDADDR
 ```
@@ -124,7 +166,8 @@ This was discovered through analysis of webOS libraries and confirmed through te
 
 ## Hardware Configuration
 
-- **Chip:** Broadcom BCM4329 (combo WiFi/Bluetooth)
+- **Chip:** CSR BlueCore (BT). **[CORRECTED: not Broadcom BCM4329 — HCI
+  manufacturer = Cambridge Silicon Radio. "BCM4329" is a misnomer.]**
 - **Interface:** UART via GSBI6 (0x16540000)
 - **Baud Rate:** 115200 (default), supports up to 3686400
 - **Protocol:** BCSP (SLIP-framed)
@@ -174,8 +217,11 @@ BCSP (BlueCore Serial Protocol) is a reliable transport protocol that:
 - Supports retransmission for reliability
 - Was commonly used by CSR/Cambridge Silicon Radio chips
 
-The BCM4329's HCI reports "Cambridge Silicon Radio" as manufacturer, suggesting
-this chip may have CSR-derived Bluetooth silicon or firmware.
+The HCI manufacturer field reports "Cambridge Silicon Radio". **[CORRECTED:
+this is not a "suggestion" — the BT silicon IS a CSR BlueCore part. The
+BCSP transport, BCCMD/PSKEY config, `CsrTmBlueCore*` bootstrap, and the
+CSR-default BD address all confirm it. The "BCM4329" name applies (at
+most) to the WiFi+BT combo packaging, not the BT core's HCI behaviour.]**
 
 ## Working Configuration
 
@@ -367,12 +413,20 @@ The BCCMD (BlueCore Command) is wrapped in BCSP/SLIP framing:
 
 ### PS Payload Structure (for PSKEY commands)
 
-| Offset | Field   | Value      | Description                        |
-|--------|---------|------------|------------------------------------|
-| 0-1    | PSKey   | 0x0001     | PSKEY_BDADDR                       |
-| 2-3    | Stores  | 0x0004     | Number of uint16 words             |
-| 4-5    | Length  | 0x0008     | Length in bytes                    |
-| 6+     | Data    | (variable) | PSKEY value                        |
+**[CORRECTED]** The CSR PS-set payload order is `[PSKey, Length(words),
+Stores(mask), Data...]`. The original table swapped Length and Stores:
+
+| Offset | Field   | Value      | Description                                    |
+|--------|---------|------------|------------------------------------------------|
+| 0-1    | PSKey   | 0x0001     | PSKEY_BDADDR                                    |
+| 2-3    | Length  | 0x0004     | value length in **uint16 words** (4 words = BD addr) |
+| 4-5    | Stores  | 0x0008     | **store mask = 0x0008 = psram (VOLATILE)**      |
+| 6+     | Data    | (variable) | PSKEY value                                     |
+
+Store-mask values: `0x0008`=psram (volatile, survives WARM_RESET, lost on
+power/cold reset), `0x0001`=psi (flash/EEPROM, persistent), `0x0002`=psf,
+`0x0000`=default. webOS uses **0x0008** → everything is reconfigured each
+cold boot.
 
 ### PSKEY_BDADDR Format (8 bytes / 4 words)
 
@@ -405,25 +459,32 @@ SLIP                                                                            
 
 ### PSKEY_HOST_INTERFACE (Protocol Switching)
 
-The chip's UART protocol can potentially be changed via PSKEY_HOST_INTERFACE (0x01FE):
+**[CORRECTED]** The transport-selector PSKEY is **0x01F9**, not 0x01FE
+(0x01FE = ANA_FREQ). Confirmed against BlueZ `tools/csr.h`
+(`CSR_PSKEY_HOST_INTERFACE 0x01f9`) and against this chip's own config
+(0x01F9 ← 0x0001 = BCSP, which is why it boots BCSP).
 
-| Value | Protocol |
-|-------|----------|
-| 0x0001 | BCSP (current) |
-| 0x0003 | H4 (standard HCI UART) |
+| Value | Protocol | Source |
+|-------|----------|--------|
+| 0x0000 | none (no host connection) | CSR-sourced |
+| 0x0001 | BCSP (current) | **confirmed on this chip** |
+| 0x0002 | USB | CSR-sourced |
+| 0x0003 | H4 (standard HCI UART) | standard table — verify with `psget` first |
+| 0x0004 | H5 (3-wire) | standard table |
 
-**Theoretical H4 switching command:**
+**Theoretical H4 switching command** (corrected: PSKEY id `f9 01`,
+length-then-store-mask order, write to psram 0x0008):
 ```
 BCCMD payload for PSKEY_HOST_INTERFACE = H4:
   Type:   02 00  (SETREQ)
-  Length: 08 00  (8 words)
+  Length: 09 00  (9 words: 5 hdr + 3 ps + 1 data)
   SeqNo:  00 00
-  VarID:  03 70  (PS)
+  VarID:  03 70  (0x7003 = PS)
   Status: 00 00
-  PSKey:  fe 01  (0x01FE = HOST_INTERFACE)
-  Stores: 01 00  (1 word)
-  Length: 02 00  (2 bytes)
-  Value:  03 00  (0x0003 = H4)
+  PSKey:  f9 01  (0x01F9 = HOST_INTERFACE)   <-- was wrongly "fe 01"
+  Length: 01 00  (1 word)
+  Stores: 08 00  (0x0008 = psram, volatile)
+  Value:  03 00  (0x0003 = H4 — verify the firmware's H4 value via psget)
 ```
 
 After setting HOST_INTERFACE, a **WARM_RESET** (VarID 0x4002) is required:
@@ -441,10 +502,19 @@ BCCMD for WARM_RESET:
 1. **Timing**: After WARM_RESET, the host must immediately switch UART handling
    from BCSP to H4 - requires custom tooling
 
-2. **Persistence**: PSKEY changes may not persist across power cycles if the
-   chip lacks EEPROM/flash for PS storage
+2. **Persistence**: webOS writes PSKEYs to **psram (store mask 0x0008,
+   volatile)**, which strongly implies a ROM-boot module with no writable
+   NVM. If so, HOST_INTERFACE=H4 would have to be re-set on **every cold
+   boot** — and crystal/RF-cal/BDADDR still need re-pushing regardless of
+   transport. Net: switching to H4 yields **no persistence win** over
+   BCSP, and you cannot drop the BCSP code (it bootstraps the switch).
+   Confirm with `bccmd psmemtype` (RAM/ROM = volatile; Flash/EEPROM =
+   persistable).
 
-3. **Untested**: H4 mode has not been verified to work on this chip
+3. **Untested**: H4 mode has not been verified to work on this chip.
+   Also note mainline has **no CSR-over-H4 setup driver** — `hci_h4.c` is
+   transparent (no PSKEY logic) and `hci_bcm.c` is Broadcom-only. CSR init
+   must run in userspace (`bccmd`) or in our BCSP driver either way.
 
 ### Key Insight: Pre-Attach BD Address Setting
 
@@ -658,23 +728,28 @@ To properly set the BD address, we must either:
 
 Analysis shows bcattach sends **12 PSKEYs before BDADDR**:
 
+**[CORRECTED]** PSKEY names/values for keys 1, 6, 11 below were
+mislabeled; the values prove the canonical mapping:
+
 | # | PSKEY | Value | Description |
 |---|-------|-------|-------------|
-| 1 | 0x01FE HOST_INTERFACE | 0x6590 | BCSP mode configuration |
-| 2 | 0x01BE PCM_MIN_CPU_CLOCK | 0x3AFC | PCM clock setting |
+| 1 | 0x01FE **ANA_FREQ** | 0x6590 | **26000 = 26 MHz crystal freq** [was "HOST_INTERFACE"] |
+| 2 | 0x01BE UART_BAUDRATE | 0x3AFC | UART/PCM clock setting |
 | 3 | 0x01AB H_HC_FC_MAX_ACL | 0x0001 | ACL packet length |
 | 4 | 0x01B0 H_HC_FC_MAX_SCO | 0x0001 | SCO packet length |
 | 5 | 0x01B9 PCM_SAMPLE_SIZE | 0x0008 | PCM sample size |
-| 6 | **0x01F6 ANA_FREQ** | **0x0019** | **26MHz crystal (critical!)** |
+| 6 | 0x01F6 **ANA_FTRIM** | 0x0019 | **25 = crystal fine trim** [was "ANA_FREQ"] |
 | 7 | 0x0011 LC_MAX_TX_POWER | 0x0154 | Max TX power |
 | 8 | 0x0013 LC_DEFAULT_TX_POWER | 0x000B | Default TX power |
 | 9 | 0x024D LC_MAX_TX_POWER_NO_RSSI | 0x0000 | Max TX power (no RSSI) |
 | 10 | 0x000E ENC_KEY_LMIN | 0x0001 | Encryption key length |
-| 11 | 0x01F9 XTAL_FTRIM | 0x0001 | Crystal fine trim |
+| 11 | 0x01F9 **HOST_INTERFACE** | 0x0001 | **transport = BCSP** [was "XTAL_FTRIM"] |
 | 12 | 0x025D LC_DEFAULT_TX_POWER_NO_RSSI | 0x0001 | Default TX (no RSSI) |
 
-**Most Critical:** PSKEY_ANA_FREQ (0x01F6) = 25 (0x19) sets the 26MHz external crystal.
-Without this, the chip clock may not be properly configured.
+**Most Critical:** PSKEY_ANA_FREQ (**0x01FE**) = 0x6590 (26000) sets the
+26 MHz crystal frequency; PSKEY_ANA_FTRIM (0x01F6) = 25 is its fine trim.
+Without the correct crystal config the chip clock is wrong. (The original
+report swapped these — ANA_FREQ is 0x01FE, not 0x01F6.)
 
 ### bcattach vs PmBtStack Comparison
 
@@ -808,18 +883,20 @@ if (param_1 == 0x12e9) {
 }
 ```
 
-**Standard PSKEYs (12 core + BDADDR):**
-1. 0x1fe (HOST_INTERFACE) - Host interface mode
-2. 0x1be (PCM_MIN_CPU_CLOCK) - Only if HOST_IF is 1 or 7
+**Standard PSKEYs (12 core + BDADDR)** — **[CORRECTED labels for #1, #6,
+#11; see Corrections banner. The decompiler's value for #6 (0x19=25) and
+#11 (0x0001=BCSP) prove the canonical mapping.]**
+1. 0x1fe (**ANA_FREQ**) - Crystal frequency (0x6590 = 26000 = 26MHz)
+2. 0x1be (UART_BAUDRATE / PCM clock)
 3. 0x1ab (H_HC_FC_MAX_ACL) - HCI flow control max ACL
 4. 0x1b0 (H_HC_FC_MAX_SCO) - HCI flow control max SCO
 5. 0x1b9 (PCM_SAMPLE_SIZE) - PCM sample size
-6. 0x1f6 (ANA_FREQ) - Crystal frequency (26000 = 26MHz)
+6. 0x1f6 (**ANA_FTRIM**) - Crystal fine trim (0x19 = 25)
 7. 0x11 (LC_MAX_TX_POWER) - Maximum TX power
 8. 0x13 (LC_DEFAULT_TX_POWER) - Default TX power
 9. 0x24d (LC_MAX_TX_POWER_NO_RSSI) - Max TX power without RSSI
 10. 0xe (ENC_KEY_LMIN) - Minimum encryption key length
-11. 0x1f9 (XTAL_FTRIM) - Crystal fine trim (0x19 = 25)
+11. 0x1f9 (**HOST_INTERFACE**) - transport selector (0x0001 = BCSP)
 12. 0x25d (LC_DEFAULT_TX_POWER_NO_RSSI) - Default TX power without RSSI
 13. 0x1 (BDADDR) - Bluetooth device address (4 words)
 
