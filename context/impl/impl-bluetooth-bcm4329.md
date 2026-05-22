@@ -2,7 +2,46 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: ldisc link works; RESET_ON_INIT fixed NOP race; NEW blocker = reliable BCSP channel — chip ACKs unreliable pkts but REJECTS reliable HCI packets (rxack stuck at 0)
+status: ROOT CAUSE FOUND — scrambled PSKEY ids write crystal=1/baud=0, WARM_RESET bricks chip. Fix 633763367fab (skip_pskeys=true). Bricked chip needs COLD power-cycle to clear psram, then test.
+---
+
+## 2026-05-22 (night-5): ROOT CAUSE — scrambled PSKEY ids brick the chip
+
+TXWIRE hexdump capture was decisive. The reliable-channel "blocker" was a
+symptom: in that capture the chip only sent SYNC (link never established),
+because the chip was already BRICKED by garbage PSKEYs from a prior run.
+
+The driver's PSKEY id `#define`s are SCRAMBLED (right values → wrong ids,
+the same mislabeling fixed in the report but still live in the driver):
+```
+Set PSKEY 0x01fe = 0x0001   <- ANA_FREQ (crystal) = 1  (want 0x6590)
+Set PSKEY 0x01be = 0x0000   <- UART_BAUDRATE = 0
+Set PSKEY 0x0011 = 0x6590   <- 26000 to LC_MAX_TX_POWER
+```
+`#define PSKEY_ANA_FREQ 0x0011` (real 0x01FE), `HOST_INTERFACE 0x01FE`
+(real 0x01F9), etc. bcsp_setup() sends these then WARM_RESET → crystal=1,
+baud=0 applied → chip clock+UART dead → only emits SYNC forever.
+
+Unifies the whole saga: fresh chip links once, then our PSKEYs+WARM_RESET
+brick it; thereafter only SYNC. Explains "ldisc worked then stopped" and
+likely serdev never linking. flow-control / CRC / reset-timing /
+RESET_ON_INIT / reliable-channel were all secondary.
+
+Damage is in volatile psram (stores=0x08) → survives WARM_RESET AND a GPIO
+BT_POWER cycle (even 5 s; gpio130 doesn't drain the core). A bricked chip
+needs a TRUE cold device power-off (battery) to clear psram before it
+links again.
+
+**Fix 633763367fab:** default `skip_pskeys = true`. Chip runs on factory
+EEPROM config. Sending NO PSKEYs >> sending scrambled ones. Loses custom
+BD addr + RF cal until the id<->value mapping is corrected (canonical:
+ANA_FREQ=0x01FE, ANA_FTRIM=0x01F6, HOST_INTERFACE=0x01F9,
+UART_BAUDRATE=0x01BE, LC_MAX_TX_POWER=0x0011, LC_DEFAULT_TX_POWER=0x0013).
+
+**Next:** rebuild (skip_pskeys=true) → COLD power-off device → ldisc attach
+via btup → expect link + HCI Reset OK + hci0 UP. Full analysis:
+memory [[bcm4329-scrambled-pskeys-brick-chip]].
+
 ---
 
 ## 2026-05-22 (night-4): RESET_ON_INIT fixes NOP race; reliable channel is the new wall
