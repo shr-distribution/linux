@@ -1968,12 +1968,19 @@
 		};
 	};
 
-	/* LM8502 LED Controller */
+	/* LM8502 LED Controller
+	 *
+	 * Drive strength matches legacy webOS gpiomux for this pin
+	 * (GPIO_OUTL_8M_PN = 8 mA, GPIOMUX_PULL_NONE). 2 mA is too weak
+	 * for the chip to reliably see the enable edge — the chip stays
+	 * silent on I2C (every transaction NAKs, reads return 0xff from
+	 * the bus pull-ups) when driven at 2 mA.
+	 */
 	lm8502_pins: lm8502-state {
 		enable-pins {
 			pins = "gpio121";  /* Enable */
 			function = "gpio";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-disable;
 		};
 		irq-pins {

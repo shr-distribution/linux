@@ -410,20 +410,33 @@ static int lm8502_probe(struct i2c_client *client)
 				 ret);
 	}
 
-	/* Get enable GPIO */
+	/*
+	 * Get enable GPIO as OUTPUT LOW first. The legacy webOS gpiomux
+	 * also drives this pin LOW at board-init time
+	 * (GPIO_OUTL_8M_PN), and the legacy LM8502 driver then performs
+	 * an explicit LOW → HIGH transition during probe. The chip needs
+	 * to see this rising edge to come out of power-down.
+	 *
+	 * Acquiring with GPIOD_OUT_HIGH (as the previous mainline version
+	 * did) was wrong: if the bootloader / a previous boot left
+	 * gpio121 already high, the driver never asserted a transition
+	 * and the chip stayed silent on I2C (NAK on every transfer,
+	 * reads = 0xff from bus pull-ups).
+	 */
 	priv->enable_gpio = devm_gpiod_get_optional(dev, "enable",
-						    GPIOD_OUT_HIGH);
+						    GPIOD_OUT_LOW);
 	if (IS_ERR(priv->enable_gpio)) {
 		ret = PTR_ERR(priv->enable_gpio);
 		dev_err(dev, "Failed to get enable GPIO: %d\n", ret);
 		goto err_disable_vcc;
 	}
 
-	/* Enable the chip via GPIO if available */
 	if (priv->enable_gpio) {
-		dev_info(dev, "Enable GPIO acquired, setting high\n");
+		dev_info(dev, "Enable GPIO acquired (low), forcing power-cycle\n");
+		gpiod_set_value_cansleep(priv->enable_gpio, 0);
+		msleep(10);  /* Hold low long enough for chip to fully power down */
 		gpiod_set_value_cansleep(priv->enable_gpio, 1);
-		dev_info(dev, "Enable GPIO set to high\n");
+		dev_info(dev, "Enable GPIO raised, chip powered up\n");
 	} else {
 		dev_warn(dev, "No enable GPIO found (optional)\n");
 	}
