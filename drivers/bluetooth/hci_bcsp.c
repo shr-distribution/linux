@@ -2218,12 +2218,16 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 
 	/* Try palm-specific compatible first, then generic */
 	np = of_find_compatible_node(NULL, NULL, "palm,bcm4329-bcsp");
-	if (!np)
+	if (!np) {
+		BT_DBG("BCSP: palm,bcm4329-bcsp not found, trying generic");
 		np = of_find_compatible_node(NULL, NULL, "brcm,bcm4329-bt");
+	}
 	if (!np) {
 		BT_INFO("BCSP: No DT node found, using Palm defaults");
 		return;
 	}
+
+	BT_INFO("BCSP: Found DT node for bluetooth config");
 
 	/*
 	 * BCM4329 on TouchPad ships in BCSP-operational state — no SYNC
@@ -2231,7 +2235,9 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 	 */
 	if (of_property_read_bool(np, "qcom,bcsp-skip-sync")) {
 		bcsp->skip_sync = true;
-		BT_INFO("BCSP: skip-sync enabled via DT (chip already operational)");
+		BT_INFO("BCSP: skip-sync ENABLED via DT (chip already operational)");
+	} else {
+		BT_DBG("BCSP: skip-sync property not found or false");
 	}
 
 	/* Read TX power table from DT (overrides Palm default) */
