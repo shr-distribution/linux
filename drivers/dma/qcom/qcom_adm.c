@@ -587,6 +587,10 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		burst = achan->slave.src_maxburst * achan->slave.src_addr_width;
 	}
 
+	if (achan->id == 5)
+		trace_printk("ADM-PREP: ch5 device_fc=%d crci=%d burst=%d dir=%d\n",
+			     achan->slave.device_fc, achan->crci, burst, direction);
+
 	dev_dbg(adev->dev,
 		"ADM prep_slave_sg: chan=%d device_fc=%d achan->crci=%d burst=%d dir=%d\n",
 		achan->id, achan->slave.device_fc, achan->crci, burst, direction);
@@ -1151,10 +1155,19 @@ static void adm_issue_pending(struct dma_chan *chan)
 	struct adm_chan *achan = to_adm_chan(chan);
 	unsigned long flags;
 
+	if (achan->id == 5)
+		trace_printk("ADM-ISSUE: ch5 called\n");
+
 	spin_lock_irqsave(&achan->vc.lock, flags);
 
-	if (vchan_issue_pending(&achan->vc) && !achan->curr_txd)
+	if (vchan_issue_pending(&achan->vc) && !achan->curr_txd) {
+		if (achan->id == 5)
+			trace_printk("ADM-ISSUE: ch5 starting DMA\n");
 		adm_start_dma(achan);
+	} else if (achan->id == 5) {
+		trace_printk("ADM-ISSUE: ch5 NOT starting (vchan_issue=%d curr_txd=%p)\n",
+			     vchan_issue_pending(&achan->vc), achan->curr_txd);
+	}
 	spin_unlock_irqrestore(&achan->vc.lock, flags);
 }
 
