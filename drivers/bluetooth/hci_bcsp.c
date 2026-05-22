@@ -2404,13 +2404,21 @@ static int bcsp_open(struct hci_uart *hu)
 	skb_queue_head_init(&bcsp->unrel);
 
 	/*
-	 * Enable hardware flow control. The BCM4329 chip may expect
-	 * RTS/CTS to be active for proper communication. WebOS used
-	 * UART_WITH_FLOW_CONTROL for GSBI6.
+	 * Run the GSBI6 UART with hardware flow control DISABLED, matching
+	 * webOS. The legacy board file (board-tenderloin.c btuart_data) sets
+	 *   .uart_mode = HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE
+	 * i.e. no automatic CRTSCTS gating. The UART_WITH_FLOW_CONTROL flag
+	 * passed to board_gsbi6_init() only muxes the RTS/CTS *pins* as the
+	 * GSBI6 function; it does NOT enable CRTSCTS in the UART driver. A
+	 * previous version of this driver misread that and turned CRTSCTS on,
+	 * which gates host TX on the chip's CTS line — the chip then never
+	 * receives our SYNC_RSP and loops SYNC (da dc ed ed) forever, so BCSP
+	 * link establishment times out. hci_serdev already left flow control
+	 * disabled before calling us; keep it that way explicitly.
 	 */
 	if (hu->serdev) {
-		serdev_device_set_flow_control(hu->serdev, true);
-		BT_INFO("BCSP: Enabled hardware flow control");
+		serdev_device_set_flow_control(hu->serdev, false);
+		BT_INFO("BCSP: Hardware flow control disabled (webOS FLOW_CTRL_NONE)");
 	}
 
 	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
