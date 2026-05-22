@@ -188,10 +188,19 @@ static int lm8502_chip_init(struct lm8502_data *priv)
 	dev_info(dev, "I2C communication OK, ENGINE_CNTRL1=0x%02x\n", val);
 
 	/*
-	 * Skip software reset - after reset the chip needs the enable GPIO
-	 * to be toggled, but we've already set it high. Just proceed with
-	 * chip enable directly.
+	 * Software reset the LM8502. WebOS does this after GPIO enable and
+	 * before attempting any register writes. Clears internal state and
+	 * ensures the chip is in a known state for configuration.
+	 * Writing 0xFF to RESET (0x3D) triggers the reset.
 	 */
+	dev_info(dev, "Sending software reset to LM8502\n");
+	ret = regmap_write(priv->regmap, LM8502_RESET, 0xFF);
+	if (ret) {
+		dev_err(dev, "Software reset failed: %d\n", ret);
+		return ret;
+	}
+	msleep(50);  /* Allow chip to complete reset */
+	dev_info(dev, "Software reset complete, chip ready for configuration\n");
 
 	/*
 	 * Initialize registers to match webOS configuration exactly:
