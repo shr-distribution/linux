@@ -4197,12 +4197,28 @@
 	status = "okay";
 };
 
+/*
+ * Video-codec IOMMUs (Port A / Port B) intentionally left DISABLED.
+ *
+ * The vidc_1080p.fw firmware uses physical addresses internally (built
+ * for the webOS kernel, which ran the codec with no IOMMU).  The vidc
+ * node deliberately omits an `iommus` property and addresses SMI/DRAM
+ * physically.  But enabling these IOMMU device nodes makes msm_iommu
+ * probe them and bring up their context banks, which then sit in the
+ * codec's AXI path and raise a continuous storm of MHF (multi-hit)
+ * page faults on every firmware SMI access (FAR in the 0x38000000
+ * firmware/SMIPOOL window).  The fault IRQ flood throttles the console
+ * and starves decode (≈19/50 frames, device wedges).
+ *
+ * webOS ran the codec without these IOMMUs active, so leaving them
+ * disabled lets VIDC traffic pass through untranslated as designed.
+ */
 &vcodec_a_iommu {
-	status = "okay";
+	status = "disabled";
 };
 
 &vcodec_b_iommu {
-	status = "okay";
+	status = "disabled";
 };
 
 &gfx2d0_iommu {
