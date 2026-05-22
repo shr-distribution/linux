@@ -956,6 +956,10 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 
 	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
 
+	/* WiFi ch5 diagnostic */
+	if (srcs & BIT(5))
+		dev_info(adev->dev, "ADM-IRQ: ch5 in srcs=0x%08x\n", srcs);
+
 	/*
 	 * Iterate only the set channel bits in srcs.  Fixed 16-iteration
 	 * loop wasted ~14 branch checks per IRQ on tenderloin where only
@@ -973,15 +977,24 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 				       ADM_CH_STATUS_SD(i, adev->ee));
 
 		/* if no result present, skip */
-		if (!(status & ADM_CH_STATUS_VALID))
+		if (!(status & ADM_CH_STATUS_VALID)) {
+			if (i == 5)
+				dev_info(adev->dev, "ADM-IRQ: ch5 STATUS=0x%08x (not VALID, skipped)\n", status);
 			continue;
+		}
 
 		result = readl_relaxed(adev->regs +
 			ADM_CH_RSLT(i, adev->ee));
 
 		/* no valid results, skip */
-		if (!(result & ADM_CH_RSLT_VALID))
+		if (!(result & ADM_CH_RSLT_VALID)) {
+			if (i == 5)
+				dev_info(adev->dev, "ADM-IRQ: ch5 RESULT=0x%08x (not VALID, skipped)\n", result);
 			continue;
+		}
+
+		if (i == 5)
+			dev_info(adev->dev, "ADM-IRQ: ch5 RESULT=0x%08x, calling vchan_cookie_complete\n", result);
 
 		/*
 		 * Flag error only if ERR bit is set (real hardware error).
