@@ -3033,6 +3033,22 @@ static int vidc_runtime_suspend(struct device *dev)
 	 */
 	core->fw_running = false;
 
+	/*
+	 * Mimic webOS DDL's per-session firmware lifecycle: unload the
+	 * firmware blob here so the next runtime_resume's open_channel
+	 * triggers a full request_firmware + ioremap + memcpy via
+	 * vidc_load_firmware().  We've exhausted SW_RESET-state and
+	 * GDSC-cycling fixes for the cross-session "cmd=51 recovery"
+	 * boot — the firmware itself is detecting some persistent state
+	 * we haven't isolated.  webOS works around this with full
+	 * unload/reload per session (ddl_device_init / _release) and
+	 * never sees recovery-mode boots; mirror that.
+	 *
+	 * Cheap (~10 ms total for unload+reload) compared to the 50–500 ms
+	 * cost of running through a failing/recovery boot path.
+	 */
+	vidc_unload_firmware(core);
+
 	return 0;
 }
 
