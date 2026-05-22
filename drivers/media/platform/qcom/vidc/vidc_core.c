@@ -430,6 +430,35 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 				printk(KERN_EMERG "VIDC: fw recopy: first 1KB all zeros, cannot verify\n");
 			}
 		}
+
+		/*
+		 * Firmware patch: NOP out the bltz at memory offset 0x3ec2
+		 * that branches to the cmd=51 recovery-mode emit path at
+		 * 0x37c6 (movi.n a14,0x33).
+		 *
+		 * Located via Ghidra RE: this is the SINGLE conditional
+		 * branch that triggers cmd=51 instead of cmd=9 (clean) at
+		 * firmware boot.  The bltz tests register a11 after a
+		 * callx0 a0 indirect call right before; if a11 is negative,
+		 * recovery path is taken.  In our usage pattern (back-to-back
+		 * codec sessions in the same kernel-driver lifecycle, no
+		 * driver unbind between), session 2+ reliably triggers this.
+		 *
+		 * NOP'ing the branch forces the firmware to always fall
+		 * through to the cmd=9 path.  Replacing 3 bytes:
+		 *   memory[0x3ec2..0x3ec4]: 66 b9 00 (bltz a11, 0x37c6)
+		 *                       ->: 00 00 20 (or a0, a0, a0 — Xtensa NOP)
+		 *
+		 * Only patch the webOS firmware (size 500140); other blobs
+		 * may have different offsets / opcodes.
+		 */
+		if (core->fw_size == 500140) {
+			iowrite8(0x00, (void __iomem *)(core->fw_vaddr + 0x3ec2));
+			iowrite8(0x00, (void __iomem *)(core->fw_vaddr + 0x3ec3));
+			iowrite8(0x20, (void __iomem *)(core->fw_vaddr + 0x3ec4));
+			printk(KERN_EMERG
+			       "VIDC: fw patch: bltz a11,0x37c6 at 0x3ec2 NOPed (force cmd=9 path)\n");
+		}
 	}
 
 	/* Initialize channel instance IDs */
