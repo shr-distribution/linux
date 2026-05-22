@@ -232,6 +232,72 @@ This is **an in-flight driver effort**, not a fresh investigation
 to start from scratch. Continuing it requires understanding the
 existing commit chain.
 
+## 2026-05-22 (evening): skip-sync hypothesis FALSIFIED — chip needs handshake (fc36dcf860b7)
+
+After deploying the double-power-cycle fix the chip got past PSKEY
+config + WARM_RESET cleanly, but HCI Reset (opcode 0x0c03) timed
+out -110. dmesg showed `events:0` on `hciconfig -a` despite RX
+bytes incrementing.
+
+With `hci_bcsp.c +p` dynamic-debug enabled the truth came out:
+
+```
+BCSP: RX LE hdr: 40 41 00 7e
+BCSP: RX LE payload: da dc ed ed     ← SYNC magic
+BCSP: skip-sync — ignoring LE packet ...
+(repeats indefinitely)
+```
+
+The chip emits SYNC packets continuously after WARM_RESET and our
+skip-sync code dutifully ignores them. The chip never reaches
+operational state; nothing gets decoded as HCI events.
+
+**Root cause of the bad hypothesis:** the webOS hsuart wire trace
+(`reports/bt-trace/webos-bcsp-only-2026-05-22.log`) was captured
+*after* userspace `bcattach` had already done the handshake. The
+first TX in the trace (`c0 da 35 00 f0 02 04 00 ...`) has BCSP
+header byte = `0xda` = seq 2 ack 3, not seq 0 ack 0. So the trace
+tells us nothing about the chip's state at fresh power-up — only
+its steady-state.
+
+**Fix (commit `fc36dcf860b7`):**
+
+- DT: drop `qcom,bcsp-skip-sync` from the bluetooth subnode in
+  `qcom-apq8060-tenderloin-common.dtsi`.
+- `hci_bcsp.c`:
+  - Sync handler: remove the GPIO power-cycle path (PSRAM-PSKEY
+    wipe). Reset our seq/queues, set `link_state = UNINIT`,
+    `link_established = false`, `reinit_completion(link_up)`, then
+    fall through to send SYNC_RSP and let the standard state
+    machine drive CONF / CONF_RSP / LINK_ACTIVE.
+  - `bcsp_setup()`: reinit `link_up` + clear `link_established`
+    *before* sending WARM_RESET (so we don't race with the sync
+    handler's reinit). After WARM_RESET, replace the
+    `msleep(1500)` with `wait_for_completion_timeout(link_up, 5 s)`
+    — only return once the re-handshake actually finished. Without
+    this, HCI core's first command (HCI Reset) races the
+    in-progress handshake and times out -110.
+  - Drop the now-dead skip-sync early-return at the top of the LE
+    handler. The `skip_sync` field is still in the struct (for some
+    hypothetical chip that genuinely boots operational), but no DT
+    sets it on tenderloin.
+
+Expected next-state on-device after Yocto rebuild:
+
+- Initial probe: `BCSP: Sent initial sync to wake chip` →
+  `BCSP: sync received` → `BCSP: sync_rsp received, moving to INIT
+  state` → `BCSP: conf received, responding with conf_rsp` →
+  `BCSP: Link established (first time)`
+- bcsp_setup runs PSKEY + BDADDR + WARM_RESET
+- After WARM_RESET: `BCSP: post-WARM_RESET sync — link returned to
+  UNINIT` → handshake repeats → `BCSP: Link re-established after
+  WARM_RESET`
+- `hci0: Opcode 0x0c03 failed: -110` GONE
+- `hciconfig hci0 up` succeeds; chip BD `00:1d:fe:85:64:a9`
+  visible; `events:` counter > 0
+
+Awaiting Yocto rebuild + redeploy to verify.
+
 ## 2026-05-22 (PM): Double power-cycle race wiping PSKEYs — fixed (65125445c55e)
 
 On-device test of the skip-SYNC code revealed a second class of bug:
