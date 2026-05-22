@@ -950,6 +950,9 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 	struct adm_device *adev = data;
 	u32 srcs, i;
 	struct adm_async_desc *async_desc;
+	ktime_t t_entry, t_before_loop, t_after_status, t_after_result;
+
+	t_entry = ktime_get();
 
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
@@ -958,7 +961,10 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 
 	/* WiFi ch5 diagnostic */
 	if (srcs & BIT(5))
-		dev_info(adev->dev, "ADM-IRQ: ch5 in srcs=0x%08x\n", srcs);
+		dev_info(adev->dev, "ADM-IRQ: ch5 in srcs=0x%08x t=%lld\n",
+			 srcs, ktime_to_us(t_entry));
+
+	t_before_loop = ktime_get();
 
 	/*
 	 * Iterate only the set channel bits in srcs.  Fixed 16-iteration
@@ -976,25 +982,37 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		status = readl_relaxed(adev->regs +
 				       ADM_CH_STATUS_SD(i, adev->ee));
 
+		t_after_status = ktime_get();
+
 		/* if no result present, skip */
 		if (!(status & ADM_CH_STATUS_VALID)) {
 			if (i == 5)
-				dev_info(adev->dev, "ADM-IRQ: ch5 STATUS=0x%08x (not VALID, skipped)\n", status);
+				dev_info(adev->dev, "ADM-IRQ: ch5 STATUS=0x%08x (not VALID, skipped) t=%lld\n",
+					 status, ktime_to_us(t_after_status));
 			continue;
 		}
 
 		result = readl_relaxed(adev->regs +
 			ADM_CH_RSLT(i, adev->ee));
 
+		t_after_result = ktime_get();
+
 		/* no valid results, skip */
 		if (!(result & ADM_CH_RSLT_VALID)) {
 			if (i == 5)
-				dev_info(adev->dev, "ADM-IRQ: ch5 RESULT=0x%08x (not VALID, skipped)\n", result);
+				dev_info(adev->dev, "ADM-IRQ: ch5 RESULT=0x%08x (not VALID, skipped) t=%lld\n",
+					 result, ktime_to_us(t_after_result));
 			continue;
 		}
 
-		if (i == 5)
-			dev_info(adev->dev, "ADM-IRQ: ch5 RESULT=0x%08x, calling vchan_cookie_complete\n", result);
+		if (i == 5) {
+			s64 delta_entry_to_loop = ktime_us_delta(t_before_loop, t_entry);
+			s64 delta_loop_to_status = ktime_us_delta(t_after_status, t_before_loop);
+			s64 delta_status_to_result = ktime_us_delta(t_after_result, t_after_status);
+			dev_info(adev->dev, "ADM-IRQ: ch5 RESULT=0x%08x t=%lld Δ[entry→loop]=%lld Δ[loop→status]=%lld Δ[status→result]=%lld\n",
+				 result, ktime_to_us(t_after_result),
+				 delta_entry_to_loop, delta_loop_to_status, delta_status_to_result);
+		}
 
 		/*
 		 * Flag error only if ERR bit is set (real hardware error).
@@ -1068,6 +1086,14 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		}
 
 		spin_unlock(&achan->vc.lock);
+	}
+
+	/* WiFi ch5: log total IRQ handler time */
+	if (i == 5) {
+		ktime_t t_exit = ktime_get();
+		s64 delta_total = ktime_us_delta(t_exit, t_entry);
+		if (delta_total > 1000) /* Log if > 1ms */
+			dev_info(adev->dev, "ADM-IRQ: ch5 SLOW handler total=%lld us\n", delta_total);
 	}
 
 	return IRQ_HANDLED;
