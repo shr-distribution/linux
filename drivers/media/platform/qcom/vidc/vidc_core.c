@@ -1728,6 +1728,27 @@ static void vidc_dpb_calc_sizes(u32 width, u32 height,
 }
 
 /*
+ * Per-DPB-slot H.264 motion-vector buffer size.  webOS computes this as
+ * ddl_get_yuv_buf_size(width, height >> 2, TILE) — i.e. the tile-format
+ * buffer size for a quarter-height plane:
+ *
+ *   sz_mv = ALIGN(ALIGN(width,128) * ALIGN(height>>2,32), 8192)
+ *
+ * This scales with resolution.  A fixed 32 KB happens to exceed the
+ * requirement at 320x240 (24576) but falls far short at 640x480 (81920),
+ * which the firmware rejects at INIT_BUFFERS with error 0x47
+ * (VIDC_1080P_ERROR_ALLOC_DPB_SIZE_NOT_SUFFICIENT) — the MV buffer is
+ * part of the per-slot DPB allocation the firmware size-checks.
+ */
+static u32 vidc_dpb_calc_mv_size(u32 width, u32 height)
+{
+	u32 w = ALIGN(width, VIDC_DPB_TILE_ALIGN_WIDTH);
+	u32 h = ALIGN(height >> 2, VIDC_DPB_TILE_ALIGN_HEIGHT);
+
+	return ALIGN(w * h, VIDC_DPB_TILE_MULTIPLY_FACTOR);
+}
+
+/*
  * Allocate and program the DPB (display picture buffer) pool, then
  * issue the VIDC_OP_INIT_BUFFERS command to the firmware.
  *
@@ -1792,7 +1813,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	vidc_dpb_calc_sizes(inst->seq_width, inst->seq_height,
 			    &y_size, &c_size);
 	mv_size = (inst->codec == VIDC_CODEC_H264_DEC) ?
-		  VIDC_DPB_MV_SIZE : 0;
+		  vidc_dpb_calc_mv_size(inst->seq_width, inst->seq_height) : 0;
 
 	inst->dpb_y_size = y_size;
 	inst->dpb_c_size = c_size;
