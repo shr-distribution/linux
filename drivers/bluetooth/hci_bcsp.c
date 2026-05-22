@@ -572,13 +572,19 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 
 	/*
 	 * CRC handling for BCSP packets:
-	 * The BCM4329 chip sends Link Establishment packets WITH CRC (header
-	 * byte 0x40), but per BCSP spec, LE packets should be sent WITHOUT CRC.
-	 * This asymmetric behavior is documented in the BCSP specification.
+	 * The CSR BlueCore chip on the TouchPad sends ALL packets WITH CRC,
+	 * including Link Establishment packets on channel 1 (header byte 0x40
+	 * + trailing CRC) and ACK frames. The webOS bcattach wire trace
+	 * confirms it sends SYNC as c0 40 41 00 7e da dc ed ed a9 7a c0 and
+	 * SYNC-RSP as c0 40 41 00 7e ac af ef ee bb 84 c0 — both CRC'd.
 	 *
-	 * Disable CRC for LE channel (1), enable for all other channels.
+	 * A previous version excluded channel 1 ("LE packets without CRC per
+	 * spec"). That was wrong for this chip: our no-CRC SYNC/SYNC-RSP were
+	 * silently dropped, the chip never saw our SYNC, never sent SYNC-RSP,
+	 * and link establishment looped forever. Honor use_crc on every
+	 * channel (matches mainline hci_bcsp and webOS; txcrc defaults true).
 	 */
-	bool pkt_crc = (chan != 1) && bcsp->use_crc;
+	bool pkt_crc = bcsp->use_crc;
 
 	if (pkt_crc)
 		hdr[0] |= 0x40;
