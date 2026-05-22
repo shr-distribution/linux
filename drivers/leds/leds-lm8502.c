@@ -259,17 +259,35 @@ static int lm8502_chip_init(struct lm8502_data *priv)
 		regmap_write(priv->regmap, LM8502_D1_CURRENT_CTRL + i, 0);
 	}
 
-	/* Verify key registers after init */
+	/* Verify key registers after init — report read errors explicitly
+	 * so silent NAKs don't masquerade as 0xff "register values". */
 	{
 		unsigned int val;
-		regmap_read(priv->regmap, LM8502_ENGINE_CNTRL1, &val);
-		dev_info(dev, "After init: ENGINE_CNTRL1=0x%02x (expect 0x40)\n", val);
-		regmap_read(priv->regmap, LM8502_ENGINE_CNTRL2, &val);
-		dev_info(dev, "After init: ENGINE_CNTRL2=0x%02x (expect 0x20)\n", val);
-		regmap_read(priv->regmap, LM8502_MISC, &val);
-		dev_info(dev, "After init: MISC=0x%02x (expect 0x6a)\n", val);
-		regmap_read(priv->regmap, LM8502_D1_CONTROL, &val);
-		dev_info(dev, "After init: D1_CONTROL=0x%02x (expect 0x10)\n", val);
+		int rc;
+
+		rc = regmap_read(priv->regmap, LM8502_ENGINE_CNTRL1, &val);
+		if (rc)
+			dev_info(dev, "After init: ENGINE_CNTRL1 read failed: %d\n", rc);
+		else
+			dev_info(dev, "After init: ENGINE_CNTRL1=0x%02x (expect 0x40)\n", val);
+
+		rc = regmap_read(priv->regmap, LM8502_ENGINE_CNTRL2, &val);
+		if (rc)
+			dev_info(dev, "After init: ENGINE_CNTRL2 read failed: %d\n", rc);
+		else
+			dev_info(dev, "After init: ENGINE_CNTRL2=0x%02x (expect 0x20)\n", val);
+
+		rc = regmap_read(priv->regmap, LM8502_MISC, &val);
+		if (rc)
+			dev_info(dev, "After init: MISC read failed: %d\n", rc);
+		else
+			dev_info(dev, "After init: MISC=0x%02x (expect 0x6a)\n", val);
+
+		rc = regmap_read(priv->regmap, LM8502_D1_CONTROL, &val);
+		if (rc)
+			dev_info(dev, "After init: D1_CONTROL read failed: %d\n", rc);
+		else
+			dev_info(dev, "After init: D1_CONTROL=0x%02x (expect 0x10)\n", val);
 	}
 
 	dev_info(dev, "Chip initialized, boost enabled\n");
@@ -408,20 +426,30 @@ static int lm8502_probe(struct i2c_client *client)
 		if (ret)
 			dev_warn(dev, "regulator_set_load(100mA) failed: %d\n",
 				 ret);
+		/*
+		 * Give RPM time to switch the rail to HPM before we toggle
+		 * the chip-enable pin. The set_load call sends an IPC to
+		 * RPM; the actual mode/current change is not synchronous.
+		 */
+		msleep(20);
 	}
 
 	/*
 	 * Get enable GPIO as OUTPUT LOW first. The legacy webOS gpiomux
-	 * also drives this pin LOW at board-init time
-	 * (GPIO_OUTL_8M_PN), and the legacy LM8502 driver then performs
-	 * an explicit LOW → HIGH transition during probe. The chip needs
+	 * drives this pin LOW at board-init time (GPIO_OUTL_8M_PN), so
+	 * by the time the LM8502 driver probes the chip has been
+	 * powered down for hundreds of ms. The legacy driver then
+	 * performs an explicit LOW → HIGH transition; the chip needs
 	 * to see this rising edge to come out of power-down.
 	 *
 	 * Acquiring with GPIOD_OUT_HIGH (as the previous mainline version
 	 * did) was wrong: if the bootloader / a previous boot left
 	 * gpio121 already high, the driver never asserted a transition
-	 * and the chip stayed silent on I2C (NAK on every transfer,
-	 * reads = 0xff from bus pull-ups).
+	 * and the chip stayed silent on I2C.
+	 *
+	 * We hold LOW for 100 ms (was 10 ms — likely too short to fully
+	 * discharge the chip's internal supply if the bootloader had
+	 * left it powered on through Linux init).
 	 */
 	priv->enable_gpio = devm_gpiod_get_optional(dev, "enable",
 						    GPIOD_OUT_LOW);
@@ -432,16 +460,17 @@ static int lm8502_probe(struct i2c_client *client)
 	}
 
 	if (priv->enable_gpio) {
-		dev_info(dev, "Enable GPIO acquired (low), forcing power-cycle\n");
+		dev_info(dev, "Enable GPIO acquired (low), holding 100 ms\n");
 		gpiod_set_value_cansleep(priv->enable_gpio, 0);
-		msleep(10);  /* Hold low long enough for chip to fully power down */
+		msleep(100);
 		gpiod_set_value_cansleep(priv->enable_gpio, 1);
 		dev_info(dev, "Enable GPIO raised, chip powered up\n");
 	} else {
 		dev_warn(dev, "No enable GPIO found (optional)\n");
 	}
 
-	/* Allow chip to power up before I2C communication */
+	/* Allow chip to power up before I2C communication. webOS waits
+	 * ~10 ms; bump to 50 ms for margin. */
 	msleep(50);
 
 	i2c_set_clientdata(client, priv);
