@@ -29,7 +29,7 @@ module_param(a2xx_debug_submit, bool, 0644);
 MODULE_PARM_DESC(a2xx_debug_submit, "Log every GPU submit with timing info");
 
 /* Enable extra cache flush before every submit */
-static bool a2xx_debug_flush_cache = true;
+static bool a2xx_debug_flush_cache;
 module_param(a2xx_debug_flush_cache, bool, 0644);
 MODULE_PARM_DESC(a2xx_debug_flush_cache, "Force outer cache flush before GPU submit");
 
@@ -47,7 +47,7 @@ MODULE_PARM_DESC(a2xx_debug_wptr_delay, "Microseconds to delay before WPTR write
 static atomic_t submit_counter = ATOMIC_INIT(0);
 
 /* Capture SQ state on first few submits */
-static bool a2xx_debug_first_submit_sq = true;
+static bool a2xx_debug_first_submit_sq;
 module_param(a2xx_debug_first_submit_sq, bool, 0644);
 MODULE_PARM_DESC(a2xx_debug_first_submit_sq, "Log SQ state on first 3 submits");
 

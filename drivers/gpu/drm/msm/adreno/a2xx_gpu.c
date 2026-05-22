@@ -41,7 +41,6 @@ static u32 a2xx_icc_bw_for_freq(unsigned long freq_hz)
 	return Bps_to_icc(freq_hz) * 8;
 }
 
-
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	struct msm_ringbuffer *ring = submit->ring;
@@ -50,23 +49,6 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 
 	/* Debug: log submit details */
 	a2xx_debug_log_submit(gpu, submit);
-
-	/*
-	 * Cross-context-boundary state-leak workaround: if this submit is
-	 * from a different DRM client than the previous one on this ring,
-	 * inject a sanitizer preamble that bulk-restores Mesa's user
-	 * shader-constant range from a kernel-pinned shadow BO via
-	 * PM4_LOAD_CONSTANT_CONTEXT (ALU bank) and CP_SET_CONSTANT (bool
-	 * + loop).  This matches the KGSL context-restore path on the
-	 * legacy 2.6 kernel.  See a2xx_emit_sanitizer_preamble().
-	 */
-	if ((ring->cur_ctx_seqno != submit->queue->ctx->seqno ||
-	     a2xx_always_preamble) &&
-	    !a2xx_skip_preamble) {
-		(void)a2xx_alloc_shadow(gpu);  /* lazy-init, fall back to
-						* inline writes if it fails */
-		a2xx_emit_sanitizer_preamble(gpu, ring);
-	}
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
@@ -108,50 +90,6 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 		break;
 	}
 
-	/*
-	 * EXPERIMENTAL: force the low nibble of the seqno written to
-	 * CP_SCRATCH_REG2 to a value in the empirically-determined
-	 * "stable rendering" set.
-	 *
-	 * 50-run gl-capture analysis on Adreno 220 / HP TouchPad showed
-	 * pixel output is fully deterministic given submit->seqno & 0xF
-	 * (perfect 16-cycle pattern). 9 of 16 lo-nibbles produce the
-	 * "stable" rendering hash (lo = 0, 3, 4, 5, b, c, d, e, f); the
-	 * other 7 produce different per-position broken renderings:
-	 *
-	 *   lo=1: 78d9...  lo=2: 9f34...
-	 *   lo=6: 4d4c...  lo=7: 24c2...  lo=8: 0b59...
-	 *   lo=9: 6b08...  lo=a: 7b74...
-	 *
-	 * The seqno value is written to CP_SCRATCH_REG2 (debug-only HW
-	 * register, mainline doesn't depend on it for fence tracking -
-	 * fence completion uses the CACHE_FLUSH_TS event below which
-	 * stores into rbmemptr(ring, fence) memory). So masking the
-	 * lo-nibble of what we write to SCRATCH_REG2 is functionally
-	 * a no-op - except that the GPU's internal state machinery
-	 * apparently uses some bits of this register, producing the
-	 * 16-cycle variance we observe.
-	 *
-	 * Mask the seqno to (seqno & ~0xF) so SCRATCH_REG2 always lands
-	 * in the lo=0 "stable" slot. The CACHE_FLUSH_TS path below
-	 * keeps the unmasked seqno so fence completion still works.
-	 *
-	 * If this collapses the 50-run variance to a single hash, we've
-	 * confirmed SCRATCH_REG2's low bits drive a HW state machine
-	 * that affects rendering.
-	 */
-	/*
-	 * Aggressive test: write 0 unconditionally. The earlier
-	 * (seqno & ~0xFu) mask collapsed the 16-cycle to lo-nibble=0
-	 * but a residual 8-cycle persists in the 100-cap test (8
-	 * unique hashes per period). Write 0 always - if cycle
-	 * collapses to 100/100, SCRATCH_REG2 is fully the source.
-	 * If 8 unique hashes remain, the residual cycle is from
-	 * something else entirely.
-	 */
-	OUT_PKT0(ring, REG_AXXX_CP_SCRATCH_REG2, 1);
-	OUT_RING(ring, 0);
-
 	/* wait for idle before cache flush/interrupt */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
 	OUT_RING(ring, 0x00000000);
@@ -166,79 +104,10 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	/* Debug: force cache flush before notifying GPU */
 	a2xx_debug_cache_flush();
 
-	/*
-	 * Pre-WPTR sync: targeted poll on RBBM_STATUS busy-bits to replace
-	 * the empirical udelay(10000) hack.
-	 *
-	 * Empirical finding: A22X needs a "settle" period before the WPTR
-	 * write or a deterministic 8-cycle of broken renderings emerges.
-	 * The brute-force fix was udelay(10000) (10ms CPU busy-wait) which
-	 * is unshippable. Try a hardware-driven poll first: spin on
-	 * RBBM_STATUS until all busy-bits are clear (GPU is fully retired
-	 * from the previous batch). Only fall back to udelay if the poll
-	 * times out without idle.
-	 *
-	 * The previous batch's CACHE_FLUSH_TS + CP_INTERRUPT have already
-	 * been issued at this point, so the GPU should retire quickly. The
-	 * poll lets us wait only as long as needed.
-	 *
-	 * If this fails to fix the cycle, the race isn't pipeline-busy but
-	 * something else (power/clock domain stabilization), and we'd need
-	 * a different mechanism (e.g., poll a PLL-lock register or wait
-	 * after pm_resume).
-	 */
-	if (a2xx_rbbm_poll_enable && a2xx_rbbm_poll_mask) {
-		ktime_t start = ktime_get();
-		u32 status;
-		unsigned int spins = 0;
-
-		while (1) {
-			status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
-			if (!(status & a2xx_rbbm_poll_mask))
-				break;
-			spins++;
-			/* timeout at ~50ms to avoid hangs */
-			if (ktime_us_delta(ktime_get(), start) > 50000) {
-				/* fall back to brute-force mdelay (udelay > 2000 is rejected) */
-				mdelay(10);
-				break;
-			}
-			cpu_relax();
-		}
-
-		if (spins > 0)
-			pr_debug_ratelimited(
-				"a2xx submit: spun %u times waiting for RBBM idle (status=%08x mask=%08x)\n",
-				spins, status, a2xx_rbbm_poll_mask);
-	}
-
 	/* Debug: optional EXTRA delay before WPTR write (knob for tests) */
 	wptr_delay = a2xx_debug_get_wptr_delay();
 	if (wptr_delay > 0)
 		udelay(wptr_delay);
-
-	/*
-	 * Legacy KGSL WPTR-polling mirror: when enabled, the CP polls a
-	 * coherent memory location for the WPTR value. Update it and barrier
-	 * before the register write so either path reaches the CP coherently.
-	 */
-	if (a2xx_wptr_poll_enable) {
-		ring->memptrs->wptr = get_wptr(ring);
-		/* ensure CP sees the wptr mirror update before the register kick */
-		wmb();
-#ifdef CONFIG_OUTER_CACHE
-		outer_sync();
-#endif
-	}
-
-	/*
-	 * Option D fix for the period-8 cycle (see report 23). Pulse
-	 * GFX3D_RESET right before WPTR to clear SQ/VPC logic state
-	 * (the seat of the 8-cycle wavefront-scheduler residue) WITHOUT
-	 * touching the GDSC rail (which would wipe GMEM SRAM and break
-	 * tile-based rendering, as we observed with Option C).
-	 */
-	a2xx_pulse_gfx3d_reset(gpu);
 
 	adreno_flush(gpu, ring, REG_AXXX_CP_RB_WPTR);
 }
@@ -293,72 +162,8 @@ static bool a2xx_me_init(struct msm_gpu *gpu)
 		OUT_RING(ring, 1);
 	}
 
-	/*
-	 * If WPTR-polling mode is enabled, the CP reads the wptr value from
-	 * memptrs->wptr (programmed via REG_AXXX_CP_RB_WPTR_BASE in hw_init).
-	 * me_init runs before any user submit, so we must update the mirror
-	 * here too or the CP will poll a stale 0 value and never advance.
-	 */
-	if (a2xx_wptr_poll_enable) {
-		ring->memptrs->wptr = get_wptr(ring);
-		wmb();
-#ifdef CONFIG_OUTER_CACHE
-		outer_sync();
-#endif
-	}
-
 	adreno_flush(gpu, ring, REG_AXXX_CP_RB_WPTR);
 	return a2xx_idle(gpu);
-}
-
-/*
- * Option H one-shot boot-time GFX3D core reset.
- *
- * Replicates the webOS msm_clk_soc_init() reset sequence that mainline
- * never executes. At first a2xx_hw_init the GFX3D rail is on and the
- * core clock is running (pm_runtime resume fired), so we satisfy the
- * webOS pre-condition "clock enabled during reset".
- *
- * Runs exactly ONCE per kernel uptime, gated by a2xx_boot_reset_done.
- * The static flag survives pm_runtime cycles but resets on module
- * reload / reboot, mirroring webOS's "once at SoC bringup" semantics.
- *
- * Pulse is via MMCC SW_RESET_CORE_REG BIT(12) - the OUTER GFX3D core
- * reset that resets the entire power-domain logic block, including
- * the SQ wavefront SRAM that the INNER RBBM_SOFT_RESET (which we
- * already do at line ~735) cannot reach.
- */
-static bool a2xx_boot_reset_done = false;
-
-static void a2xx_one_shot_boot_reset(struct msm_gpu *gpu)
-{
-	void __iomem *resetr;
-	u32 v;
-
-	if (!a2xx_boot_reset_enable)
-		return;
-	if (a2xx_boot_reset_done)
-		return;
-
-	resetr = ioremap(A2XX_MMCC_GFX3D_RESET, 4);
-	if (!resetr) {
-		dev_warn(gpu->dev->dev,
-			 "a2xx_one_shot_boot_reset: ioremap MMCC reset failed\n");
-		return;
-	}
-
-	v = readl(resetr);
-	writel(v | A2XX_GFX3D_RESET_BIT, resetr);
-	(void)readl(resetr); /* posting read */
-	udelay(5);           /* matches webOS clock-8x60.c:2563 */
-	writel(v & ~A2XX_GFX3D_RESET_BIT, resetr);
-	(void)readl(resetr);
-	udelay(5);           /* settle */
-	iounmap(resetr);
-
-	a2xx_boot_reset_done = true;
-	dev_info(gpu->dev->dev,
-		 "a2xx: one-shot GFX3D boot reset pulsed (Option H)\n");
 }
 
 static int a2xx_hw_init(struct msm_gpu *gpu)
@@ -372,13 +177,6 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	a2xx_gpummu_params(to_msm_vm(gpu->vm)->mmu, &pt_base, &tran_error);
 
 	DBG("%s", gpu->name);
-
-	/*
-	 * Option H: one-shot boot-time MMCC GFX3D core reset. Done BEFORE
-	 * any other hw_init work because it resets the entire GFX3D power-
-	 * domain logic block including state RBBM_SOFT_RESET cannot reach.
-	 */
-	a2xx_one_shot_boot_reset(gpu);
 
 	/* halt ME to avoid ucode upload issues on a20x */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, AXXX_CP_ME_CNTL_HALT);
@@ -512,24 +310,9 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 
 	/* Initialize SQ_GPR_MANAGEMENT.
 	 *
-	 * EXPERIMENT (2026-05-11): pulse the webOS binning shader partition
-	 * value (0x0007f010 = VTX=127, PIX=1, static) at cold-start before
-	 * settling to the KGSL default (0x00040400 = VTX=64, PIX=64, static).
-	 *
-	 * Hypothesis: the A22X period-8 render cycle is caused by the binner
-	 * coming up at cold-start with an uninitialized wavefront-slot pointer
-	 * that rotates through 8 stable mis-indexed states. Pulsing the binning
-	 * partition value at hw_init - before any draw or ring-buffer activity
-	 * - might snap all 8 VSC pipe pointers to a known boundary.
-	 *
-	 * Per-batch Mesa-side pulse (patch 0093 Fork D) shifted 4/7 wrong
-	 * hashes but didn't collapse the period-8 cycle. This is the
-	 * cold-start variant of that experiment.
-	 *
-	 * KGSL writes only 0x00040400. Without proper init, random power-on
-	 * values could starve one shader type of GPRs.
+	 * KGSL writes 0x00040400 (VTX=64, PIX=64, static). Without proper
+	 * init, random power-on values could starve one shader type of GPRs.
 	 */
-	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x0007f010);
 	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x00040400);
 
 	/* note: gsl doesn't set this */
@@ -565,22 +348,8 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	if (ret)
 		return ret;
 
-	{
-		u32 rb_cntl = MSM_GPU_RB_CNTL_DEFAULT | AXXX_CP_RB_CNTL_NO_UPDATE;
-
-		if (a2xx_wptr_poll_enable) {
-			/* Match legacy KGSL setup: program WPTR mirror BEFORE
-			 * enabling POLL_EN so the CP doesn't read a stale
-			 * address as the polling target. */
-			gpu_write(gpu, REG_AXXX_CP_RB_WPTR_BASE,
-				lower_32_bits(rbmemptr(gpu->rb[0], wptr)));
-			gpu_write(gpu, REG_AXXX_CP_RB_WPTR_DELAY,
-				a2xx_wptr_poll_delay);
-			rb_cntl |= AXXX_CP_RB_CNTL_POLL_EN;
-		}
-
-		gpu_write(gpu, REG_AXXX_CP_RB_CNTL, rb_cntl);
-	}
+	gpu_write(gpu, REG_AXXX_CP_RB_CNTL,
+		MSM_GPU_RB_CNTL_DEFAULT | AXXX_CP_RB_CNTL_NO_UPDATE);
 
 	gpu_write(gpu, REG_AXXX_CP_RB_BASE, lower_32_bits(gpu->rb[0]->iova));
 
@@ -641,103 +410,6 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 
 	/* clear ME_HALT to start micro engine */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, 0);
-
-	/*
-	 * DIAGNOSTIC: dump key A2XX state at end of every hw_init. Fires once
-	 * per pm_resume cycle, so each session start prints exactly one line.
-	 * Use this to compare register state across sessions (kmscube on fresh
-	 * boot vs kmscube after surface-manager).
-	 */
-	{
-		static unsigned int hw_init_seq;
-
-		pr_info("a2xx hw_init seq=%u: PT_BASE=%08x MMU_CONFIG=%08x "
-			"TRAN_ERROR=%08x RBBM_STATUS=%08x "
-			"PM_OVERRIDE1=%08x PM_OVERRIDE2=%08x "
-			"SQ_INTERP=%08x SQ_GPR_MGMT=%08x\n",
-			++hw_init_seq,
-			gpu_read(gpu, REG_A2XX_MH_MMU_PT_BASE),
-			gpu_read(gpu, REG_A2XX_MH_MMU_CONFIG),
-			gpu_read(gpu, REG_A2XX_MH_MMU_TRAN_ERROR),
-			gpu_read(gpu, REG_A2XX_RBBM_STATUS),
-			gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE1),
-			gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2),
-			gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL),
-			gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
-
-		/*
-		 * MH (Memory Hub) diagnostic dump - investigating period-8
-		 * cycle in rendering output. The MH ARBITER is configured for
-		 * IN_FLIGHT_LIMIT=8 (8 in-flight memory transactions). Per
-		 * Gemini's hypothesis the MH may use seqno-modulo-8 to select
-		 * an internal write buffer / transaction tag, with buffers
-		 * 1-7 holding stale config from bootloader/prior state.
-		 *
-		 * Read CLNT_INTF_CTRL_CONFIG1 + CONFIG2 and sweep MH_DEBUG_CNTL
-		 * (0x0a4e) writing values 0..31 and reading MH_DEBUG_DATA
-		 * (0x0a4f) to dump all hidden MH state on every hw_init.
-		 */
-		{
-			u32 i, vals[64];
-			pr_info("a2xx MH probe: CLNT_INTF_CFG1=%08x CFG2=%08x\n",
-				gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1),
-				gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2));
-			pr_info("a2xx MH probe: AXI_ERR=%08x INT_STATUS=%08x\n",
-				gpu_read(gpu, 0x0a45),
-				gpu_read(gpu, 0x0a43));
-			/* Undocumented MH regs - webOS/KGSL readback shows:
-			 * 0x0a56=0x765cab98, 0x0a57=0x00043210, 0x0a58=0x00000020
-			 * (the latter looks like an 8-port routing table). */
-			pr_info("a2xx MH probe: 0x0a56=%08x 0x0a57=%08x 0x0a58=%08x\n",
-				gpu_read(gpu, 0x0a56),
-				gpu_read(gpu, 0x0a57),
-				gpu_read(gpu, 0x0a58));
-			/*
-			 * SQ slot/state probes per Gemini's analysis - the
-			 * cycle-of-8 may reflect SQ wavefront slot rotation
-			 * with 7 of 8 slots holding stale parameter SRAM.
-			 * SQ_INST_STORE_MANAGMENT (0x0d02) shows VS/PIX
-			 * instruction-base offsets; SQ_DEBUG_MISC (0x0d05)
-			 * exposes internal SQ debug state. SQ_FLOW_CONTROL
-			 * (0x0d01) may indicate which slot is current.
-			 */
-			pr_info("a2xx SQ probe: GPR_MGMT=%08x INST_STORE_MGMT=%08x FLOW_CTRL=%08x DEBUG_MISC=%08x\n",
-				gpu_read(gpu, 0x0d00),
-				gpu_read(gpu, 0x0d02),
-				gpu_read(gpu, 0x0d01),
-				gpu_read(gpu, 0x0d05));
-			/* Extended sweep 0..63 - matches KGSL's postmortem dump.
-			 * Values 32..63 may expose hidden state hw_init alone misses. */
-			for (i = 0; i < 64; i++) {
-				gpu_write(gpu, 0x0a4e, i); /* MH_DEBUG_CNTL */
-				vals[i] = gpu_read(gpu, 0x0a4f); /* MH_DEBUG_DATA */
-			}
-			pr_info("a2xx MH_DEBUG[ 0..7]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-				vals[0], vals[1], vals[2], vals[3],
-				vals[4], vals[5], vals[6], vals[7]);
-			pr_info("a2xx MH_DEBUG[ 8..15]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-				vals[8], vals[9], vals[10], vals[11],
-				vals[12], vals[13], vals[14], vals[15]);
-			pr_info("a2xx MH_DEBUG[16..23]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-				vals[16], vals[17], vals[18], vals[19],
-				vals[20], vals[21], vals[22], vals[23]);
-			pr_info("a2xx MH_DEBUG[24..31]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-				vals[24], vals[25], vals[26], vals[27],
-				vals[28], vals[29], vals[30], vals[31]);
-			pr_info("a2xx MH_DEBUG[32..39]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-				vals[32], vals[33], vals[34], vals[35],
-				vals[36], vals[37], vals[38], vals[39]);
-			pr_info("a2xx MH_DEBUG[40..47]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-				vals[40], vals[41], vals[42], vals[43],
-				vals[44], vals[45], vals[46], vals[47]);
-			pr_info("a2xx MH_DEBUG[48..55]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-				vals[48], vals[49], vals[50], vals[51],
-				vals[52], vals[53], vals[54], vals[55]);
-			pr_info("a2xx MH_DEBUG[56..63]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-				vals[56], vals[57], vals[58], vals[59],
-				vals[60], vals[61], vals[62], vals[63]);
-		}
-	}
 
 	return a2xx_me_init(gpu) ? 0 : -EINVAL;
 }
@@ -803,11 +475,6 @@ static void a2xx_destroy(struct msm_gpu *gpu)
 	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 
 	DBG("%s", gpu->name);
-
-	if (a2xx_gpu->shadow_bo) {
-		msm_gem_kernel_put(a2xx_gpu->shadow_bo, gpu->vm);
-		a2xx_gpu->shadow_bo = NULL;
-	}
 
 	adreno_gpu_cleanup(adreno_gpu);
 
@@ -1186,252 +853,6 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 	return ring->memptrs->rptr;
 }
 
-/*
- * Force-collapse the GFX3D GDSC on every runtime suspend, and pulse
- * GFX3D_RESET on every runtime resume.
- *
- * Background: the QCOM gdsc driver registers all MSM8660 MMCC GDSCs
- * with gov=NULL, so the genpd framework never actually fires the
- * gdsc_disable callback on idle. The GFX3D rail therefore stays
- * permanently in "Logic-Off-Memory-On" retention mode (GDSCR bits
- * ENABLE+RETENTION both set), preserving SQ wavefront scheduler and
- * VPC SRAM state across submits. Symptom: deterministic period-8
- * cycle of rendering nondeterminism, fingerprinted across many
- * weeks of investigation (see reports/gpu-cycle-of-8-*.md).
- *
- * Mainline's gdsc_disable LEGACY_FOOTSWITCH path only clears ENABLE
- * (BIT 8). Mainline's gdsc_enable only pulses the AHB reset
- * (GFX3D_AHB_RESET); the core_clk reset (GFX3D_RESET) is never
- * touched. Both are required for a true cold-rail cycle.
- *
- * Rather than patch generic gdsc.c (which serves many platforms),
- * isolate the workaround here. Direct register writes via ioremap
- * are layering violations but acceptable for an MSM8660-only quirk;
- * the genpd state intentionally stays "on" since gov=NULL means it
- * never actually transitions and the framework doesn't depend on
- * the hardware-side state matching its software-side bookkeeping.
- */
-/* MMCC register addresses + GFX3D bits - defined near top of file for
- * use by a2xx_one_shot_boot_reset (called early in a2xx_hw_init) as
- * well as a2xx_force_gdsc_*. Moved here from inline GDSC block.
- */
-
-/*
- * Initial Option C (force GDSC collapse on pm_runtime suspend + core
- * reset pulse on resume) successfully cleared the SQ/VPC logic state
- * that was driving the period-8 cycle - but it also wiped the GMEM
- * SRAM which is on the same GFX3D power rail. Result: tile-boundary
- * artefacts (vertical stripe at x=512), edge spurs, off-triangle
- * garbage. We traded one bug for another.
- *
- * Option D (Gemini AI update-23 reply): keep the GDSC permanently
- * powered (preserving GMEM), and pulse just GFX3D_RESET (the
- * core_clk reset that resets the LOGIC blocks SQ/VPC) at the start
- * of every submit, right before the WPTR write. This clears the
- * toxic Wavefront Scheduler state without losing the GMEM tile
- * routing SRAM.
- *
- * Default true - this is the shippable knob.
- */
-bool a2xx_force_collapse_on_suspend = false;
-module_param(a2xx_force_collapse_on_suspend, bool, 0644);
-MODULE_PARM_DESC(a2xx_force_collapse_on_suspend,
-		 "force GFX3D GDSC collapse + core reset pulse on every "
-		 "pm_runtime cycle. Clears the SQ wavefront residue but "
-		 "wipes GMEM SRAM, producing tile-boundary artefacts. Per "
-		 "Gemini update 27 the tile noise is *more distracting* "
-		 "than the baseline 8-cycle's wrong-colour renders, so the "
-		 "shippable default is OFF. Kept as A/B knob for testing. "
-		 "The proper fix is the Mesa-side SQ scrub (Option E).");
-
-bool a2xx_pulse_reset_on_submit = true;
-module_param(a2xx_pulse_reset_on_submit, bool, 0644);
-MODULE_PARM_DESC(a2xx_pulse_reset_on_submit,
-		 "pulse RBBM_SOFT_RESET before each WPTR write to clear "
-		 "SQ/VPC state without wiping GMEM (1=enable)");
-
-uint a2xx_pulse_reset_mask = 0x0000003F;
-module_param(a2xx_pulse_reset_mask, uint, 0644);
-MODULE_PARM_DESC(a2xx_pulse_reset_mask,
-		 "mask written to RBBM_SOFT_RESET during the per-submit "
-		 "pulse. A2XX bit-map: BIT(0)=VGT BIT(1)=PA/VPC BIT(2)=SQ "
-		 "BIT(3)=SX BIT(4)=TC BIT(5)=RB BIT(6)=BC BIT(7)=MH (DO "
-		 "NOT TOUCH) BIT(8)=CP (DO NOT TOUCH). Default 0x3F = "
-		 "VGT|PA|SQ|SX|TC|RB (per Gemini update 25 - RB needed "
-		 "because the 8-cycle is GMEM-tile aligned).");
-
-uint a2xx_pulse_reset_udelay = 10;
-module_param(a2xx_pulse_reset_udelay, uint, 0644);
-MODULE_PARM_DESC(a2xx_pulse_reset_udelay,
-		 "udelay (microseconds) for both halves of the per-submit "
-		 "RBBM_SOFT_RESET pulse. Default 10us.");
-
-bool a2xx_pulse_reset_force_clocks = true;
-module_param(a2xx_pulse_reset_force_clocks, bool, 0644);
-MODULE_PARM_DESC(a2xx_pulse_reset_force_clocks,
-		 "force all sub-block clocks on via PM_OVERRIDE1/2 before "
-		 "the reset pulse. Without this, dynamic clock gating may "
-		 "leave target sub-blocks clock-gated and the reset signal "
-		 "won't propagate through the flip-flops (the reset write "
-		 "'takes' but the logic never resets).");
-
-bool a2xx_pulse_reset_halt_cp = false;
-module_param(a2xx_pulse_reset_halt_cp, bool, 0644);
-MODULE_PARM_DESC(a2xx_pulse_reset_halt_cp,
-		 "additionally halt the CP via CP_ME_CNTL.HALT before the "
-		 "pulse and unhalt after. Optional safety measure if the "
-		 "pulse races with CP activity. Default off.");
-
-/*
- * Pulse RBBM_SOFT_RESET with a SURGICAL mask that clears only the
- * sub-blocks responsible for the period-8 cycle and per-pixel
- * jitter, WITHOUT touching CP (would wipe microcode), MH (would
- * lose IOMMU state), or the GDSC rail (would wipe GMEM SRAM).
- *
- * Per Gemini AI's A2XX bit-map (update 24 reply):
- *
- *   BIT(0) - VGT (Vertex Geometry Tester)
- *   BIT(1) - PA/VPC (Primitive Assembly / Vertex Parameter Cache)
- *   BIT(2) - SQ (Shader / Wavefront Scheduler)
- *   BIT(3) - SX (Shader Export)
- *   BIT(4) - TC (Texture Cache)
- *   BIT(5) - ROP (Render Backend)
- *   BIT(7) - MH (Memory Hub) -- DO NOT TOUCH
- *   BIT(8) - CP (Command Processor) -- DO NOT TOUCH
- *
- * Target mask = 0x1F = VGT | PA/VPC | SQ | SX | TC. This is the
- * recommended scrub set: it kills the wavefront-scheduler state
- * (the 8-cycle), the varying interpolator state (per-pixel jitter),
- * and the texture cache, while leaving CP, MH, ROP, and GMEM SRAM
- * untouched.
- *
- * Called from a2xx_submit right before adreno_flush() writes WPTR.
- * The CP is idle at this point (waiting for new work), so the
- * sub-block resets are safe.
- *
- * Earlier attempts that didn't work:
- *   - GFX3D_RESET (MMCC 0x0210 bit 12): wipes CP, hangs at rptr=20
- *   - RBBM_SOFT_RESET=0xFFFFFFFE: too broad, resets MH (IOMMU)
- */
-static void a2xx_pulse_gfx3d_reset(struct msm_gpu *gpu)
-{
-	u32 saved_pm1 = 0, saved_pm2 = 0;
-	u32 saved_me_cntl = 0;
-
-	if (!a2xx_pulse_reset_on_submit)
-		return;
-
-	/*
-	 * Force all sub-block clocks on before pulsing the reset.
-	 * Without this, dynamic clock gating leaves target sub-blocks
-	 * with their clocks off, and the synchronous reset signal can't
-	 * propagate through the flip-flops. The reset register write
-	 * "takes" but the logic never actually resets. This is the
-	 * primary suspect for our previous bit-identical Phase A/B
-	 * result with mask=0x1F (per Gemini update 25 reply).
-	 */
-	if (a2xx_pulse_reset_force_clocks) {
-		saved_pm1 = gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE1);
-		saved_pm2 = gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2);
-		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0xFFFFFFFF);
-		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xFFFFFFFF);
-		(void)gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2);
-	}
-
-	/*
-	 * Optionally halt the CP first so it can't race the pulse.
-	 * Off by default - the pulse is supposed to happen pre-WPTR
-	 * when the CP is idle waiting for new work anyway.
-	 */
-	if (a2xx_pulse_reset_halt_cp) {
-		saved_me_cntl = gpu_read(gpu, REG_AXXX_CP_ME_CNTL);
-		gpu_write(gpu, REG_AXXX_CP_ME_CNTL,
-			  saved_me_cntl | AXXX_CP_ME_CNTL_HALT);
-		(void)gpu_read(gpu, REG_AXXX_CP_ME_CNTL);
-	}
-
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, a2xx_pulse_reset_mask);
-	(void)gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
-	udelay(a2xx_pulse_reset_udelay);
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000000);
-	(void)gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
-	udelay(a2xx_pulse_reset_udelay);
-
-	if (a2xx_pulse_reset_halt_cp) {
-		gpu_write(gpu, REG_AXXX_CP_ME_CNTL, saved_me_cntl);
-		(void)gpu_read(gpu, REG_AXXX_CP_ME_CNTL);
-	}
-
-	if (a2xx_pulse_reset_force_clocks) {
-		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, saved_pm1);
-		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, saved_pm2);
-		(void)gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2);
-	}
-}
-
-static void a2xx_force_gdsc_collapse(struct msm_gpu *gpu)
-{
-	void __iomem *gdscr;
-	u32 v;
-
-	if (!a2xx_force_collapse_on_suspend)
-		return;
-
-	gdscr = ioremap(A2XX_MMCC_GFX3D_GDSCR, 4);
-	if (!gdscr)
-		return;
-
-	v = readl(gdscr);
-	/* Clamp I/O first, then drop ENABLE + RETENTION together. */
-	writel(v | A2XX_GDSCR_CLAMP, gdscr);
-	writel((v | A2XX_GDSCR_CLAMP)
-	       & ~(A2XX_GDSCR_ENABLE | A2XX_GDSCR_RETENTION), gdscr);
-	(void)readl(gdscr); /* posting read */
-	iounmap(gdscr);
-
-	udelay(50); /* allow rail to fully drain */
-}
-
-static void a2xx_force_gdsc_enable_and_reset(struct msm_gpu *gpu)
-{
-	void __iomem *gdscr, *resetr;
-	u32 v;
-
-	if (!a2xx_force_collapse_on_suspend)
-		return;
-
-	gdscr = ioremap(A2XX_MMCC_GFX3D_GDSCR, 4);
-	if (gdscr) {
-		v = readl(gdscr);
-		writel(v | A2XX_GDSCR_ENABLE, gdscr);
-		(void)readl(gdscr);
-		udelay(2); /* rail charge */
-		writel((v | A2XX_GDSCR_ENABLE) & ~A2XX_GDSCR_CLAMP, gdscr);
-		(void)readl(gdscr);
-		udelay(5); /* clamp settle */
-		iounmap(gdscr);
-	}
-
-	/*
-	 * Pulse GFX3D_RESET (core_clk reset) AFTER the rail is on but
-	 * BEFORE the clock controllers turn on the GFX3D clocks. This
-	 * mirrors arch/arm/mach-msm/footswitch-8x60.c's "Toggle core
-	 * reset now that power is on (required for some cores)" step
-	 * which mainline gdsc_enable skips for LEGACY_FOOTSWITCH.
-	 */
-	resetr = ioremap(A2XX_MMCC_GFX3D_RESET, 4);
-	if (resetr) {
-		v = readl(resetr);
-		writel(v | A2XX_GFX3D_RESET_BIT, resetr);
-		(void)readl(resetr);
-		udelay(5);
-		writel(v & ~A2XX_GFX3D_RESET_BIT, resetr);
-		(void)readl(resetr);
-		udelay(5);
-		iounmap(resetr);
-	}
-}
-
 static int a2xx_pm_suspend(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
@@ -1477,25 +898,7 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	if (a2xx_gpu->icc_path)
 		icc_set_bw(a2xx_gpu->icc_path, 0, 0);
 
-	/*
-	 * Allow time for the interconnect state change to propagate
-	 * through the bus fabric before disabling clocks.
-	 */
-	udelay(10);
-
-	{
-		int ret = msm_gpu_pm_suspend(gpu);
-
-		/*
-		 * After clocks are down and AXI is quiescent, force the
-		 * GFX3D rail to fully collapse. This clears the SQ
-		 * wavefront scheduler and VPC SRAM that would otherwise
-		 * persist in retention mode and drive the period-8 cycle.
-		 */
-		a2xx_force_gdsc_collapse(gpu);
-
-		return ret;
-	}
+	return msm_gpu_pm_suspend(gpu);
 }
 
 static int a2xx_pm_resume(struct msm_gpu *gpu)
@@ -1504,21 +907,10 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 	int ret;
 
-	/*
-	 * Bring the GFX3D rail back BEFORE msm_gpu_pm_resume enables
-	 * the gfx3d clocks. The legacy MSM8660 footswitch power-on
-	 * sequence is: set ENABLE -> rail charge -> deassert clamp ->
-	 * pulse core reset. We do that here directly via ioremap (see
-	 * a2xx_force_gdsc_enable_and_reset for the full rationale) and
-	 * then let msm_gpu_pm_resume turn the clocks on as normal.
-	 */
-	a2xx_force_gdsc_enable_and_reset(gpu);
-
 	ret = msm_gpu_pm_resume(gpu);
 	if (ret)
 		return ret;
 
-	/* Restore bandwidth after resume (cleared in suspend) */
 	if (a2xx_gpu->icc_path) {
 		u32 bw = a2xx_icc_bw_for_freq(gpu->fast_rate);
 
