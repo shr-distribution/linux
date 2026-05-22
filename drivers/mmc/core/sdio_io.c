@@ -322,8 +322,15 @@ static int sdio_io_rw_ext_helper(struct sdio_func *func, int write,
 	if (!func || (func->num > 7))
 		return -EINVAL;
 
-	/* Do the bulk of the transfer using block mode (if supported). */
-	if (func->card->cccr.multi_block && (size > sdio_max_byte_size(func))) {
+	/*
+	 * Do the bulk of the transfer using block mode (if supported).
+	 *
+	 * QUIRK for AR6003 SDIO on MSM8660 ADM DMA: BLOCK mode FIXED-address
+	 * reads hang. Legacy webOS uses BYTE mode for all FIXED transfers.
+	 * Force byte-mode for FIXED-address transfers to match legacy behavior.
+	 */
+	if (func->card->cccr.multi_block && (size > sdio_max_byte_size(func)) &&
+	    incr_addr) {  /* Only use block mode for INCREMENTAL address */
 		/* Blocks per command is limited by host count, host transfer
 		 * size and the maximum for IO_RW_EXTENDED of 511 blocks. */
 		max_blocks = min(func->card->host->max_blk_count, 511u);
