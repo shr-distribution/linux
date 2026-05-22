@@ -852,6 +852,11 @@ static void __mmci_start_request(struct mmci_host *host,
 static void
 mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 {
+	/* Trace request end for WiFi SDCC4 debugging */
+	if (host->mmc->index == 3 && mrq && mrq->data)
+		trace_printk("MMCI-REQ-END: cmd=%u blksz=%u blocks=%u\n",
+			     mrq->cmd->opcode, mrq->data->blksz, mrq->data->blocks);
+
 	writel(0, host->base + MMCICOMMAND);
 
 	BUG_ON(host->data);
@@ -1931,6 +1936,11 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 	/* Make sure we have data to handle */
 	if (!data)
 		return;
+
+	/* Trace data IRQ for WiFi SDCC4 debugging */
+	if (host->mmc->index == 3)
+		trace_printk("MMCI-DATA-IRQ: status=0x%08x blksz=%u blocks=%u\n",
+			     status, data->blksz, data->blocks);
 
 	/* First check for errors */
 	status_err = status & (host->variant->start_err |
