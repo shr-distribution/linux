@@ -617,6 +617,17 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	}
 
 	bcsp_slip_msgdelim(nskb);
+
+	/*
+	 * Debug: dump the full on-wire bytes of every prepared packet so we
+	 * can compare reliable (HCI command, chan 5/6) framing against the
+	 * working unreliable packets and against webOS captures. Enable with
+	 * `echo "module hci_uart +p" > /sys/kernel/debug/dynamic_debug/control`.
+	 */
+	BT_DBG("BCSP TXWIRE chan=%d rel=%d crc=%d hdr=%02x%02x%02x%02x len=%u: %*ph",
+	       chan, rel, pkt_crc ? 1 : 0, hdr[0], hdr[1], hdr[2], hdr[3],
+	       nskb->len, min_t(int, nskb->len, 32), nskb->data);
+
 	return nskb;
 }
 
@@ -1076,6 +1087,23 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp = hu->priv;
 	int pass_up = 0;
+
+	/*
+	 * Debug: dump every decoded RX packet's header + payload (post-SLIP,
+	 * post-CRC-strip) so we can see exactly what the chip sends back —
+	 * in particular whether it ever sends a reliable HCI event/ack in
+	 * response to our reliable HCI commands.
+	 */
+	BT_DBG("BCSP RXPKT hdr=%02x%02x%02x%02x rel=%d crc=%d chan=%d seq=%d ack=%d len=%u: %*ph",
+	       bcsp->rx_skb->data[0], bcsp->rx_skb->data[1],
+	       bcsp->rx_skb->data[2], bcsp->rx_skb->data[3],
+	       (bcsp->rx_skb->data[0] & 0x80) ? 1 : 0,
+	       (bcsp->rx_skb->data[0] & 0x40) ? 1 : 0,
+	       bcsp->rx_skb->data[1] & 0x0f,
+	       bcsp->rx_skb->data[0] & 0x07,
+	       (bcsp->rx_skb->data[0] >> 3) & 0x07,
+	       bcsp->rx_skb->len, min_t(int, bcsp->rx_skb->len, 32),
+	       bcsp->rx_skb->data);
 
 	if (bcsp->rx_skb->data[0] & 0x80) {	/* reliable pkt */
 		BT_DBG("Received seqno %u from card", bcsp->rxseq_txack);
