@@ -1983,29 +1983,6 @@ init_buf_done:
 	dev_info(core->dev, "VIDC DPB initialised, %u slots active (hw_mask=0x%x)\n",
 		 inst->dpb_count, inst->dpb_hw_mask);
 
-	/*
-	 * SMIPOOL CPU R/W self-test: write known pattern to DPB slot 0
-	 * byte 0..15, then immediately read it back.  If the pattern is
-	 * preserved, CPU reads work and the all-zero readback after
-	 * FRAME_DONE means the firmware never wrote there.  If the pattern
-	 * is gone (reads back as 0 or other), CPU reads from SMIPOOL are
-	 * broken — same hw quirk as the on-chip SMI 3 MB region.
-	 */
-	{
-		u8 *p = inst->dpb_y_vaddr;
-		u8 saved[16], readback[16];
-		int i;
-
-		memcpy(saved, p, 16);
-		for (i = 0; i < 16; i++)
-			p[i] = 0xa5 ^ i;
-		/* Ensure the writes hit memory before the readback */
-		wmb();
-		memcpy(readback, p, 16);
-		memcpy(p, saved, 16);  /* restore */
-		print_hex_dump(KERN_INFO, "SMIPOOL self-test (expect a5/a4/a7/a6 ...): ",
-			       DUMP_PREFIX_NONE, 16, 1, readback, 16, false);
-	}
 	return 0;
 
 err_free_dma:
@@ -2116,89 +2093,6 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 		dev_warn(core->dev,
 			 "luma/chroma offset mismatch: y=0x%x c=0x%x (expected c=0x%x)\n",
 			 y_offset, c_offset, y_offset + (u32)y_size);
-	}
-
-	/*
-	 * Diagnostic: dump 32 bytes from the start AND middle of luma + 16
-	 * bytes of chroma straight from the SMIPOOL DPB slot before memcpy.
-	 * The output JPEG is solid green (Y=U=V=0) — needed to know whether
-	 * a) firmware wrote real data and CPU reads return zeros (SMIPOOL
-	 *    hw quirk), or b) firmware never wrote (wrong DPB layout), or
-	 * c) we read the wrong location.  Sample two Y offsets to detect
-	 * partial writes (e.g. only top tiles populated).
-	 */
-	print_hex_dump(KERN_INFO, "DPB Y[0:32]: ", DUMP_PREFIX_NONE,
-		       16, 1, slot_y, 32, false);
-	print_hex_dump(KERN_INFO, "DPB Y[mid]: ", DUMP_PREFIX_NONE,
-		       16, 1, (u8 *)slot_y + y_size / 2, 32, false);
-	print_hex_dump(KERN_INFO, "DPB C[0:16]: ", DUMP_PREFIX_NONE,
-		       16, 1, slot_c, 16, false);
-
-	/*
-	 * Full scan: walk the entire DPB pool + H.264 work bufs and count
-	 * non-0xCC bytes.  Firmware writes to vert_nb_mv (proven), so its
-	 * MGEN2MAXI master can reach SMIPOOL — but writes don't appear at
-	 * DPB slot offsets 0 / mid.  Scan all of DPB to find where (if
-	 * anywhere) the firmware actually writes decoded pixels.
-	 */
-	{
-		u8 *p;
-		size_t i;
-		size_t dpb_nonzero = 0, nb_mv_nonzero = 0, nb_ip_nonzero = 0;
-		size_t first_dpb_nonzero = SIZE_MAX;
-		size_t last_dpb_nonzero = 0;
-
-		p = inst->dpb_y_vaddr;
-		for (i = 0; i < inst->dpb_y_alloc_size; i++) {
-			if (p[i] != 0xcc) {
-				dpb_nonzero++;
-				if (first_dpb_nonzero == SIZE_MAX)
-					first_dpb_nonzero = i;
-				last_dpb_nonzero = i;
-			}
-		}
-		if (inst->h264_vert_nb_mv_vaddr) {
-			p = inst->h264_vert_nb_mv_vaddr;
-			for (i = 0; i < VIDC_H264_VERT_NB_MV_SIZE; i++)
-				if (p[i] != 0xcc)
-					nb_mv_nonzero++;
-		}
-		if (inst->h264_nb_ip_vaddr) {
-			p = inst->h264_nb_ip_vaddr;
-			for (i = 0; i < VIDC_H264_NB_IP_SIZE; i++)
-				if (p[i] != 0xcc)
-					nb_ip_nonzero++;
-		}
-		dev_info(core->dev,
-			 "scan: DPB=%zu/%zu modified [first=0x%zx last=0x%zx]; vert_nb_mv=%zu/%u; nb_ip=%zu/%u\n",
-			 dpb_nonzero, (size_t)inst->dpb_y_alloc_size,
-			 first_dpb_nonzero == SIZE_MAX ? 0 : first_dpb_nonzero,
-			 last_dpb_nonzero,
-			 nb_mv_nonzero, VIDC_H264_VERT_NB_MV_SIZE,
-			 nb_ip_nonzero, VIDC_H264_NB_IP_SIZE);
-		if (dpb_nonzero && first_dpb_nonzero != SIZE_MAX) {
-			print_hex_dump(KERN_INFO, "DPB first-change[0:32]: ",
-				       DUMP_PREFIX_NONE, 16, 1,
-				       (u8 *)inst->dpb_y_vaddr + first_dpb_nonzero,
-				       32, false);
-		}
-	}
-
-	/*
-	 * Sample slot bytes at fixed offsets — tells us whether the slot
-	 * picked by display_y_raw has been written with real pixel data
-	 * yet, or is still mostly sentinel.  Helps distinguish "GStreamer
-	 * captured an early sentinel frame" from "we're reading wrong
-	 * slot".
-	 */
-	{
-		u8 *p = slot_y;
-		dev_info(core->dev,
-			 "slot_y bytes @+0x000: %02x %02x %02x %02x  @+0x1000: %02x %02x %02x %02x  @+0x4000: %02x %02x %02x %02x  @+0x10000: %02x %02x %02x %02x\n",
-			 p[0], p[1], p[2], p[3],
-			 p[0x1000], p[0x1001], p[0x1002], p[0x1003],
-			 p[0x4000], p[0x4001], p[0x4002], p[0x4003],
-			 p[0x10000], p[0x10001], p[0x10002], p[0x10003]);
 	}
 
 	memcpy(dst_vaddr, slot_y, y_size);
