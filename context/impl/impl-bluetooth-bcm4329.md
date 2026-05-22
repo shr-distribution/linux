@@ -2,7 +2,54 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: flow-control-root-cause-found-fix-pushed-pending-yocto-rebuild
+status: crc-on-LE-fix-pushed-pending-yocto-rebuild (flow-control was a red herring)
+---
+
+## 2026-05-22 (later): flow-control was a red herring — real blocker is CRC on LE packets (3a7ac6dd0f58)
+
+Rebuilt with the flow-control fix (kernel g83025300533e, includes
+3149a6f9c1ab). On-device retest: dmesg shows
+`BCSP: Hardware flow control disabled (webOS FLOW_CTRL_NONE)` but the
+handshake behaviour is **identical** to before — chip loops SYNC, never
+sends SYNC-RSP, `Timeout waiting for link establishment`. So disabling
+flow control changed nothing; it was NOT the blocker. (Kept anyway —
+webOS uses FLOW_CTRL_NONE, so it's the correct webOS-matching state.)
+
+The wire diff is the real smoking gun:
+- chip SYNC:  `c0 40 41 00 7e da dc ed ed a9 7a c0`  (byte0=0x40 = CRC bit + trailing CRC)
+- our SYNC:   `c0 00 41 00 be da dc ed ed c0`         (byte0=0x00 = no CRC)
+
+`bcsp_prepare_pkt()` had `pkt_crc = (chan != 1) && use_crc` — it stripped
+CRC from channel-1 (link establishment) packets on a "LE without CRC per
+spec" assumption. Wrong for this CSR chip: it drops our non-CRC
+SYNC/SYNC-RSP, never sees our SYNC, never replies.
+
+**webOS bcattach wire trace (github webOS-ports/utilities,
+tenderloin-halium/bcattach/main.c) is authoritative** — it sends every LE
+packet WITH CRC:
+- SYNC:     `c0 40 41 00 7e da dc ed ed a9 7a c0`
+- SYNC-RSP: `c0 40 41 00 7e ac af ef ee bb 84 c0`
+With CRC on, our SYNC becomes byte-identical to the chip's.
+
+**Fix (3a7ac6dd0f58):** drop the `(chan != 1)` exclusion →
+`pkt_crc = bcsp->use_crc` (txcrc default true). Matches mainline
+hci_bcsp + webOS. RX path already validated the chip's CRC'd packets, so
+only TX needed it.
+
+Expected next-state after Yocto rebuild + module redeploy:
+- chip emits SYNC-RSP (`ac af ef ee`) → `sync_rsp received, moving to INIT`
+- conf exchange → `Link established` → PSKEY+BDADDR+WARM_RESET →
+  re-handshake → HCI Reset succeeds → `hciconfig hci0 up`, events > 0
+
+### Cheap check (still BLOCKED on link-up) — do once BCSP link is up
+The CSR persistence/H4 question needs a working link to send BCCMDs.
+Once `hciconfig hci0 up` works, read (via our BCCMD machinery or a
+`bccmd` binary if LuneOS ships one):
+- `psmemtype` — Flash(0x00)/EEPROM(0x01) ⇒ persistent H4 possible;
+  RAM(0x02)/ROM(0x03) ⇒ volatile, drop the H4 idea
+- `chiprev` / `chipver` — exact BlueCore part
+- `psget 0x01f9` — firmware's actual BCSP value (to know the H4 value)
+
 ---
 
 ## 2026-05-22 (late): HW flow control was gating host TX — fix pushed (3149a6f9c1ab)
