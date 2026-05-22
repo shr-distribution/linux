@@ -879,23 +879,28 @@ static void adm_start_dma(struct adm_chan *achan)
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
 		u32 crci_val;
+		u32 blk_size = async_desc->blk_size;
+
 		/*
-		 * EXPERIMENT 2026-05-21: Force CRCI block size to 0 for WiFi
-		 * ch5 (sdcc4) to match legacy webOS msm_dmov behavior. Legacy
-		 * always uses DMOV_CRCI_DEFAULT_CONF which sets blk_size=0.
-		 * Mainline was programming data->blksz (2 for 52B BMI, 128 for
-		 * HTC body reads) which caused BMI polling loops to hang.
-		 * Hypothesis: AR6003 SDIO expects CRCI block size 0.
+		 * SDCC CRCIs must use the legacy webOS msm_dmov block size, NOT
+		 * a value derived from the DMA burst. On MSM8660/APQ8060 the
+		 * legacy adm1_crci_conf[] hardcodes DMOV_CRCI_CONF(sd=1,blk=1)
+		 * for the SDCC CRCIs — eMMC sdcc1 = CRCI 1, WiFi sdcc4 = CRCI 5
+		 * (qcom,sdcc-crci in DT). blk_size=1 is half-FIFO (32 B)
+		 * granularity, matching the SDCC's half-full FIFO CRCI trigger.
+		 *
+		 * Mainline's adm_get_blksize() instead maps the 64 B burst to 2
+		 * (full FIFO), and an earlier experiment forced WiFi to 0 — both
+		 * mis-pace the CRCI handshake against the FIFO, which on reads
+		 * latches RXOVERRUN/DATACRCFAIL (the AR6003 128 B HTC mailbox
+		 * read "error during DMA transfer", and eMMC large multi-block
+		 * read DATACRCFAIL). Match legacy exactly for these two CRCIs;
+		 * all other CRCIs (crypto, etc.) keep the computed value.
 		 */
-		if (achan->id == 5) {
-			crci_val = async_desc->mux | 0;  /* Force blk_size=0 for WiFi */
-			trace_printk("ADM-DIAG: ch5 CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=0 FORCED, was %d, len=%zu)\n",
-				     async_desc->crci, crci_val,
-				     async_desc->mux, async_desc->blk_size,
-				     async_desc->length);
-		} else {
-			crci_val = async_desc->mux | async_desc->blk_size;
-		}
+		if (async_desc->crci == 1 || async_desc->crci == 5)
+			blk_size = 1;
+
+		crci_val = async_desc->mux | blk_size;
 		writel(crci_val,
 		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
 	}
