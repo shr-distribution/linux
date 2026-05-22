@@ -855,7 +855,7 @@ static void mmci_dma_error(struct mmci_host *host)
 static void __mmci_start_request(struct mmci_host *host,
 				 struct mmc_request *mrq);
 
-/* Forward declaration: used by mmci_qcom_dma_read_complete() for data->stop. */
+/* Forward declaration: used by mmci_qcom_dma_complete() for data->stop. */
 static void mmci_start_command(struct mmci_host *host,
 			       struct mmc_command *cmd, u32 c);
 
@@ -1293,33 +1293,44 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 }
 
 /*
- * Qualcomm SDCC ADM-DMA read completion callback.
+ * Qualcomm SDCC ADM-DMA completion callback (reads AND writes).
  *
  * On MSM8660/APQ8060 (Tenderloin) the SDCC Data Path State Machine does
- * NOT reliably raise MCI_DATAEND after the ADM drains the RX FIFO for a
- * DMA read — only MCI_DATABLOCKEND fires (and that is masked out of
- * MMCIMASK0). mmci_data_irq() only completes a transfer on MCI_DATAEND,
- * so DMA reads otherwise hang forever in mmc_wait_for_req_done()
- * (observed: AR6003 HTC mailbox 128-byte read never returns, modprobe
- * blocked >600 s).
+ * NOT reliably raise MCI_DATAEND after a DMA transfer. For reads only
+ * MCI_DATABLOCKEND fires (masked out of MMCIMASK0); mmci_data_irq()
+ * completes a transfer solely on MCI_DATAEND, so a missed DATAEND means
+ * the request never completes. Reads then hang forever in
+ * mmc_wait_for_req_done() (AR6003 HTC 128-byte read, modprobe >600 s);
+ * writes get force-terminated with -ETIMEDOUT by qcom_dma_timeout_work,
+ * which TEARS a write mid-flight and corrupts the eMMC filesystem (the
+ * recurring rootfs/uboot corruption after a clean webOS reflash).
  *
- * Legacy webOS msm_sdcc completes DMA transfers from the msm_dmov
- * complete_func (coordinated with DATAEND). We replicate that: when the
- * ADM signals the descriptor done (RESULT=success ⇒ all bytes moved),
- * finish the request here. The qcom_adm IRQ handler invokes this from
- * hardirq with achan->vc.lock dropped, so taking host->lock is safe.
+ * Legacy webOS msm_sdcc completes EVERY DMA transfer — read and write —
+ * from the msm_dmov complete_func, not from a SDCC DATAEND alone. We
+ * replicate that here: when the ADM signals the descriptor done
+ * (RESULT=success ⇒ all bytes moved), finish the request.
  *
- * Writes are unaffected: they still complete via the MCI_DATAEND path in
- * mmci_data_irq() (plus the qcom_dma_timeout_work watchdog); this
- * callback is only wired for reads. Whichever path grabs host->lock and
- * finds host->data first wins; the loser sees host->data == NULL and
- * bails, so there is no double-completion.
+ * Safe for writes because these transfers are CRCI flow-controlled
+ * (device_fc=1): the ADM descriptor only completes once CRCI pacing has
+ * drained every byte through the SDCC FIFO to the card, so DMA-done means
+ * the data reached the card. The card's internal programming-busy is then
+ * handled by the mmc core's normal CMD13 ready-poll before the next
+ * request — mmci_stop_data() here does not truncate it.
+ *
+ * The qcom_adm IRQ handler invokes this from hardirq with achan->vc.lock
+ * dropped, so taking host->lock is safe. The MCI_DATAEND path in
+ * mmci_data_irq() still runs for transfers that DO raise it; whichever
+ * path grabs host->lock and finds host->data first wins, the loser sees
+ * host->data == NULL and bails, so there is no double-completion. The
+ * watchdog remains armed as a last resort for a genuine DMA failure where
+ * neither DATAEND nor this callback ever fires.
  */
-static void mmci_qcom_dma_read_complete(void *param)
+static void mmci_qcom_dma_complete(void *param)
 {
 	struct mmci_host *host = param;
 	unsigned long flags;
 	struct mmc_data *data;
+	bool write;
 
 	spin_lock_irqsave(&host->lock, flags);
 
@@ -1332,18 +1343,22 @@ static void mmci_qcom_dma_read_complete(void *param)
 		return;
 	}
 
+	write = !(data->flags & MMC_DATA_READ);
+
 	/*
 	 * host->data still pending => the SDCC did NOT raise DATAEND and this
-	 * callback is what actually completes the read. Logging the index
-	 * tells us whether eMMC (mmc0) shares the WiFi (mmc1) no-DATAEND path.
+	 * callback is what actually completes the transfer. The direction tag
+	 * tells us whether writes (not just reads) miss DATAEND on this SoC,
+	 * and on which controller (mmc0=eMMC, mmc1=WiFi).
 	 */
-	trace_printk("MMCI-DMA-CB: mmc%u callback COMPLETES read (no DATAEND) blksz=%u blocks=%u\n",
-		     host->mmc->index, data->blksz, data->blocks);
+	trace_printk("MMCI-DMA-CB: mmc%u callback COMPLETES %s (no DATAEND) blksz=%u blocks=%u\n",
+		     host->mmc->index, write ? "WRITE" : "read",
+		     data->blksz, data->blocks);
 
 	if (host->variant->qcom_datactrl_delay)
 		cancel_delayed_work(&host->qcom_dma_timeout_work);
 
-	/* ADM RESULT=success means the full transfer landed in memory */
+	/* ADM RESULT=success ⇒ full transfer moved (to memory, or to card) */
 	mmci_dma_finalize(host, data);
 	mmci_stop_data(host);
 
@@ -1494,15 +1509,16 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		goto unmap_exit;
 
 	/*
-	 * Qualcomm SDCC ADM-DMA reads do not get a reliable MCI_DATAEND from
-	 * the SDCC DPSM, so they cannot complete via mmci_data_irq(). Wire a
-	 * dmaengine completion callback (invoked by qcom_adm from its IRQ
-	 * handler) to finish the request when the ADM reports the descriptor
-	 * done. See mmci_qcom_dma_read_complete() for the full rationale.
-	 * Writes keep the conventional DATAEND + watchdog completion path.
+	 * Qualcomm SDCC ADM-DMA transfers (reads AND writes) do not get a
+	 * reliable MCI_DATAEND from the SDCC DPSM, so they cannot depend on
+	 * mmci_data_irq() to complete. Wire a dmaengine completion callback
+	 * (invoked by qcom_adm from its IRQ handler) to finish the request
+	 * when the ADM reports the descriptor done — matching legacy msm_sdcc
+	 * which completes both directions from its DMA complete_func. See
+	 * mmci_qcom_dma_complete() for why this is also safe for writes.
 	 */
-	if (host->variant->qcom_dml && (data->flags & MMC_DATA_READ)) {
-		desc->callback = mmci_qcom_dma_read_complete;
+	if (host->variant->qcom_dml) {
+		desc->callback = mmci_qcom_dma_complete;
 		desc->callback_param = host;
 	}
 
@@ -2092,15 +2108,17 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 
 	if (status & MCI_DATAEND || data->error) {
 		/*
-		 * Tag DATAEND-driven completion of READS (low volume) so we can
-		 * contrast against the mmci_qcom_dma_read_complete callback path
-		 * and see whether eMMC (mmc0) gets DATAEND on DMA reads where
-		 * WiFi (mmc1) does not.
+		 * Tag DATAEND-driven completion of DMA transfers (low volume) so
+		 * we can contrast against the mmci_qcom_dma_complete callback path
+		 * and see, per direction and per controller (mmc0=eMMC,
+		 * mmc1=WiFi), which transfers get a real DATAEND vs rely on the
+		 * DMA-done callback.
 		 */
-		if ((data->flags & MMC_DATA_READ) && host->dma_in_progress)
-			trace_printk("MMCI-DATAEND-RD: mmc%u completes read via DATAEND status=0x%08x blksz=%u blocks=%u err=%d\n",
-				     host->mmc->index, status, data->blksz,
-				     data->blocks, data->error);
+		if (host->dma_in_progress)
+			trace_printk("MMCI-DATAEND: mmc%u completes %s via DATAEND status=0x%08x blksz=%u blocks=%u err=%d\n",
+				     host->mmc->index,
+				     (data->flags & MMC_DATA_READ) ? "read" : "WRITE",
+				     status, data->blksz, data->blocks, data->error);
 
 		if (host->variant->qcom_datactrl_delay)
 			cancel_delayed_work(&host->qcom_dma_timeout_work);
