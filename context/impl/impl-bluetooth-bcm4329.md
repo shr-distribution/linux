@@ -2,7 +2,45 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: BREAKTHROUGH — TX physically works (BREAK test); ldisc/hciattach worked per record, serdev stuck → serdev-specific. Decision point.
+status: CONFIRMED serdev-specific — ldisc/hciattach establishes link (events flow) on live device; serdev never links. Decision: finish ldisc vs fix serdev. Remaining: HCI-init timeout.
+---
+
+## 2026-05-22 (night-3): ldisc test PASSED — serdev confirmed as the bug
+
+Rebuilt with the DT #if 0 (8ed0e7e757ab) → /dev/ttyMSM1 exposed (serial1-0
+gone). Powered chip from userspace GPIO (base 512 → 642 pwr / 643 wake /
+650 reset, active-low: low 150ms then high + 1s), loaded modules, ran
+`hciattach /dev/ttyMSM1 bcsp 115200`:
+
+```
+BCSP: sync_rsp received, moving to INIT state
+BCSP: conf received, responding with conf_rsp
+BCSP: Link established (first time)
+BCSP: conf_rsp received, link established
+hci0 RX events:16   (serdev was events:0, no link ever)
+```
+
+**Same hci_bcsp.c, same chip, same UART/pins. Chip responds via ldisc,
+NEVER via serdev. → 100% serdev-specific.** (Rules out TX/HW/content/baud/
+flow-control/reset-timing for good — those are shared.)
+
+Remaining (separate, smaller) issue on ldisc: after link-up the HCI init
+(`Read Local Features 0x1003` / `HCI Reset 0x0c03`) times out -110 with
+"unexpected event for opcode 0x0000". The driver also re-sends
+PSKEYs+WARM_RESET on every link-up ("Restart hciattach for fresh
+connection"); `skip_pskeys=1` (writable param) avoids the re-init loop on a
+2nd attach but HCI cmds still time out. So: reliable BCSP channel (chan 5,
+seq/ack) + post-WARM_RESET reconnect need finishing. webOS reached
+hci0 UP events:46, so achievable.
+
+**Decision point:** (a) finish the ldisc path (fix HCI-init / WARM_RESET
+reconnect; ship hciattach + a userspace GPIO-power unit), or (b) find the
+serdev open-path difference (serdev leaves RTS deasserted / different
+termios than tty open) and fix serdev to match. ldisc is proven-closer.
+
+Test artifacts: DT #if 0 at &gsbi6_serial bluetooth{}; revert to restore
+serdev. Full analysis: memory [[bcm4329-tx-not-reaching-chip]].
+
 ---
 
 ## 2026-05-22 (night-2): TX pad PROVEN working; isolated to serdev (not TX/HW)
