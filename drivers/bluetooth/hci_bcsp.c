@@ -2410,6 +2410,21 @@ static int bcsp_open(struct hci_uart *hu)
 	skb_queue_head_init(&bcsp->unrel);
 
 	/*
+	 * Tell HCI core to send HCI_Reset as the first command after
+	 * bcsp_setup() returns. CSR BlueCore chips emit one or two unsolicited
+	 * "Command Complete" events with opcode=0x0000 (NOP, ncmd=1) at
+	 * link-up as a flow-control indicator. Without an initial HCI_Reset,
+	 * the first real command (Read Local Features) races those NOPs and
+	 * the response matching breaks ("unexpected event for opcode 0x0000",
+	 * then the real command times out -110). HCI_Reset absorbs the NOPs
+	 * and puts the chip in a clean command-response state.
+	 *
+	 * Without this bit, hci_ldisc.c sets HCI_QUIRK_RESET_ON_CLOSE which
+	 * suppresses the init-time Reset.
+	 */
+	set_bit(HCI_UART_RESET_ON_INIT, &hu->hdev_flags);
+
+	/*
 	 * Run the GSBI6 UART with hardware flow control DISABLED, matching
 	 * webOS. The legacy board file (board-tenderloin.c btuart_data) sets
 	 *   .uart_mode = HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE
