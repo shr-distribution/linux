@@ -31,11 +31,6 @@ module_param(address_space_size, ullong, 0600);
 
 static bool zap_available = true;
 
-/* Test knob: enable outer_sync() before WPTR writes, matching legacy KGSL behavior */
-static bool adreno_test_outer_sync = true;
-module_param(adreno_test_outer_sync, bool, 0644);
-MODULE_PARM_DESC(adreno_test_outer_sync, "Test: enable outer_sync() before WPTR write in adreno_flush()");
-
 /* Provide a no-op fallback for outer_sync() when outercache support
  * isn't available in the build environment to avoid implicit-decl errors
  * in out-of-tree or trimmed build setups.
@@ -745,13 +740,6 @@ void adreno_flush(struct msm_gpu *gpu, struct msm_ringbuffer *ring, u32 reg)
 
 	/* ensure writes to ringbuffer have hit system memory: */
 	mb();
-
-	/* Test option: match legacy KGSL behavior with outer_sync before WPTR */
-	if (adreno_test_outer_sync) {
-#ifdef CONFIG_OUTER_CACHE
-		outer_sync();
-#endif
-	}
 
 	gpu_write(gpu, reg, wptr);
 }

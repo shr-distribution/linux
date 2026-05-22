@@ -824,6 +824,12 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	 */
 	writel(readl(host->base + MMCIMASK0) | MCI_DATAENDMASK,
 	       host->base + MMCIMASK0);
+
+	/* Trace mask setup for WiFi SDCC4 debugging */
+	if (host->mmc->index == 3)
+		trace_printk("MMCI-DMA-START: MASK0=0x%08x (enabled DATAENDMASK) blksz=%u blocks=%u\n",
+			     readl(host->base + MMCIMASK0), data->blksz, data->blocks);
+
 	return 0;
 }
 
@@ -2502,6 +2508,12 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 		u32 raw_status;
 		status = readl(host->base + MMCISTATUS);
 		raw_status = status;
+
+		/* Trace IRQ entry for WiFi SDCC4 debugging */
+		if (host->mmc->index == 3 && status)
+			trace_printk("MMCI-IRQ: status=0x%08x mask0=0x%08x\n",
+				     status, readl(host->base + MMCIMASK0));
+
 		if (!status)
 			break;
 
