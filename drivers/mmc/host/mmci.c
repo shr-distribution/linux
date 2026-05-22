@@ -1330,6 +1330,7 @@ static void mmci_qcom_dma_complete(void *param)
 	struct mmci_host *host = param;
 	unsigned long flags;
 	struct mmc_data *data;
+	u32 status, status_err;
 	bool write;
 
 	spin_lock_irqsave(&host->lock, flags);
@@ -1346,17 +1347,44 @@ static void mmci_qcom_dma_complete(void *param)
 	write = !(data->flags & MMC_DATA_READ);
 
 	/*
-	 * host->data still pending => the SDCC did NOT raise DATAEND and this
-	 * callback is what actually completes the transfer. The direction tag
-	 * tells us whether writes (not just reads) miss DATAEND on this SoC,
-	 * and on which controller (mmc0=eMMC, mmc1=WiFi).
+	 * The ADM moving all bytes does NOT mean the SDCC considered the
+	 * transfer clean: it can still latch DATACRCFAIL / RXOVERRUN /
+	 * DATATIMEOUT / STARTBITERR. Completing purely on the DMA-done edge
+	 * would bypass that check and could report success with CRC-bad data
+	 * (a real risk on this SoC's FIXED-address mailbox reads). Sample
+	 * MMCISTATUS here and honor any pending data error so the request
+	 * fails cleanly instead of returning corrupt data. (We hold
+	 * host->lock, so this is serialized against mmci_irq's error path;
+	 * whichever runs first completes, the other sees host->data == NULL.)
 	 */
-	trace_printk("MMCI-DMA-CB: mmc%u callback COMPLETES %s (no DATAEND) blksz=%u blocks=%u\n",
+	status = readl(host->base + MMCISTATUS);
+	status_err = status & (host->variant->start_err |
+			       MCI_DATACRCFAIL | MCI_DATATIMEOUT |
+			       MCI_TXUNDERRUN | MCI_RXOVERRUN);
+
+	trace_printk("MMCI-DMA-CB: mmc%u callback COMPLETES %s (no DATAEND) blksz=%u blocks=%u status=0x%08x err=0x%08x\n",
 		     host->mmc->index, write ? "WRITE" : "read",
-		     data->blksz, data->blocks);
+		     data->blksz, data->blocks, status, status_err);
 
 	if (host->variant->qcom_datactrl_delay)
 		cancel_delayed_work(&host->qcom_dma_timeout_work);
+
+	if (status_err && !data->error) {
+		/* Clear the latched error bits we are consuming. */
+		writel(status_err, host->base + MMCICLEAR);
+
+		if (status_err & MCI_DATACRCFAIL)
+			data->error = -EILSEQ;
+		else if (status_err & MCI_DATATIMEOUT)
+			data->error = -ETIMEDOUT;
+		else if (status_err & MCI_STARTBITERR)
+			data->error = -ECOMM;
+		else if (status_err & (MCI_TXUNDERRUN | MCI_RXOVERRUN))
+			data->error = -EIO;
+
+		/* Tear down the DMA cleanly on a hardware data error. */
+		mmci_dma_error(host);
+	}
 
 	/* ADM RESULT=success ⇒ full transfer moved (to memory, or to card) */
 	mmci_dma_finalize(host, data);
