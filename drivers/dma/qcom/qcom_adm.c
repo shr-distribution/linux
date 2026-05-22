@@ -1022,31 +1022,34 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		achan->curr_txd = NULL;
 
 		if (async_desc) {
+			dma_async_tx_callback callback = NULL;
+			void *callback_param = NULL;
+
 			/*
-			 * Call client callback immediately in hardirq context
-			 * instead of deferring through vchan tasklet. MMCI expects
-			 * synchronous completion notification and times out if the
-			 * callback is deferred. Legacy webOS msm_dmov called
-			 * complete_func() directly from hardirq with identical
-			 * pattern. After ~2500 transfers, vchan_cookie_complete's
-			 * tasklet deferral causes MMCI to timeout before the tasklet
-			 * runs, breaking WiFi firmware download.
+			 * Save callback before vchan_cookie_complete, as vchan
+			 * may schedule tasklet that frees descriptor. Call callback
+			 * synchronously after vchan_cookie_complete but before
+			 * releasing lock, matching legacy webOS msm_dmov pattern.
+			 * MMCI requires immediate notification and times out if
+			 * callback is deferred to vchan tasklet.
 			 */
-			dma_cookie_complete(&async_desc->vd.tx);
 			if (async_desc->vd.tx.callback) {
-				spin_unlock(&achan->vc.lock);
-				async_desc->vd.tx.callback(async_desc->vd.tx.callback_param);
-				spin_lock(&achan->vc.lock);
+				callback = async_desc->vd.tx.callback;
+				callback_param = async_desc->vd.tx.callback_param;
 			}
 
-			/* Return descriptor to pool or free it */
-			if (async_desc->pool_index >= 0) {
-				spin_lock(&adev->pool_lock);
-				list_add_tail(&async_desc->pool_node, &adev->desc_free_list);
-				spin_unlock(&adev->pool_lock);
-			} else {
-				/* Dynamic allocation, use vchan free path */
-				vchan_cookie_complete(&async_desc->vd);
+			/*
+			 * Let vchan handle cookie completion and descriptor
+			 * queueing. This ensures proper cookie management and
+			 * cleanup through the standard virt-dma tasklet path.
+			 */
+			vchan_cookie_complete(&async_desc->vd);
+
+			/* Invoke callback immediately in hardirq before tasklet runs */
+			if (callback) {
+				spin_unlock(&achan->vc.lock);
+				callback(callback_param);
+				spin_lock(&achan->vc.lock);
 			}
 
 			/* kick off next DMA */
