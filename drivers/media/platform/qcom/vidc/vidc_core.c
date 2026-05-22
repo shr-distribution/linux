@@ -169,23 +169,39 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * — same behaviour as legacy, no surprise transitions.
 	 */
 	sw_reset = vidc_read(core, VIDC_REG_SW_RESET);
+	printk(KERN_EMERG "VIDC: hw_reset: entry SW_RESET=0x%08x\n", sw_reset);
 
 	/*
-	 * Cold-start normalisation: after a GDSC power cycle SW_RESET reads
-	 * 0x000 (every block in reset). Stage-1 RMW then becomes a structural
-	 * no-op, and stage-2 RESET_ALL also hits a register already at 0x000,
-	 * so the reset signals never see the 1→0 falling edge that the VIDC
-	 * hardware requires before it will latch a DRAM_BASE write.
+	 * ALWAYS normalize entry state to RESET_NONE & ~RISC (0x3fe), the
+	 * same state the GDSC footswitch leaves on first power-up.
 	 *
-	 * Fix: force SW_RESET to RESET_NONE & ~RISC (0x3fe) — the same state
-	 * the GDSC footswitch leaves on first power-up — so stage-1 and
-	 * stage-2 proceed identically to the warm-boot path. Stage-2's
-	 * RESET_ALL write then produces the required 1→0 falling edge.
+	 * On cold-start (first session after Linux boot), SW_RESET reads 0x3fe
+	 * naturally (or 0x000 in some test setups) — no special handling
+	 * needed.  On session 2+, gdsc_disable's AHB reset assertion at end
+	 * of session 1 leaves SW_RESET at a weird intermediate value like
+	 * 0x33 (RISC+MC+DMX+COMMON released, VI+VIDCCORE+codecs in reset).
+	 * From there, the stage-1 progressive RMW below doesn't drive the
+	 * 1→0 edges every VIDC block needs to fully reset, and the
+	 * firmware boots into a broken state where every AHB read returns
+	 * the same garbage value (cmd=0x110909 / "recovery mode") instead
+	 * of cmd=9 (FW_STATUS_RET / clean boot).
+	 *
+	 * Force a 0 → 0x3fe transition so every block sees a real reset
+	 * pulse before stage-1 runs.  Stage-2 then does its own 0 → 0x3fe
+	 * cycle on top — both cycles together give the firmware blocks a
+	 * clean restart matching the cold-boot path.
 	 */
-	if (sw_reset == 0) {
-		sw_reset = VIDC_RESET_NONE & ~VIDC_RESET_RISC;
-		vidc_write(core, VIDC_REG_SW_RESET, sw_reset);
+	if (sw_reset != (VIDC_RESET_NONE & ~VIDC_RESET_RISC)) {
+		printk(KERN_EMERG "VIDC: hw_reset: normalizing 0x%08x -> 0x000 -> 0x3fe\n",
+		       sw_reset);
+		/* All blocks into reset (clean slate) */
+		vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_ALL);
 		msleep(1);
+		/* Release everything except RISC */
+		vidc_write(core, VIDC_REG_SW_RESET,
+			   VIDC_RESET_NONE & ~VIDC_RESET_RISC);
+		msleep(1);
+		sw_reset = VIDC_RESET_NONE & ~VIDC_RESET_RISC;
 	}
 
 	sw_reset &= ~VIDC_RESET_VI;
