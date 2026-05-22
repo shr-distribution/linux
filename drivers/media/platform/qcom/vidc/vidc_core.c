@@ -453,11 +453,38 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 		 * may have different offsets / opcodes.
 		 */
 		if (core->fw_size == 500140) {
+			u32 pre_3ec0, pre_37c0, pre_37c4;
+			u32 post_3ec0, post_37c0;
+
+			/* Pre-patch readback: 16 bytes around bltz site & emit site */
+			pre_3ec0 = readl_relaxed(core->fw_vaddr + 0x3ec0);
+			pre_37c0 = readl_relaxed(core->fw_vaddr + 0x37c0);
+			pre_37c4 = readl_relaxed(core->fw_vaddr + 0x37c4);
+			printk(KERN_EMERG
+			       "VIDC: fw PRE  [0x3ec0]=0x%08x  [0x37c0]=0x%08x  [0x37c4]=0x%08x\n",
+			       pre_3ec0, pre_37c0, pre_37c4);
+
+			/* Patch 1: NOP the bltz at 0x3ec2 (3 bytes) */
 			iowrite8(0x00, (void __iomem *)(core->fw_vaddr + 0x3ec2));
 			iowrite8(0x00, (void __iomem *)(core->fw_vaddr + 0x3ec3));
 			iowrite8(0x20, (void __iomem *)(core->fw_vaddr + 0x3ec4));
+
+			/* Patch 2 (belt+suspenders): also zero the movi.n at 0x37c6.
+			 * If 0x37c6 is reached by some other path we missed, this
+			 * stops it from loading 0x33 — but the instruction following
+			 * still runs, so this is a debug aid not a real fix.
+			 * The 2 bytes that were `c3 e3` are the suspect movi.n.
+			 * We replace with `f0 20` (movi.n a0, 0 — load 0 into a0, harmless).
+			 *
+			 * Actually keep original for now and just observe.
+			 */
+
+			post_3ec0 = readl_relaxed(core->fw_vaddr + 0x3ec0);
+			post_37c0 = readl_relaxed(core->fw_vaddr + 0x37c0);
 			printk(KERN_EMERG
-			       "VIDC: fw patch: bltz a11,0x37c6 at 0x3ec2 NOPed (force cmd=9 path)\n");
+			       "VIDC: fw POST [0x3ec0]=0x%08x  [0x37c0]=0x%08x  patch_applied=%s\n",
+			       post_3ec0, post_37c0,
+			       (post_3ec0 != pre_3ec0) ? "YES" : "NO");
 		}
 	}
 
