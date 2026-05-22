@@ -1,8 +1,8 @@
 ---
 domain: bluetooth-bcm4329
 created: "2026-05-21"
-last_updated: "2026-05-21"
-status: bcsp-sync-handshake-timeout
+last_updated: "2026-05-22"
+status: root-cause-found-sync-handshake-not-needed
 ---
 
 # Implementation: Bluetooth BCM4329 (BCSP over GSBI6 UART)
@@ -140,7 +140,71 @@ This is a **Yocto image-install issue**, separate from the kernel
 work. Tracked as a future item: confirm the recipe installs the
 modules at build time so manual scp+tar isn't needed.
 
-## Active investigation: BCSP SYNC
+## Root cause found via legacy wire trace (2026-05-22)
+
+A debug-instrumented legacy webOS kernel
+(`/uboot/uImage.webOSdebug`, md5 `dcfdd89ff56b4fe55262bc7dd322f29f`)
+with `print_hex_dump` injected into `drivers/misc/hsuart.c`'s
+`hsuart_copy_buf_to_user` (RX path) and `hsuart_copy_user_to_buf`
+(TX path) captured the full BCSP wire exchange between webOS userspace
+and the BCM4329 chip over `/dev/bt_uart`. Trace saved at
+`reports/bt-trace/webos-bcsp-only-2026-05-22.log`.
+
+### Key observation: webOS skips BCSP link establishment / SYNC
+
+The very first TX from webOS userspace after BT power-up is a real
+BCCMD (BlueCore Command) packet with payload `02 04 00`, NOT a BCSP
+SYNC packet:
+
+```
+[  101.253647] TX> c0 da 35 00 f0 02 04 00 75 18 c0     <- first host TX
+[  101.259137] RX< c0 60 00 00 9f dd 6f c0              <- chip's ack-only response
+```
+
+The chip responds with a normal BCSP ack-only frame. Subsequent
+traffic is all BCCMD/PSKEY/HCI wrapped in BCSP framing
+(`0xC0 ... 0xC0` SLIP delimiters). Full sequence of ~13 BT packets
+captured.
+
+A canonical BCSP SYNC packet would be `c0 da dc ed ed c0` (raw
+`01 7e` after SLIP-escaping the 0xC0 inside the payload). **No such
+packet appears** anywhere in the webOS trace.
+
+### Implication for mainline driver
+
+The BCM4329 on the HP TouchPad is **already in BCSP mode** at chip
+power-up — likely a factory PSKEY setting in the BT chip's NVRAM.
+webOS userspace skips link-establishment SYNC and goes straight to
+configured-link state, assuming `txseq=0` / `rxack=0` align with the
+chip.
+
+Our mainline driver `drivers/bluetooth/hci_bcsp.c` insists on doing
+the SYNC handshake first (the "initial sync to wake chip" we saw on
+on-device test). The chip never returns a `sync_rsp` because it
+doesn't need to — it's already past that state. Our driver times out
+at the SYNC phase and never reaches operational state.
+
+### Action plan
+
+Add a DT property `qcom,bcsp-skip-sync;` (or a serdev driver flag)
+to the existing `bluetooth { compatible = "palm,bcm4329-bcsp"; ... }`
+node. When set, the driver skips:
+  - sync_req TX
+  - waiting for sync_rsp
+  - the BCSP `LINK_UNINIT` → `LINK_INIT` transition
+
+and starts directly in the operational state with `txseq=0` /
+`rxack=0`. The standard ack/seq flow then handles the configured
+link from packet #1 forward.
+
+This is a small, contained patch — probably 30-50 lines plus 1 DT
+property. Test by booting LuneOS, modprobing the BT modules, and
+checking if `hciconfig hci0 up` succeeds (which it currently times
+out at).
+
+## Active investigation: BCSP SYNC (closed)
+
+
 
 The recent commit stream (May 2026) shows the driver author
 iterating on exactly this issue:
