@@ -179,14 +179,6 @@ static int lm8502_chip_init(struct lm8502_data *priv)
 	unsigned int val;
 	int ret;
 
-	/* First, try to read a register to verify I2C communication */
-	ret = regmap_read(priv->regmap, LM8502_ENGINE_CNTRL1, &val);
-	if (ret) {
-		dev_err(dev, "I2C read test failed: %d\n", ret);
-		return ret;
-	}
-	dev_info(dev, "I2C communication OK, ENGINE_CNTRL1=0x%02x\n", val);
-
 	/*
 	 * Software reset the LM8502. WebOS does this after GPIO enable and
 	 * before attempting any register writes. Clears internal state and
@@ -199,8 +191,16 @@ static int lm8502_chip_init(struct lm8502_data *priv)
 		dev_err(dev, "Software reset failed: %d\n", ret);
 		return ret;
 	}
-	msleep(50);  /* Allow chip to complete reset */
+	msleep(100);  /* Allow chip to complete reset and settle */
 	dev_info(dev, "Software reset complete, chip ready for configuration\n");
+
+	/* Now verify I2C communication after reset */
+	ret = regmap_read(priv->regmap, LM8502_ENGINE_CNTRL1, &val);
+	if (ret) {
+		dev_err(dev, "I2C read after reset failed: %d\n", ret);
+		return ret;
+	}
+	dev_info(dev, "I2C communication OK after reset, ENGINE_CNTRL1=0x%02x\n", val);
 
 	/*
 	 * Initialize registers to match webOS configuration exactly:
