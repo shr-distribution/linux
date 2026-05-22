@@ -885,11 +885,10 @@ static void adm_start_dma(struct adm_chan *achan)
 		 */
 		if (achan->id == 5) {
 			crci_val = async_desc->mux | 0;  /* Force blk_size=0 for WiFi */
-			dev_info(adev->dev,
-				 "ADM-DIAG: ch5 CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=0 FORCED, was %d, len=%zu)\n",
-				 async_desc->crci, crci_val,
-				 async_desc->mux, async_desc->blk_size,
-				 async_desc->length);
+			trace_printk("ADM-DIAG: ch5 CRCI_CTL[%d]=0x%x (mux=0x%x blk_size=0 FORCED, was %d, len=%zu)\n",
+				     async_desc->crci, crci_val,
+				     async_desc->mux, async_desc->blk_size,
+				     async_desc->length);
 		} else {
 			crci_val = async_desc->mux | async_desc->blk_size;
 		}
@@ -959,10 +958,10 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 
 	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
 
-	/* WiFi ch5 diagnostic */
+	/* WiFi ch5 diagnostic - use trace_printk for low latency */
 	if (srcs & BIT(5))
-		dev_info(adev->dev, "ADM-IRQ: ch5 in srcs=0x%08x t=%lld\n",
-			 srcs, ktime_to_us(t_entry));
+		trace_printk("ADM-IRQ: ch5 in srcs=0x%08x t=%lld\n",
+			     srcs, ktime_to_us(t_entry));
 
 	t_before_loop = ktime_get();
 
@@ -987,8 +986,8 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		/* if no result present, skip */
 		if (!(status & ADM_CH_STATUS_VALID)) {
 			if (i == 5)
-				dev_info(adev->dev, "ADM-IRQ: ch5 STATUS=0x%08x (not VALID, skipped) t=%lld\n",
-					 status, ktime_to_us(t_after_status));
+				trace_printk("ADM-IRQ: ch5 STATUS=0x%08x (not VALID, skipped) t=%lld\n",
+					     status, ktime_to_us(t_after_status));
 			continue;
 		}
 
@@ -1000,8 +999,8 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		/* no valid results, skip */
 		if (!(result & ADM_CH_RSLT_VALID)) {
 			if (i == 5)
-				dev_info(adev->dev, "ADM-IRQ: ch5 RESULT=0x%08x (not VALID, skipped) t=%lld\n",
-					 result, ktime_to_us(t_after_result));
+				trace_printk("ADM-IRQ: ch5 RESULT=0x%08x (not VALID, skipped) t=%lld\n",
+					     result, ktime_to_us(t_after_result));
 			continue;
 		}
 
@@ -1009,9 +1008,9 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			s64 delta_entry_to_loop = ktime_us_delta(t_before_loop, t_entry);
 			s64 delta_loop_to_status = ktime_us_delta(t_after_status, t_before_loop);
 			s64 delta_status_to_result = ktime_us_delta(t_after_result, t_after_status);
-			dev_info(adev->dev, "ADM-IRQ: ch5 RESULT=0x%08x t=%lld Δ[entry→loop]=%lld Δ[loop→status]=%lld Δ[status→result]=%lld\n",
-				 result, ktime_to_us(t_after_result),
-				 delta_entry_to_loop, delta_loop_to_status, delta_status_to_result);
+			trace_printk("ADM-IRQ: ch5 RESULT=0x%08x t=%lld Δ[entry→loop]=%lld Δ[loop→status]=%lld Δ[status→result]=%lld\n",
+				     result, ktime_to_us(t_after_result),
+				     delta_entry_to_loop, delta_loop_to_status, delta_status_to_result);
 		}
 
 		/*
@@ -1093,7 +1092,7 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		ktime_t t_exit = ktime_get();
 		s64 delta_total = ktime_us_delta(t_exit, t_entry);
 		if (delta_total > 1000) /* Log if > 1ms */
-			dev_info(adev->dev, "ADM-IRQ: ch5 SLOW handler total=%lld us\n", delta_total);
+			trace_printk("ADM-IRQ: ch5 SLOW handler total=%lld us\n", delta_total);
 	}
 
 	return IRQ_HANDLED;
