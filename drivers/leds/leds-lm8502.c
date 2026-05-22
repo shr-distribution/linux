@@ -395,8 +395,13 @@ static int lm8502_probe(struct i2c_client *client)
 	}
 
 	/* Enable the chip via GPIO if available */
-	if (priv->enable_gpio)
+	if (priv->enable_gpio) {
+		dev_info(dev, "Enable GPIO acquired, setting high\n");
 		gpiod_set_value_cansleep(priv->enable_gpio, 1);
+		dev_info(dev, "Enable GPIO set to high\n");
+	} else {
+		dev_warn(dev, "No enable GPIO found (optional)\n");
+	}
 
 	/* Allow chip to power up before I2C communication */
 	msleep(50);
