@@ -2,7 +2,48 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: CONFIRMED serdev-specific — ldisc/hciattach establishes link (events flow) on live device; serdev never links. Decision: finish ldisc vs fix serdev. Remaining: HCI-init timeout.
+status: ldisc link works; RESET_ON_INIT fixed NOP race; NEW blocker = reliable BCSP channel — chip ACKs unreliable pkts but REJECTS reliable HCI packets (rxack stuck at 0)
+---
+
+## 2026-05-22 (night-4): RESET_ON_INIT fixes NOP race; reliable channel is the new wall
+
+eMMC bad-block note: hciattach/hciconfig live on bad eMMC sectors (~57.43M)
+and fault on exec → fs goes emergency_ro. Worked around by cross-compiling
+a static helper `/tmp/btup.c` (arm-linux-gnueabihf-gcc -static) that does
+hciattach's ioctls (TIOCSETD N_HCI, HCIUARTSETFLAGS, HCIUARTSETPROTO
+BCSP) + HCIDEVUP, runnable from tmpfs. Keep btup around for all BT tests.
+
+**RESET_ON_INIT (3baaf15749ca) works — but my bcsp_open() set is TOO LATE
+for ldisc.** hci_ldisc.c hci_uart_register_dev() reads the flag (sets
+HCI_QUIRK_RESET_ON_CLOSE) BEFORE calling proto->open(). So the flag must
+be set via HCIUARTSETFLAGS *before* HCIUARTSETPROTO (btup does this:
+flags=BIT(1)=2). With it set: HCI core sends HCI_Reset (0x0c03) FIRST and
+the "unexpected event for opcode 0x0000" NOP race is GONE. (TODO: make the
+driver set the quirk correctly without relying on userspace SETFLAGS —
+hu->hdev is NULL in bcsp_open so can't hci_set_quirk there; needs a
+different hook, or set it in the serdev register path / a DT-driven flag.)
+
+**NEW BLOCKER — reliable BCSP channel:** With RESET_ON_INIT, HCI_Reset
+(0x0c03, reliable chan 5, seqno 0) is sent but times out -110. dyndbg:
+`Request for pkt 0 from card` repeats forever — the chip never advances
+its rxack past 0, i.e. it REJECTS our reliable packet. Crucially: the chip
+ACKs UNRELIABLE packets fine (LE chan 1 sync/conf; BCCMD chan 2 PSKEYs all
+worked → WARM_RESET happened), but we have NEVER successfully delivered a
+RELIABLE packet. HCI commands are the only reliable traffic, and all fail.
+
+Notable: webOS sent BCCMD as RELIABLE (byte0=0xf5 = bit7 rel + bit6 crc),
+but our driver sends BCCMD unreliable (chan 2, rel=0). Hypotheses for chip
+rejecting reliable pkts: (a) reliable byte0=0xC0 (0x80|0x40|seq0) is the
+first packet needing SLIP-escaping of byte0 — escaping verified correct,
+CRC over unescaped byte, but worth a wire capture; (b) reliable channel
+needs priming / choke-unchoke the chip expects; (c) seqno desync after the
+stage-1 WARM_RESET re-handshake. Next: add a TX hexdump for non-LE packets
+and capture the exact reliable HCI_Reset bytes vs a webOS reliable packet.
+
+Two-stage test recipe (works around everything): power chip via GPIO
+642/643/650; stage1 `btup attachup` skip_pskeys=0 (PSKEYs+WARM_RESET);
+kill; skip_pskeys=1; stage2 `btup attachup` (NO gpio reset — PSRAM kept).
+
 ---
 
 ## 2026-05-22 (night-3): ldisc test PASSED — serdev confirmed as the bug
