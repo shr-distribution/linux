@@ -2,7 +2,42 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: CRC fix verified (TX byte-perfect) but chip RX still dead; reset-pulse+1s-settle fix pushed (8054d7305229) pending rebuild
+status: STUCK at link establishment — TX byte-perfect but chip never RX; narrowed to physical TX path / msm_serial-vs-hsuart (see 2026-05-22 night)
+---
+
+## 2026-05-22 (night): reset-timing FALSIFIED too; narrowed to physical TX path
+
+Deployed reset-timing fix (kernel ge06d7dea58f8, 8054d7305229). The 1s
+settle is visible in the log (probe 159.6s → first UART traffic 160.9s),
+but the chip STILL only streams SYNC, never SYNC-RSP. Reset timing is NOT
+the blocker (kept anyway, webOS-faithful).
+
+**Decisive logic:** our SYNC `c0 40 41 00 7e da dc ed ed a9 7a c0` is
+byte-identical to webOS bcattach's working SYNC. If the chip received our
+bytes it would accept them (it accepted the same bytes from webOS). It
+doesn't react ⇒ our TX is not physically reaching the chip's RXD.
+
+**Everything on our side verified correct on-device:** GPIOs (BT_WAKE hi,
+out of reset), GSBI6 MR1=0x34 (no CTS gating), MR2=0x34 (8N1), SR=0xAC
+(TXEMT — bytes clocked out FIFO), UART clock 1843200 = 115200×16 (RX & TX
+share it), pin mux gpio53-56 = gsbi6 fn 16mA, TX pad idle-high, RX
+1902/1902 clean SYNC zero errors, console ttyMSM0 proves msm_serial TX
+works on another GSBI. Chip is healthy (clean SYNC, proper shy state).
+
+**Only remaining difference from webOS: the UART driver** — mainline
+msm_serial UARTDM vs webOS custom hsuart (/dev/ttyHS0), same GSBI6 pins.
+
+Next steps (need scope or rebuild): (1) logic analyzer on gpio53 to
+confirm TX toggles the pad; (2) check GSBI6 UARTDM DM/DMA-mode TX
+programming vs console PIO, try forcing PIO; (3) compare GSBI_CTRL/TCSR +
+full UARTDM regs vs a webOS dump; (4) RFR(gpio56)=high under no-flow —
+webOS hsuart may drive it asserted (affects chip TX in theory). Full
+analysis: memory [[bcm4329-tx-not-reaching-chip]].
+
+Logging: per-PSKEY "Set PSKEY" INFO lines downgraded to BT_DBG
+(cc759b950c35). Per-packet logs are already BT_DBG (only with dyndbg=+p);
+stop loading with dyndbg=+p for quiet operation.
+
 ---
 
 ## 2026-05-22 (evening): CRC fix VERIFIED working at TX level; chip RX still dead → reset-timing fix (8054d7305229)
