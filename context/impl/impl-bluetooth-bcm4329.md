@@ -232,6 +232,63 @@ This is **an in-flight driver effort**, not a fresh investigation
 to start from scratch. Continuing it requires understanding the
 existing commit chain.
 
+## 2026-05-22 (PM): Double power-cycle race wiping PSKEYs — fixed (65125445c55e)
+
+On-device test of the skip-SYNC code revealed a second class of bug:
+PSKEYs were being wiped right after we sent them, leaving the chip in
+EEPROM-default state and the BCSP framing layer in disarray.
+
+Two stacked bugs:
+
+**Bug 1 — race between sync handler and bcsp_setup() power cycles**
+
+After WARM_RESET, `bcsp_setup()` calls `msleep(1000)` then checks
+`warm_reset_sent` and (if still set) fires `bcsp_serdev_power_cycle()`.
+But `bcsp_serdev_power_cycle()` contains its OWN `msleep(2000)` for
+chip settling. So when the sync handler (triggered by post-WARM_RESET
+chip noise/SYNC) entered the power-cycle path FIRST, it took ~2.1 s
+to clear `warm_reset_sent`. `bcsp_setup()` woke up after only 1 s,
+saw the flag still set, and fired a SECOND overlapping power cycle.
+
+Wire evidence:
+```
+[273.602] BCSP: Serdev mode - power cycling for clean restart   (sync handler)
+[274.556] BCSP: skip-sync — explicit power cycle after WARM_RESET (bcsp_setup)
+[275.916] BCSP: Waiting for chip to send sync after power cycle... (sync handler exits)
+[298.624] Bluetooth: Error in BCSP hdr checksum                  (×many)
+```
+
+**Bug 2 — the hard power cycle itself was wrong**
+
+PSKEYs are sent with `PSKEY_STORES_PSRAM = 0x08` (volatile store,
+matching webOS). A GPIO-driven power cycle clears PSRAM and wipes
+*everything we just configured*. The legacy/webOS path uses
+**WARM_RESET BCCMD only** — chip restarts but PSRAM is kept intact.
+
+By doing a hard power cycle after WARM_RESET (twice, no less), we
+were dropping the chip back to EEPROM defaults — no PSKEY overrides,
+no BD address, no RF calibration table.
+
+**Fix (commit `65125445c55e`):**
+
+- `bcsp_handle_le_pkt()`: early-return when `skip_sync` is set. Any
+  inbound link-establishment packet is spurious in this mode (chip
+  is supposed to be operational from EEPROM). Drops the race entry
+  point entirely.
+- `bcsp_setup()` (both BDADDR_PENDING and BDADDR_NONE paths): drop
+  the `bcsp_serdev_power_cycle()` call. Wait 1.5 s for chip restart
+  (matches webOS spacing) then resync driver-side BCSP sequence
+  numbers, queues, and RX state. No GPIO toggle, PSRAM survives.
+
+Expected next-state on-device after Yocto rebuild:
+- Single log line `BCSP: skip-sync — resyncing driver state after WARM_RESET`
+- No more `Power cycling Bluetooth chip…` after WARM_RESET
+- No `Error in BCSP hdr checksum` / `Short BCSP packet` floods
+- HCI Reset / Read Local Version succeed
+- `hciconfig hci0 up` completes; chip BD addr `00:1d:fe:85:64:a9`
+
+Awaiting Yocto rebuild + redeploy to verify.
+
 ## 2026-05-22: Skip-SYNC patch + DT opt-in
 
 webOS hsuart wire trace confirms the host never sends a BCSP SYNC
