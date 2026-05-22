@@ -2488,6 +2488,28 @@ static int bcsp_open(struct hci_uart *hu)
 	if (hu->serdev) {
 		serdev_device_set_flow_control(hu->serdev, false);
 		BT_INFO("BCSP: Hardware flow control disabled (webOS FLOW_CTRL_NONE)");
+
+		/*
+		 * Assert RTS (RFR, gpio56) during BCSP link establishment.
+		 *
+		 * The webOS cold-handshake capture
+		 * (reports/bt-trace/webos-cold-handshake-2026-05-22.log) shows
+		 * the legacy hsuart driving RFR ASSERTED (low; FUNC_1/OUT_LOW
+		 * via btuart_deassert_rts "get") immediately before TX SYNC.
+		 * RFR is the CSR chip's CTS input. With RFR DEASSERTED (high —
+		 * msm_serial's state when flow control is off) the chip treats
+		 * the host as "not ready to receive" and never transmits its
+		 * CONF/SYNC-RSP — it just streams SYNC forever and link
+		 * establishment never completes. That is exactly our symptom,
+		 * even though our SYNC bytes are byte-identical to webOS's.
+		 *
+		 * set_tiocm(TIOCM_RTS) -> msm_set_mctrl sets MR1 RX_RDY_CTL
+		 * (auto-RFR), asserting RFR low while the RX FIFO has room
+		 * (always true during light link-establishment traffic).
+		 * CTS_CTL stays clear so our TX is NOT gated by the chip's CTS.
+		 */
+		serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);
+		BT_INFO("BCSP: Asserted RTS (RFR) for link establishment (webOS-style)");
 	}
 
 	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
