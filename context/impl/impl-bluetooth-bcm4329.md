@@ -2,7 +2,65 @@
 domain: bluetooth-bcm4329
 created: "2026-05-21"
 last_updated: "2026-05-22"
-status: skip-sync-patch-landed-pending-on-device-verification
+status: flow-control-root-cause-found-fix-pushed-pending-yocto-rebuild
+---
+
+## 2026-05-22 (late): HW flow control was gating host TX — fix pushed (3149a6f9c1ab)
+
+Kernel `g8165758913da` (includes fc36dcf860b7) deployed via Yocto;
+BT modules extracted from `modules-tenderloin.tgz` (matching version)
+and scp'd to `/lib/modules/$(uname -r)`, `depmod -a`, modprobe
+btbcm + hci_uart. On-device dynamic-debug (`modprobe hci_uart dyndbg=+p`)
+captured the real handshake state:
+
+```
+BCSP: TX LE pkt: c0 00 41 00 be da dc ed ed c0   ← our SYNC
+BCSP: RX LE payload: da dc ed ed                  ← chip SYNC
+BCSP: sync received
+BCSP: sending sync_rsp
+BCSP: TX LE pkt: c0 00 41 00 be ac af ef ee c0    ← our SYNC_RSP
+(chip keeps sending SYNC forever, NEVER sends SYNC_RSP back)
+```
+
+fc36dcf860b7 worked as intended on the *response* side — we now answer
+the chip's SYNC with SYNC_RSP (no more skip-sync ignoring). But the chip
+never ACKs **our** SYNC, so it loops in BCSP_LINK_UNINIT. In BCSP both
+peers send SYNC and each emits SYNC_RSP on *receiving* the peer's SYNC.
+The chip not emitting SYNC_RSP = it is not receiving our TX. chip→host
+RX is clean at 115200, so this is a host→chip TX stall.
+
+**Root cause:** `bcsp_open()` called `serdev_device_set_flow_control(true)`
+→ CRTSCTS. The msm UART gates TX on the chip's CTS line, and the BCM4329
+holds CTS deasserted until it has been talked to (chicken-and-egg). So
+every host TX (incl. our SYNC_RSP) stalls in the UART FIFO and never
+reaches the chip.
+
+The driver comment ("WebOS used UART_WITH_FLOW_CONTROL for GSBI6")
+misread the legacy board file. `board-tenderloin.c btuart_data` sets
+`.uart_mode = HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE`.
+`UART_WITH_FLOW_CONTROL` passed to `board_gsbi6_init()` only muxes the
+RTS/CTS *pins* as GSBI6 function (our DT already muxes gpio53-56);
+it does NOT turn on CRTSCTS. webOS managed RTS manually via
+`p_board_rts_pin_deassert_cb` and never CTS-gated TX.
+
+**Fix (3149a6f9c1ab):** `bcsp_open()` now calls
+`serdev_device_set_flow_control(hu->serdev, false)`. hci_serdev already
+leaves it off (hci_serdev.c:394, runs before proto->open); we just stop
+flipping it back on.
+
+Expected next-state after Yocto rebuild + module redeploy:
+- `BCSP: Hardware flow control disabled (webOS FLOW_CTRL_NONE)` in dmesg
+- chip emits SYNC_RSP (`ac af ef ee`) → `BCSP: sync_rsp received, moving
+  to INIT state` → conf exchange → `BCSP: Link established (first time)`
+- bcsp_setup PSKEY+BDADDR+WARM_RESET → re-handshake → HCI Reset succeeds
+- `hciconfig hci0 up` works, BD `00:1d:fe:85:64:a9`, events > 0
+
+**Module deploy note (Yocto image-install gap persists):** the running
+image still ships with no BT modules under `/lib/modules/$(uname -r)`.
+Workflow that works: extract `tmp-glibc/deploy/images/tenderloin/
+modules-tenderloin.tgz` (symlink → version matching `uname -r`), scp the
+`lib/modules/<rel>` dir to device, `depmod -a`, modprobe.
+
 ---
 
 # Implementation: Bluetooth BCM4329 (BCSP over GSBI6 UART)
