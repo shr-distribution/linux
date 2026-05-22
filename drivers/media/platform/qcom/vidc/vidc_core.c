@@ -600,7 +600,21 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		 * causes the firmware to return HEADER_NOT_FOUND (error 52).
 		 */
 		if (core->fw_recovery_mode) {
-			if (inst && inst->seq_header_pending) {
+			if (inst && inst->init_buffers_pending) {
+				/*
+				 * Recovery-mode INIT_BUFFERS ack: firmware
+				 * sends cmd=0 (EMPTY) instead of cmd=15
+				 * (RESP_INIT_BUFFERS).  Match both decoder
+				 * vidc_init_buffers and encoder
+				 * vidc_init_enc_buffers, which both wait on
+				 * inst->done after setting init_buffers_pending.
+				 */
+				dev_info(core->dev,
+					 "recovery INIT_BUFFERS ack via EMPTY IRQ\n");
+				inst->init_buffers_pending = false;
+				inst->state = VIDC_STATE_RUNNING;
+				complete(&inst->done);
+			} else if (inst && inst->seq_header_pending) {
 				dev_info(core->dev,
 					 "recovery SEQ_HEADER ack via EMPTY IRQ\n");
 				inst->seq_header_pending = false;
@@ -1753,6 +1767,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	core->curr_inst = inst;
 	reinit_completion(&inst->done);
 	inst->error = 0;
+	inst->init_buffers_pending = true;
 	spin_unlock_irqrestore(&core->irqlock, flags);
 
 	/*
@@ -1832,10 +1847,16 @@ int vidc_init_buffers(struct vidc_inst *inst)
 			vidc_read(core, VIDC_REG_RISC2HOST_CMD),
 			vidc_read(core, VIDC_REG_CH0_INST_ID),
 			vidc_read(core, VIDC_REG_RETURNED_CH_INST_ID));
+		spin_lock_irqsave(&core->irqlock, flags);
+		inst->init_buffers_pending = false;
+		spin_unlock_irqrestore(&core->irqlock, flags);
 		ret = -ETIMEDOUT;
 		goto err_free_dma;
 	}
 init_buf_done:
+	spin_lock_irqsave(&core->irqlock, flags);
+	inst->init_buffers_pending = false;
+	spin_unlock_irqrestore(&core->irqlock, flags);
 
 	if (inst->error) {
 		dev_err(core->dev, "INIT_BUFFERS firmware error: %d\n",
@@ -2317,6 +2338,7 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 	core->curr_inst = inst;
 	reinit_completion(&inst->done);
 	inst->error = 0;
+	inst->init_buffers_pending = true;
 	spin_unlock_irqrestore(&core->irqlock, flags);
 
 	/* INIT_CH before parameters (DDL pattern for every command) */
@@ -2331,10 +2353,17 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 
 	if (!wait_for_completion_timeout(&inst->done,
 					 msecs_to_jiffies(1000))) {
+		spin_lock_irqsave(&core->irqlock, flags);
+		inst->init_buffers_pending = false;
+		spin_unlock_irqrestore(&core->irqlock, flags);
 		dev_err(core->dev, "encoder INIT_BUFFERS timeout\n");
 		ret = -ETIMEDOUT;
 		goto err_free_dma;
 	}
+
+	spin_lock_irqsave(&core->irqlock, flags);
+	inst->init_buffers_pending = false;
+	spin_unlock_irqrestore(&core->irqlock, flags);
 
 	if (inst->error) {
 		dev_err(core->dev,

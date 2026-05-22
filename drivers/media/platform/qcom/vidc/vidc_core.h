@@ -777,6 +777,16 @@ struct vidc_inst {
 	 * vidc_enc_seq_done_work (normal path) or on timeout.
 	 */
 	bool seq_header_pending;
+
+	/*
+	 * Set true by vidc_init_buffers/vidc_init_enc_buffers just before
+	 * issuing the INIT_BUFFERS command.  In recovery-mode boots the
+	 * firmware acks INIT_BUFFERS with an EMPTY IRQ (cmd=0) instead of
+	 * RESP_INIT_BUFFERS; the ISR completes inst->done via this flag.
+	 * Cleared by the ISR (recovery path) or by the wait-completion site
+	 * (normal path) or on timeout.
+	 */
+	bool init_buffers_pending;
 };
 
 /* Core functions */
