@@ -1022,7 +1022,32 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		achan->curr_txd = NULL;
 
 		if (async_desc) {
-			vchan_cookie_complete(&async_desc->vd);
+			/*
+			 * Call client callback immediately in hardirq context
+			 * instead of deferring through vchan tasklet. MMCI expects
+			 * synchronous completion notification and times out if the
+			 * callback is deferred. Legacy webOS msm_dmov called
+			 * complete_func() directly from hardirq with identical
+			 * pattern. After ~2500 transfers, vchan_cookie_complete's
+			 * tasklet deferral causes MMCI to timeout before the tasklet
+			 * runs, breaking WiFi firmware download.
+			 */
+			dma_cookie_complete(&async_desc->vd.tx);
+			if (async_desc->vd.tx.callback) {
+				spin_unlock(&achan->vc.lock);
+				async_desc->vd.tx.callback(async_desc->vd.tx.callback_param);
+				spin_lock(&achan->vc.lock);
+			}
+
+			/* Return descriptor to pool or free it */
+			if (async_desc->pool_index >= 0) {
+				spin_lock(&adev->pool_lock);
+				list_add_tail(&async_desc->pool_node, &adev->desc_free_list);
+				spin_unlock(&adev->pool_lock);
+			} else {
+				/* Dynamic allocation, use vchan free path */
+				vchan_cookie_complete(&async_desc->vd);
+			}
 
 			/* kick off next DMA */
 			adm_start_dma(achan);
