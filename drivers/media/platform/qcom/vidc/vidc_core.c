@@ -1712,11 +1712,19 @@ int vidc_close_channel(struct vidc_inst *inst)
 static void vidc_dpb_calc_sizes(u32 width, u32 height,
 				u32 *y_size, u32 *c_size)
 {
-	u32 w = ALIGN(width, VIDC_DPB_TILE_ALIGN_WIDTH);
-	u32 h = ALIGN(height, VIDC_DPB_TILE_ALIGN_HEIGHT);
+	u32 w  = ALIGN(width, VIDC_DPB_TILE_ALIGN_WIDTH);
+	u32 hy = ALIGN(height, VIDC_DPB_TILE_ALIGN_HEIGHT);
+	/*
+	 * Chroma plane is half-height (NV12 4:2:0). webOS computes the chroma
+	 * tile size from (height >> 1) rounded up to the tile-height grid —
+	 * NOT as y_size/2.  These differ once the final 8192 alignment kicks
+	 * in (e.g. 640x480: y=311296 so y/2=155648, but the correct chroma is
+	 * ALIGN(640*ALIGN(240,32),8192) = ALIGN(640*256,8192) = 163840).
+	 */
+	u32 hc = ALIGN(height >> 1, VIDC_DPB_TILE_ALIGN_HEIGHT);
 
-	*y_size = w * h;
-	*c_size = (w * h) / 2;
+	*y_size = ALIGN(w * hy, VIDC_DPB_TILE_MULTIPLY_FACTOR);
+	*c_size = ALIGN(w * hc, VIDC_DPB_TILE_MULTIPLY_FACTOR);
 }
 
 /*

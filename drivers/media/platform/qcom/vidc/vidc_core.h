@@ -158,6 +158,16 @@
  */
 #define VIDC_DPB_TILE_ALIGN_WIDTH	128
 #define VIDC_DPB_TILE_ALIGN_HEIGHT	32
+/*
+ * Final per-plane size alignment.  webOS DDL_TILE_MULTIPLY_FACTOR — the
+ * tile-format YUV buffer size is rounded UP to a multiple of 8192 after
+ * the width*height compute.  Omitting this undershoots the firmware's
+ * required DPB slot size for resolutions whose padded luma area is not
+ * already a multiple of 8192 (e.g. 640x480: 640*480=307200 -> 311296),
+ * which the firmware rejects at INIT_BUFFERS with
+ * VIDC_1080P_ERROR_ALLOC_DPB_SIZE_NOT_SUFFICIENT (71 / 0x47).
+ */
+#define VIDC_DPB_TILE_MULTIPLY_FACTOR	8192
 
 /*
  * Per-DPB-slot motion-vector buffer size, conservative upper bound for
