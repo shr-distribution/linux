@@ -616,18 +616,22 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			printk(KERN_EMERG "VIDC: SEQ_HEADER done\n");
 
 			/*
-			 * Allocate recon (reference) frame buffers and issue
-			 * encoder INIT_BUFFERS. Geometry is known from S_FMT.
+			 * No encoder INIT_BUFFERS — webOS doesn't issue it.
+			 * The encoder firmware allocates its own recon pool
+			 * internally from the SMI region declared at SYS_INIT.
+			 * After encode_seq_start completes (cmd=4 SEQ_DONE)
+			 * the firmware is in WAIT_FOR_FRAME state and ready
+			 * for FRAME_DATA encode commands.
+			 *
+			 * Issuing INIT_BUFFERS here put the firmware into a
+			 * weird state that emitted cmd=16 (EDFU - Encoder DPB
+			 * Frame Update) as a side effect of programming the
+			 * RECON_LUMA/CHROMA register block, then it failed to
+			 * ack INIT_BUFFERS with the expected cmd=15 — we kept
+			 * timing out.  Removing the call lets the encoder
+			 * follow webOS's documented flow:
+			 *   OPEN_CH → SEQ_HEADER → FRAME_DATA
 			 */
-			printk(KERN_EMERG "VIDC: Initializing encoder buffers...\n");
-			ret = vidc_init_enc_buffers(inst);
-			if (ret) {
-				printk(KERN_EMERG "VIDC: init_enc_buffers failed: %d\n", ret);
-				vidc_close_channel(inst);
-				pm_runtime_put(core->dev);
-				return ret;
-			}
-			printk(KERN_EMERG "VIDC: Encoder buffers initialized successfully\n");
 
 			inst->streamon_out = true;
 			inst->sequence_out = 0;

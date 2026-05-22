@@ -1863,6 +1863,15 @@
 	 * - GPIO 122: BT_RST_N_3G
 	 * - GPIO 131: BT_WAKE_3G (same)
 	 */
+	/*
+	 * BCM4329 BT control GPIOs.
+	 *
+	 * Drive strength matches the legacy webOS gpiomux active config
+	 * (BT_RST_N / BT_POWER / BT_WAKE = GPIO_OUTL_8M_PN or GPIO_OUTH_8M_PN
+	 * — all 8 mA, no pull). At 2 mA the chip can be unreliable to
+	 * power up at cold boot; the rising/falling edges aren't crisp
+	 * enough for the BCM4329's enable pins.
+	 */
 	bt_pin: bt-state {
 		hostwake-pins {
 			pins = "gpio129";
@@ -1873,21 +1882,21 @@
 		power-pins {
 			pins = "gpio130";
 			function = "gpio";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-disable;
 		};
 
 		devwake-pins {
 			pins = "gpio131";
 			function = "gpio";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-disable;
 		};
 
 		reset-pins {
 			pins = "gpio138";
 			function = "gpio";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-disable;
 		};
 	};
@@ -2009,17 +2018,22 @@
 		};
 	};
 
+	/*
+	 * MT9M113 webcam control GPIOs. Drive strength matches the
+	 * legacy webOS gpiomux active state (TENDERLOIN_WEBCAM_RST and
+	 * TENDERLOIN_WEBCAM_PWDN are both GPIO_OUTH_8M_PN at 8 mA).
+	 */
 	camera_pins: camera-state {
 		reset-pins {
 			pins = "gpio106";  /* WEBCAM_RST */
 			function = "gpio";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-disable;
 		};
 		pwdn-pins {
 			pins = "gpio107";  /* WEBCAM_PWDN */
 			function = "gpio";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-disable;
 		};
 		mclk-pins {
