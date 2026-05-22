@@ -1356,7 +1356,7 @@ static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value)
 	skb_queue_tail(&bcsp->unrel, skb);
 	hci_uart_tx_wakeup(hu);
 
-	BT_INFO("BCSP: Set PSKEY 0x%04x = 0x%04x", pskey, value);
+	BT_DBG("BCSP: Set PSKEY 0x%04x = 0x%04x", pskey, value);
 
 	return 0;
 }
@@ -1431,7 +1431,7 @@ static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
 	skb_queue_tail(&bcsp->unrel, skb);
 	hci_uart_tx_wakeup(hu);
 
-	BT_INFO("BCSP: Set PSKEY 0x%04x with %d words", pskey, len_words);
+	BT_DBG("BCSP: Set PSKEY 0x%04x with %d words", pskey, len_words);
 
 	kfree(bccmd);
 	return 0;
