@@ -2,7 +2,7 @@
 
 **For consultation with fresh AI / external advisors. Self-contained.**
 
-Last updated: 2026-05-11
+Last updated: 2026-05-22 (cross-generation kernel comparison + fd2/kernel register diff added — see §4.10 and §6 BINNER-CONFLICT)
 
 ---
 
@@ -230,6 +230,31 @@ Analyzed `leia_pm4_470.fw` (9220 bytes, 2305 instructions, custom Qualcomm ME IS
 
 ---
 
+### 4.10 Cross-generation kernel comparison + fd2/kernel register diff (2026-05-22)
+
+Static analysis only — no new hardware tests. Compared the webOS 2011 "Yamato" KGSL against the **modern 2012/2013 CAF Adreno KGSL** shipped on peer MSM8660 devices (HTC pyramid/sensation `refs/htc-msm8660`, kernel 3.0.71; Samsung Celox `refs/samsung-msm8660`, kernel 3.0.72), then diffed the **complete A220 per-context register set** the modern kernel save/restores against everything Mesa `fd2` emits per pass.
+
+**Finding 1 — the kernel layer is exhausted as a fix source.** Both the 2011 webOS KGSL *and* the modern HTC/Samsung kernels perform per-frame binning **entirely via the userspace-built cmdstream / draw-context save-restore IBs**. The kernel only establishes the *static* environment — firmware (`leia_*_470`), 512 K GMEM, `PM_OVERRIDE2=0x1a0`, MH arbiter, the `0x00032f07` 1K-boundary fix, `SQ_GPR_MANAGEMENT` static mode — **all of which mainline already replicates** (verified: `a2xx_gpu.c:1212, 1220, 1262-1263`, catalog `0x02020000`/512K/`leia_*_470`). A register-invariant period-8 (§4.6) therefore cannot be cured by any kernel write. This is consistent with every kernel-side falsification in §5.
+
+**Finding 2 — the type-4 LOAD_CONSTANT_CONTEXT "broadcast" hypothesis (update 17) is further weakened.** The modern `adreno_a2xx.c` restores the entire per-context block — `VSC_BIN_SIZE … VSC_PIPE_DATA_LENGTH_7` **plus** `SQ_GPR_MANAGEMENT` — as one atomic save/restore IB using ordinary `CP_SET_CONSTANT`/type-0, **not** type-4. If type-4 were the magic "broadcast into all 8 hw contexts" path, the modern kernels would depend on it; they don't. Reinforces §5: the state is binner-internal with no external write path.
+
+**Finding 3 — fd2-vs-kernel register diff (authoritative gap list).** Took `register_ranges_a220[]` + the separately-handled regs from `build_regsave_cmds` (the modern kernel's complete enumeration of leak-prone A220 context state) and checked each against every `REG_A2XX_*` symbol `fd2` emits:
+
+| Category | In `fd2`? |
+|---|---|
+| RB/PA/SQ raster+blend state (DEPTHCONTROL, COLORCONTROL, MODECONTROL, SCISSOR, AA, COLOR_MASK, SAMPLE_POS, COPY_CONTROL, DEPTH_CLEAR…) | emitted |
+| PC block (MAX_VTX_INDX, INDX_OFFSET, VERTEX_REUSE_BLOCK_CNTL) | emitted via the `VGT_*` aliases — **same addresses** (`REG_A220_PC_MAX_VTX_INDX` is `#define`d to `REG_VGT_MAX_VTX_INDX`=0x2100). **No VGT→PC address bug** — checked and ruled out. |
+| SQ_GPR_MANAGEMENT, TP0_CHICKEN | emitted |
+| Bool/Loop constant banks (SQ_CF_BOOLEANS / SQ_CF_LOOP) | not in normal emit, but covered by the sanitizer (Mesa 0081) |
+| **VSC binning block `0x0C00`–`0x0C1D`** (0xC00 master-enable, VSC_BIN_SIZE, PIPE_DATA_ADDRESS_0..7, PIPE_DATA_LENGTH_0..7) | **entirely absent** |
+| Minor leak surface: RB_DEPTH_INFO, COHER_DEST_BASE_0, PA_SC_WINDOW_SCISSOR_BR, PA_CL_VPORT_ZOFFSET, SQ_WRAPPING_1, RB_SAMPLE_COUNT_CTL, RB_FOG_COLOR, PA_SU_LINE_CNTL | absent (minor) |
+
+**The only systematic gap is the hardware-binning block** — which §5 already shows zeroing doesn't help (item 16) and Phase 0 engaging stalls. So the diff is a clean **negative result**: there is no missing "ordinary" register hiding the fix. It is purely the HW binner.
+
+**Finding 4 — the new framing (see §6 BINNER-CONFLICT).** `fd2_gmem.c` drives `VGT_CURRENT_BIN_ID_MIN/MAX` in a per-tile **CPU loop** = freedreno does **software** tile binning, while the A220 **hardware** VSC binner is always present in the primitive path ahead of the RB. The bug is therefore not "freedreno forgot to program the binner" but a **conflict between freedreno's SW per-tile loop and the A220's HW binner**, whose 8-pipe internal RAM gates primitive→tile routing invisibly.
+
+---
+
 ## 5. Cumulative ruled-out mechanisms
 
 The cycle's seat is NOT:
@@ -314,6 +339,19 @@ Also the proprietary stack engages `leia_configure_binning_pass` per draw — a 
 
 Mesa would need a much larger investment to replicate this (essentially: implement hw binning for A22X, the "TODO" in `fd2_gmem.c:60-64`).
 
+### Hypothesis BINNER-CONFLICT: SW tile-loop vs always-present HW binner (added 2026-05-22, current best model)
+
+Refines BINNER-A/B and PROPRIETARY-DRIVES-BINNER using the fd2/kernel register diff (§4.10). freedreno renders via a **software** per-tile CPU loop (`fd2_gmem.c` sets `VGT_CURRENT_BIN_ID_MIN/MAX` per tile and replays the cmdstream), but the A220's **hardware** VSC binner sits in the primitive path ahead of the RB and is **always present** — freedreno never drives nor cleanly disables it (the entire `0x0C00`–`0x0C1D` block is absent from `fd2`, §4.10 Finding 3). The two binning mechanisms collide: the HW binner's 8-pipe internal RAM gates which primitives reach which tiles, *independent* of the SW loop and *invisible* to MMIO.
+
+This single model explains every observation simultaneously:
+- **Geometry intact, tile coverage cycles** → vertex/raster path fine; HW binner silently masks primitive→tile routing.
+- **Period-8** → 8 VSC pipes.
+- **Register-invariant (§4.6)** → gating state is the binner's private pipe RAM.
+- **Every scrub fails; only a real binning pass would fix it** → the pipe RAM is only rewritten when the binner executes a pass producing a non-empty visibility stream.
+- **Phase 0 (`LRZ_VSC_CONTROL=3`) stalls** → binner engaged but its 8 pipes have no backing BOs → empty visibility stream → RB has nothing to consume.
+
+**Prediction for Phase 1/2 (Fork C):** collapses to the correct hash **iff** the 8 `VSC_PIPE_DATA_ADDRESS` regs point at real, distinct, mapped per-pipe BOs with non-zero `VSC_PIPE_DATA_LENGTH` **and** a VS-only binning variant emits visibility data. If it still stalls, the BO wiring is wrong, not the shader — same signature as Phase 0. This makes "drive the binner fully" (not "scrub/disable it") the only path consistent with the evidence, matching the proprietary stack's choice.
+
 None of these hypotheses is fully testable without either (a) significant Mesa engineering work, or (b) hardware-level probe access we don't have.
 
 ---
@@ -382,6 +420,14 @@ If you can offer ideas we haven't covered, the highest-value areas are:
 
 6. **The "27 MHz clock-force triggered a mode transition" data point** — does anyone have insight into what hardware-level event the lockup-at-27MHz might have triggered? It's the only mode-transition we've ever observed and it would be useful to know what we'd need to do deliberately to flip modes back (and ideally into a "stable / non-cycling" mode if one exists).
 
+### Cheap next tests (added 2026-05-22, from the fd2/kernel register diff §4.10)
+
+These are low-risk and follow directly from the diff; none is expected to fix period-8 (that needs full HW binning) but they harden state determinism and address the *secondary* cross-client nondeterminism symptom:
+
+- **Emit `COHER_DEST_BASE_0` in `fd2_emit_restore` (highest-value cheap test).** It is the RB cache-coherency base, freedreno never re-emits it per pass, and a stale value across DRM clients can produce nondeterministic tile writeback — directly relevant to the "9-of-10 distinct outputs across client transitions" symptom (and we already have `a2xx-cache-coherency-analysis.md`).
+- **Add the other 7 absent context regs** to `fd2_emit_restore` as defensive re-emit: `RB_DEPTH_INFO`, `PA_SC_WINDOW_SCISSOR_BR`, `PA_CL_VPORT_ZOFFSET`, `SQ_WRAPPING_1`, `RB_SAMPLE_COUNT_CTL`, `RB_FOG_COLOR`, `PA_SU_LINE_CNTL`. Matches the modern kernel's `register_ranges_a220[]` leak-prone set.
+- **Do NOT spend more effort on kernel-side cycle fixes** — §4.10 Finding 1 proves the fix cannot live in the kernel.
+
 ### Implementation feasibility
 
 7. **Is the proprietary "leia_configure_binning_pass + visibility-stream allocation + EXPORT-instruction emission" mechanism feasible to port into Mesa freedreno A22X?** The decomp shows it requires shader-compiler changes (emit `vpos` exports), VSC pipe BO allocation, and per-frame buffer growth. Mesa's a20x hw_binning is the closest reference — but a22x has different VSC register semantics and the proprietary decomp suggests A22X-specific paths. Multi-week port effort if so.
@@ -409,7 +455,8 @@ For deeper context if needed:
 - **Tile-coverage visual analysis (key 2026-05-11 finding)**: `reports/fb-captures/perturbed-7-wrong-hashes/mosaic_8way.png` and `reports/fb-captures/baseline-comparison-old-vs-new.png` — these show the 8 outputs side-by-side
 - SoC-init audit: `reports/gpu-cycle-of-8-soc-init-audit-2026-05-11.md` (work-in-progress, key findings in Gemini update 28)
 - Vendor decomp Ghidra output: `reports/ghidra-decomp/decomp-txt/`
-- Closed-source webOS KGSL reference: `/home/herrie/webos/touchpad-kernel/webos-linux-kernel-touchpad/drivers/gpu/msm/`
+- Closed-source webOS KGSL reference (2011 "Yamato"): `/home/herrie/webos/touchpad-kernel/webos-linux-kernel-touchpad/drivers/gpu/msm/`
+- **Modern peer MSM8660 Adreno KGSL** (2012/2013, has the authoritative A220 per-context save/restore reg-list used in §4.10): `/home/herrie/webos/touchpad-kernel/refs/htc-msm8660/drivers/gpu/msm/adreno_a2xx.c` (HTC pyramid, 3.0.71) and `.../refs/samsung-msm8660/...` (Samsung Celox, 3.0.72). Key: `register_ranges_a220[]` + `build_regsave_cmds` / `build_regrestore_cmds`.
 - Mesa freedreno tree: `/home/herrie/Documents/GitHub/mesa-latest/src/gallium/drivers/freedreno/a2xx/`
 - Kernel a2xx driver: `drivers/gpu/drm/msm/adreno/a2xx_gpu.c`
 - Firmware blobs: `firmware/leia_pm4_470.fw` (9220B), `firmware/leia_pfp_470.fw` (1156B)

@@ -2951,23 +2951,20 @@ static int vidc_runtime_suspend(struct device *dev)
 		vidc_write(core, VIDC_REG_AXI_CTRL, 0);
 
 		/*
-		 * AXI halt+reset drains the bus master but doesn't actually
-		 * idle the VIDC internal blocks — the clock branch's
-		 * BRANCH_CLK_OFF status bit still indicates active. Pulse
-		 * SW_RESET=ALL to force every internal block (RISC, VIDCCORE,
-		 * COMMON, MC, VI, DMX, H264/VC1/MPEG codecs) into reset so
-		 * they stop driving the AXI/AHB interconnect.  Without this,
-		 * vidc_clk_disable for vcodec_axi_b_clk triggers
-		 * "status stuck at 'on'" WARNs at the end of every session
-		 * and the next boot lands in firmware recovery mode (cmd=51).
-		 *
-		 * The next vidc_runtime_resume always runs vidc_boot_firmware
-		 * which re-pulses SW_RESET via hw_reset, so a clean reset here
-		 * is consistent with the existing boot-path expectations.
+		 * NOTE: We previously also pulsed VIDC_REG_SW_RESET=ALL here
+		 * to silence the "vcodec_axi_b_clk stuck at on" WARN at
+		 * clk_disable.  That made things worse — on the next session
+		 * boot every MMIO read returned the same value (0x133 across
+		 * AXI_STATUS, SW_RESET, FW_VERSION), and FW_STATUS_RET /
+		 * SYS_INIT / OPEN_CH all timed out.  The pulse needs the
+		 * clock to propagate through the internal blocks; cutting the
+		 * clock immediately after leaves the blocks stuck mid-reset
+		 * and the AHB slave dead.  hw_reset() on the next resume
+		 * re-pulses SW_RESET while clocks are on and works correctly,
+		 * so leave the suspend-side reset to it.  The WARN at
+		 * clk_branch_disable is cosmetic — recovery-mode booting is
+		 * handled by the cmd=0x110909 ACK path.
 		 */
-		vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_ALL);
-		/* Brief settle so the reset pulse propagates before clk_disable */
-		udelay(100);
 	}
 
 	vidc_clk_disable(core);
