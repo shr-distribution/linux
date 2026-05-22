@@ -173,10 +173,30 @@ static int lm8502_brightness_set(struct led_classdev *cdev,
 	return ret;
 }
 
+/*
+ * Write a register, retrying once after a short delay if the chip
+ * returns ENXIO. The bus on Tenderloin (GSBI8 QUP, shared with A6
+ * batteries) occasionally drops a transaction with -ENXIO; the A6
+ * driver hits the same pattern. The chip is also briefly unresponsive
+ * during the post-reset settling window, so the first I2C operation
+ * after reset frequently misses.
+ */
+static int lm8502_write_retry(struct lm8502_data *priv, unsigned int reg,
+			      unsigned int val)
+{
+	int ret;
+
+	ret = regmap_write(priv->regmap, reg, val);
+	if (ret == -ENXIO) {
+		usleep_range(2000, 3000);
+		ret = regmap_write(priv->regmap, reg, val);
+	}
+	return ret;
+}
+
 static int lm8502_chip_init(struct lm8502_data *priv)
 {
 	struct device *dev = &priv->client->dev;
-	unsigned int val;
 	int ret;
 
 	/*
@@ -186,28 +206,24 @@ static int lm8502_chip_init(struct lm8502_data *priv)
 	 * Writing 0xFF to RESET (0x3D) triggers the reset.
 	 */
 	dev_info(dev, "Sending software reset to LM8502\n");
-	ret = regmap_write(priv->regmap, LM8502_RESET, 0xFF);
+	ret = lm8502_write_retry(priv, LM8502_RESET, 0xFF);
 	if (ret) {
 		dev_err(dev, "Software reset failed: %d\n", ret);
 		return ret;
 	}
-	msleep(100);  /* Allow chip to complete reset and settle */
-	dev_info(dev, "Software reset complete, chip ready for configuration\n");
-
-	/* Now verify I2C communication after reset */
-	ret = regmap_read(priv->regmap, LM8502_ENGINE_CNTRL1, &val);
-	if (ret) {
-		dev_err(dev, "I2C read after reset failed: %d\n", ret);
-		return ret;
-	}
-	dev_info(dev, "I2C communication OK after reset, ENGINE_CNTRL1=0x%02x\n", val);
+	msleep(50);  /* webOS uses mdelay(50); 50ms is enough */
 
 	/*
 	 * Initialize registers to match webOS configuration exactly:
 	 * - ENGINE_CNTRL1 (0x00) = 0x40 (CHIP_EN)
 	 * - ENGINE_CNTRL2 (0x01) = 0x20
+	 *
+	 * webOS does a read of ENGINE_CNTRL1 here but ignores any I2C
+	 * error and just OR's in CHIP_EN. We hardcode 0x40 — same end
+	 * result without depending on a post-reset read succeeding (which
+	 * empirically fails with -ENXIO on the first attempt on tenderloin).
 	 */
-	ret = regmap_write(priv->regmap, LM8502_ENGINE_CNTRL1, 0x40);
+	ret = lm8502_write_retry(priv, LM8502_ENGINE_CNTRL1, 0x40);
 	if (ret) {
 		dev_err(dev, "ENGINE_CNTRL1 write failed: %d\n", ret);
 		return ret;
