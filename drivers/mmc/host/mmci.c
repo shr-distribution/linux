@@ -2298,6 +2298,24 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 				"CMDTIMEOUT: cmd%d arg=0x%08x status=0x%08x data=%s\n",
 				cmd->opcode, cmd->arg, status,
 				host->data ? "yes" : "no");
+		/*
+		 * WiFi (mmc1) CMD53 timeout diag: dump the CPSM/DPSM state to
+		 * understand why the command after a DMA write gets no response
+		 * (WMI WRITE->READ CMDTIMEOUT). datactrl_first means DATACTRL is
+		 * armed before the command; a stuck DPSM from the prior write
+		 * would show here.
+		 */
+		if (host->mmc->index == 1 && cmd->opcode == SD_IO_RW_EXTENDED)
+			dev_err(mmc_dev(host->mmc),
+				"DIAG[CMD53-TO]: STATUS=0x%08x DATACTRL=0x%08x DATACNT=%u CLK=0x%08x MASK0=0x%08x CMD=0x%08x atomic=%d defer=%d\n",
+				readl(host->base + MMCISTATUS),
+				readl(host->base + MMCIDATACTRL),
+				readl(host->base + MMCIDATACNT),
+				readl(host->base + MMCICLOCK),
+				readl(host->base + MMCIMASK0),
+				readl(host->base + MMCICOMMAND),
+				host->atomic_submit.active,
+				host->dma_issue_deferred);
 	} else if (status & MCI_CMDCRCFAIL && cmd->flags & MMC_RSP_CRC) {
 		cmd->error = -EILSEQ;
 	} else if (host->variant->busy_timeout && busy_resp &&
