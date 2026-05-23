@@ -2921,31 +2921,24 @@
 	assigned-clock-rates = <58982400>;
 
 	/*
-	 * TX-only DMA for gapless transmit; RX stays PIO. (was TX+RX DMA)
-	 *
-	 * webOS hsuart used ADM1 DMA for both directions:
-	 *   DMOV_HSUART1_TX_CHAN = 22 (ADM1 global) → local 6, CRCI 8
+	 * Full TX+RX ADM1 DMA, matching webOS hsuart:
 	 *   DMOV_HSUART1_RX_CHAN = 23 (ADM1 global) → local 7, CRCI 9
+	 *   DMOV_HSUART1_TX_CHAN = 22 (ADM1 global) → local 6, CRCI 8
 	 *
-	 * TX DMA is required: PIO TX introduces inter-byte gaps when the CPU
-	 * is preempted / AHB is congested, and the CSR BlueCore rejects BCSP
-	 * frames with intra-frame idle (RX stale timeout). DMA streams bytes
-	 * gaplessly from memory to the TX FIFO. Keep it.
+	 * TX DMA is required so BCSP frames stream gaplessly to the chip
+	 * (PIO TX inter-byte gaps trip the CSR BlueCore RX stale timeout).
 	 *
-	 * RX DMA is DISABLED on purpose. On-device (RXWIRE hex dump in
-	 * hci_bcsp bcsp_recv) the mainline msm_serial ADM RX-DMA completion
-	 * path delivered the correct byte COUNT (from UARTDM_RX_TOTAL_SNAP,
-	 * a hardware register) but ZERO data — the chip's 12-byte SYNC bursts
-	 * arrived as "00 00 .. 00", so BCSP link-est never advanced past
-	 * BCSP_W4_PKT_DELIMITER (no 0xc0 ever seen). This matches the known
-	 * unreliable-ADM-read behavior on MSM8660 (cf. SDCC DMA reads only
-	 * raising DATABLOCKEND, and AR6003 BMI rejecting DMA-paced reads).
-	 * PIO RX reads UARTDM_RF directly with no DMA buffer/cache hazard and
-	 * is plenty for 115200 BCSP traffic. Provide only the "tx" channel so
-	 * msm_serial's RX falls back to PIO (request "rx" simply absent).
+	 * RX DMA delivering all-zeros earlier was NOT an ADM read defect — it
+	 * was the GSBI6 node's wrong cell-index (12 instead of 6) in
+	 * qcom-msm8660.dtsi, which made qcom_gsbi route GSBI12's TCSR CRCI mux
+	 * bits instead of GSBI6's, so GSBI6's RX CRCI never reached ADM1 and
+	 * the RX DMA channel got no data-ready handshake. With cell-index
+	 * fixed to 6, the CRCI is routed and RX DMA receives real data, so we
+	 * restore the webOS-faithful dual-DMA configuration here.
 	 */
-	dmas = <&adm_dma1 6>;
-	dma-names = "tx";
+	dmas = <&adm_dma1 7>, <&adm_dma1 6>;
+	dma-names = "rx", "tx";
+	qcom,rx-crci = <9>;
 	qcom,tx-crci = <8>;
 
 	/*
