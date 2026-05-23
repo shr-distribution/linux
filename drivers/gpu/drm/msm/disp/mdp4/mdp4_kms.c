@@ -126,7 +126,7 @@ static void mdp4_dump_bw_regs(struct mdp4_kms *mdp4_kms, const char *tag)
 {
 	static unsigned int seq;
 
-	pr_info("mdp4 BW regs [%s seq=%u]: "
+	pr_debug("mdp4 BW regs [%s seq=%u]: "
 		"PORTMAP=%08x READ_CNFG=%08x "
 		"DMA_FETCH_P=%08x DMA_FETCH_E=%08x "
 		"PIPE_FETCH VG1=%08x VG2=%08x RGB1=%08x RGB2=%08x "
