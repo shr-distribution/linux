@@ -936,9 +936,22 @@ static void adm_start_dma(struct adm_chan *achan)
 		if (async_desc->crci == 1 || async_desc->crci == 5)
 			blk_size = 1;
 
+		/*
+		 * Fix #4: CRCI_CTL is in the ADM CONFIG register bank, which on
+		 * MSM8660/APQ8060 is live at EE=0 (verified by /dev/mem on the
+		 * working webOS kernel: CRCI_CTL reads back 0x1 / blk_size=1 for
+		 * crci1 (eMMC) and crci5 (WiFi) at the EE=0 aperture, while the
+		 * EE=1 aperture is a dead mirror reading 0). Writing at adev->ee
+		 * (=1) silently dropped this block-size programming, so the SDCC
+		 * channels ran on whatever blk_size the bootloader left in EE=0 ->
+		 * mis-paced ADM<->FIFO CRCI handshake -> the residual eMMC/WiFi
+		 * "error during DMA transfer". Write at the live EE=0 aperture.
+		 * (Contrast: the per-channel command bank - CMD_PTR/RSLT/FLUSH -
+		 * is live at EE=1; only the CONFIG bank CONF/CRCI_CTL is at EE=0.)
+		 */
 		crci_val = async_desc->mux | blk_size;
 		writel(crci_val,
-		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
+		       adev->regs + ADM_CRCI_CTL(async_desc->crci, 0));
 	}
 
 	/*
