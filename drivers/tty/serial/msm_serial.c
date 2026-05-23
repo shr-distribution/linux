@@ -1062,7 +1062,7 @@ msm_find_best_baud(struct uart_port *port, unsigned int baud,
 		   unsigned long *rate)
 {
 	struct msm_port *msm_port = to_msm_port(port);
-	unsigned int divisor, result;
+	unsigned int divisor, result, clk_mult = 1;
 	unsigned long target, old, best_rate = 0, diff, best_diff = ULONG_MAX;
 	const struct msm_baud_map *entry, *end, *best;
 	static const struct msm_baud_map table[] = {
@@ -1084,8 +1084,21 @@ msm_find_best_baud(struct uart_port *port, unsigned int baud,
 		{ 1536, 0x00,  1 },
 	};
 
+	/*
+	 * GSBI6 (phys 0x16540000) is the TouchPad BT (CSR BlueCore) UART. The
+	 * CSR chip decodes webOS's TX but not ours despite identical MR1/MR2/
+	 * 8N1/115200. The one remaining config difference: webOS clocks this
+	 * UART from a higher fundamental rate and divides via CSR (fund_clk
+	 * 7372800 / CSR DIV_4 for 115200) instead of fund_clk = 16*baud / CSR
+	 * DIV_1. Mirror that here for low baud on the BT UART: target a 4x
+	 * higher clock so the selector picks a CSR /4 divider from a cleaner
+	 * higher source clock (mainline gcc-msm8660 ftbl supports 7372800).
+	 */
+	if (port->mapbase == 0x16540000 && baud && baud <= 460800)
+		clk_mult = 4;
+
 	best = table; /* Default to smallest divider */
-	target = clk_round_rate(msm_port->clk, 16 * baud);
+	target = clk_round_rate(msm_port->clk, clk_mult * 16 * baud);
 	divisor = DIV_ROUND_CLOSEST(target, 16 * baud);
 
 	end = table + ARRAY_SIZE(table);
