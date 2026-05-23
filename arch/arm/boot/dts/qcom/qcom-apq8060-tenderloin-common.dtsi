@@ -4292,12 +4292,6 @@
 	status = "okay";
 };
 
-/*
- * DISABLED: Still hangs early boot despite power-domains + SW_RESET skip.
- * Investigating deeper - may be clk_set_rate before pm_runtime_enable,
- * or interconnect voting issue, or probe dependency ordering.
- */
-/*
 &rotator {
 	status = "okay";
 };
@@ -4305,7 +4299,6 @@
 &vpe {
 	status = "okay";
 };
-*/
 
 &vidc {
 	status = "okay";
