@@ -2778,7 +2778,7 @@ static int vidc_probe(struct platform_device *pdev)
 	}
 
 	/* Set initial clock rate */
-	ret = clk_set_rate(core->core_clk, vidc_clk_rates[2]); /* 96 MHz */
+	ret = clk_set_rate(core->core_clk, vidc_clk_rates[4]); /* 200 MHz */
 	if (ret) {
 		dev_err(dev, "failed to set core clock rate: %d\n", ret);
 		return ret;
