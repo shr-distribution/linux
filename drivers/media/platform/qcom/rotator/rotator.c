@@ -11,6 +11,7 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/interconnect.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -165,6 +166,35 @@ static const struct rotator_fmt *find_format(u32 fourcc)
 }
 
 /*
+ * The MSM8660 rotator has no colour-space converter and no scaler: it can
+ * rotate/flip and detile, but it always writes back the same colour space
+ * and chroma sub-sampling it read. Given a source (OUTPUT) format, return
+ * the only format the CAPTURE side may legally use:
+ *   - RGB sources rotate to the identical RGB format.
+ *   - YUV sources (including the Samsung tiled NV12MT the decoder emits)
+ *     are written back as the *linear* YUV format with the same sub-sampling
+ *     and Cb/Cr order (e.g. NV12MT -> NV12, NV12 -> NV12, NV16 -> NV16).
+ * Anything else (e.g. NV12 -> RGB) would only ever produce a luma-only
+ * grayscale image, so it must not be advertised or accepted.
+ */
+static const struct rotator_fmt *rotator_capture_fmt_for(const struct rotator_fmt *src)
+{
+	unsigned int i;
+
+	if (src->chroma == ROTATOR_CHROMA_RGB)
+		return src;
+
+	for (i = 0; i < ARRAY_SIZE(rotator_formats); i++) {
+		const struct rotator_fmt *f = &rotator_formats[i];
+
+		if (!f->tiled && f->chroma == src->chroma && f->cbcr == src->cbcr)
+			return f;
+	}
+
+	return src;
+}
+
+/*
  * V4L2 ioctl operations
  */
 
@@ -180,13 +210,24 @@ static int rotator_querycap(struct file *file, void *priv,
 static int rotator_enum_fmt(struct file *file, void *priv,
 			    struct v4l2_fmtdesc *f)
 {
+	struct rotator_ctx *ctx = rotator_fh_to_ctx(file->private_data);
 	bool is_out = V4L2_TYPE_IS_OUTPUT(f->type);
 	unsigned int i, n = 0;
 
+	/*
+	 * The CAPTURE side can only ever produce the single format that
+	 * matches the current source colour space (the rotator has no CSC).
+	 * Advertise exactly that one so userspace cannot negotiate an
+	 * impossible conversion such as NV12 -> RGB (which yields grayscale).
+	 */
+	if (!is_out) {
+		if (f->index != 0)
+			return -EINVAL;
+		f->pixelformat = rotator_capture_fmt_for(ctx->src.fmt)->fourcc;
+		return 0;
+	}
+
 	for (i = 0; i < ARRAY_SIZE(rotator_formats); i++) {
-		/* Tiled formats are only valid as the rotator's input */
-		if (rotator_formats[i].tiled && !is_out)
-			continue;
 		if (n == f->index) {
 			f->pixelformat = rotator_formats[i].fourcc;
 			return 0;
@@ -222,6 +263,7 @@ static int rotator_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
 
 static int rotator_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 {
+	struct rotator_ctx *ctx = rotator_fh_to_ctx(file->private_data);
 	const struct rotator_fmt *fmt;
 	u32 bpp;
 
@@ -232,6 +274,21 @@ static int rotator_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	/* Tiled layout is input-only; fall back to linear on the CAPTURE side */
 	if (fmt->tiled && f->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
 		fmt = &rotator_formats[0];
+
+	/*
+	 * The CAPTURE (output) side cannot change colour space or size: the
+	 * rotator has no CSC and no scaler. Force the only legal output format
+	 * for the current source, and force the output geometry to the source
+	 * geometry (width/height swapped for 90/270 rotation). This prevents
+	 * the grayscale (YUV->RGB) and the silently-ignored-scaling failures.
+	 */
+	if (!V4L2_TYPE_IS_OUTPUT(f->type)) {
+		bool swap = (ctx->rotation == 90 || ctx->rotation == 270);
+
+		fmt = rotator_capture_fmt_for(ctx->src.fmt);
+		f->fmt.pix.width = swap ? ctx->src.height : ctx->src.width;
+		f->fmt.pix.height = swap ? ctx->src.width : ctx->src.height;
+	}
 
 	f->fmt.pix.pixelformat = fmt->fourcc;
 	f->fmt.pix.width = clamp(f->fmt.pix.width,
@@ -305,10 +362,28 @@ static int rotator_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	frame->sizeimage = f->fmt.pix.sizeimage;
 	frame->fmt = fmt;
 
-	/* Reset the source crop to the full frame when input dimensions change */
-	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT)
+	/*
+	 * Setting the source resets the derived state: the crop ROI goes back
+	 * to the full frame, and the CAPTURE (dst) format is re-derived to the
+	 * only legal output for this source (same colour space, same size — no
+	 * CSC, no scaling). The dst stays valid even if userspace never issues
+	 * an explicit CAPTURE S_FMT.
+	 */
+	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
+		bool swap = (ctx->rotation == 90 || ctx->rotation == 270);
+
 		ctx->crop = (struct v4l2_rect){ 0, 0, frame->width,
 						frame->height };
+
+		ctx->dst.fmt = rotator_capture_fmt_for(frame->fmt);
+		ctx->dst.width = swap ? frame->height : frame->width;
+		ctx->dst.height = swap ? frame->width : frame->height;
+		ctx->dst.bytesperline = ctx->dst.width *
+			(ctx->dst.fmt->num_planes == 1 ?
+				ctx->dst.fmt->depth / 8 : 1);
+		ctx->dst.sizeimage = ctx->dst.width * ctx->dst.height *
+				     ctx->dst.fmt->depth / 8;
+	}
 
 	return 0;
 }
@@ -831,6 +906,28 @@ static int rotator_probe(struct platform_device *pdev)
 	rot->dev = dev;
 	mutex_init(&rot->lock);
 	init_completion(&rot->done);
+
+	/*
+	 * Set up DMA parameters. Without this:
+	 *   - vb2_mmap NULL-derefs on dev->dma_parms->max_segment_size
+	 *   - vb2_dma_contig_plane_dma_addr returns raw CMA physical
+	 *     addresses instead of IOMMU-translated iovas, which then fault
+	 *     when the rotator reads/writes them through its own SMMU
+	 *     (rot_iommu @ 0x7700000).
+	 *
+	 * 32-bit DMA mask is correct: the rotator addresses sub-4GB and the
+	 * CMA/SMI buffers live well below the 4 GB boundary.
+	 */
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret) {
+		dev_err(dev, "failed to set DMA mask: %d\n", ret);
+		return ret;
+	}
+	dev->dma_parms = devm_kzalloc(dev, sizeof(*dev->dma_parms),
+				      GFP_KERNEL);
+	if (!dev->dma_parms)
+		return -ENOMEM;
+	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
 
 	/* Map registers */
 	rot->base = devm_platform_ioremap_resource(pdev, 0);
