@@ -56,6 +56,7 @@ static const unsigned long vidc_clk_rates[] = {
 	96000000,
 	133330000,
 	200000000,
+	228570000,	/* HIGH — top of the mmcc vcodec freq table */
 };
 
 static int vidc_clk_enable(struct vidc_core *core)
@@ -2778,7 +2779,7 @@ static int vidc_probe(struct platform_device *pdev)
 	}
 
 	/* Set initial clock rate */
-	ret = clk_set_rate(core->core_clk, vidc_clk_rates[4]); /* 200 MHz */
+	ret = clk_set_rate(core->core_clk, vidc_clk_rates[5]); /* 228.57 MHz */
 	if (ret) {
 		dev_err(dev, "failed to set core clock rate: %d\n", ret);
 		return ret;
