@@ -2921,26 +2921,31 @@
 	assigned-clock-rates = <58982400>;
 
 	/*
-	 * DMA configuration for gapless UART TX/RX (matches webOS hsuart).
-	 * From webOS kernel arch/arm/mach-msm/include/mach/dma.h:
-	 *   DMOV_HSUART1_TX_CHAN = 22  (ADM1 global channel)
-	 *   DMOV_HSUART1_TX_CRCI = 8
-	 *   DMOV_HSUART1_RX_CHAN = 23  (ADM1 global channel)
-	 *   DMOV_HSUART1_RX_CRCI = 9
+	 * TX-only DMA for gapless transmit; RX stays PIO. (was TX+RX DMA)
 	 *
-	 * ADM1 local channel numbering: global - 16
-	 *   RX: 23 - 16 = 7
-	 *   TX: 22 - 16 = 6
+	 * webOS hsuart used ADM1 DMA for both directions:
+	 *   DMOV_HSUART1_TX_CHAN = 22 (ADM1 global) → local 6, CRCI 8
+	 *   DMOV_HSUART1_RX_CHAN = 23 (ADM1 global) → local 7, CRCI 9
 	 *
-	 * Without DMA, msm_serial falls back to PIO (CPU writes to FIFO).
-	 * PIO introduces inter-byte gaps when the CPU is preempted or AHB
-	 * bus is congested, causing the CSR BlueCore chip to reject BCSP
-	 * frames (RX stale timeout). DMA streams bytes gaplessly from
-	 * memory to FIFO via hardware, eliminating the gap.
+	 * TX DMA is required: PIO TX introduces inter-byte gaps when the CPU
+	 * is preempted / AHB is congested, and the CSR BlueCore rejects BCSP
+	 * frames with intra-frame idle (RX stale timeout). DMA streams bytes
+	 * gaplessly from memory to the TX FIFO. Keep it.
+	 *
+	 * RX DMA is DISABLED on purpose. On-device (RXWIRE hex dump in
+	 * hci_bcsp bcsp_recv) the mainline msm_serial ADM RX-DMA completion
+	 * path delivered the correct byte COUNT (from UARTDM_RX_TOTAL_SNAP,
+	 * a hardware register) but ZERO data — the chip's 12-byte SYNC bursts
+	 * arrived as "00 00 .. 00", so BCSP link-est never advanced past
+	 * BCSP_W4_PKT_DELIMITER (no 0xc0 ever seen). This matches the known
+	 * unreliable-ADM-read behavior on MSM8660 (cf. SDCC DMA reads only
+	 * raising DATABLOCKEND, and AR6003 BMI rejecting DMA-paced reads).
+	 * PIO RX reads UARTDM_RF directly with no DMA buffer/cache hazard and
+	 * is plenty for 115200 BCSP traffic. Provide only the "tx" channel so
+	 * msm_serial's RX falls back to PIO (request "rx" simply absent).
 	 */
-	dmas = <&adm_dma1 7>, <&adm_dma1 6>;
-	dma-names = "rx", "tx";
-	qcom,rx-crci = <9>;
+	dmas = <&adm_dma1 6>;
+	dma-names = "tx";
 	qcom,tx-crci = <8>;
 
 	/*
