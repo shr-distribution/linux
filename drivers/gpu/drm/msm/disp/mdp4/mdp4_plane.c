@@ -5,6 +5,7 @@
  */
 
 #include <drm/drm_atomic.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
@@ -358,6 +359,26 @@ static int mdp4_plane_mode_set(struct drm_plane *plane,
 		mdp4_write_csc_config(mdp4_kms, pipe, csc);
 	}
 
+	/*
+	 * Source flip — the VG/RGB pipe can mirror the fetched image
+	 * horizontally and/or vertically during scanout (no rotator block
+	 * needed).  180° rotation is FLIP_LR | FLIP_UD; individual reflects
+	 * map straight to the LR/UD bits.  Used e.g. for panels mounted
+	 * upside-down (TouchPad LVDS) so video can be shown right-way-up
+	 * without a software flip pass.
+	 */
+	if (plane->state) {
+		unsigned int rot = plane->state->rotation;
+
+		if (rot & DRM_MODE_ROTATE_180)
+			op_mode |= MDP4_PIPE_OP_MODE_FLIP_LR |
+				   MDP4_PIPE_OP_MODE_FLIP_UD;
+		if (rot & DRM_MODE_REFLECT_X)
+			op_mode |= MDP4_PIPE_OP_MODE_FLIP_LR;
+		if (rot & DRM_MODE_REFLECT_Y)
+			op_mode |= MDP4_PIPE_OP_MODE_FLIP_UD;
+	}
+
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(pipe), op_mode);
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_PHASEX_STEP(pipe), phasex_step);
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_PHASEY_STEP(pipe), phasey_step);
@@ -463,6 +484,18 @@ struct drm_plane *mdp4_plane_init(struct drm_device *dev,
 
 	mdp4_plane->pipe = pipe_id;
 	mdp4_plane->name = pipe_names[pipe_id];
+
+	/*
+	 * Expose hardware source flip (180° / X / Y reflect) — handled by
+	 * the pipe's PIPE_OP_MODE FLIP_LR/FLIP_UD bits in mode_set, no
+	 * rotator block required.  90°/270° would need the standalone MDP
+	 * rotator (not implemented), so they are intentionally not offered.
+	 */
+	drm_plane_create_rotation_property(plane, DRM_MODE_ROTATE_0,
+					   DRM_MODE_ROTATE_0 |
+					   DRM_MODE_ROTATE_180 |
+					   DRM_MODE_REFLECT_X |
+					   DRM_MODE_REFLECT_Y);
 
 	drm_plane_helper_add(plane, &mdp4_plane_helper_funcs);
 
