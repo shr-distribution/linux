@@ -1943,6 +1943,15 @@ static struct clk_branch mdp_axi_clk = {
 static struct clk_branch rot_axi_clk = {
 	.halt_reg = 0x01d8,
 	.halt_bit = 2,
+	/*
+	 * The rotator AXI clock shares the MMSS fabric with MDP. While MDP is
+	 * scanning out to the display the fabric never idles, so this branch
+	 * cannot halt and its status stays stuck at 'on'. Without skipping the
+	 * halt check, every rotator runtime-PM suspend triggers a
+	 * "rot_axi_clk status stuck at 'on'" WARN storm (same class as
+	 * gfx3d_axi_clk / vcodec_axi_b_clk). Skip the halt poll.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0020,
 		.enable_mask = BIT(22),
