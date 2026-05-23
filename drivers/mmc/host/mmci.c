@@ -2198,6 +2198,34 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 
 	if (status & MCI_DATAEND || data->error) {
 		/*
+		 * WiFi (mmc1) DMA READ: do NOT complete on DATAEND. On this SoC
+		 * the SDCC raises DATAEND while the ADM is still draining the
+		 * CRCI handshake — the dmaengine completion callback fires LATE,
+		 * after DATAEND. Tearing down the DPSM here (mmci_stop_data) while
+		 * the ADM is mid-transfer leaves the SDCC CPSM stuck in the
+		 * data-state response window, so the NEXT command never completes
+		 * (confirmed: the dummy52 CMD52 issued after a 128-byte HTC read
+		 * never raises a completion IRQ → modprobe hangs in D-state).
+		 *
+		 * Defer to mmci_qcom_dma_complete, which runs from the ADM's own
+		 * IRQ when the descriptor is truly done and the data path is
+		 * clean. This matches legacy webOS msm_sdcc, which completes reads
+		 * only from the msm_dmov complete_func, never from a SDCC DATAEND.
+		 * The callback is wired for every mmc1 read (see _mmci_dmae_prep_
+		 * data), so it is guaranteed to fire; the DATAEND bit was already
+		 * cleared by mmci_irq, and qcom_dma_timeout_work is the backstop.
+		 * Errors (DATACRCFAIL/RXOVERRUN/TIMEOUT) still complete here so the
+		 * failure is handled promptly. Writes are unaffected (PROG_DONE
+		 * path below). eMMC (mmc0) is unaffected.
+		 */
+		if (host->mmc->index == 1 && host->dma_in_progress &&
+		    (data->flags & MMC_DATA_READ) && !data->error) {
+			trace_printk("MMCI-DATAEND: mmc1 read DATAEND IGNORED, defer to ADM callback blksz=%u blocks=%u\n",
+				     data->blksz, data->blocks);
+			return;
+		}
+
+		/*
 		 * Tag DATAEND-driven completion of DMA transfers (low volume) so
 		 * we can contrast against the mmci_qcom_dma_complete callback path
 		 * and see, per direction and per controller (mmc0=eMMC,
