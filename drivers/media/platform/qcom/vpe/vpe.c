@@ -222,7 +222,11 @@ static int vpe_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 static int vpe_g_selection(struct file *file, void *priv,
 			   struct v4l2_selection *s)
 {
-	struct vpe_ctx *ctx = vpe_fh_to_ctx(priv);
+	/*
+	 * The V4L2 core passes NULL as priv for {G,S}_SELECTION
+	 * (see v4l_g_selection/v4l_s_selection); derive ctx from the file.
+	 */
+	struct vpe_ctx *ctx = vpe_fh_to_ctx(file->private_data);
 
 	switch (s->target) {
 	case V4L2_SEL_TGT_CROP:
@@ -255,7 +259,8 @@ static int vpe_g_selection(struct file *file, void *priv,
 static int vpe_s_selection(struct file *file, void *priv,
 			   struct v4l2_selection *s)
 {
-	struct vpe_ctx *ctx = vpe_fh_to_ctx(priv);
+	/* priv is NULL for {G,S}_SELECTION; derive ctx from the file. */
+	struct vpe_ctx *ctx = vpe_fh_to_ctx(file->private_data);
 	struct v4l2_rect *area;
 	u32 max_w, max_h;
 
