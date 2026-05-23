@@ -4292,6 +4292,11 @@
 	status = "okay";
 };
 
+/*
+ * DISABLED: Still hangs with power-domains + SW_RESET skip + iommus.
+ * Need to check: probe order, clock dependencies, whether drivers even load.
+ */
+/*
 &rotator {
 	status = "okay";
 };
@@ -4299,6 +4304,7 @@
 &vpe {
 	status = "okay";
 };
+*/
 
 &vidc {
 	status = "okay";
