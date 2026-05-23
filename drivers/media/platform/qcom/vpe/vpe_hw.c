@@ -135,12 +135,13 @@ void vpe_hw_set_dst_addr(void __iomem *base, dma_addr_t y_addr, dma_addr_t cbcr_
 	writel(cbcr_addr, base + VPE_OUTP1_ADDR);
 }
 
-void vpe_hw_set_src_size(void __iomem *base, u32 width, u32 height, u32 stride)
+void vpe_hw_set_src_size(void __iomem *base, u32 img_w, u32 img_h,
+			 u32 crop_w, u32 crop_h, u32 stride)
 {
-	u32 size = ((height & 0xfff) << 16) | (width & 0xfff);
-
-	writel(size, base + VPE_SRC_SIZE);
-	writel(size, base + VPE_SRC_IMAGE_SIZE);
+	/* SRC_SIZE is the ROI (crop) being read; IMAGE_SIZE is the full frame */
+	writel(((crop_h & 0xfff) << 16) | (crop_w & 0xfff), base + VPE_SRC_SIZE);
+	writel(((img_h & 0xfff) << 16) | (img_w & 0xfff),
+	       base + VPE_SRC_IMAGE_SIZE);
 	writel(stride, base + VPE_SRC_YSTRIDE1);
 
 	/* Set source format for NV12 */
@@ -186,6 +187,7 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 {
 	u64 phase_step_x, phase_step_y;
 	u32 step_x, step_y;
+	u32 op_mode;
 
 	/* Calculate phase step values (fixed point 3.29 format) */
 	phase_step_x = ((u64)src_w << SCALER_PHASE_BITS) + (dst_w - 1);
@@ -195,6 +197,18 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 	phase_step_y = ((u64)src_h << SCALER_PHASE_BITS) + (dst_h - 1);
 	do_div(phase_step_y, dst_h);
 	step_y = (u32)phase_step_y;
+
+	/*
+	 * Enable/disable the scaler block in OP_MODE[1:0]. The phase steps
+	 * and coefficients below are inert unless the scaler is enabled here:
+	 * the legacy msm_vpe1 driver sets OP_MODE |= 0x3 when zooming and
+	 * clears it for a 1:1 passthrough. Without this the VPE ignores the
+	 * requested scale entirely.
+	 */
+	op_mode = readl(base + VPE_OP_MODE) & ~VPE_OP_MODE_SCALE_MASK;
+	if (src_w != dst_w || src_h != dst_h)
+		op_mode |= VPE_OP_MODE_SCALE_EN;
+	writel(op_mode, base + VPE_OP_MODE);
 
 	/* Load scale coefficients based on maximum phase step */
 	vpe_hw_load_scale_coeff(base, max(step_x, step_y));
@@ -206,10 +220,14 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 	/* Set phase step values */
 	writel(step_x, base + VPE_SCALE_PHASEX_STEP);
 	writel(step_y, base + VPE_SCALE_PHASEY_STEP);
+}
 
-	/* Set source ROI offset to 0 */
-	writel(0, base + VPE_SRC_XY);
-	writel(0, base + VPE_OUT_XY);
+void vpe_hw_set_roi(void __iomem *base, u32 src_x, u32 src_y,
+		    u32 dst_x, u32 dst_y)
+{
+	/* Source crop offset and output placement offset */
+	writel(((src_y & 0xfff) << 16) | (src_x & 0xfff), base + VPE_SRC_XY);
+	writel(((dst_y & 0xfff) << 16) | (dst_x & 0xfff), base + VPE_OUT_XY);
 }
 
 void vpe_hw_set_rotation(void __iomem *base, int rotation)

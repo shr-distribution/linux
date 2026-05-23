@@ -99,6 +99,10 @@
 #define VPE_OP_MODE_ROT_180		(2 << 8)
 #define VPE_OP_MODE_ROT_270		(3 << 8)
 
+/* Scaler enable bits (OP_MODE[1:0]: bit0 = X, bit1 = Y) */
+#define VPE_OP_MODE_SCALE_MASK		GENMASK(1, 0)
+#define VPE_OP_MODE_SCALE_EN		0x3
+
 /* Scale phase constants (fixed point 3.29 format) */
 #define SCALER_PHASE_BITS		29
 #define HAL_MDP_PHASE_STEP_2P50		0x50000000
@@ -120,9 +124,12 @@ void vpe_hw_start(void __iomem *base);
 /* Configuration functions */
 void vpe_hw_set_src_addr(void __iomem *base, dma_addr_t y_addr, dma_addr_t cbcr_addr);
 void vpe_hw_set_dst_addr(void __iomem *base, dma_addr_t y_addr, dma_addr_t cbcr_addr);
-void vpe_hw_set_src_size(void __iomem *base, u32 width, u32 height, u32 stride);
+void vpe_hw_set_src_size(void __iomem *base, u32 img_w, u32 img_h,
+			 u32 crop_w, u32 crop_h, u32 stride);
 void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride);
 void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 dst_h);
+void vpe_hw_set_roi(void __iomem *base, u32 src_x, u32 src_y,
+		    u32 dst_x, u32 dst_y);
 void vpe_hw_set_rotation(void __iomem *base, int rotation);
 void vpe_hw_set_op_mode(void __iomem *base, u32 mode);
 

@@ -90,6 +90,8 @@ struct vpe_ctx {
 
 	struct vpe_frame	src;
 	struct vpe_frame	dst;
+	struct v4l2_rect	crop;		/* source ROI */
+	struct v4l2_rect	compose;	/* output placement */
 	int			rotation;
 };
 
@@ -208,6 +210,80 @@ static int vpe_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	frame->sizeimage = pix->sizeimage;
 	frame->fmt = vpe_find_format(pix->pixelformat);
 
+	/* Reset the ROI to the full frame whenever dimensions change */
+	if (V4L2_TYPE_IS_OUTPUT(f->type))
+		ctx->crop = (struct v4l2_rect){ 0, 0, pix->width, pix->height };
+	else
+		ctx->compose = (struct v4l2_rect){ 0, 0, pix->width, pix->height };
+
+	return 0;
+}
+
+static int vpe_g_selection(struct file *file, void *priv,
+			   struct v4l2_selection *s)
+{
+	struct vpe_ctx *ctx = vpe_fh_to_ctx(priv);
+
+	switch (s->target) {
+	case V4L2_SEL_TGT_CROP:
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+		if (!V4L2_TYPE_IS_OUTPUT(s->type))
+			return -EINVAL;
+		if (s->target == V4L2_SEL_TGT_CROP)
+			s->r = ctx->crop;
+		else
+			s->r = (struct v4l2_rect){ 0, 0, ctx->src.width,
+						   ctx->src.height };
+		return 0;
+	case V4L2_SEL_TGT_COMPOSE:
+	case V4L2_SEL_TGT_COMPOSE_DEFAULT:
+	case V4L2_SEL_TGT_COMPOSE_BOUNDS:
+		if (V4L2_TYPE_IS_OUTPUT(s->type))
+			return -EINVAL;
+		if (s->target == V4L2_SEL_TGT_COMPOSE)
+			s->r = ctx->compose;
+		else
+			s->r = (struct v4l2_rect){ 0, 0, ctx->dst.width,
+						   ctx->dst.height };
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int vpe_s_selection(struct file *file, void *priv,
+			   struct v4l2_selection *s)
+{
+	struct vpe_ctx *ctx = vpe_fh_to_ctx(priv);
+	struct v4l2_rect *area;
+	u32 max_w, max_h;
+
+	if (s->target == V4L2_SEL_TGT_CROP && V4L2_TYPE_IS_OUTPUT(s->type)) {
+		area = &ctx->crop;
+		max_w = ctx->src.width;
+		max_h = ctx->src.height;
+	} else if (s->target == V4L2_SEL_TGT_COMPOSE &&
+		   !V4L2_TYPE_IS_OUTPUT(s->type)) {
+		area = &ctx->compose;
+		max_w = ctx->dst.width;
+		max_h = ctx->dst.height;
+	} else {
+		return -EINVAL;
+	}
+
+	/* Clamp the requested rectangle into the frame, aligned to 2px */
+	s->r.left = clamp_t(int, s->r.left, 0, max_w - VPE_MIN_WIDTH);
+	s->r.top = clamp_t(int, s->r.top, 0, max_h - VPE_MIN_HEIGHT);
+	s->r.width = clamp_t(u32, s->r.width, VPE_MIN_WIDTH, max_w - s->r.left);
+	s->r.height = clamp_t(u32, s->r.height, VPE_MIN_HEIGHT, max_h - s->r.top);
+	s->r.left = ALIGN(s->r.left, 2);
+	s->r.top = ALIGN(s->r.top, 2);
+	s->r.width = ALIGN(s->r.width, 2);
+	s->r.height = ALIGN(s->r.height, 2);
+
+	*area = s->r;
+
 	return 0;
 }
 
@@ -244,6 +320,9 @@ static const struct v4l2_ioctl_ops vpe_ioctl_ops = {
 
 	.vidioc_s_fmt_vid_cap		= vpe_s_fmt,
 	.vidioc_s_fmt_vid_out		= vpe_s_fmt,
+
+	.vidioc_g_selection		= vpe_g_selection,
+	.vidioc_s_selection		= vpe_s_selection,
 
 	.vidioc_reqbufs			= v4l2_m2m_ioctl_reqbufs,
 	.vidioc_querybuf		= v4l2_m2m_ioctl_querybuf,
@@ -284,13 +363,17 @@ static void vpe_device_run(void *priv)
 	dst_cbcr = dst_y + ctx->dst.bytesperline * ctx->dst.height;
 	dst_stride = ctx->dst.bytesperline;
 
-	/* Configure hardware */
+	/* Configure hardware: scale the source crop ROI into the output area */
 	vpe_hw_set_src_addr(vpe->base, src_y, src_cbcr);
 	vpe_hw_set_dst_addr(vpe->base, dst_y, dst_cbcr);
-	vpe_hw_set_src_size(vpe->base, ctx->src.width, ctx->src.height, src_stride);
-	vpe_hw_set_dst_size(vpe->base, ctx->dst.width, ctx->dst.height, dst_stride);
-	vpe_hw_set_scale(vpe->base, ctx->src.width, ctx->src.height,
-			 ctx->dst.width, ctx->dst.height);
+	vpe_hw_set_src_size(vpe->base, ctx->src.width, ctx->src.height,
+			    ctx->crop.width, ctx->crop.height, src_stride);
+	vpe_hw_set_dst_size(vpe->base, ctx->compose.width, ctx->compose.height,
+			    dst_stride);
+	vpe_hw_set_scale(vpe->base, ctx->crop.width, ctx->crop.height,
+			 ctx->compose.width, ctx->compose.height);
+	vpe_hw_set_roi(vpe->base, ctx->crop.left, ctx->crop.top,
+		       ctx->compose.left, ctx->compose.top);
 	vpe_hw_set_rotation(vpe->base, ctx->rotation);
 
 	/* Enable interrupt and start processing */
@@ -508,6 +591,8 @@ static int vpe_open(struct file *file)
 
 	ctx->dst = ctx->src;
 	ctx->rotation = 0;
+	ctx->crop = (struct v4l2_rect){ 0, 0, ctx->src.width, ctx->src.height };
+	ctx->compose = ctx->crop;
 
 	return 0;
 
@@ -618,6 +703,11 @@ static int vpe_probe(struct platform_device *pdev)
 	if (IS_ERR(vpe->core_clk))
 		return dev_err_probe(dev, PTR_ERR(vpe->core_clk),
 				     "Failed to get core clock\n");
+
+	/* VPE core runs at 160 MHz (F_VPE in the legacy 8x60 clock table) */
+	ret = clk_set_rate(vpe->core_clk, VPE_CLOCK_RATE);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to set core clock rate\n");
 
 	vpe->axi_clk = devm_clk_get(dev, "axi");
 	if (IS_ERR(vpe->axi_clk))
