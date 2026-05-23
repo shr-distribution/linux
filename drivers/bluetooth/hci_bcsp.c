@@ -685,11 +685,22 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 	/* Now, try to send a reliable pkt. We can only send a
 	 * reliable packet if the number of packets sent but not yet ack'ed
 	 * is < than the winsize
+	 *
+	 * BCSP link-establishment gating: the reliable channel must NOT carry
+	 * data until the link is ACTIVE. During UNINIT/INIT we are still doing
+	 * the SYNC/CONF handshake (those go out on the unreliable channel,
+	 * handled above). On-device the CSR BlueCore was being flooded with
+	 * reliable channel-5 HCI packets (e.g. HCI Reset, retransmitted across
+	 * the whole TX window) while it was still only sending SYNC — the chip
+	 * never advanced. webOS userspace BCSP (bcattach) never sends HCI
+	 * traffic before link-up. Hold reliable packets in the queue until the
+	 * handshake completes so link establishment is not polluted.
 	 */
 
 	spin_lock_irqsave_nested(&bcsp->unack.lock, flags, SINGLE_DEPTH_NESTING);
 
-	if (bcsp->unack.qlen < BCSP_TXWINSIZE) {
+	if (bcsp->link_state == BCSP_LINK_ACTIVE &&
+	    bcsp->unack.qlen < BCSP_TXWINSIZE) {
 		skb = skb_dequeue(&bcsp->rel);
 		if (skb != NULL) {
 			struct sk_buff *nskb;
