@@ -2676,15 +2676,59 @@ void vidc_free_buffers(struct vidc_inst *inst)
 
 void vidc_core_deinit(struct vidc_core *core)
 {
+	u32 axi_status;
+	int timeout;
+
+	/*
+	 * Power the codec ON (GDSC + clocks) before tearing down clocks.
+	 *
+	 * On unbind/remove the device is typically already runtime-suspended:
+	 * vidc_runtime_suspend() has cut core/iface/axi and dropped the VED
+	 * power domain, but the persistent vcodec_axi_a/b branches are still
+	 * clk-enabled (kept on across runtime PM).  Gating axi_b here with the
+	 * power domain OFF leaves the branch unable to reach 'halted', so
+	 * clk_branch_disable() spins out a "vcodec_axi_b_clk status stuck at
+	 * 'on'" WARN that a genpd/PM kworker then re-fires tens of thousands
+	 * of times per second — a printk flood that hangs the device on every
+	 * driver rebind.
+	 *
+	 * pm_runtime_get_sync() resumes the domain (GDSC + clocks back on);
+	 * the firmware was unloaded on suspend (fw_loaded=false) so resume
+	 * does NOT re-boot it.  With the domain powered, vidc_clk_disable()
+	 * is balanced against the resume's enable and axi_a/b gate cleanly.
+	 *
+	 * Caller (vidc_remove) must not have called pm_runtime_disable() yet.
+	 */
+	pm_runtime_get_sync(core->dev);
+
 	vidc_unload_firmware(core);
+
+	/*
+	 * Drain the codec AXI master before gating Port B (mirrors
+	 * vidc_runtime_suspend) so vcodec_axi_b_clk reaches 'halted'.
+	 * Best-effort: clocks are on here, so the MMIO is safe.
+	 */
+	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
+	for (timeout = 100; timeout > 0; timeout--) {
+		axi_status = vidc_read(core, VIDC_REG_AXI_STATUS);
+		if ((axi_status & VIDC_AXI_HALT_ACK_MASK) == 0x3)
+			break;
+		udelay(50);
+	}
+	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_RESET);
+	vidc_write(core, VIDC_REG_AXI_CTRL, 0);
+
 	vidc_clk_disable(core);
 	/* axi_a/b are enabled once on first resume and stay on across
-	 * the driver's runtime — release them only here on remove. */
+	 * the driver's runtime — release them only here on remove, while
+	 * the power domain is on (above) so the branch can gate. */
 	if (core->axi_ab_persistent_enabled) {
 		clk_disable_unprepare(core->axi_b_clk);
 		clk_disable_unprepare(core->axi_a_clk);
 		core->axi_ab_persistent_enabled = false;
 	}
+
+	pm_runtime_put_noidle(core->dev);
 }
 
 static int vidc_probe(struct platform_device *pdev)
@@ -2949,10 +2993,15 @@ static void vidc_remove(struct platform_device *pdev)
 {
 	struct vidc_core *core = platform_get_drvdata(pdev);
 
-	pm_runtime_disable(core->dev);
 	vidc_enc_unregister(core);
 	vidc_dec_unregister(core);
+	/*
+	 * vidc_core_deinit() does a pm_runtime_get_sync() to power the codec
+	 * on while it gates the clocks (see the WARN-storm rationale there),
+	 * so disable runtime PM AFTER it, not before.
+	 */
 	vidc_core_deinit(core);
+	pm_runtime_disable(core->dev);
 	v4l2_device_unregister(&core->v4l2_dev);
 }
 
