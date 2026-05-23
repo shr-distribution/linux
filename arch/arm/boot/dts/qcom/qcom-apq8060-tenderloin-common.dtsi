@@ -4292,7 +4292,6 @@
 	status = "okay";
 };
 
-/*
 &rotator {
 	status = "okay";
 };
