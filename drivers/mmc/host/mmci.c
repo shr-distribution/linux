@@ -2955,6 +2955,21 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 			if (is_write) {
 				host->dummy52_in_progress = true;
 				host->pending_mrq = mrq;
+				/*
+				 * CRITICAL: clear the atomic-submit state before
+				 * issuing the dummy CMD52. mmci_should_atomic_submit
+				 * sets atomic_submit.active=true for the preceding WiFi
+				 * DMA READ, and it is only cleared at the top of
+				 * __mmci_start_request — which we bypass here. If left
+				 * set, mmci_start_command STASHES the CMD52 (ARG/CMD
+				 * saved for the ADM exec_func) instead of writing
+				 * MMCICOMMAND, so the command is never issued, no
+				 * completion IRQ fires, and modprobe hangs forever in
+				 * D-state. The dummy CMD52 carries no data and must go
+				 * through the conventional command path.
+				 */
+				host->atomic_submit.armed = false;
+				host->atomic_submit.active = false;
 				dev_info_ratelimited(mmc_dev(mmc),
 						     "dummy52: dispatching before CMD53 WRITE\n");
 				mmci_start_command(host, &host->dummy52_cmd, 0);
