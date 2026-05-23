@@ -1059,6 +1059,26 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		}
 
 		/*
+		 * Fix #2 (lightweight): surface the FLUSH state for visibility.
+		 * Legacy msm_dmov read FLUSH0..5 (fill_errdata) and handed the
+		 * partial-transfer state to the client. Our consumers recover
+		 * their byte count from peripheral HW counters (UART
+		 * UARTDM_RX_TOTAL_SNAP, SDCC DATACNT), not the dmaengine residue,
+		 * so we don't compute a residue here — but log FLUSH_STATE0 (read
+		 * from the EE=1 command bank, where it is live on MSM8660) so a
+		 * partial/flushed transfer is observable rather than silently
+		 * reported as a clean DONE. Pairs with Fix #1's graceful flush.
+		 */
+		if (result & ADM_CH_RSLT_FLUSH) {
+			u32 fstate = readl_relaxed(adev->regs +
+					ADM_CH_FLUSH_STATE0(i, adev->ee));
+
+			dev_dbg(adev->dev,
+				"ADM ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x\n",
+				i, result, fstate);
+		}
+
+		/*
 		 * Flag error only if ERR bit is set (real hardware error).
 		 * Flush-only results are expected behavior - UART drivers
 		 * use dmaengine_terminate_all() to retrieve partial RX data.
