@@ -614,6 +614,20 @@ const struct msm_format *mdp_get_format(struct msm_kms *kms, uint32_t format,
 		map = mdp_formats_ubwc;
 		map_size = ARRAY_SIZE(mdp_formats_ubwc);
 		break;
+	case DRM_FORMAT_MOD_SAMSUNG_64_32_TILE:
+		/*
+		 * MDP4 VG pipes can fetch 64x32-tiled YCbCr (the format the
+		 * VIDC video decoder produces) and detile it in hardware.  The
+		 * mdp4 plane advertises this modifier and selects
+		 * FRAME_TILE_YCBCR_420 from fb->modifier in
+		 * mdp4_get_frame_format(); the plane format descriptor itself
+		 * is the same NV12 entry as the linear case, so reuse
+		 * mdp_formats.  Without this, addfb2 with the tile modifier
+		 * returns -EINVAL here before the plane is ever consulted.
+		 */
+		map = mdp_formats;
+		map_size = ARRAY_SIZE(mdp_formats);
+		break;
 	default:
 		drm_err(kms->dev, "unsupported format modifier %llX\n", modifier);
 		return NULL;
