@@ -590,9 +590,6 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		burst = achan->slave.src_maxburst * achan->slave.src_addr_width;
 	}
 
-	if (achan->id == 5)
-		trace_printk("ADM-PREP: ch5 device_fc=%d crci=%d burst=%d dir=%d\n",
-			     achan->slave.device_fc, achan->crci, burst, direction);
 
 	dev_dbg(adev->dev,
 		"ADM prep_slave_sg: chan=%d device_fc=%d achan->crci=%d burst=%d dir=%d\n",
@@ -1007,21 +1004,11 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 	struct adm_device *adev = data;
 	u32 srcs, i;
 	struct adm_async_desc *async_desc;
-	ktime_t t_entry, t_before_loop, t_after_status, t_after_result;
-
-	t_entry = ktime_get();
 
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
 
 	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
-
-	/* WiFi ch5 diagnostic - use trace_printk for low latency */
-	if (srcs & BIT(5))
-		trace_printk("ADM-IRQ: ch5 in srcs=0x%08x t=%lld\n",
-			     srcs, ktime_to_us(t_entry));
-
-	t_before_loop = ktime_get();
 
 	/*
 	 * Iterate only the set channel bits in srcs.  Fixed 16-iteration
@@ -1039,37 +1026,16 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		status = readl_relaxed(adev->regs +
 				       ADM_CH_STATUS_SD(i, adev->ee));
 
-		t_after_status = ktime_get();
-
 		/* if no result present, skip */
-		if (!(status & ADM_CH_STATUS_VALID)) {
-			if (i == 5)
-				trace_printk("ADM-IRQ: ch5 STATUS=0x%08x (not VALID, skipped) t=%lld\n",
-					     status, ktime_to_us(t_after_status));
+		if (!(status & ADM_CH_STATUS_VALID))
 			continue;
-		}
 
 		result = readl_relaxed(adev->regs +
 			ADM_CH_RSLT(i, adev->ee));
 
-		t_after_result = ktime_get();
-
 		/* no valid results, skip */
-		if (!(result & ADM_CH_RSLT_VALID)) {
-			if (i == 5)
-				trace_printk("ADM-IRQ: ch5 RESULT=0x%08x (not VALID, skipped) t=%lld\n",
-					     result, ktime_to_us(t_after_result));
+		if (!(result & ADM_CH_RSLT_VALID))
 			continue;
-		}
-
-		if (i == 5) {
-			s64 delta_entry_to_loop = ktime_us_delta(t_before_loop, t_entry);
-			s64 delta_loop_to_status = ktime_us_delta(t_after_status, t_before_loop);
-			s64 delta_status_to_result = ktime_us_delta(t_after_result, t_after_status);
-			trace_printk("ADM-IRQ: ch5 RESULT=0x%08x t=%lld Δ[entry→loop]=%lld Δ[loop→status]=%lld Δ[status→result]=%lld\n",
-				     result, ktime_to_us(t_after_result),
-				     delta_entry_to_loop, delta_loop_to_status, delta_status_to_result);
-		}
 
 		/*
 		 * Fix #2 (lightweight): surface the FLUSH state for visibility.
@@ -1133,12 +1099,6 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			if (async_desc->vd.tx.callback) {
 				callback = async_desc->vd.tx.callback;
 				callback_param = async_desc->vd.tx.callback_param;
-				if (i == 5)
-					trace_printk("ADM-IRQ: ch5 callback=%p param=%p len=%zu\n",
-						     callback, callback_param, async_desc->length);
-			} else if (i == 5) {
-				trace_printk("ADM-IRQ: ch5 NO CALLBACK len=%zu\n",
-					     async_desc->length);
 			}
 
 			/* Return pooled descriptor immediately without vchan */
@@ -1162,25 +1122,13 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 
 			/* Invoke callback after starting next DMA */
 			if (callback) {
-				if (i == 5)
-					trace_printk("ADM-IRQ: ch5 CALLING callback\n");
 				spin_unlock(&achan->vc.lock);
 				callback(callback_param);
-				if (i == 5)
-					trace_printk("ADM-IRQ: ch5 callback RETURNED\n");
 				spin_lock(&achan->vc.lock);
 			}
 		}
 
 		spin_unlock(&achan->vc.lock);
-	}
-
-	/* WiFi ch5: log total IRQ handler time */
-	if (i == 5) {
-		ktime_t t_exit = ktime_get();
-		s64 delta_total = ktime_us_delta(t_exit, t_entry);
-		if (delta_total > 1000) /* Log if > 1ms */
-			trace_printk("ADM-IRQ: ch5 SLOW handler total=%lld us\n", delta_total);
 	}
 
 	return IRQ_HANDLED;
@@ -1239,19 +1187,11 @@ static void adm_issue_pending(struct dma_chan *chan)
 	struct adm_chan *achan = to_adm_chan(chan);
 	unsigned long flags;
 
-	if (achan->id == 5)
-		trace_printk("ADM-ISSUE: ch5 called\n");
-
 	spin_lock_irqsave(&achan->vc.lock, flags);
 
-	if (vchan_issue_pending(&achan->vc) && !achan->curr_txd) {
-		if (achan->id == 5)
-			trace_printk("ADM-ISSUE: ch5 starting DMA\n");
+	if (vchan_issue_pending(&achan->vc) && !achan->curr_txd)
 		adm_start_dma(achan);
-	} else if (achan->id == 5) {
-		trace_printk("ADM-ISSUE: ch5 NOT starting (vchan_issue=%d curr_txd=%p)\n",
-			     vchan_issue_pending(&achan->vc), achan->curr_txd);
-	}
+
 	spin_unlock_irqrestore(&achan->vc.lock, flags);
 }
 
