@@ -621,6 +621,31 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 	struct vidc_inst *inst = vb2_get_drv_priv(q);
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *vbuf;
+	unsigned long flags;
+
+	/*
+	 * Quiesce async completion work BEFORE returning buffers or closing
+	 * the channel.  A FRAME_DONE that raced streamoff would otherwise run
+	 * frame_done_work against buffers we're about to return to userspace,
+	 * or — worse — call vidc_dec_emit_dpb() reading inst->dpb_y_vaddr
+	 * while vidc_close_channel()->vidc_free_buffers() frees that DPB pool
+	 * (use-after-free; the frame_done_work oops + multimedia-IOMMU fault
+	 * storm seen on aborted playback).
+	 *
+	 * Clear curr_inst under irqlock so the IRQ handler (which reads
+	 * curr_inst and queues work under the same lock) stops dispatching
+	 * into this instance, then drain any already-queued work.
+	 * frame_done_work / seq_done_work take only vb2/m2m spinlocks, not
+	 * inst->lock, so cancel_work_sync() here cannot deadlock against the
+	 * queue lock held across stop_streaming.
+	 */
+	spin_lock_irqsave(&core->irqlock, flags);
+	if (core->curr_inst == inst)
+		core->curr_inst = NULL;
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	cancel_work_sync(&inst->frame_done_work);
+	cancel_work_sync(&inst->seq_done_work);
 
 	/* Return all buffers to userspace */
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
@@ -1458,19 +1483,18 @@ static int vidc_dec_close(struct file *file)
 	struct vidc_core *core = inst->core;
 
 	/*
-	 * Flush any pending async work before tearing down state.
-	 * The m2m_ctx release below will reject buffer ops, so if a
-	 * frame-done IRQ raced our close it must finish (and call
-	 * v4l2_m2m_job_finish) before we free inst.
-	 */
-	cancel_work_sync(&inst->seq_header_work);
-	cancel_work_sync(&inst->seq_done_work);
-	cancel_work_sync(&inst->frame_done_work);
-
-	/*
-	 * Clear core->curr_inst if it still points at this instance — an IRQ
-	 * arriving on a future session's boot dereferences curr_inst and
-	 * crashes the kernel if it points at freed memory.
+	 * Order matters.  The VIDC IRQ handler runs entirely under
+	 * core->irqlock: it reads inst = core->curr_inst and, for a
+	 * FRAME_DONE, queue_work(&inst->frame_done_work).  If we cancelled
+	 * the work first and only THEN cleared curr_inst, an IRQ landing in
+	 * between would re-queue frame_done_work after the cancel — and it
+	 * would run against this inst after we kfree() it (use-after-free,
+	 * the source of the frame_done_work oops + the multimedia-IOMMU
+	 * fault storm).
+	 *
+	 * So clear curr_inst under irqlock FIRST (after this the IRQ sees
+	 * NULL and the `if (inst)` guards skip queueing), THEN drain any
+	 * work already queued before the clear.
 	 */
 	{
 		unsigned long flags;
@@ -1479,6 +1503,10 @@ static int vidc_dec_close(struct file *file)
 			core->curr_inst = NULL;
 		spin_unlock_irqrestore(&core->irqlock, flags);
 	}
+
+	cancel_work_sync(&inst->seq_header_work);
+	cancel_work_sync(&inst->seq_done_work);
+	cancel_work_sync(&inst->frame_done_work);
 
 	mutex_lock(&core->lock);
 	list_del(&inst->list);

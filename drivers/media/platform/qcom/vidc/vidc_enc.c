@@ -655,6 +655,23 @@ static void vidc_enc_stop_streaming(struct vb2_queue *q)
 	struct vidc_inst *inst = vb2_get_drv_priv(q);
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *vbuf;
+	unsigned long flags;
+
+	/*
+	 * Quiesce completion work before returning buffers / closing the
+	 * channel: stop the IRQ dispatching into this inst (clear curr_inst
+	 * under irqlock) then drain any queued enc_complete_work, so it can't
+	 * run against buffers being returned or DPB being freed by
+	 * vidc_close_channel().  (See the decoder stop_streaming for the
+	 * detailed rationale; same race.)
+	 */
+	spin_lock_irqsave(&core->irqlock, flags);
+	if (core->curr_inst == inst)
+		core->curr_inst = NULL;
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	cancel_work_sync(&inst->enc_complete_work);
+	cancel_work_sync(&inst->seq_done_work);
 
 	/* Return all buffers to userspace */
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
@@ -1026,14 +1043,11 @@ static int vidc_enc_close(struct file *file)
 	struct vidc_inst *inst = vidc_file_to_inst(file);
 	struct vidc_core *core = inst->core;
 
-	/* Flush async completion work before tearing down state. */
-	cancel_work_sync(&inst->seq_done_work);
-	cancel_work_sync(&inst->enc_complete_work);
-
 	/*
-	 * Clear core->curr_inst if it still points at this instance — an IRQ
-	 * arriving on a future session's boot dereferences curr_inst and
-	 * crashes the kernel if it points at freed memory.
+	 * Clear curr_inst under irqlock FIRST, then drain work — otherwise an
+	 * IRQ landing between cancel and clear re-queues enc_complete_work
+	 * after the cancel and it runs against this inst post-kfree().  (Same
+	 * use-after-free shape as the decoder frame_done_work path.)
 	 */
 	{
 		unsigned long flags;
@@ -1042,6 +1056,9 @@ static int vidc_enc_close(struct file *file)
 			core->curr_inst = NULL;
 		spin_unlock_irqrestore(&core->irqlock, flags);
 	}
+
+	cancel_work_sync(&inst->seq_done_work);
+	cancel_work_sync(&inst->enc_complete_work);
 
 	mutex_lock(&core->lock);
 	list_del(&inst->list);
