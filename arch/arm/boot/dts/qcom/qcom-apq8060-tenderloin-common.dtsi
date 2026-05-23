@@ -2967,14 +2967,14 @@
 	 * - reset-gpios: BT_RST_N (GPIO 138) - active low reset
 	 *
 	 * See reports/bcm4329-bluetooth-analysis.md
+	 *
+	 * 2026-05-23: serdev re-enabled after confirming the GSBI6 UART now
+	 * uses ADM1 DMA (commit 7be954e461e0). The prior LDISC/userspace test
+	 * (#if 0) proved DMA delivers byte-perfect gapless RX, but userspace
+	 * cannot power-sequence the chip (VREG_S3A_1V8 regulator + reset/wake
+	 * timing). The in-kernel hci_bcsp serdev driver does that correctly,
+	 * so we restore it to drive the BCSP handshake over the DMA-backed UART.
 	 */
-#if 0 /* LDISC TEST (2026-05-22): disable serdev BT subnode so the serial
-       * core exposes /dev/ttyMSM1 for `hciattach /dev/ttyMSM1 bcsp 115200`.
-       * Goal: confirm BCSP link establishment works via line discipline
-       * (it did per reports/bcm4329-bluetooth-analysis.md) while it is
-       * stuck via serdev — isolating the bug to the serdev path. Power the
-       * chip from userspace GPIO before hciattach. Re-enable to restore
-       * serdev. */
 	bluetooth {
 		/*
 		 * Use palm-specific compatible to select BCSP driver.
@@ -3356,7 +3356,6 @@
 		interrupts = <129 IRQ_TYPE_EDGE_RISING>;
 		interrupt-names = "host-wakeup";
 	};
-#endif /* LDISC TEST: re-enable bluetooth{} serdev node to restore serdev */
 };
 
 &gsbi12 {
