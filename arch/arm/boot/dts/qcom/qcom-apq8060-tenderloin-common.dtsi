@@ -2968,13 +2968,23 @@
 	 *
 	 * See reports/bcm4329-bluetooth-analysis.md
 	 *
-	 * 2026-05-23: serdev re-enabled after confirming the GSBI6 UART now
-	 * uses ADM1 DMA (commit 7be954e461e0). The prior LDISC/userspace test
-	 * (#if 0) proved DMA delivers byte-perfect gapless RX, but userspace
-	 * cannot power-sequence the chip (VREG_S3A_1V8 regulator + reset/wake
-	 * timing). The in-kernel hci_bcsp serdev driver does that correctly,
-	 * so we restore it to drive the BCSP handshake over the DMA-backed UART.
+	 * 2026-05-23: serdev DISABLED again to use the line-discipline path.
+	 * Per the bcm4329-tx-not-reaching-chip investigation, the kernel
+	 * hci_bcsp LDISC established the BCSP link ("sync_rsp received -> conf
+	 * -> Link established") where serdev never did, on the same chip/UART.
+	 * The serdev and ldisc TX byte paths are identical (ttyport_write_buf
+	 * -> tty->ops->write), and MR1/MR2/clock/baud all match webOS, yet
+	 * serdev fails to get the chip to respond. Disable the serdev subnode
+	 * so the serial core exposes /dev/ttyMSM1; drive BCSP via the kernel
+	 * ldisc (modprobe hci_uart; hciattach /dev/ttyMSM1 bcsp 115200, or the
+	 * btup helper). Power the chip from userspace GPIO (TLMM base 512:
+	 * BT_POWER 642, BT_WAKE 643, BT_RST_N 650) before attaching.
+	 *
+	 * NOTE: CONFIG_BT / CONFIG_BT_HCIUART are =m (modules). Built-in (=y)
+	 * was found to break WiFi and eMMC (built-in BT probes at boot and
+	 * contends on the shared ADM1 DMA / GSBI resources). Keep BT modular.
 	 */
+#if 0 /* LDISC path: serdev subnode disabled so /dev/ttyMSM1 is exposed */
 	bluetooth {
 		/*
 		 * Use palm-specific compatible to select BCSP driver.
@@ -3356,6 +3366,7 @@
 		interrupts = <129 IRQ_TYPE_EDGE_RISING>;
 		interrupt-names = "host-wakeup";
 	};
+#endif /* LDISC path: re-enable bluetooth{} serdev node to restore serdev */
 };
 
 &gsbi12 {
