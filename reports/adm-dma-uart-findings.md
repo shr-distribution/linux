@@ -121,3 +121,20 @@ No channel/CRCI *misassignment* anywhere — the gaps are in completion/flush/EE
 - **Module load without eMMC writes** (eMMC wedges on big writes): gunzip `.ko` to tmpfs and `insmod` from `/tmp` — don't `scp` to `/lib/modules` or `depmod`.
 
 Cross-refs (memory): [[bcm4329-dma-vs-pio-root-cause]], [[mmci-dma-read-no-dataend]], [[tenderloin-dma-concurrent]], [[adm-ee0-ground-truth]], [[ce2-hash-resolved]].
+
+---
+
+## 7. ON-DEVICE RESULT: Fix #1 verified (2026-05-23)
+
+Kernel `gfe1c54809ec5` (Fix #1 only). Verified live + via netconsole:
+- **WiFi FIXED:** ath6kl downloads fw (`ar6003 hw 2.1.1 sdio fw 3.2.0.144 api 3`)
+  and `wlan0` comes UP and passes traffic. The BMI firmware download is all
+  `cmd53` data DMA on ADM1 — it failed before with `cmd53 data=yes -> error
+  during DMA transfer -> ath6kl Failed to start hardware -110`. Graceful flush
+  fixed it. `error during DMA transfer` on the WiFi channel: 0 this boot.
+- **eMMC improved:** still 2 transient `error during DMA transfer` (mmc0/SDCC1
+  at 328s/338s) but they now RECOVER — no more jbd2 writeback wedge / hang.
+- Confirms the abort-vs-graceful root cause AND the EE=1 command-bank truth.
+
+Remaining eMMC DMA errors -> next target is Fix #4 (CRCI_CTL blk_size at EE=0;
+mainline writes it to the dead EE=1 mirror so SDCC pacing is wrong).
