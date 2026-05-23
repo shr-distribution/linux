@@ -2543,20 +2543,21 @@
 	qcom,datactrl-first;
 
 	/*
-	 * The Qualcomm SDCC dummy CMD52 errata (DPSM left half-closed
-	 * after CMD53 WRITE causing DATACRCFAIL on the next command) only
-	 * triggers when MCI_CLK_PWRSAVE is on — SCLK gates immediately
-	 * and the half-closed DPSM state is visible to the next transfer.
-	 * Mainline runs sdcc4 with PWRSAVE off (CLKREG=0x9b00 without the
-	 * PWRSAVE bit), so SCLK stays running and the DPSM closes
-	 * cleanly. qcom,dummy52-required is therefore NOT set here.
+	 * Qualcomm SDCC dummy CMD52 errata: a CMD53 WRITE leaves the SDCC
+	 * DPSM half-closed, so the NEXT CMD53 fails. PWRSAVE is in fact ON
+	 * for sdcc4 (CLKREG=0x9b00 has bit 9 / MCI_CLK_PWRSAVE set — the
+	 * earlier comment here was wrong), matching legacy CAF msm_sdcc which
+	 * ran sdcc4 with PWRSAVE on AND plat->dummy52_required=1.
 	 *
-	 * Legacy CAF msm_sdcc had plat->dummy52_required=1 on SDCC4 but
-	 * also had PWRSAVE always on. With PWRSAVE off, the dummy CMD52
-	 * actually breaks AR6003 BMI: the CMD52 corrupts the chip's
-	 * internal SDIO state during firmware download, causing
-	 * DATACRCFAIL on the subsequent BMI write.
+	 * Observed on mainline once the DMA path was fixed: after the 128-byte
+	 * WMI-CONTROL connect WRITE, the 24-byte reg-table READ CMD53
+	 * CMDTIMEOUTs (card gives no response), failing WMI init. Enable the
+	 * dummy CMD52 drain. The driver gates the dispatch per controller and
+	 * only drains before a READ on sdcc4 (mmc1) — NEVER before a WiFi
+	 * WRITE — because a dummy CMD52 ahead of a BMI firmware WRITE corrupts
+	 * the AR6003 download (the historical "dummy52 breaks BMI" failure).
 	 */
+	qcom,dummy52-required;
 	#address-cells = <1>;
 	#size-cells = <0>;
 	disable-wp;

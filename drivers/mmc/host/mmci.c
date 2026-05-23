@@ -2845,30 +2845,38 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	if (host->dummy52_required && host->dummy52_needed) {
 		host->dummy52_needed = false;
 		/*
-		 * EXPERIMENT (WRITE->READ): dispatch the dummy CMD52 before a
-		 * following CMD53 READ as well, not just a WRITE. dummy52_needed
-		 * is only armed after a CMD53 WRITE, so this targets exactly the
-		 * WRITE->READ case. Evidence: after the 128-byte WMI-CONTROL
-		 * connect WRITE, the next 24-byte reg-table READ CMD53 CMDTIMEOUTs
-		 * (card gives no response — SDCC DPSM left half-closed by the
-		 * write). The CMD52 drains that residual state. NOTE: an earlier
-		 * comment warned dummy52-before-READ caused an 800 ms timeout in
-		 * the post-BMI_DONE reset window; if BMI now fails earlier we know
-		 * to re-gate this to the WMI phase only.
+		 * Drain the half-closed SDCC DPSM left by a CMD53 WRITE with a
+		 * dummy CMD52 before the next CMD53. dummy52_needed is only armed
+		 * after a CMD53 WRITE.
+		 *
+		 * Direction of the *next* CMD53 that needs the drain differs per
+		 * controller:
+		 *  - eMMC (mmc0): WRITE->WRITE hits DATACRCFAIL -> drain before a
+		 *    following WRITE (original behaviour).
+		 *  - WiFi (mmc1): WRITE->READ hits CMD53 CMDTIMEOUT (the 128-byte
+		 *    WMI-CONTROL connect WRITE then the 24-byte reg-table READ) ->
+		 *    drain before a following READ. Crucially do NOT drain before
+		 *    a WiFi WRITE: a dummy CMD52 inserted ahead of a BMI firmware
+		 *    WRITE corrupts the AR6003 SDIO download (documented). Gating
+		 *    to READ keeps the dummy52 away from the BMI write path.
 		 */
 		if (mrq->cmd->opcode == SD_IO_RW_EXTENDED && mrq->data) {
-			host->dummy52_in_progress = true;
-			host->pending_mrq = mrq;
-			dev_info_ratelimited(mmc_dev(mmc),
-					     "dummy52: dispatching before opcode=%u %s\n",
-					     mrq->cmd->opcode,
-					     (mrq->data->flags & MMC_DATA_WRITE) ?
-					     "WRITE" : "READ");
-			mmci_start_command(host, &host->dummy52_cmd, 0);
-			spin_unlock_irqrestore(&host->lock, flags);
-			return;
+			bool is_write = mrq->data->flags & MMC_DATA_WRITE;
+			bool drain = (host->mmc->index == 1) ? !is_write : is_write;
+
+			if (drain) {
+				host->dummy52_in_progress = true;
+				host->pending_mrq = mrq;
+				dev_info_ratelimited(mmc_dev(mmc),
+						     "dummy52: dispatching before opcode=%u %s\n",
+						     mrq->cmd->opcode,
+						     is_write ? "WRITE" : "READ");
+				mmci_start_command(host, &host->dummy52_cmd, 0);
+				spin_unlock_irqrestore(&host->lock, flags);
+				return;
+			}
 		}
-		/* non-CMD53 / no-data: clear the flag and fall through */
+		/* not the drain-triggering direction: clear flag and fall through */
 	}
 
 	__mmci_start_request(host, mrq);
