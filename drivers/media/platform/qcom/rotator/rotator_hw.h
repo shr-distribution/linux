@@ -74,8 +74,9 @@
 #define ROTATOR_CHROMA_H2V2		3
 
 /* Source format register bits */
-#define ROTATOR_SRC_FORMAT_FRAME_LINEAR	(0 << 29)
-#define ROTATOR_SRC_FORMAT_FRAME_TILE	(1 << 29)
+#define ROTATOR_SRC_FORMAT_FRAME_LINEAR		(0 << 29)
+#define ROTATOR_SRC_FORMAT_FRAME_TILE		(1 << 29)
+#define ROTATOR_SRC_FORMAT_FRAME_SUPERTILE	(2 << 29)	/* Samsung 64x32 */
 #define ROTATOR_SRC_FORMAT_TILE_SIZE	BIT(22)
 #define ROTATOR_SRC_FORMAT_FETCH_SHIFT	19
 #define ROTATOR_SRC_FORMAT_UNPACK_ALIGN	BIT(18)
@@ -122,7 +123,8 @@ u32 rotator_hw_get_version(void __iomem *base);
 void rotator_hw_start(void __iomem *base);
 
 /* Buffer configuration */
-void rotator_hw_set_src_size(void __iomem *base, u32 width, u32 height);
+void rotator_hw_set_src_size(void __iomem *base, u32 img_w, u32 img_h,
+			     u32 crop_x, u32 crop_y, u32 crop_w, u32 crop_h);
 void rotator_hw_set_src_addr(void __iomem *base, dma_addr_t y_addr,
 			     dma_addr_t c_addr);
 void rotator_hw_set_dst_addr(void __iomem *base, dma_addr_t y_addr,
@@ -130,6 +132,12 @@ void rotator_hw_set_dst_addr(void __iomem *base, dma_addr_t y_addr,
 void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride);
 void rotator_hw_set_rotation(void __iomem *base, u32 rotation, u32 chroma);
 void rotator_hw_set_format_rgb(void __iomem *base, u32 bpp, bool has_alpha);
-void rotator_hw_set_format_yuv(void __iomem *base, u32 chroma_mode, bool cbcr);
+void rotator_hw_set_format_yuv(void __iomem *base, u32 chroma_mode, bool cbcr,
+			       bool tiled);
+
+/* Samsung 64x32 supertile: 8 KB-aligned size of the tiled luma plane, which
+ * is also the offset to the (tiled) chroma plane. Matches legacy tile_size().
+ */
+u32 rotator_tiled_chroma_offset(u32 width, u32 height);
 
 #endif /* _ROTATOR_HW_H_ */

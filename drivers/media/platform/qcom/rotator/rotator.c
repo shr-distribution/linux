@@ -29,6 +29,8 @@
 #define ROTATOR_NAME		"qcom-rotator"
 #define ROTATOR_MIN_WIDTH	16
 #define ROTATOR_MIN_HEIGHT	16
+#define ROTATOR_CORE_CLOCK_RATE	160000000	/* 160 MHz (F_ROT) */
+#define ROTATOR_AUTOSUSPEND_MS	100		/* keep clocks up between frames */
 
 /* Interconnect bandwidth */
 #define ROTATOR_BW_AVG		(500 * 1024 * 1024)	/* 500 MB/s */
@@ -41,6 +43,7 @@ struct rotator_fmt {
 	u32 chroma;
 	bool cbcr;
 	bool has_alpha;
+	bool tiled;		/* Samsung 64x32 supertile; input (OUTPUT) only */
 };
 
 static const struct rotator_fmt rotator_formats[] = {
@@ -91,6 +94,17 @@ static const struct rotator_fmt rotator_formats[] = {
 		.chroma		= ROTATOR_CHROMA_H2V1,
 		.cbcr		= false,
 	},
+	{
+		/* Tiled NV12 (64x32 supertile) — detiled to linear NV12 output.
+		 * Keep last: it is only offered on the OUTPUT (input) queue.
+		 */
+		.fourcc		= V4L2_PIX_FMT_NV12MT,
+		.depth		= 12,
+		.num_planes	= 2,
+		.chroma		= ROTATOR_CHROMA_H2V2,
+		.cbcr		= true,
+		.tiled		= true,
+	},
 };
 
 struct rotator_frame {
@@ -128,6 +142,7 @@ struct rotator_ctx {
 
 	struct rotator_frame src;
 	struct rotator_frame dst;
+	struct v4l2_rect crop;		/* source ROI (SRC_XY) */
 	u32 rotation;
 	bool hflip;
 	bool vflip;
@@ -165,12 +180,21 @@ static int rotator_querycap(struct file *file, void *priv,
 static int rotator_enum_fmt(struct file *file, void *priv,
 			    struct v4l2_fmtdesc *f)
 {
-	if (f->index >= ARRAY_SIZE(rotator_formats))
-		return -EINVAL;
+	bool is_out = V4L2_TYPE_IS_OUTPUT(f->type);
+	unsigned int i, n = 0;
 
-	f->pixelformat = rotator_formats[f->index].fourcc;
+	for (i = 0; i < ARRAY_SIZE(rotator_formats); i++) {
+		/* Tiled formats are only valid as the rotator's input */
+		if (rotator_formats[i].tiled && !is_out)
+			continue;
+		if (n == f->index) {
+			f->pixelformat = rotator_formats[i].fourcc;
+			return 0;
+		}
+		n++;
+	}
 
-	return 0;
+	return -EINVAL;
 }
 
 static int rotator_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
@@ -205,6 +229,10 @@ static int rotator_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	if (!fmt)
 		fmt = &rotator_formats[0];
 
+	/* Tiled layout is input-only; fall back to linear on the CAPTURE side */
+	if (fmt->tiled && f->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
+		fmt = &rotator_formats[0];
+
 	f->fmt.pix.pixelformat = fmt->fourcc;
 	f->fmt.pix.width = clamp(f->fmt.pix.width,
 				 (u32)ROTATOR_MIN_WIDTH,
@@ -213,20 +241,34 @@ static int rotator_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 				  (u32)ROTATOR_MIN_HEIGHT,
 				  (u32)ROTATOR_MAX_HEIGHT);
 
-	/* Align to 16 pixels for hardware requirements */
-	f->fmt.pix.width = ALIGN(f->fmt.pix.width, 16);
-	f->fmt.pix.height = ALIGN(f->fmt.pix.height, 16);
-
-	bpp = fmt->depth / 8;
-	if (fmt->num_planes == 1) {
-		f->fmt.pix.bytesperline = f->fmt.pix.width * bpp;
-		f->fmt.pix.sizeimage = f->fmt.pix.bytesperline *
-				       f->fmt.pix.height;
-	} else {
-		/* YUV planar */
+	if (fmt->tiled) {
+		/* Supertile rows are 128 px wide and 32 px high */
+		f->fmt.pix.width = ALIGN(f->fmt.pix.width, 128);
+		f->fmt.pix.height = ALIGN(f->fmt.pix.height, 32);
 		f->fmt.pix.bytesperline = f->fmt.pix.width;
-		f->fmt.pix.sizeimage = f->fmt.pix.width * f->fmt.pix.height *
-				       fmt->depth / 8;
+		/* tiled Y plane (8 KB-aligned) + tiled chroma (half height) */
+		f->fmt.pix.sizeimage =
+			rotator_tiled_chroma_offset(f->fmt.pix.width,
+						    f->fmt.pix.height) +
+			rotator_tiled_chroma_offset(f->fmt.pix.width,
+						    f->fmt.pix.height / 2);
+	} else {
+		/* Align to 16 pixels for hardware requirements */
+		f->fmt.pix.width = ALIGN(f->fmt.pix.width, 16);
+		f->fmt.pix.height = ALIGN(f->fmt.pix.height, 16);
+
+		bpp = fmt->depth / 8;
+		if (fmt->num_planes == 1) {
+			f->fmt.pix.bytesperline = f->fmt.pix.width * bpp;
+			f->fmt.pix.sizeimage = f->fmt.pix.bytesperline *
+					       f->fmt.pix.height;
+		} else {
+			/* YUV planar */
+			f->fmt.pix.bytesperline = f->fmt.pix.width;
+			f->fmt.pix.sizeimage = f->fmt.pix.width *
+					       f->fmt.pix.height *
+					       fmt->depth / 8;
+		}
 	}
 
 	f->fmt.pix.colorspace = V4L2_COLORSPACE_DEFAULT;
@@ -262,6 +304,70 @@ static int rotator_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	frame->bytesperline = f->fmt.pix.bytesperline;
 	frame->sizeimage = f->fmt.pix.sizeimage;
 	frame->fmt = fmt;
+
+	/* Reset the source crop to the full frame when input dimensions change */
+	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT)
+		ctx->crop = (struct v4l2_rect){ 0, 0, frame->width,
+						frame->height };
+
+	return 0;
+}
+
+static int rotator_g_selection(struct file *file, void *priv,
+			       struct v4l2_selection *s)
+{
+	struct rotator_ctx *ctx = rotator_fh_to_ctx(file->private_data);
+
+	switch (s->target) {
+	case V4L2_SEL_TGT_CROP:
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+		if (!V4L2_TYPE_IS_OUTPUT(s->type))
+			return -EINVAL;
+		if (s->target == V4L2_SEL_TGT_CROP)
+			s->r = ctx->crop;
+		else
+			s->r = (struct v4l2_rect){ 0, 0, ctx->src.width,
+						   ctx->src.height };
+		return 0;
+	case V4L2_SEL_TGT_COMPOSE:
+	case V4L2_SEL_TGT_COMPOSE_DEFAULT:
+	case V4L2_SEL_TGT_COMPOSE_BOUNDS:
+		/*
+		 * The rotator has no output-XY register, so output placement is
+		 * not supported: the compose rectangle is always the full frame.
+		 */
+		if (V4L2_TYPE_IS_OUTPUT(s->type))
+			return -EINVAL;
+		s->r = (struct v4l2_rect){ 0, 0, ctx->dst.width,
+					   ctx->dst.height };
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int rotator_s_selection(struct file *file, void *priv,
+			       struct v4l2_selection *s)
+{
+	struct rotator_ctx *ctx = rotator_fh_to_ctx(file->private_data);
+	u32 max_w, max_h;
+
+	/* Only source crop is settable (SRC_XY); output is always full-frame */
+	if (s->target != V4L2_SEL_TGT_CROP || !V4L2_TYPE_IS_OUTPUT(s->type))
+		return -EINVAL;
+
+	max_w = ctx->src.width;
+	max_h = ctx->src.height;
+
+	s->r.left = clamp_t(int, s->r.left, 0, max_w - ROTATOR_MIN_WIDTH);
+	s->r.top = clamp_t(int, s->r.top, 0, max_h - ROTATOR_MIN_HEIGHT);
+	s->r.width = clamp_t(u32, s->r.width, ROTATOR_MIN_WIDTH,
+			     max_w - s->r.left);
+	s->r.height = clamp_t(u32, s->r.height, ROTATOR_MIN_HEIGHT,
+			      max_h - s->r.top);
+
+	ctx->crop = s->r;
 
 	return 0;
 }
@@ -304,7 +410,7 @@ static void rotator_device_run(void *priv)
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 	dma_addr_t src_y, src_c, dst_y, dst_c;
 	u32 rotation = 0;
-	u32 src_w, src_h, dst_w, dst_h;
+	u32 src_w, src_h;
 	int ret;
 
 	src_buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
@@ -313,25 +419,26 @@ static void rotator_device_run(void *priv)
 	src_y = vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
 	dst_y = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
 
+	/* Rotate the source crop ROI; its dimensions drive the output size */
+	src_w = ctx->crop.width;
+	src_h = ctx->crop.height;
+
 	/* Calculate chroma plane addresses for YUV formats */
 	if (ctx->src.fmt->num_planes == 2) {
-		src_c = src_y + ctx->src.width * ctx->src.height;
+		/*
+		 * Tiled source: the (tiled) chroma plane follows the 8 KB-aligned
+		 * tiled luma plane. Linear source: chroma follows Y at w*h.
+		 * The output is always written back linear.
+		 */
+		if (ctx->src.fmt->tiled)
+			src_c = src_y + rotator_tiled_chroma_offset(
+					ctx->src.width, ctx->src.height);
+		else
+			src_c = src_y + ctx->src.width * ctx->src.height;
 		dst_c = dst_y + ctx->dst.width * ctx->dst.height;
 	} else {
 		src_c = 0;
 		dst_c = 0;
-	}
-
-	src_w = ctx->src.width;
-	src_h = ctx->src.height;
-
-	/* Calculate destination dimensions based on rotation */
-	if (ctx->rotation == 90 || ctx->rotation == 270) {
-		dst_w = src_h;
-		dst_h = src_w;
-	} else {
-		dst_w = src_w;
-		dst_h = src_h;
 	}
 
 	/* Build rotation flags */
@@ -359,7 +466,8 @@ static void rotator_device_run(void *priv)
 
 	/* Configure hardware */
 	rotator_hw_reset(rot->base);
-	rotator_hw_set_src_size(rot->base, src_w, src_h);
+	rotator_hw_set_src_size(rot->base, ctx->src.width, ctx->src.height,
+				ctx->crop.left, ctx->crop.top, src_w, src_h);
 	rotator_hw_set_src_addr(rot->base, src_y, src_c);
 	rotator_hw_set_dst_addr(rot->base, dst_y, dst_c);
 	rotator_hw_set_strides(rot->base, ctx->src.bytesperline,
@@ -373,7 +481,8 @@ static void rotator_device_run(void *priv)
 					  ctx->src.fmt->has_alpha);
 	} else {
 		rotator_hw_set_format_yuv(rot->base, ctx->src.fmt->chroma,
-					  ctx->src.fmt->cbcr);
+					  ctx->src.fmt->cbcr,
+					  ctx->src.fmt->tiled);
 	}
 
 	/* Enable interrupt and start */
@@ -388,7 +497,7 @@ static void rotator_device_run(void *priv)
 	}
 
 	rotator_hw_disable_irq(rot->base);
-	pm_runtime_put(rot->dev);
+	pm_runtime_put_autosuspend(rot->dev);
 
 done:
 	src_buf = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
@@ -555,6 +664,7 @@ static int rotator_open(struct file *file)
 	ctx->rotation = 0;
 	ctx->hflip = false;
 	ctx->vflip = false;
+	ctx->crop = (struct v4l2_rect){ 0, 0, ctx->src.width, ctx->src.height };
 
 	return 0;
 
@@ -599,6 +709,8 @@ static const struct v4l2_ioctl_ops rotator_ioctl_ops = {
 	.vidioc_try_fmt_vid_out	= rotator_try_fmt,
 	.vidioc_s_fmt_vid_cap	= rotator_s_fmt,
 	.vidioc_s_fmt_vid_out	= rotator_s_fmt,
+	.vidioc_g_selection	= rotator_g_selection,
+	.vidioc_s_selection	= rotator_s_selection,
 	.vidioc_reqbufs		= v4l2_m2m_ioctl_reqbufs,
 	.vidioc_querybuf	= v4l2_m2m_ioctl_querybuf,
 	.vidioc_qbuf		= v4l2_m2m_ioctl_qbuf,
@@ -734,6 +846,11 @@ static int rotator_probe(struct platform_device *pdev)
 		return PTR_ERR(rot->core_clk);
 	}
 
+	/* ROT core runs at 160 MHz (F_ROT max in the legacy 8x60 clock table) */
+	ret = clk_set_rate(rot->core_clk, ROTATOR_CORE_CLOCK_RATE);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to set core clk rate\n");
+
 	rot->ahb_clk = devm_clk_get(dev, "iface");
 	if (IS_ERR(rot->ahb_clk)) {
 		dev_err(dev, "failed to get iface clock\n");
@@ -791,10 +908,24 @@ static int rotator_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, rot);
+
+	/*
+	 * Keep the clocks and ICC vote up for a short window after each frame
+	 * instead of toggling them per transform — at video frame rates the
+	 * per-frame clk_prepare + interconnect re-vote is pure overhead.
+	 */
+	pm_runtime_set_autosuspend_delay(dev, ROTATOR_AUTOSUSPEND_MS);
+	pm_runtime_use_autosuspend(dev);
 	pm_runtime_enable(dev);
 
-	dev_info(dev, "Qualcomm MSM8660 Rotator driver probed (HW version: 0x%08x)\n",
-		 rotator_hw_get_version(rot->base));
+	/* The version register needs the clocks running to read back */
+	if (pm_runtime_resume_and_get(dev) >= 0) {
+		dev_info(dev, "Qualcomm MSM8660 Rotator probed (HW version: 0x%08x)\n",
+			 rotator_hw_get_version(rot->base));
+		pm_runtime_put_autosuspend(dev);
+	} else {
+		dev_info(dev, "Qualcomm MSM8660 Rotator probed\n");
+	}
 
 	return 0;
 

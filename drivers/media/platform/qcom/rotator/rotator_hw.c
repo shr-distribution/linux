@@ -55,16 +55,33 @@ void rotator_hw_start(void __iomem *base)
 	writel(1, base + ROTATOR_START);
 }
 
-void rotator_hw_set_src_size(void __iomem *base, u32 width, u32 height)
+void rotator_hw_set_src_size(void __iomem *base, u32 img_w, u32 img_h,
+			     u32 crop_x, u32 crop_y, u32 crop_w, u32 crop_h)
 {
-	/* SRC_SIZE: [28:16] = height-1, [12:0] = width-1 */
-	writel(((height - 1) << 16) | (width - 1), base + ROTATOR_SRC_SIZE);
+	/* SRC_SIZE: [28:16] = ROI height, [12:0] = ROI width (no -1; matches
+	 * legacy msm_rotator which programs the raw crop dimensions).
+	 */
+	writel(((crop_h & 0x1fff) << 16) | (crop_w & 0x1fff),
+	       base + ROTATOR_SRC_SIZE);
+
+	/* SRC_XY: ROI offset within the full image */
+	writel(((crop_y & 0x1fff) << 16) | (crop_x & 0x1fff),
+	       base + ROTATOR_SRC_XY);
 
 	/* SRC_IMAGE_SIZE: full image dimensions */
-	writel((height << 16) | width, base + ROTATOR_SRC_IMAGE_SIZE);
+	writel(((img_h & 0x1fff) << 16) | (img_w & 0x1fff),
+	       base + ROTATOR_SRC_IMAGE_SIZE);
+}
 
-	/* SRC_XY: crop offset (0,0 for full image) */
-	writel(0, base + ROTATOR_SRC_XY);
+u32 rotator_tiled_chroma_offset(u32 width, u32 height)
+{
+	/* Two 64-wide tiles per macro-tile row, one 32-high tile per column */
+	const u32 tile_w = 64 * 2;	/* 128 */
+	const u32 tile_h = 32 * 1;	/* 32 */
+	u32 row_num_w = (width + tile_w - 1) / tile_w;
+	u32 row_num_h = (height + tile_h - 1) / tile_h;
+
+	return ((row_num_w * row_num_h * tile_w * tile_h) + 8191) & ~8191u;
 }
 
 void rotator_hw_set_src_addr(void __iomem *base, dma_addr_t y_addr,
@@ -150,7 +167,8 @@ void rotator_hw_set_format_rgb(void __iomem *base, u32 bpp, bool has_alpha)
 	writel(fmt, base + ROTATOR_SRC_FORMAT);
 }
 
-void rotator_hw_set_format_yuv(void __iomem *base, u32 chroma_mode, bool cbcr)
+void rotator_hw_set_format_yuv(void __iomem *base, u32 chroma_mode, bool cbcr,
+			       bool tiled)
 {
 	u32 fmt;
 	u32 pack;
@@ -164,8 +182,13 @@ void rotator_hw_set_format_yuv(void __iomem *base, u32 chroma_mode, bool cbcr)
 	writel(pack, base + ROTATOR_SRC_UNPACK_PATTERN1);
 	writel(pack, base + ROTATOR_OUT_PACK_PATTERN1);
 
-	/* Source format for YUV */
-	fmt = ROTATOR_SRC_FORMAT_FRAME_LINEAR |
+	/*
+	 * Source frame format: supertile for Samsung 64x32 tiled NV12 (the
+	 * layout the VIDC decoder emits), linear otherwise. The output is
+	 * always written back linear.
+	 */
+	fmt = (tiled ? ROTATOR_SRC_FORMAT_FRAME_SUPERTILE
+		     : ROTATOR_SRC_FORMAT_FRAME_LINEAR) |
 	      ROTATOR_SRC_FORMAT_TILE_SIZE |
 	      (ROTATOR_FETCH_PLANES_PSEUDO << ROTATOR_SRC_FORMAT_FETCH_SHIFT) |
 	      ROTATOR_SRC_FORMAT_UNPACK_TIGHT |
