@@ -649,6 +649,16 @@ static int vpe_runtime_resume(struct device *dev)
 	struct vpe_dev *vpe = dev_get_drvdata(dev);
 	int ret;
 
+	/*
+	 * Set the core rate inside runtime PM (clocks still gated, footswitch
+	 * just powered by genpd) rather than in probe. Doing it in probe — with
+	 * the footswitch off and MDP scanning out of the shared MMSS fabric —
+	 * is what hung early boot. Mirrors the gemini driver.
+	 */
+	ret = clk_set_rate(vpe->core_clk, VPE_CLOCK_RATE);
+	if (ret)
+		return ret;
+
 	ret = clk_prepare_enable(vpe->core_clk);
 	if (ret)
 		return ret;
@@ -676,7 +686,6 @@ static int vpe_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct vpe_dev *vpe;
-	u32 version;
 	int ret;
 
 	vpe = devm_kzalloc(dev, sizeof(*vpe), GFP_KERNEL);
@@ -704,10 +713,7 @@ static int vpe_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(vpe->core_clk),
 				     "Failed to get core clock\n");
 
-	/* VPE core runs at 160 MHz (F_VPE in the legacy 8x60 clock table) */
-	ret = clk_set_rate(vpe->core_clk, VPE_CLOCK_RATE);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to set core clock rate\n");
+	/* Core rate (160 MHz F_VPE) is set in runtime_resume, not here */
 
 	vpe->axi_clk = devm_clk_get(dev, "axi");
 	if (IS_ERR(vpe->axi_clk))
@@ -731,15 +737,12 @@ static int vpe_probe(struct platform_device *pdev)
 	/* Enable runtime PM */
 	pm_runtime_enable(dev);
 
-	/* Check hardware version */
-	ret = pm_runtime_resume_and_get(dev);
-	if (ret < 0)
-		goto err_pm;
-
-	version = vpe_hw_get_version(vpe->base);
-	dev_info(dev, "VPE hardware version: 0x%08x\n", version);
-
-	pm_runtime_put(dev);
+	/*
+	 * Do NOT resume the device here to read the version register. Powering
+	 * the VPE footswitch + clocks at probe, while MDP is scanning out of the
+	 * shared MMSS fabric, wedges the AXI bus and hangs early boot. The read
+	 * was cosmetic; all HW access now happens under runtime PM at streamon.
+	 */
 
 	/* Request IRQ */
 	ret = devm_request_irq(dev, vpe->irq, vpe_irq_handler, 0, VPE_NAME, vpe);

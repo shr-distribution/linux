@@ -4293,12 +4293,6 @@
 };
 
 /*
- * DISABLED: Hang persists even with IOMMU contexts disabled, so the
- * fault is in the rotator/VPE probe path itself, not the IOMMU.
- * Theories falsified: power-domains, SW_RESET skip, missing iommus,
- * IOMMU context enable. Hang is in driver probe register access.
- */
-/*
 &rotator {
 	status = "okay";
 };
@@ -4306,7 +4300,6 @@
 &vpe {
 	status = "okay";
 };
-*/
 
 &vidc {
 	status = "okay";

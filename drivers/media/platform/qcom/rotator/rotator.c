@@ -776,6 +776,16 @@ static int rotator_runtime_resume(struct device *dev)
 		}
 	}
 
+	/*
+	 * Set the core rate while the domain is being resumed but before the
+	 * branch is enabled, mirroring the gemini driver. Setting the rate in
+	 * probe (clocks off, footswitch off) is what other 8x60 MMSS drivers
+	 * avoid; doing it here keeps all clock/HW access inside runtime PM.
+	 */
+	ret = clk_set_rate(rot->core_clk, ROTATOR_CORE_CLOCK_RATE);
+	if (ret)
+		goto err_icc;
+
 	ret = clk_prepare_enable(rot->core_clk);
 	if (ret)
 		goto err_icc;
@@ -845,11 +855,7 @@ static int rotator_probe(struct platform_device *pdev)
 		dev_err(dev, "failed to get core clock\n");
 		return PTR_ERR(rot->core_clk);
 	}
-
-	/* ROT core runs at 160 MHz (F_ROT max in the legacy 8x60 clock table) */
-	ret = clk_set_rate(rot->core_clk, ROTATOR_CORE_CLOCK_RATE);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to set core clk rate\n");
+	/* Core rate (160 MHz F_ROT) is set in runtime_resume, not here */
 
 	rot->ahb_clk = devm_clk_get(dev, "iface");
 	if (IS_ERR(rot->ahb_clk)) {
@@ -918,14 +924,15 @@ static int rotator_probe(struct platform_device *pdev)
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_enable(dev);
 
-	/* The version register needs the clocks running to read back */
-	if (pm_runtime_resume_and_get(dev) >= 0) {
-		dev_info(dev, "Qualcomm MSM8660 Rotator probed (HW version: 0x%08x)\n",
-			 rotator_hw_get_version(rot->base));
-		pm_runtime_put_autosuspend(dev);
-	} else {
-		dev_info(dev, "Qualcomm MSM8660 Rotator probed\n");
-	}
+	/*
+	 * Do NOT touch hardware here. Resuming the device at probe to read the
+	 * version register powers the ROT footswitch + clocks while MDP is
+	 * actively scanning out of the shared MMSS fabric; on this SoC that
+	 * register access wedges the AXI bus and hangs early boot. The version
+	 * read was cosmetic — drop it. All HW access now happens under runtime
+	 * PM during streaming, matching the gemini driver.
+	 */
+	dev_info(dev, "Qualcomm MSM8660 Rotator probed\n");
 
 	return 0;
 
