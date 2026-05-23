@@ -4269,6 +4269,14 @@
 	status = "okay";
 };
 
+&rotator {
+	status = "okay";
+};
+
+&vpe {
+	status = "okay";
+};
+
 &vidc {
 	status = "okay";
 	/*
