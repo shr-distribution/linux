@@ -52,6 +52,9 @@
 /* channel status */
 #define ADM_CH_STATUS_VALID		BIT(1)
 
+/* channel flush command (written to ADM_CH_FLUSH_STATE0) */
+#define ADM_CH_FLUSH_GRACEFUL		BIT(31)	/* drain in-flight data & report it; 0 = abrupt abort/discard */
+
 /* channel result */
 #define ADM_CH_RSLT_VALID		BIT(31)
 #define ADM_CH_RSLT_ERR			BIT(3)
@@ -726,8 +729,22 @@ static int adm_terminate_all(struct dma_chan *chan)
 	 * The IRQ handler will clear curr_txd after completing the descriptor.
 	 */
 
-	/* send flush command to terminate current transaction */
-	writel_relaxed(0x0,
+	/*
+	 * Send a GRACEFUL flush (BIT 31) rather than an abrupt abort (0x0).
+	 * Graceful flush makes the ADM drain any in-flight read/write data to
+	 * memory and post a result with the partial state, instead of
+	 * discarding it. This matches legacy msm_dmov (DMOV_FLUSH_TYPE = 1<<31)
+	 * and the HTC 3.4 driver. The abrupt 0x0 abort dropped residual bytes
+	 * still in the ADM read pipeline -> RX DMA returned "correct count,
+	 * zero data" and SDCC/WiFi DMA transfers wedged on cleanup.
+	 *
+	 * EE: FLUSH_STATE0 is in the per-channel COMMAND bank (CMD_PTR/RSLT/
+	 * FLUSH/STATUS), which on MSM8660/APQ8060 is live at EE=1. Verified by
+	 * /dev/mem on webOS: CMD_PTR is live at the EE=1 aperture (+0x800),
+	 * while only the config bank (CONF/CRCI_CTL) is live at EE=0. So
+	 * adev->ee (=1) is the correct aperture for the flush.
+	 */
+	writel_relaxed(ADM_CH_FLUSH_GRACEFUL,
 		       adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
 
 	/*
