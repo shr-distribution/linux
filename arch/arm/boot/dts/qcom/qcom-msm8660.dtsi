@@ -1617,6 +1617,7 @@
 				 <&mmcc VPE_AXI_CLK>,
 				 <&mmcc VPE_AHB_CLK>;
 			clock-names = "core", "axi", "ahb";
+			power-domains = <&mmcc VPE_GDSC>;
 			interconnects = <&mmss_fabric MMFAB_MAS_VPE
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "vpe-mem";
@@ -1655,6 +1656,7 @@
 				 <&mmcc ROT_AHB_CLK>,
 				 <&mmcc ROT_AXI_CLK>;
 			clock-names = "core", "iface", "axi";
+			power-domains = <&mmcc ROT_GDSC>;
 			interconnects = <&mmss_fabric MMFAB_MAS_ROTATOR
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "rotator-mem";
