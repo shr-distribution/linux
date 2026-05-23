@@ -2844,18 +2844,31 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	 */
 	if (host->dummy52_required && host->dummy52_needed) {
 		host->dummy52_needed = false;
-		if (mrq->cmd->opcode == SD_IO_RW_EXTENDED &&
-		    mrq->data && (mrq->data->flags & MMC_DATA_WRITE)) {
+		/*
+		 * EXPERIMENT (WRITE->READ): dispatch the dummy CMD52 before a
+		 * following CMD53 READ as well, not just a WRITE. dummy52_needed
+		 * is only armed after a CMD53 WRITE, so this targets exactly the
+		 * WRITE->READ case. Evidence: after the 128-byte WMI-CONTROL
+		 * connect WRITE, the next 24-byte reg-table READ CMD53 CMDTIMEOUTs
+		 * (card gives no response — SDCC DPSM left half-closed by the
+		 * write). The CMD52 drains that residual state. NOTE: an earlier
+		 * comment warned dummy52-before-READ caused an 800 ms timeout in
+		 * the post-BMI_DONE reset window; if BMI now fails earlier we know
+		 * to re-gate this to the WMI phase only.
+		 */
+		if (mrq->cmd->opcode == SD_IO_RW_EXTENDED && mrq->data) {
 			host->dummy52_in_progress = true;
 			host->pending_mrq = mrq;
 			dev_info_ratelimited(mmc_dev(mmc),
-					     "dummy52: dispatching before opcode=%u\n",
-					     mrq->cmd->opcode);
+					     "dummy52: dispatching before opcode=%u %s\n",
+					     mrq->cmd->opcode,
+					     (mrq->data->flags & MMC_DATA_WRITE) ?
+					     "WRITE" : "READ");
 			mmci_start_command(host, &host->dummy52_cmd, 0);
 			spin_unlock_irqrestore(&host->lock, flags);
 			return;
 		}
-		/* READ or non-CMD53: clear the flag and fall through */
+		/* non-CMD53 / no-data: clear the flag and fall through */
 	}
 
 	__mmci_start_request(host, mrq);
