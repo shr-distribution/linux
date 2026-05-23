@@ -4269,13 +4269,15 @@
 	status = "okay";
 };
 
-&rotator {
-	status = "okay";
-};
-
-&vpe {
-	status = "okay";
-};
+/*
+ * Rotator and VPE are left disabled: the mmcc-msm8660 clock driver does
+ * not yet implement the ROT_GDSC / VPE_GDSC power domains (the legacy
+ * kernel powered these blocks via the fs_rot / fs_vpe footswitches).
+ * Without a power-domain the m2m drivers enable clocks but not the MMSS
+ * footswitch, so the probe-time register read hangs the AXI bus and
+ * stalls early boot. Re-enable once ROT/VPE GDSCs are added to the
+ * clock controller and wired here via power-domains.
+ */
 
 &vidc {
 	status = "okay";
