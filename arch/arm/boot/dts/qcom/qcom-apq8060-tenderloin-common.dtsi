@@ -2921,6 +2921,29 @@
 	assigned-clock-rates = <58982400>;
 
 	/*
+	 * DMA configuration for gapless UART TX/RX (matches webOS hsuart).
+	 * From webOS kernel arch/arm/mach-msm/include/mach/dma.h:
+	 *   DMOV_HSUART1_TX_CHAN = 22  (ADM1 global channel)
+	 *   DMOV_HSUART1_TX_CRCI = 8
+	 *   DMOV_HSUART1_RX_CHAN = 23  (ADM1 global channel)
+	 *   DMOV_HSUART1_RX_CRCI = 9
+	 *
+	 * ADM1 local channel numbering: global - 16
+	 *   RX: 23 - 16 = 7
+	 *   TX: 22 - 16 = 6
+	 *
+	 * Without DMA, msm_serial falls back to PIO (CPU writes to FIFO).
+	 * PIO introduces inter-byte gaps when the CPU is preempted or AHB
+	 * bus is congested, causing the CSR BlueCore chip to reject BCSP
+	 * frames (RX stale timeout). DMA streams bytes gaplessly from
+	 * memory to FIFO via hardware, eliminating the gap.
+	 */
+	dmas = <&adm_dma1 7>, <&adm_dma1 6>;
+	dma-names = "rx", "tx";
+	qcom,rx-crci = <9>;
+	qcom,tx-crci = <8>;
+
+	/*
 	 * Legacy webOS kernel used HSUART with no hardware flow control:
 	 * HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE
 	 * Do NOT enable uart-has-rtscts here.
