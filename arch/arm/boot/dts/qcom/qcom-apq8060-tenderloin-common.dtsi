@@ -2921,32 +2921,27 @@
 	assigned-clock-rates = <58982400>;
 
 	/*
-	 * TX-only DMA for gapless transmit; RX stays PIO. (was TX+RX DMA)
+	 * Full PIO (no DMA) for the Bluetooth UART — both TX and RX.
 	 *
-	 * webOS hsuart used ADM1 DMA for both directions:
-	 *   DMOV_HSUART1_TX_CHAN = 22 (ADM1 global) → local 6, CRCI 8
-	 *   DMOV_HSUART1_RX_CHAN = 23 (ADM1 global) → local 7, CRCI 9
+	 * History: webOS hsuart used ADM1 DMA both directions, so this session
+	 * added TX+RX DMA, then dropped to TX-only after finding the mainline
+	 * ADM RX-DMA path on this UART delivers the correct byte COUNT (from
+	 * UARTDM_RX_TOTAL_SNAP) but ZERO data — the chip's SYNC bursts arrived
+	 * as all-zeros (RXWIRE dump). PIO RX then received the chip's SYNC
+	 * perfectly, but the chip still never responded to our DMA-TX SYNC-RSP.
 	 *
-	 * TX DMA is required: PIO TX introduces inter-byte gaps when the CPU
-	 * is preempted / AHB is congested, and the CSR BlueCore rejects BCSP
-	 * frames with intra-frame idle (RX stale timeout). DMA streams bytes
-	 * gaplessly from memory to the TX FIFO. Keep it.
+	 * KEY EVIDENCE (memory bcm4329-tx-not-reaching-chip, 2026-05-22): the
+	 * kernel hci_bcsp LINE DISCIPLINE established the BCSP link
+	 * ("sync_rsp received -> conf -> Link established") with this UART in
+	 * FULL PIO (no dmas property at all). That proves PIO TX reaches the
+	 * chip decodably and the chip responds. Since the mainline ADM is
+	 * demonstrably unreliable on this UART (RX zeros), TX DMA is the prime
+	 * suspect for malforming our SYNC on the wire so the chip can't decode
+	 * it. Revert to the known link-establishing full-PIO configuration.
 	 *
-	 * RX DMA is DISABLED on purpose. On-device (RXWIRE hex dump in
-	 * hci_bcsp bcsp_recv) the mainline msm_serial ADM RX-DMA completion
-	 * path delivered the correct byte COUNT (from UARTDM_RX_TOTAL_SNAP,
-	 * a hardware register) but ZERO data — the chip's 12-byte SYNC bursts
-	 * arrived as "00 00 .. 00", so BCSP link-est never advanced past
-	 * BCSP_W4_PKT_DELIMITER (no 0xc0 ever seen). This matches the known
-	 * unreliable-ADM-read behavior on MSM8660 (cf. SDCC DMA reads only
-	 * raising DATABLOCKEND, and AR6003 BMI rejecting DMA-paced reads).
-	 * PIO RX reads UARTDM_RF directly with no DMA buffer/cache hazard and
-	 * is plenty for 115200 BCSP traffic. Provide only the "tx" channel so
-	 * msm_serial's RX falls back to PIO (request "rx" simply absent).
+	 * If link establishment now succeeds via serdev, TX DMA was the
+	 * regression. PIO is more than adequate for 115200 BCSP.
 	 */
-	dmas = <&adm_dma1 6>;
-	dma-names = "tx";
-	qcom,tx-crci = <8>;
 
 	/*
 	 * Legacy webOS kernel used HSUART with no hardware flow control:
