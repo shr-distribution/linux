@@ -609,6 +609,23 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 			dev_err(adev->dev, "invalid crci value\n");
 			return NULL;
 		}
+
+		/*
+		 * SDCC CRCI block-size override (eMMC=CRCI 1, WiFi=CRCI 5).
+		 *
+		 * Legacy webOS msm_dmov adm1_crci_conf[] hardcodes blk_size=1 for
+		 * both SDCC CRCIs: blk_size=1 = half-FIFO (32 B) = the SDCC
+		 * half-full CRCI trigger. adm_get_blksize() instead derives it
+		 * from burst (64 B FIFO -> 2 = full-FIFO), which mis-paces the
+		 * CRCI handshake against the SDCC FIFO. The drift accumulates over
+		 * long transfers and the SDCC latches DATACRCFAIL / RXOVERRUN on
+		 * large multi-block reads (480 KB eMMC reads fail with
+		 * bytes_xfered=0; the 128 B WiFi FIXED mailbox read also errors).
+		 * Replicate the legacy per-CRCI table: force half-FIFO for the two
+		 * SDCC CRCIs only; crypto CE (CRCI 2/3) keeps the computed value.
+		 */
+		if (crci == 1 || crci == 5)
+			blk_size = 1;
 	}
 
 	/* iterate through sgs and compute allocation size of structures */
