@@ -899,10 +899,10 @@ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 			    (mrq->data->flags & MMC_DATA_WRITE));
 		if (arm) {
 			host->dummy52_needed = true;
-			dev_info_ratelimited(mmc_dev(host->mmc),
-					     "dummy52: armed after CMD53 %s %u bytes\n",
-					     (mrq->data->flags & MMC_DATA_WRITE) ?
-					     "WRITE" : "READ", len);
+			dev_dbg(mmc_dev(host->mmc),
+				"dummy52: armed after CMD53 %s %u bytes\n",
+				(mrq->data->flags & MMC_DATA_WRITE) ?
+				"WRITE" : "READ", len);
 		}
 	}
 
@@ -2970,8 +2970,8 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 				 */
 				host->atomic_submit.armed = false;
 				host->atomic_submit.active = false;
-				dev_info_ratelimited(mmc_dev(mmc),
-						     "dummy52: dispatching before CMD53 WRITE\n");
+				dev_dbg(mmc_dev(mmc),
+					"dummy52: dispatching before CMD53 WRITE\n");
 				mmci_start_command(host, &host->dummy52_cmd, 0);
 				spin_unlock_irqrestore(&host->lock, flags);
 				return;
