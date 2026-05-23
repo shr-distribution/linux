@@ -132,15 +132,28 @@ static u32 vidc_dec_get_framesize(u32 pixfmt, u32 width, u32 height)
 	switch (pixfmt) {
 	case V4L2_PIX_FMT_NV12MT:
 		/*
-		 * 64x32 tiled NV12. Same total byte count as linear NV12
-		 * with 128-pixel stride alignment: each tile is 64x32 bytes
-		 * for luma, and the plane is rounded up to a whole number
-		 * of tile rows. Two tiles abreast fill the 128-pixel stride.
+		 * 64x32 tiled NV12. Each tile is 64x32 bytes for luma; the
+		 * plane is rounded up to whole tile rows (128-pixel stride,
+		 * 32-line height) AND each plane size is finally aligned up to
+		 * DDL_TILE_MULTIPLY_FACTOR (8192) — the same formula as
+		 * vidc_dpb_calc_sizes()/ddl_get_yuv_buf_size().
+		 *
+		 * The 8192 alignment is NOT optional: copy_dpb_to_dst() copies
+		 * y_size + c_size from the DPB slot (which ARE 8192-aligned)
+		 * into this CAPTURE buffer.  Omitting the alignment here made
+		 * the CAPTURE sizeimage too small whenever stride*height was
+		 * not already a multiple of 8192 (e.g. 640x480: 471040 vs the
+		 * 475136 actually copied), overflowing the vb2 buffer by 4 KB
+		 * so every frame came back flagged ERROR with payload 0.
+		 * 320x240 happened to be exact (147456) which is why only
+		 * higher resolutions broke.
 		 */
 		y_stride = ALIGN(width, 128);
 		uv_stride = y_stride;
-		y_plane = y_stride * ALIGN(height, 32);
-		uv_plane = uv_stride * ALIGN(height / 2, 32);
+		y_plane = ALIGN(y_stride * ALIGN(height, 32),
+				VIDC_DPB_TILE_MULTIPLY_FACTOR);
+		uv_plane = ALIGN(uv_stride * ALIGN(height / 2, 32),
+				 VIDC_DPB_TILE_MULTIPLY_FACTOR);
 		return y_plane + uv_plane;
 	default:
 		/* Compressed formats - estimate based on resolution */
