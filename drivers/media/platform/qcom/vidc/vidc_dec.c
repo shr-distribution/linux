@@ -664,7 +664,21 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 			vidc_close_channel(inst);
 
 			inst->streamon_out = false;
-			pm_runtime_put(core->dev);
+			/*
+			 * put_SYNC, not bare put: legacy/mako/htc/g2 all get a
+			 * clean next-session boot (cmd=9, not the cmd=51 recovery
+			 * boot) by fully power-collapsing the video core on
+			 * last-close. Our VED is a genpd (power-domains =
+			 * <&mmcc VED_GDSC>), so the collapse only happens when this
+			 * device actually runtime-suspends. A bare async put lets
+			 * the next session's resume_and_get race in before genpd
+			 * powers VED off, so the firmware re-boots on a still-warm
+			 * core -> recovery mode. put_sync forces vidc_runtime_suspend
+			 * (fw invalidate) + genpd VED power-off to complete here,
+			 * before this session returns, so the next first-open boots
+			 * a genuinely cold core.
+			 */
+			pm_runtime_put_sync(core->dev);
 		}
 	} else {
 		while ((vbuf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx)))

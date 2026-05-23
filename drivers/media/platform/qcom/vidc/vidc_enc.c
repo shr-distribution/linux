@@ -682,7 +682,14 @@ static void vidc_enc_stop_streaming(struct vb2_queue *q)
 			/* Close firmware channel before dropping PM ref */
 			vidc_close_channel(inst);
 			inst->streamon_out = false;
-			pm_runtime_put(core->dev);
+			/*
+			 * put_SYNC, not bare put: force vidc_runtime_suspend (fw
+			 * invalidate) + genpd VED_GDSC power-off to complete here so
+			 * the next session's firmware re-boots on a cold core
+			 * (cmd=9), not a warm one (cmd=51 recovery). See the longer
+			 * rationale in vidc_dec_stop_streaming().
+			 */
+			pm_runtime_put_sync(core->dev);
 		}
 	} else {
 		while ((vbuf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx)))
