@@ -318,8 +318,10 @@ static void msm_request_tx_dma(struct msm_port *msm_port, resource_size_t base)
 
 	/* allocate DMA resources, if available */
 	dma->chan = dma_request_chan(dev, "tx");
-	if (IS_ERR(dma->chan))
+	if (IS_ERR(dma->chan)) {
+		dev_err(dev, "Failed to get TX DMA channel: %ld\n", PTR_ERR(dma->chan));
 		goto no_tx;
+	}
 
 	of_property_read_u32(dev->of_node, "qcom,tx-crci", &crci);
 
@@ -339,6 +341,7 @@ static void msm_request_tx_dma(struct msm_port *msm_port, resource_size_t base)
 	if (ret)
 		goto rel_tx;
 
+	dev_info(dev, "TX DMA channel acquired (CRCI %u)\n", crci);
 	dma->dir = DMA_TO_DEVICE;
 
 	if (msm_port->is_uartdm < UARTDM_1P4)
@@ -367,8 +370,10 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 
 	/* allocate DMA resources, if available */
 	dma->chan = dma_request_chan(dev, "rx");
-	if (IS_ERR(dma->chan))
+	if (IS_ERR(dma->chan)) {
+		dev_err(dev, "Failed to get RX DMA channel: %ld\n", PTR_ERR(dma->chan));
 		goto no_rx;
+	}
 
 	of_property_read_u32(dev->of_node, "qcom,rx-crci", &crci);
 
@@ -392,6 +397,7 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 	if (ret)
 		goto err;
 
+	dev_info(dev, "RX DMA channel acquired (CRCI %u)\n", crci);
 	dma->dir = DMA_FROM_DEVICE;
 
 	if (msm_port->is_uartdm < UARTDM_1P4)
