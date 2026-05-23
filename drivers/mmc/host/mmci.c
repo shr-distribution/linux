@@ -2309,6 +2309,7 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 				MCI_CMDCRCFAIL | MCI_CMDTIMEOUT)))
 			return;
 
+		trace_printk("dummy52: CMD52 completed, status=0x%08x\n", status);
 		host->cmd = NULL;
 		host->dummy52_in_progress = false;
 
@@ -2316,6 +2317,8 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 			struct mmc_request *real_mrq = host->pending_mrq;
 
 			host->pending_mrq = NULL;
+			trace_printk("dummy52: dispatching pending request cmd=%u\n",
+				     real_mrq->cmd->opcode);
 			__mmci_start_request(host, real_mrq);
 		}
 		return;
