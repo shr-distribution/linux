@@ -655,10 +655,10 @@ static void vidc_dec_buf_queue(struct vb2_buffer *vb)
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 
-	dev_info(core->dev,
-		 "buf_queue: type=%u seq_parsed=%d hdr_direct=%d streamon_out=%d\n",
-		 vb->type, inst->seq_parsed, inst->seq_hdr_direct,
-		 inst->streamon_out);
+	dev_dbg(core->dev,
+		"buf_queue: type=%u seq_parsed=%d hdr_direct=%d streamon_out=%d\n",
+		vb->type, inst->seq_parsed, inst->seq_hdr_direct,
+		inst->streamon_out);
 
 	v4l2_m2m_buf_queue(inst->m2m_ctx, vbuf);
 
@@ -971,7 +971,7 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 		if (!kva)
 			goto submit;
 
-		print_hex_dump(KERN_INFO, "vidc seq_hdr BEFORE[0:16]: ",
+		print_hex_dump_debug("vidc seq_hdr BEFORE[0:16]: ",
 			       DUMP_PREFIX_NONE, 16, 1, kva,
 			       min_t(u32, src_size, 16), false);
 
@@ -1025,7 +1025,7 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 			}
 		}
 
-		print_hex_dump(KERN_INFO, "vidc seq_hdr AFTER[0:40]: ",
+		print_hex_dump_debug("vidc seq_hdr AFTER[0:40]: ",
 			       DUMP_PREFIX_NONE, 16, 1, kva,
 			       min_t(u32, src_size, 40), false);
 

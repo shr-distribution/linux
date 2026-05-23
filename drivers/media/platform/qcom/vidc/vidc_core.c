@@ -532,10 +532,10 @@ static void vidc_handle_frame_done(struct vidc_core *core,
 	status = vidc_read(core, VIDC_REG_DEC_DISPLAY_STATUS);
 	inst->display_status = status & VIDC_DISPLAY_STATUS_MASK;
 
-	dev_info(core->dev,
-		 "Frame done: Y_raw=0x%x C_raw=0x%x (offsets 0x%x / 0x%x) status=%u\n",
-		 inst->display_y_raw, inst->display_c_raw,
-		 inst->display_y_raw << VIDC_ADDR_SHIFT,
+	dev_dbg(core->dev,
+		"Frame done: Y_raw=0x%x C_raw=0x%x (offsets 0x%x / 0x%x) status=%u\n",
+		inst->display_y_raw, inst->display_c_raw,
+		inst->display_y_raw << VIDC_ADDR_SHIFT,
 		 inst->display_c_raw << VIDC_ADDR_SHIFT,
 		 inst->display_status);
 
