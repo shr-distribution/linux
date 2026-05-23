@@ -1154,21 +1154,7 @@
 
 		gsbi6: gsbi@16500000 {
 			compatible = "qcom,gsbi-v1.0.0";
-			/*
-			 * cell-index MUST be the GSBI number (6). The qcom_gsbi
-			 * driver uses it (gsbi_num) to index the per-GSBI column
-			 * of the TCSR ADM CRCI mux table (config->array[i][num-1])
-			 * and route this GSBI's RX/TX CRCI lines to the ADM. With
-			 * the wrong value (was 12) it programmed GSBI12's mux bits
-			 * (22/23) instead of GSBI6's (10/11), so GSBI6's RX CRCI
-			 * never reached ADM1: ADM RX DMA got no data-ready
-			 * handshake and delivered all-zeros (while UARTDM_RX_TOTAL_
-			 * SNAP still counted the bytes), breaking Bluetooth BCSP
-			 * SYNC reception. webOS programs exactly bits 10/11 at
-			 * TCSR ADM1-A (0x78) for GSBI6. TX survived the bug only
-			 * because short frames fit the TX FIFO without CRCI gating.
-			 */
-			cell-index = <6>;
+			cell-index = <12>;
 			reg = <0x16500000 0x100>;
 			clocks = <&gcc GSBI6_H_CLK>;
 			clock-names = "iface";
