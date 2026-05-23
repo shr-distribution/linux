@@ -880,25 +880,29 @@ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 	 * mmci_request will insert a CMD52 before the real command so the
 	 * SDCC data-path state machine drains cleanly.
 	 *
-	 * WiFi (mmc1): arm after READ only. The SDCC DPSM retains residual
-	 * state after ADM DMA read completion (via callback) that causes the
-	 * next CMD53 WRITE to CMDTIMEOUT (observed after 6 HTC service-connect
-	 * reads → htc_start write). NOT arming after writes keeps the dummy52
-	 * out of the BMI firmware upload path (all writes), avoiding the
-	 * documented corruption when CMD52 interrupts LZ download.
+	 * WiFi (mmc1): arm after DMA READ only (>= 128B, which uses DMA via
+	 * validate_dma). The SDCC DPSM retains residual state after ADM DMA
+	 * read completion (via callback) that causes the next CMD53 WRITE to
+	 * CMDTIMEOUT (observed after 6 HTC 128B service-connect reads →
+	 * htc_start write). NOT arming after writes keeps the dummy52 out of
+	 * the BMI firmware upload path (all writes). Small PIO reads (< 128B,
+	 * like BMI register reads) don't need dummy52 — only DMA reads trigger
+	 * the DPSM issue.
 	 * eMMC (mmc0): arm after WRITE only (original behavior).
 	 */
 	if (host->dummy52_required && mrq && mrq->cmd &&
 	    mrq->data && mrq->cmd->opcode == SD_IO_RW_EXTENDED) {
-		bool arm = (host->mmc->index == 1 && (mrq->data->flags & MMC_DATA_READ)) ||
-			   (host->mmc->index == 0 && (mrq->data->flags & MMC_DATA_WRITE));
+		unsigned int len = mrq->data->blksz * mrq->data->blocks;
+		bool arm = (host->mmc->index == 1 &&
+			    (mrq->data->flags & MMC_DATA_READ) && len >= 128) ||
+			   (host->mmc->index == 0 &&
+			    (mrq->data->flags & MMC_DATA_WRITE));
 		if (arm) {
 			host->dummy52_needed = true;
 			dev_info_ratelimited(mmc_dev(host->mmc),
 					     "dummy52: armed after CMD53 %s %u bytes\n",
 					     (mrq->data->flags & MMC_DATA_WRITE) ?
-					     "WRITE" : "READ",
-					     mrq->data->blksz * mrq->data->blocks);
+					     "WRITE" : "READ", len);
 		}
 	}
 
