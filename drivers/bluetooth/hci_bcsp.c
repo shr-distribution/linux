@@ -1258,6 +1258,18 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 	BT_DBG("hu %p count %d rx_state %d rx_count %ld",
 	       hu, count, bcsp->rx_state, bcsp->rx_count);
 
+	/*
+	 * RXWIRE debug: dump the raw bytes the serdev RX path actually delivers.
+	 * Counterpart to the TXWIRE dump. Used to settle whether the chip's
+	 * SYNC frames are reaching us intact (c0 40 41 ... c0) or arriving as
+	 * zeros/garbage (DMA RX corruption vs chip-in-zeros-state). Gated on
+	 * dynamic debug like the rest; enable with
+	 * `echo 'file hci_bcsp.c +p' > /sys/kernel/debug/dynamic_debug/control`.
+	 */
+	if (count > 0)
+		print_hex_dump_debug("BCSP RXWIRE: ", DUMP_PREFIX_NONE, 16, 1,
+				     data, min(count, 32), false);
+
 	ptr = data;
 	while (count) {
 		if (bcsp->rx_count) {
