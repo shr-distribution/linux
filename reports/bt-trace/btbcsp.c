@@ -5,7 +5,8 @@
  * advances (sends CONF) here, the kernel driver was the issue.
  *
  * Build (mainline LuneOS, glibc): arm-linux-gnueabihf-gcc -static -O2 -o btbcsp btbcsp.c
- * Usage: btbcsp /dev/ttyMSM1
+ * Usage: btbcsp /dev/ttyMSM1 [bt_wake_gpio]
+ *   bt_wake_gpio defaults to 643 (TLMM base 512 + BT_WAKE 131); pass 0 to skip.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +32,25 @@ static const unsigned char P_CONFRSP[] = {0xde,0xad,0xd0,0xd0};
 
 static long now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec*1000+t.tv_nsec/1000000; }
 
+/* Assert BT_WAKE (chip PIO[1], host->chip wake). On mainline the TLMM gpiochip
+ * base is 512, so BT_WAKE gpio131 = sysfs 643. The serdev driver drives this in
+ * set_power, but ldisc/userspace tests bypass it — without it the CSR chip can
+ * keep its UART RX gated (deep sleep) while still TXing SYNC. Non-fatal. */
+static void bt_wake_assert(int gpio)
+{
+	char path[64]; int f; char buf[8]; int len;
+	if (gpio <= 0) return;
+	f = open("/sys/class/gpio/export", O_WRONLY);
+	if (f >= 0) { len = snprintf(buf,sizeof buf,"%d",gpio); write(f,buf,len); close(f); }
+	snprintf(path,sizeof path,"/sys/class/gpio/gpio%d/direction",gpio);
+	f = open(path, O_WRONLY);
+	if (f < 0) { printf("BT_WAKE gpio%d: open failed (%s) — assert by hand\n", gpio, strerror(errno)); return; }
+	write(f,"out",3); close(f);
+	snprintf(path,sizeof path,"/sys/class/gpio/gpio%d/value",gpio);
+	f = open(path, O_WRONLY);
+	if (f >= 0) { write(f,"1",1); close(f); printf("BT_WAKE gpio%d asserted HIGH\n", gpio); }
+}
+
 static int contains(const unsigned char *buf, int n, const unsigned char *pat){
 	int i; for(i=0;i+4<=n;i++) if(!memcmp(buf+i,pat,4)) return 1; return 0;
 }
@@ -42,7 +62,9 @@ int main(int argc, char **argv)
 	long start, last_tx = 0;
 	unsigned char rx[512];
 	const char *tty = argc>1?argv[1]:"/dev/ttyMSM1";
+	int wake_gpio = argc>2?atoi(argv[2]):643;
 
+	bt_wake_assert(wake_gpio);
 	fd = open(tty, O_RDWR|O_NOCTTY|O_NONBLOCK);
 	if (fd<0){ perror("open"); return 1; }
 	tcgetattr(fd,&ti); cfmakeraw(&ti);

@@ -8,6 +8,10 @@
  *   btup up               -> HCIDEVUP on hci0 (triggers hci_dev_open ->
  *                            bcsp_setup -> HCI init w/ Reset-first).
  *   btup attachup <tty>   -> attach, then HCIDEVUP, then hold.
+ *
+ * BT_WAKE: attach asserts gpio643 (TLMM base 512 + BT_WAKE 131) high before
+ * touching the tty, so the CSR chip's UART RX is awake. Override the gpio number
+ * with env BT_WAKE_GPIO=<n>, or BT_WAKE_GPIO=0 to skip.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +35,25 @@
 #define HCIDEVUP   _IOW('H', 201, int)
 #define HCIDEVDOWN _IOW('H', 202, int)
 
+/* Assert BT_WAKE (chip PIO[1], host->chip wake). Without it the CSR BlueCore can
+ * keep its UART RX gated (deep sleep) while still TXing SYNC. Non-fatal. */
+static void bt_wake_assert(void)
+{
+	const char *env = getenv("BT_WAKE_GPIO");
+	int gpio = env ? atoi(env) : 643;
+	char path[64]; int f; char buf[8]; int len;
+	if (gpio <= 0) return;
+	f = open("/sys/class/gpio/export", O_WRONLY);
+	if (f >= 0) { len = snprintf(buf,sizeof buf,"%d",gpio); write(f,buf,len); close(f); }
+	snprintf(path,sizeof path,"/sys/class/gpio/gpio%d/direction",gpio);
+	f = open(path, O_WRONLY);
+	if (f < 0) { printf("BT_WAKE gpio%d: open failed (%s) — assert by hand\n", gpio, strerror(errno)); return; }
+	write(f,"out",3); close(f);
+	snprintf(path,sizeof path,"/sys/class/gpio/gpio%d/value",gpio);
+	f = open(path, O_WRONLY);
+	if (f >= 0) { write(f,"1",1); close(f); printf("BT_WAKE gpio%d asserted HIGH\n", gpio); }
+}
+
 static int set_raw_115200(int fd)
 {
 	struct termios ti;
@@ -48,9 +71,10 @@ static int set_raw_115200(int fd)
 
 static int do_attach(const char *tty)
 {
-	int fd = open(tty, O_RDWR | O_NOCTTY);
-	int ld = N_HCI, proto = HCI_UART_BCSP;
+	int fd, ld = N_HCI, proto = HCI_UART_BCSP;
 	unsigned long flags = (1UL << HCI_UART_RESET_ON_INIT_BIT);
+	bt_wake_assert();
+	fd = open(tty, O_RDWR | O_NOCTTY);
 	if (fd < 0) { perror("open tty"); return -1; }
 	if (set_raw_115200(fd) < 0) { perror("termios"); return -1; }
 	if (ioctl(fd, TIOCSETD, &ld) < 0) { perror("TIOCSETD N_HCI"); return -1; }
