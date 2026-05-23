@@ -2479,7 +2479,12 @@ static struct gdsc rot_gdsc = {
 		.name = "rot",
 	},
 	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	/*
+	 * Skip SW_RESET during power domain enable, similar to VFE_GDSC.
+	 * Asserting ROT_AHB_RESET during GDSC enable may cause a glitch
+	 * affecting other MMSS peripherals during early boot.
+	 */
+	.flags = LEGACY_FOOTSWITCH,
 };
 
 static struct gdsc ved_gdsc = {
@@ -2519,7 +2524,12 @@ static struct gdsc vpe_gdsc = {
 		.name = "vpe",
 	},
 	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	/*
+	 * Skip SW_RESET during power domain enable, similar to VFE_GDSC.
+	 * Asserting VPE_AHB_RESET during GDSC enable may cause a glitch
+	 * affecting other MMSS peripherals during early boot.
+	 */
+	.flags = LEGACY_FOOTSWITCH,
 };
 
 static struct gdsc *mmcc_msm8660_gdscs[] = {

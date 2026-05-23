@@ -4269,11 +4269,6 @@
 	status = "okay";
 };
 
-/*
- * FIXME: Rotator and VPE still hang early boot despite power-domains being
- * wired in commit 54f46c9f56ed. Investigating root cause.
- */
-/*
 &rotator {
 	status = "okay";
 };
@@ -4281,7 +4276,6 @@
 &vpe {
 	status = "okay";
 };
-*/
 
 &vidc {
 	status = "okay";
