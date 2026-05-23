@@ -4215,6 +4215,10 @@
 	status = "okay";
 };
 
+/*
+ * Temporarily disable IOMMU contexts to test if they're causing the hang
+ */
+/*
 &vpe_iommu {
 	status = "okay";
 };
@@ -4222,6 +4226,7 @@
 &rot_iommu {
 	status = "okay";
 };
+*/
 
 &ijpeg_iommu {
 	status = "okay";
@@ -4292,11 +4297,6 @@
 	status = "okay";
 };
 
-/*
- * DISABLED: Still hangs with power-domains + SW_RESET skip + iommus.
- * Need to check: probe order, clock dependencies, whether drivers even load.
- */
-/*
 &rotator {
 	status = "okay";
 };
@@ -4304,7 +4304,6 @@
 &vpe {
 	status = "okay";
 };
-*/
 
 &vidc {
 	status = "okay";
