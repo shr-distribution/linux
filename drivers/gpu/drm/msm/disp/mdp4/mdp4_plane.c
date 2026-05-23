@@ -384,9 +384,15 @@ static int mdp4_plane_mode_set(struct drm_plane *plane,
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_PHASEY_STEP(pipe), phasey_step);
 
 	if (frame_type != FRAME_LINEAR)
+		/*
+		 * EXPERIMENT: the tiled fetch drops the first 32px (one tile
+		 * row) of the image — a fixed one-tile-row fencepost seen at
+		 * every resolution.  Try declaring the tile frame one tile row
+		 * taller so the hardware walks all rows of the actual image.
+		 */
 		mdp4_write(mdp4_kms, REG_MDP4_PIPE_SSTILE_FRAME_SIZE(pipe),
 				MDP4_PIPE_SSTILE_FRAME_SIZE_WIDTH(src_w) |
-				MDP4_PIPE_SSTILE_FRAME_SIZE_HEIGHT(src_h));
+				MDP4_PIPE_SSTILE_FRAME_SIZE_HEIGHT(src_h + 32));
 
 	return 0;
 }
