@@ -1832,6 +1832,16 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	host->size = data->blksz * data->blocks;
 	data->bytes_xfered = 0;
 
+	/*
+	 * WiFi (mmc1): clear any stale PROG_DONE latch before each transfer so
+	 * that, when a WRITE completes, a set PROG_DONE reflects THIS write's
+	 * card programming. The DMA-write completion path polls for it (see
+	 * mmci_data_irq) to avoid issuing the next CMD53 while the AR6003 is
+	 * still programming the just-written mailbox.
+	 */
+	if (host->mmc->index == 1)
+		writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
+
 	clks = (unsigned long long)data->timeout_ns * host->cclk;
 	do_div(clks, NSEC_PER_SEC);
 
@@ -2182,6 +2192,31 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 				     host->mmc->index,
 				     (data->flags & MMC_DATA_READ) ? "read" : "WRITE",
 				     status, data->blksz, data->blocks, data->error);
+
+		/*
+		 * WiFi (mmc1) DMA WRITE: wait for the card to finish programming
+		 * (PROG_DONE, bit 23) before completing the request, so the next
+		 * CMD53 is not issued while the AR6003 is still busy. A DMA
+		 * write's DATAEND fires fast enough that the follow-up reg-table
+		 * READ's CMD53 otherwise races ahead of PROG_DONE and CMDTIMEOUTs
+		 * — the WMI-CONTROL connect failure (DIAG[CMD53-TO] showed
+		 * PROG_DONE set only after the read had already been sent). PIO
+		 * writes are slow enough to avoid this, so only the DMA path
+		 * needs the wait. PROG_DONE arrives within microseconds for a
+		 * 128-byte mailbox write; the bound only guards an error case.
+		 */
+		if (host->mmc->index == 1 && host->dma_in_progress &&
+		    !(data->flags & MMC_DATA_READ) && !data->error) {
+			unsigned int pd;
+
+			for (pd = 0; pd < 2000; pd++) {
+				if (readl(host->base + MMCISTATUS) &
+				    MCI_QCOM_PROGDONE)
+					break;
+				udelay(1);
+			}
+			writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
+		}
 
 		if (host->variant->qcom_datactrl_delay)
 			cancel_delayed_work(&host->qcom_dma_timeout_work);

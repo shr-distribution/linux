@@ -162,6 +162,11 @@
 #define MCI_ST_SDIOIT		(1 << 22)
 #define MCI_ST_CEATAEND		(1 << 23)
 #define MCI_ST_CARDBUSY		(1 << 24)
+/*
+ * Qualcomm SDCC: bit 23 in MMCISTATUS is PROG_DONE (card finished
+ * programming a write), not CE-ATA. Same bit position in MMCICLEAR.
+ */
+#define MCI_QCOM_PROGDONE	(1 << 23)
 /* Extended status bits for the STM32 variants */
 #define MCI_STM32_BUSYD0	BIT(20)
 #define MCI_STM32_BUSYD0END	BIT(21)
