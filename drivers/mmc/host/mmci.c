@@ -876,17 +876,30 @@ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 
 	/*
 	 * Qualcomm SDCC dummy CMD52 errata: arm the follow-up if the just
-	 * completed request was a CMD53/CMD54 WRITE. The next call to
+	 * completed request was a CMD53 with data. The next call to
 	 * mmci_request will insert a CMD52 before the real command so the
-	 * SDCC data-path state machine drains cleanly between SDIO writes.
+	 * SDCC data-path state machine drains cleanly.
+	 *
+	 * WiFi (mmc1): arm after READ only. The SDCC DPSM retains residual
+	 * state after ADM DMA read completion (via callback) that causes the
+	 * next CMD53 WRITE to CMDTIMEOUT (observed after 6 HTC service-connect
+	 * reads → htc_start write). NOT arming after writes keeps the dummy52
+	 * out of the BMI firmware upload path (all writes), avoiding the
+	 * documented corruption when CMD52 interrupts LZ download.
+	 * eMMC (mmc0): arm after WRITE only (original behavior).
 	 */
 	if (host->dummy52_required && mrq && mrq->cmd &&
-	    mrq->data && (mrq->data->flags & MMC_DATA_WRITE) &&
-	    mrq->cmd->opcode == SD_IO_RW_EXTENDED) {
-		host->dummy52_needed = true;
-		dev_info_ratelimited(mmc_dev(host->mmc),
-				     "dummy52: armed after CMD53 WRITE %u blocks\n",
-				     mrq->data->blocks);
+	    mrq->data && mrq->cmd->opcode == SD_IO_RW_EXTENDED) {
+		bool arm = (host->mmc->index == 1 && (mrq->data->flags & MMC_DATA_READ)) ||
+			   (host->mmc->index == 0 && (mrq->data->flags & MMC_DATA_WRITE));
+		if (arm) {
+			host->dummy52_needed = true;
+			dev_info_ratelimited(mmc_dev(host->mmc),
+					     "dummy52: armed after CMD53 %s %u bytes\n",
+					     (mrq->data->flags & MMC_DATA_WRITE) ?
+					     "WRITE" : "READ",
+					     mrq->data->blksz * mrq->data->blocks);
+		}
 	}
 
 	mmc_request_done(host->mmc, mrq);
@@ -2883,53 +2896,37 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	spin_lock_irqsave(&host->lock, flags);
 
 	/*
-	 * Qualcomm SDCC dummy CMD52 errata: after a CMD53 WRITE, the SDCC
-	 * DPSM is left half-closed and a subsequent CMD53 WRITE would see
-	 * DATACRCFAIL. Drain the residual state by issuing a CMD52 (read
-	 * of CCCR reg 0, function 0) first, then dispatch the real request
-	 * from the dummy52-completion path in mmci_cmd_irq.
+	 * Qualcomm SDCC dummy CMD52 errata: after a CMD53 data transfer, the
+	 * SDCC DPSM retains residual state. Drain it by issuing a CMD52
+	 * (read of CCCR reg 0, function 0) before the triggering command,
+	 * then dispatch the real request from mmci_cmd_irq.
 	 *
-	 * Only applies to the WRITE->WRITE case. CMD53 READs following a
-	 * WRITE do not hit DATACRCFAIL because the half-closed DPSM only
-	 * affects the WRITE data path. Dispatching dummy52 before a READ
-	 * would delay it into the AR6003 SDIO reset window (e.g. after
-	 * BMI_DONE) causing an 800 ms data timeout and WMI poll failure.
+	 * Drain direction per controller:
+	 *  - eMMC (mmc0): WRITE->WRITE hits DATACRCFAIL → drain before WRITE.
+	 *  - WiFi (mmc1): drain before WRITE. This covers:
+	 *    (a) WRITE->WRITE (original errata)
+	 *    (b) READ->WRITE (DMA read callback leaves DPSM dirty → next
+	 *        CMD53 WRITE CMDTIMEOUTs; confirmed on HTC START after 6
+	 *        service-connect reads)
+	 *    Never drain before READ: read→read chains work fine, and a
+	 *    drain before a read during BMI/HTC poll causes 800 ms timeout.
 	 */
 	if (host->dummy52_required && host->dummy52_needed) {
 		host->dummy52_needed = false;
-		/*
-		 * Drain the half-closed SDCC DPSM left by a CMD53 WRITE with a
-		 * dummy CMD52 before the next CMD53. dummy52_needed is only armed
-		 * after a CMD53 WRITE.
-		 *
-		 * Direction of the *next* CMD53 that needs the drain differs per
-		 * controller:
-		 *  - eMMC (mmc0): WRITE->WRITE hits DATACRCFAIL -> drain before a
-		 *    following WRITE (original behaviour).
-		 *  - WiFi (mmc1): WRITE->READ hits CMD53 CMDTIMEOUT (the 128-byte
-		 *    WMI-CONTROL connect WRITE then the 24-byte reg-table READ) ->
-		 *    drain before a following READ. Crucially do NOT drain before
-		 *    a WiFi WRITE: a dummy CMD52 inserted ahead of a BMI firmware
-		 *    WRITE corrupts the AR6003 SDIO download (documented). Gating
-		 *    to READ keeps the dummy52 away from the BMI write path.
-		 */
+
 		if (mrq->cmd->opcode == SD_IO_RW_EXTENDED && mrq->data) {
 			bool is_write = mrq->data->flags & MMC_DATA_WRITE;
-			bool drain = (host->mmc->index == 1) ? !is_write : is_write;
 
-			if (drain) {
+			if (is_write) {
 				host->dummy52_in_progress = true;
 				host->pending_mrq = mrq;
 				dev_info_ratelimited(mmc_dev(mmc),
-						     "dummy52: dispatching before opcode=%u %s\n",
-						     mrq->cmd->opcode,
-						     is_write ? "WRITE" : "READ");
+						     "dummy52: dispatching before CMD53 WRITE\n");
 				mmci_start_command(host, &host->dummy52_cmd, 0);
 				spin_unlock_irqrestore(&host->lock, flags);
 				return;
 			}
 		}
-		/* not the drain-triggering direction: clear flag and fall through */
 	}
 
 	__mmci_start_request(host, mrq);
