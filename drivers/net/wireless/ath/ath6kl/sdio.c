@@ -201,27 +201,6 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 		   request & HIF_FIXED_ADDRESS ? " (fixed)" : "", buf, len);
 	ath6kl_dbg_dump(ATH6KL_DBG_SDIO_DUMP, NULL, "sdio ", buf, len);
 
-	/*
-	 * Diagnostic for CMD53 FIXED-address read hang investigation.
-	 * Dump first 32 bytes of mailbox FIXED reads to verify data
-	 * integrity. If buffer is all-zeros or garbage, the DMA transfer
-	 * completed hardware-wise (IRQ fired) but data is corrupt.
-	 */
-	if ((request & HIF_READ) && (request & HIF_FIXED_ADDRESS) &&
-	    addr >= 0x800 && addr <= 0xfff && len >= 32) {
-		dev_info(&func->dev,
-			 "AR6K-DUMP: FIXED RD addr=0x%03x len=%d ret=%d buf[0..31]:\n"
-			 "  %02x %02x %02x %02x %02x %02x %02x %02x  "
-			 "%02x %02x %02x %02x %02x %02x %02x %02x\n"
-			 "  %02x %02x %02x %02x %02x %02x %02x %02x  "
-			 "%02x %02x %02x %02x %02x %02x %02x %02x\n",
-			 addr, len, ret,
-			 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-			 buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
-			 buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
-			 buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31]);
-	}
-
 	trace_ath6kl_sdio(addr, request, buf, len);
 
 	return ret;
