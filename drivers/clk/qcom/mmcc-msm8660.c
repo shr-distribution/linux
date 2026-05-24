@@ -2449,8 +2449,20 @@ static struct gdsc gfx2d1_gdsc = {
 
 static struct gdsc gfx3d_gdsc = {
 	.gdscr = 0x0188,
-	.resets = (unsigned int []){ GFX3D_AHB_RESET },
-	.reset_count = 1,
+	/*
+	 * GFX3D (Adreno 220) requires the core reset to be toggled on every
+	 * power-on, in addition to the AHB reset. The legacy MSM8x60
+	 * footswitch driver (mach-msm/footswitch-8x60.c) does exactly this:
+	 * after powering the GFX3D rail it issues an extra
+	 * clk_reset(core_clk, ASSERT/DEASSERT). Without it the Adreno 220
+	 * core (parameter cache) comes up free-running, producing the
+	 * deterministic period-8 render cycle on the HP TouchPad. Listing
+	 * GFX3D_RESET here lets the GDSC framework assert/deassert it around
+	 * the rail charge (see gdsc_enable LEGACY_FOOTSWITCH path), which is
+	 * the framework-correct equivalent of the legacy toggle.
+	 */
+	.resets = (unsigned int []){ GFX3D_AHB_RESET, GFX3D_RESET },
+	.reset_count = 2,
 	.pd = {
 		.name = "gfx3d",
 	},
