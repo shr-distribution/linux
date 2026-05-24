@@ -1,49 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2018 The Linux Foundation. All rights reserved. */
 
-#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/interconnect.h>
-#include <linux/moduleparam.h>
 #include <linux/pm_opp.h>
 
-#include <drm/drm_file.h>
-
 #include "a2xx_gpu.h"
-#include "a2xx_debug.h"
 #include "msm_gem.h"
 #include "msm_mmu.h"
 
 extern bool hang_debug;
-
-/*
- * SQ_GPR_MANAGEMENT value written at a2xx hw_init. Default 0x00040400
- * matches the legacy KGSL (VTX=64, PIX=64, static). Exposed as a
- * runtime-tweakable module param to investigate the A220 period-8 render
- * cycle: this register controls SQ GPR / parameter-cache banking, so
- * different values may change the 8-way wavefront-slot rotation that the
- * period-8 cycle appears to ride on. Change via
- *   /sys/module/<msm-module>/parameters/a2xx_sq_gpr_management
- * then force a GPU hw_init to apply (let the GPU idle -> autosuspend ->
- * next submit resumes + re-runs hw_init, or trigger the debugfs reset).
- * webOS's binning prelude used 0x0007f010 (VTX=127, PIX=1).
- */
-static uint a2xx_sq_gpr_management = 0x00040400;
-module_param(a2xx_sq_gpr_management, uint, 0644);
-MODULE_PARM_DESC(a2xx_sq_gpr_management,
-	"SQ_GPR_MANAGEMENT value written at a2xx hw_init "
-	"(default 0x00040400; applied on next GPU hw_init/resume)");
-
-/*
- * Track the last user IB1 across submits for forensic dump on MMU
- * fault. Only the IOVA + size are saved; the kvirt resolution is
- * deferred to fault time and uses a gpummu page-table walk
- * (a2xx_gpummu_iova_to_kvirt) which doesn't require GEM locking.
- */
-static struct {
-	u64 ib1_iova;
-	u32 ib1_size;
-} a2xx_last_ib;
 
 static void a2xx_dump(struct msm_gpu *gpu);
 static bool a2xx_idle(struct msm_gpu *gpu);
@@ -64,10 +30,6 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	struct msm_ringbuffer *ring = submit->ring;
 	unsigned int i;
-	int wptr_delay;
-
-	/* Debug: log submit details */
-	a2xx_debug_log_submit(gpu, submit);
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
@@ -88,26 +50,8 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 		}
 	}
 
-	/*
-	 * Track the FIRST user IB1 of this submit for forensic dump on
-	 * MMU fault. Just save the IOVA + size; the kvirt resolution
-	 * happens at fault time via a page-table walk
-	 * (a2xx_gpummu_iova_to_kvirt) which doesn't require GEM locking.
-	 *
-	 * Earlier attempts to capture kvaddr at submit time via
-	 * msm_gem_get_vaddr failed (-EBUSY for DONTNEED BOs) and the
-	 * msm_gem_get_vaddr_active fallback deadlocked because the
-	 * submit path already holds the BO's reservation lock through
-	 * drm_exec.
-	 */
-	for (i = 0; i < submit->nr_cmds; i++) {
-		if (submit->cmd[i].type != MSM_SUBMIT_CMD_BUF)
-			continue;
-
-		a2xx_last_ib.ib1_iova = submit->cmd[i].iova;
-		a2xx_last_ib.ib1_size = submit->cmd[i].size;
-		break;
-	}
+	OUT_PKT0(ring, REG_AXXX_CP_SCRATCH_REG2, 1);
+	OUT_RING(ring, submit->seqno);
 
 	/* wait for idle before cache flush/interrupt */
 	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
@@ -116,17 +60,9 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	OUT_PKT3(ring, CP_EVENT_WRITE, 3);
 	OUT_RING(ring, CACHE_FLUSH_TS);
 	OUT_RING(ring, rbmemptr(ring, fence));
-	OUT_RING(ring, submit->seqno);   /* unmasked - fence tracking */
+	OUT_RING(ring, submit->seqno);
 	OUT_PKT3(ring, CP_INTERRUPT, 1);
 	OUT_RING(ring, 0x80000000);
-
-	/* Debug: force cache flush before notifying GPU */
-	a2xx_debug_cache_flush();
-
-	/* Debug: optional EXTRA delay before WPTR write (knob for tests) */
-	wptr_delay = a2xx_debug_get_wptr_delay();
-	if (wptr_delay > 0)
-		udelay(wptr_delay);
 
 	adreno_flush(gpu, ring, REG_AXXX_CP_RB_WPTR);
 }
@@ -218,46 +154,21 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_MH_MMU_MPU_BASE, 0x00000000);
 	gpu_write(gpu, REG_A2XX_MH_MMU_MPU_END, 0xfffff000);
 
-	/*
-	 * Match legacy webOS KGSL: configure ALL MH MMU client ports to
-	 * BEH_TRAN_FLT (translate, fault on miss) instead of BEH_TRAN_RNG
-	 * (translate, silently bypass on miss).
-	 *
-	 * Legacy msm8660_defconfig had CONFIG_MSM_KGSL_MMU_PAGE_FAULT=y, which
-	 * sets MMU_CONFIG=2 = BEH_TRAN_FLT in kgsl_yamato.c YAMATO_MMU_CONFIG.
-	 *
-	 * BEH_TRAN_RNG is dangerous: an out-of-range / unmapped GPU access is
-	 * silently passed through to raw physical address space, so the GPU
-	 * reads garbage memory instead of faulting. On Adreno 220 this maps
-	 * onto the intermittent faceted-rendering glmark2 symptom — the GPU
-	 * pulls garbage in place of real vertex/normal/uniform data and we
-	 * see no kernel-side warning.
-	 *
-	 * BEH_TRAN_FLT will turn those silent garbage reads into visible
-	 * MH page faults via the MH interrupt path, which both eliminates
-	 * the wrong-data outcome and gives us real diagnostics.
-	 */
 	gpu_write(gpu, REG_A2XX_MH_MMU_CONFIG, A2XX_MH_MMU_CONFIG_MMU_ENABLE |
-		A2XX_MH_MMU_CONFIG_RB_W_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_CP_W_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_CP_R0_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_CP_R1_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_CP_R2_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_CP_R3_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_CP_R4_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_VGT_R0_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_VGT_R1_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_TC_R_CLNT_BEHAVIOR(BEH_TRAN_FLT) |
-		A2XX_MH_MMU_CONFIG_PA_W_CLNT_BEHAVIOR(BEH_TRAN_FLT));
+		A2XX_MH_MMU_CONFIG_RB_W_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_CP_W_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_CP_R0_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_CP_R1_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_CP_R2_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_CP_R3_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_CP_R4_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_VGT_R0_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_VGT_R1_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_TC_R_CLNT_BEHAVIOR(BEH_TRAN_RNG) |
+		A2XX_MH_MMU_CONFIG_PA_W_CLNT_BEHAVIOR(BEH_TRAN_RNG));
 
-	/*
-	 * VA range. Match webOS/KGSL live readback (0x66000fff) instead
-	 * of mainline's historical SZ_16M base, paired with the matching
-	 * GPUMMU_VA_START change in a2xx_gpummu.c. Hypothesis: the upper
-	 * VA bits index the L2 / MH cache, and mainline's low-RAM base
-	 * may hit "dirty" cache lines webOS never touches.
-	 */
-	gpu_write(gpu, REG_A2XX_MH_MMU_VA_RANGE, 0x66000000UL |
+	/* same as parameters in adreno_gpu */
+	gpu_write(gpu, REG_A2XX_MH_MMU_VA_RANGE, SZ_16M |
 		A2XX_MH_MMU_VA_RANGE_NUM_64KB_REGIONS(0xfff));
 
 	gpu_write(gpu, REG_A2XX_MH_MMU_PT_BASE, pt_base);
@@ -308,34 +219,12 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	else
 		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
 
-	/* A22X: Initialize GRAS and LRZ/VSC control registers to 0.
-	 * KGSL initializes all registers via 18KB shadow memory, but freedreno
-	 * doesn't have shadowing. Without explicit initialization, these
-	 * registers can have random values causing intermittent rendering
-	 * issues (e.g., faceted vs smooth surfaces in glmark2).
+	/*
+	 * Initialize SQ_GPR_MANAGEMENT to the legacy KGSL value
+	 * (0x00040400 = VTX=64, PIX=64, static). Without an explicit init,
+	 * random power-on values could starve one shader type of GPRs.
 	 */
-	if (!adreno_is_a20x(adreno_gpu)) {
-		gpu_write(gpu, REG_A2XX_A220_RB_LRZ_VSC_CONTROL, 0);
-		gpu_write(gpu, REG_A2XX_A220_GRAS_CONTROL, 0);
-	}
-
-	/* Initialize SQ_INTERPOLATOR_CNTL to 0xffffffff (all smooth interpolation).
-	 * Debug logging revealed that the first submit happens before Mesa sets
-	 * this register, leaving it at 0x00000000 (all flat shading). This causes
-	 * intermittent faceted rendering when the GPU state from the first draw
-	 * affects subsequent draws.
-	 */
-	gpu_write(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL, 0xffffffff);
-
-	/* Initialize SQ_GPR_MANAGEMENT.
-	 *
-	 * KGSL writes 0x00040400 (VTX=64, PIX=64, static). Without proper
-	 * init, random power-on values could starve one shader type of GPRs.
-	 * Value is a runtime module param (a2xx_sq_gpr_management) so the
-	 * GPR/param-cache banking can be swept while chasing the period-8
-	 * cycle; see the param declaration near the top of this file.
-	 */
-	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, a2xx_sq_gpr_management);
+	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x00040400);
 
 	/* note: gsl doesn't set this */
 	gpu_write(gpu, REG_A2XX_RBBM_DEBUG, 0x00080000);
@@ -439,29 +328,13 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 static void a2xx_recover(struct msm_gpu *gpu)
 {
 	int i;
-	u32 rptr, wptr, ib1_base, ib1_bufsz, rbbm_status;
-
-	/* Dump CP state + SCRATCH FIRST, before adreno_dump_info, so we get
-	 * this info even if adreno_dump_info hangs on register reads. Use
-	 * pr_err to ensure netconsole (KERN_ERR filter) shows the output.
-	 *
-	 * CP_SCRATCH_REG0..6 are used as milestone markers by Mesa Fork A/B
-	 * patch 0096. Any REG[N] reading 0 means the CP did not reach that
-	 * milestone in fd2_emit_tile_init.
-	 */
-	rptr = gpu_read(gpu, REG_AXXX_CP_RB_RPTR);
-	wptr = gpu_read(gpu, REG_AXXX_CP_RB_WPTR);
-	ib1_base = gpu_read(gpu, REG_AXXX_CP_IB1_BASE);
-	ib1_bufsz = gpu_read(gpu, REG_AXXX_CP_IB1_BUFSZ);
-	rbbm_status = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
-	pr_err("a2xx_recover: CP rptr=0x%x wptr=0x%x ib1_base=0x%x ib1_bufsz=%u rbbm_status=0x%08x\n",
-		rptr, wptr, ib1_base, ib1_bufsz, rbbm_status);
-	for (i = 0; i < 8; i++) {
-		pr_err("a2xx_recover: CP_SCRATCH_REG%d: 0x%08x\n", i,
-			gpu_read(gpu, REG_AXXX_CP_SCRATCH_REG0 + i));
-	}
 
 	adreno_dump_info(gpu);
+
+	for (i = 0; i < 8; i++) {
+		printk("CP_SCRATCH_REG%d: %u\n", i,
+			gpu_read(gpu, REG_AXXX_CP_SCRATCH_REG0 + i));
+	}
 
 	/* dump registers before resetting gpu, if enabled: */
 	if (hang_debug)
@@ -470,14 +343,9 @@ static void a2xx_recover(struct msm_gpu *gpu)
 	/*
 	 * Perform a full GPU reset matching the sequence in a2xx_hw_init()
 	 * and the legacy KGSL driver. A partial reset (0x1 = CP only) is
-	 * insufficient when the GPU is truly hung.
-	 *
-	 * The sequence is:
-	 * 1. Halt the micro engine to stop any in-flight operations
-	 * 2. Power on all blocks via PM_OVERRIDE to ensure they can be reset
-	 * 3. Assert full reset on ALL blocks (0xffffffff), not just CP
-	 * 4. Wait 30ms for the reset to complete (per KGSL driver)
-	 * 5. Deassert reset
+	 * insufficient when the GPU is truly hung: halt the ME, power all
+	 * blocks on via PM_OVERRIDE, assert reset on all blocks, wait 30ms
+	 * (per KGSL), then deassert.
 	 */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, AXXX_CP_ME_CNTL_HALT);
 
@@ -569,88 +437,11 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	mstatus = gpu_read(gpu, REG_A2XX_MASTER_INT_SIGNAL);
 
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_MH_INT_STAT) {
-		uint32_t fault_addr, tran_err, rbbm_st;
-		uint32_t rb_base, rb_rptr, rb_wptr;
-		uint32_t ib1_base, ib1_bufsz;
-		uint32_t clnt_cfg1, clnt_cfg2;
-
 		status = gpu_read(gpu, REG_A2XX_MH_INTERRUPT_STATUS);
-		fault_addr = gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT);
 
 		dev_warn(gpu->dev->dev, "MH_INT: %08X\n", status);
-		dev_warn(gpu->dev->dev, "MMU_PAGE_FAULT: %08X\n", fault_addr);
-
-		if (status & A2XX_MH_INTERRUPT_MASK_MMU_PAGE_FAULT) {
-			/*
-			 * Extra diagnostics for the deterministic
-			 * 0xc000428b fault. Dumps where the CP was in
-			 * the cmdstream, which IB, which MH client
-			 * generated the bad access, and the AXI
-			 * translation-error code.
-			 */
-			tran_err  = gpu_read(gpu, REG_A2XX_MH_MMU_TRAN_ERROR);
-			rbbm_st   = gpu_read(gpu, REG_A2XX_RBBM_STATUS);
-			rb_base   = gpu_read(gpu, REG_AXXX_CP_RB_BASE);
-			rb_rptr   = gpu_read(gpu, REG_AXXX_CP_RB_RPTR);
-			rb_wptr   = gpu_read(gpu, REG_AXXX_CP_RB_WPTR);
-			ib1_base  = gpu_read(gpu, REG_AXXX_CP_IB1_BASE);
-			ib1_bufsz = gpu_read(gpu, REG_AXXX_CP_IB1_BUFSZ);
-			clnt_cfg1 = gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG1);
-			clnt_cfg2 = gpu_read(gpu, REG_A2XX_MH_CLNT_INTF_CTRL_CONFIG2);
-
-			dev_warn(gpu->dev->dev,
-				 "  TRAN_ERROR=%08x RBBM_STATUS=%08x\n",
-				 tran_err, rbbm_st);
-			dev_warn(gpu->dev->dev,
-				 "  RB_BASE=%08x RPTR=%08x WPTR=%08x\n",
-				 rb_base, rb_rptr, rb_wptr);
-			dev_warn(gpu->dev->dev,
-				 "  IB1_BASE=%08x IB1_BUFSZ=%08x\n",
-				 ib1_base, ib1_bufsz);
-			dev_warn(gpu->dev->dev,
-				 "  MH_CLNT_INTF_CFG1=%08x CFG2=%08x\n",
-				 clnt_cfg1, clnt_cfg2);
-
-			a2xx_gpummu_debug_fault(to_msm_vm(gpu->vm)->mmu, fault_addr);
-
-			/*
-			 * Dump up to 64 dwords of the last submitted user IB1
-			 * so we can grep for the offending pointer (0xc000428b)
-			 * and find which packet / descriptor placed it there.
-			 *
-			 * Resolve IOVA -> kvirt at fault time via the gpummu
-			 * page table (no GEM locks taken). A single page (4 KB
-			 * = 1024 dwords) is enough; we cap at 64 dwords below.
-			 */
-			if (a2xx_last_ib.ib1_iova && a2xx_last_ib.ib1_size) {
-				u32 *ib_kv = a2xx_gpummu_iova_to_kvirt(
-					to_msm_vm(gpu->vm)->mmu,
-					a2xx_last_ib.ib1_iova);
-				u32 dwords = min(a2xx_last_ib.ib1_size, 64u);
-				u32 j;
-
-				dev_warn(gpu->dev->dev,
-					 "  last IB1 iova=%016llx size=%u dwords kvirt=%p (dumping %u)\n",
-					 a2xx_last_ib.ib1_iova,
-					 a2xx_last_ib.ib1_size, ib_kv, dwords);
-
-				if (ib_kv) {
-					for (j = 0; j < dwords; j += 8) {
-						dev_warn(gpu->dev->dev,
-						    "  +%03x: %08x %08x %08x %08x %08x %08x %08x %08x\n",
-						    j * 4,
-						    ib_kv[j + 0],
-						    j + 1 < dwords ? ib_kv[j + 1] : 0,
-						    j + 2 < dwords ? ib_kv[j + 2] : 0,
-						    j + 3 < dwords ? ib_kv[j + 3] : 0,
-						    j + 4 < dwords ? ib_kv[j + 4] : 0,
-						    j + 5 < dwords ? ib_kv[j + 5] : 0,
-						    j + 6 < dwords ? ib_kv[j + 6] : 0,
-						    j + 7 < dwords ? ib_kv[j + 7] : 0);
-					}
-				}
-			}
-		}
+		dev_warn(gpu->dev->dev, "MMU_PAGE_FAULT: %08X\n",
+			gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT));
 
 		gpu_write(gpu, REG_A2XX_MH_INTERRUPT_CLEAR, status);
 	}
@@ -668,7 +459,7 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_RBBM_INT_STAT) {
 		status = gpu_read(gpu, REG_A2XX_RBBM_INT_STATUS);
 
-		dev_dbg(gpu->dev->dev, "RBBM_INT: %08X\n", status);
+		dev_warn(gpu->dev->dev, "RBBM_INT: %08X\n", status);
 
 		gpu_write(gpu, REG_A2XX_RBBM_INT_ACK, status);
 	}
@@ -732,21 +523,8 @@ static const unsigned int a220_registers[] = {
 	0x250C, 0x2514, 0x2580, 0x2584, 0x25F5, 0x25F7, 0x2600, 0x2602,
 	0x2604, 0x2606, 0x2608, 0x2608, 0x2680, 0x2682, 0x2694, 0x2694,
 	0x2700, 0x2708, 0x2712, 0x2712, 0x2716, 0x2716, 0x2718, 0x271D,
-	0x2724, 0x2726, 0x2780, 0x2783,
-	/*
-	 * Extended constant-memory coverage for state-leak debugging.
-	 * Covers the full A2XX shader-constant SRAM as MMIO so the
-	 * /sys/kernel/debug/dri/0/gpu hangdump shows whether stale
-	 * constant data leaks across DRM-client transitions.
-	 *
-	 *   0x4000..0x40FF  256 vec4 ALU constants (64 dwords each
-	 *                   for VS at offset 0x20, PS at offset 0x120
-	 *                   per Mesa's PS_CONST_BASE / VS_CONST_BASE)
-	 *   0x4800..0x48BF  32 texture-fetch constants (6 dwords each)
-	 *   0x4900..0x4907  8 dwords boolean constants (256 bool flags)
-	 *   0x4908..0x493F  56 dwords loop control constants
-	 */
-	0x4000, 0x40FF, 0x4800, 0x48BF, 0x4900, 0x4907, 0x4908, 0x493F,
+	0x2724, 0x2726, 0x2780, 0x2783, 0x4000, 0x4003, 0x4800, 0x4805,
+	0x4900, 0x4900, 0x4908, 0x4908,
 	~0   /* sentinel */
 };
 
@@ -785,45 +563,8 @@ static const unsigned int a225_registers[] = {
 /* would be nice to not have to duplicate the _show() stuff with printk(): */
 static void a2xx_dump(struct msm_gpu *gpu)
 {
-	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
-
-	printk("======== A2XX GPU Register Dump ========\n");
-	printk("GPU: %s\n", adreno_is_a20x(adreno_gpu) ? "A20X (Yamato)" : "A22X (Leia)");
-
-	/* Status registers */
-	printk("STATUS REGISTERS:\n");
-	printk("  RBBM_STATUS (0x05d0) = %08x\n",
+	printk("status:   %08x\n",
 			gpu_read(gpu, REG_A2XX_RBBM_STATUS));
-	printk("  CP_RB_RPTR = %08x, CP_RB_WPTR = %08x\n",
-			gpu_read(gpu, REG_AXXX_CP_RB_RPTR),
-			gpu_read(gpu, REG_AXXX_CP_RB_WPTR));
-
-	/* Critical shader registers - these affect rendering quality */
-	printk("SHADER REGISTERS:\n");
-	printk("  SQ_GPR_MANAGEMENT (0x0d00) = %08x\n",
-			gpu_read(gpu, REG_A2XX_SQ_GPR_MANAGEMENT));
-	printk("  SQ_INST_STORE_MANAGMENT (0x0d02) = %08x\n",
-			gpu_read(gpu, REG_A2XX_SQ_INST_STORE_MANAGMENT));
-	printk("  SQ_INTERPOLATOR_CNTL (0x2182) = %08x\n",
-			gpu_read(gpu, REG_A2XX_SQ_INTERPOLATOR_CNTL));
-
-	/* Power management */
-	printk("POWER MANAGEMENT:\n");
-	printk("  RBBM_PM_OVERRIDE1 (0x039c) = %08x\n",
-			gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE1));
-	printk("  RBBM_PM_OVERRIDE2 (0x039d) = %08x\n",
-			gpu_read(gpu, REG_A2XX_RBBM_PM_OVERRIDE2));
-
-	/* A22X specific */
-	if (!adreno_is_a20x(adreno_gpu)) {
-		printk("A22X SPECIFIC:\n");
-		printk("  A220_RB_LRZ_VSC_CONTROL (0x2209) = %08x\n",
-				gpu_read(gpu, REG_A2XX_A220_RB_LRZ_VSC_CONTROL));
-		printk("  A220_GRAS_CONTROL (0x2210) = %08x\n",
-				gpu_read(gpu, REG_A2XX_A220_GRAS_CONTROL));
-	}
-
-	printk("========================================\n");
 	adreno_dump(gpu);
 }
 
@@ -857,11 +598,7 @@ a2xx_create_vm(struct msm_gpu *gpu, struct platform_device *pdev)
 	struct msm_mmu *mmu = a2xx_gpummu_new(&pdev->dev, gpu);
 	struct drm_gpuvm *vm;
 
-	/* VA base must match GPUMMU_VA_START in a2xx_gpummu.c and the
-	 * MH_MMU_VA_RANGE write in a2xx_hw_init - all three need to agree
-	 * or BOs get IOVAs outside the configured MMU range and fault. */
-	vm = msm_gem_vm_create(gpu->dev, mmu, "gpu", 0x66000000UL,
-			       0xfff * SZ_64K, true);
+	vm = msm_gem_vm_create(gpu->dev, mmu, "gpu", SZ_16M, 0xfff * SZ_64K, true);
 
 	if (IS_ERR(vm) && !IS_ERR(mmu))
 		mmu->funcs->destroy(mmu);
@@ -988,9 +725,6 @@ static const struct adreno_gpu_funcs funcs = {
 		.destroy = a2xx_destroy,
 #if defined(CONFIG_DEBUG_FS) || defined(CONFIG_DEV_COREDUMP)
 		.show = adreno_show,
-#endif
-#if defined(CONFIG_DEBUG_FS)
-		.debugfs_init = a2xx_debugfs_init,
 #endif
 		.gpu_busy = a2xx_gpu_busy,
 		.gpu_state_get = a2xx_gpu_state_get,

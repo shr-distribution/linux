@@ -25,15 +25,5 @@ struct a2xx_gpu {
 struct msm_mmu *a2xx_gpummu_new(struct device *dev, struct msm_gpu *gpu);
 void a2xx_gpummu_params(struct msm_mmu *mmu, dma_addr_t *pt_base,
 		dma_addr_t *tran_error);
-void a2xx_gpummu_debug_fault(struct msm_mmu *mmu, uint32_t fault_addr);
-void *a2xx_gpummu_iova_to_kvirt(struct msm_mmu *mmu, uint64_t iova);
-
-/* debugfs */
-#if defined(CONFIG_DEBUG_FS)
-void a2xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor);
-#else
-static inline void a2xx_debugfs_init(struct msm_gpu *gpu,
-				     struct drm_minor *minor) {}
-#endif
 
 #endif /* __A2XX_GPU_H__ */
