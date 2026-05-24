@@ -177,6 +177,17 @@ struct adm_chan {
 
 	struct list_head node;
 
+	/*
+	 * Fix #7: deferred-callback path (webOS msm_dmov complete_func
+	 * pattern). The ADM hardirq queues completed pooled descriptors here
+	 * and schedules cb_tasklet, which invokes the consumer callback and
+	 * returns the descriptor to the pool - keeping the heavy finalization
+	 * out of the IRQ so concurrent eMMC+WiFi channels are serviced fast.
+	 */
+	struct list_head cb_list;
+	spinlock_t cb_lock;
+	struct tasklet_struct cb_tasklet;
+
 	int error;
 	int initialized;
 };
@@ -993,6 +1004,46 @@ static void adm_start_dma(struct adm_chan *achan)
 }
 
 /**
+ * adm_cb_tasklet - deferred consumer-callback handler (webOS complete_func)
+ * @t: the channel's cb_tasklet
+ *
+ * Runs the consumer DMA callback for completed pooled descriptors outside
+ * the ADM hardirq, then returns each descriptor to the free pool. Mirrors
+ * webOS msm_dmov, whose complete_func only schedules a tasklet. Keeping the
+ * heavy mmci/ath6kl finalization here (not in the IRQ) lets the single ADM1
+ * service concurrent eMMC and WiFi channel completions without one blocking
+ * the other.
+ */
+static void adm_cb_tasklet(struct tasklet_struct *t)
+{
+	struct adm_chan *achan = from_tasklet(achan, t, cb_tasklet);
+	struct adm_device *adev = achan->adev;
+	struct adm_async_desc *ad, *tmp;
+	unsigned long flags;
+	LIST_HEAD(done);
+
+	spin_lock_irqsave(&achan->cb_lock, flags);
+	list_splice_init(&achan->cb_list, &done);
+	spin_unlock_irqrestore(&achan->cb_lock, flags);
+
+	list_for_each_entry_safe(ad, tmp, &done, pool_node) {
+		dma_async_tx_callback cb = ad->vd.tx.callback;
+		void *param = ad->vd.tx.callback_param;
+
+		list_del(&ad->pool_node);
+
+		/* heavy consumer finalization runs here, not in hardirq */
+		if (cb)
+			cb(param);
+
+		/* return descriptor to the free pool */
+		spin_lock_irqsave(&adev->pool_lock, flags);
+		list_add_tail(&ad->pool_node, &adev->desc_free_list);
+		spin_unlock_irqrestore(&adev->pool_lock, flags);
+	}
+}
+
+/**
  * adm_dma_irq - irq handler for ADM controller
  * @irq: IRQ of interrupt
  * @data: callback data
@@ -1083,48 +1134,49 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		achan->curr_txd = NULL;
 
 		if (async_desc) {
-			dma_async_tx_callback callback = NULL;
-			void *callback_param = NULL;
-
 			/*
-			 * Replicate webOS msm_dmov synchronous completion pattern:
-			 * complete cookie, invoke callback, recycle descriptor, and
-			 * start next DMA - all in hardirq without vchan tasklet
-			 * deferral. MMCI expects immediate notification and can't
-			 * tolerate vchan's deferred cleanup racing with next
-			 * transfer setup in adm_start_dma().
+			 * Fix #7: webOS msm_dmov complete_func pattern.
+			 * msmsdcc_dma_complete_func() just tasklet_schedule()s and
+			 * returns - the heavy consumer finalization runs in a
+			 * tasklet, NOT the dmov ISR. Mainline used to run the
+			 * consumer callback synchronously here in the ADM hardirq;
+			 * under concurrent eMMC+WiFi load on this single ADM1 that
+			 * blocks the other channel's servicing in the same IRQ and
+			 * drifts its SDCC FIFO (DATACRCFAIL / cmd23-cmd13 CMDTIMEOUT
+			 * - confirmed on-device: eMMC DATACRCFAIL coincident with
+			 * WiFi CMD53 traffic).
+			 *
+			 * Keep the latency-critical steps synchronous in hardirq:
+			 * complete the cookie and RE-ARM the next descriptor so the
+			 * next box starts immediately and the FIFO does not
+			 * underflow. Defer only the callback (and the pooled-desc
+			 * return) to a per-channel tasklet.
 			 */
 			dma_cookie_complete(&async_desc->vd.tx);
 
-			if (async_desc->vd.tx.callback) {
-				callback = async_desc->vd.tx.callback;
-				callback_param = async_desc->vd.tx.callback_param;
-			}
+			/* re-arm next DMA immediately (synchronous, fast) */
+			adm_start_dma(achan);
 
-			/* Return pooled descriptor immediately without vchan */
 			if (async_desc->pool_index >= 0) {
-				spin_lock(&adev->pool_lock);
+				/*
+				 * Queue for deferred callback + pool return.
+				 * Reuse pool_node: the desc is NOT on the free
+				 * list while it sits on cb_list; adm_cb_tasklet
+				 * runs the callback then returns it to the pool.
+				 */
+				spin_lock(&achan->cb_lock);
 				list_add_tail(&async_desc->pool_node,
-					      &adev->desc_free_list);
-				spin_unlock(&adev->pool_lock);
+					      &achan->cb_list);
+				spin_unlock(&achan->cb_lock);
+				tasklet_schedule(&achan->cb_tasklet);
 			} else {
 				/*
-				 * Dynamic descriptor - use vchan for cleanup.
-				 * vchan_vdesc_fini() will be called by tasklet.
+				 * Dynamic descriptor - vchan tasklet already
+				 * defers both callback and cleanup.
 				 */
 				list_add_tail(&async_desc->vd.node,
 					      &achan->vc.desc_completed);
 				tasklet_schedule(&achan->vc.task);
-			}
-
-			/* kick off next DMA */
-			adm_start_dma(achan);
-
-			/* Invoke callback after starting next DMA */
-			if (callback) {
-				spin_unlock(&achan->vc.lock);
-				callback(callback_param);
-				spin_lock(&achan->vc.lock);
 			}
 		}
 
@@ -1225,6 +1277,11 @@ static void adm_channel_init(struct adm_device *adev, struct adm_chan *achan,
 
 	vchan_init(&achan->vc, &adev->common);
 	achan->vc.desc_free = adm_dma_free_desc;
+
+	/* Fix #7: deferred-callback tasklet (webOS complete_func pattern) */
+	INIT_LIST_HEAD(&achan->cb_list);
+	spin_lock_init(&achan->cb_lock);
+	tasklet_setup(&achan->cb_tasklet, adm_cb_tasklet);
 }
 
 /**
@@ -1555,6 +1612,7 @@ static void adm_dma_remove(struct platform_device *pdev)
 		writel(0, adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
 
 		tasklet_kill(&adev->channels[i].vc.task);
+		tasklet_kill(&adev->channels[i].cb_tasklet);
 		adm_terminate_all(&adev->channels[i].vc.chan);
 	}
 
