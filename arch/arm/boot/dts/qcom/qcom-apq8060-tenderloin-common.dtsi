@@ -2986,7 +2986,12 @@
 	 * was found to break WiFi and eMMC (built-in BT probes at boot and
 	 * contends on the shared ADM1 DMA / GSBI resources). Keep BT modular.
 	 */
-#if 0 /* LDISC path: serdev subnode disabled so /dev/ttyMSM1 is exposed */
+#if 1 /* SERDEV path re-enabled 2026-05-24: retest serdev BCSP on the now-fixed
+       * DMA-RX transport (Fix #5 coherent RX buffer + PIO-TX/DMA-RX). Earlier
+       * serdev was disabled in favor of ldisc; RX is now proven byte-perfect
+       * over DMA, so re-evaluate whether serdev gets the chip to respond.
+       * To return to the ldisc/btup path, set this back to #if 0.
+       */
 	bluetooth {
 		/*
 		 * Use palm-specific compatible to select BCSP driver.
