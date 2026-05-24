@@ -24,6 +24,9 @@
 #include <linux/delay.h>
 #include <linux/sched/clock.h>
 
+extern void agold_gpio_set(unsigned gpio, int value);
+/* GPIO pin driving the physical keyboard backlight (matches stock kernel) */
+#define BUTTON_BACKLIGHT_GPIO 176
 
 #ifdef CONFIG_MTK_AAL_SUPPORT
 #include <ddp_aal.h>
@@ -791,8 +794,8 @@ int mt_mt65xx_led_set_cust(struct cust_mt65xx_led *cust, int level)
 		return 1;
 
 	case MT65XX_LED_MODE_GPIO:
-		LEDS_DEBUG("%s led GPIO mode!!\n", __func__);
-		return ((cust_set_brightness) (cust->data)) (level);
+		agold_gpio_set(BUTTON_BACKLIGHT_GPIO, level ? 1 : 0);
+		return 1;
 
 	case MT65XX_LED_MODE_PMIC:
 		/* for button baclight used SINK channel, when set button ISINK,
