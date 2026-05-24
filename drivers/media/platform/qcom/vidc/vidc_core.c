@@ -2379,12 +2379,86 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 	 * undefined-instruction Oops in unrelated tasks / instant hard hang
 	 * seen when the encoder streamed without recon set up).
 	 */
+
+	/*
+	 * H.264 encoder work buffers. Recon (above) is not enough: during
+	 * encode the firmware also DMAs motion-vector, colocated-zero, intra
+	 * mode/pred, neighbour-info and mb-info data into the six
+	 * VIDC_REG_ENC_* registers. Leaving those at 0 makes it write to
+	 * physical address 0 and corrupt kernel memory (the second-frame
+	 * crash). Sizes + register layout mirror webOS
+	 * ddl_calc_enc_buffer_size() + vidc_1080p_set_h264_encode_work_buffers();
+	 * use the larger (CABAC) neighbour/mb-info sizes so any entropy mode
+	 * is covered. One coherent SMIPOOL allocation carved into 6 regions.
+	 */
+	{
+		u32 mb_x = (inst->out_width + 15) / 16;
+		u32 mb_y = (inst->out_height + 15) / 16;
+		u32 sz_mv      = ALIGN(2 * mb_x * 8, SZ_2K);
+		u32 sz_colzero = ALIGN(((mb_x * mb_y + 7) / 8) * 8, SZ_2K);
+		u32 sz_md      = ALIGN(mb_x * 48, SZ_2K);
+		u32 sz_pred    = ALIGN(2 * 8 * 1024, SZ_2K);
+		u32 sz_nbor    = ALIGN(8 * 24 * mb_x, SZ_2K);
+		u32 sz_mbinfo  = ALIGN(mb_x * mb_y * 6 * 8, SZ_2K);
+		u32 o_mv      = 0;
+		u32 o_colzero = o_mv + sz_mv;
+		u32 o_md      = o_colzero + sz_colzero;
+		u32 o_pred    = o_md + sz_md;
+		u32 o_nbor    = o_pred + sz_pred;
+		u32 o_mbinfo  = o_nbor + sz_nbor;
+		u32 total     = o_mbinfo + sz_mbinfo;
+		u32 base_rel;
+
+		inst->enc_work_vaddr = dma_alloc_coherent(core->dev, total,
+				&inst->enc_work_dma_addr, GFP_KERNEL);
+		if (!inst->enc_work_vaddr) {
+			dev_err(core->dev,
+				"enc work-buffer alloc failed (%u bytes)\n", total);
+			ret = -ENOMEM;
+			goto err_free_dma;
+		}
+		inst->enc_work_size = total;
+
+		if (inst->enc_work_dma_addr < core->fw_dma_addr) {
+			dev_err(core->dev,
+				"enc work pool below fw base (%pad < %pad)\n",
+				&inst->enc_work_dma_addr, &core->fw_dma_addr);
+			ret = -ERANGE;
+			goto err_free_work;
+		}
+
+		base_rel = inst->enc_work_dma_addr - core->fw_dma_addr;
+		vidc_write(core, VIDC_REG_ENC_UP_ROW_MV,
+			   (base_rel + o_mv)      >> VIDC_ADDR_SHIFT);
+		vidc_write(core, VIDC_REG_ENC_COL_ZERO,
+			   (base_rel + o_colzero) >> VIDC_ADDR_SHIFT);
+		vidc_write(core, VIDC_REG_ENC_INTRA_MD,
+			   (base_rel + o_md)      >> VIDC_ADDR_SHIFT);
+		vidc_write(core, VIDC_REG_ENC_INTRA_PRED,
+			   (base_rel + o_pred)    >> VIDC_ADDR_SHIFT);
+		vidc_write(core, VIDC_REG_ENC_NBOR_INFO,
+			   (base_rel + o_nbor)    >> VIDC_ADDR_SHIFT);
+		vidc_write(core, VIDC_REG_ENC_MB_INFO,
+			   (base_rel + o_mbinfo)  >> VIDC_ADDR_SHIFT);
+
+		dev_info(core->dev,
+			 "enc work bufs: %u B at %pad (mv=%u colz=%u md=%u pred=%u nbor=%u mbinfo=%u)\n",
+			 total, &inst->enc_work_dma_addr,
+			 sz_mv, sz_colzero, sz_md, sz_pred, sz_nbor, sz_mbinfo);
+	}
+
 	inst->dpb_inited = true;
 	dev_info(core->dev,
 		 "VIDC encoder recon programmed: %u slots at %pad (latched by SEQ_HEADER)\n",
 		 inst->dpb_count, &inst->dpb_y_dma_addr);
 	return 0;
 
+err_free_work:
+	dma_free_coherent(core->dev, inst->enc_work_size,
+			  inst->enc_work_vaddr, inst->enc_work_dma_addr);
+	inst->enc_work_vaddr = NULL;
+	inst->enc_work_dma_addr = 0;
+	inst->enc_work_size = 0;
 err_free_dma:
 	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
 			  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
@@ -2664,6 +2738,15 @@ void vidc_free_buffers(struct vidc_inst *inst)
 	inst->dpb_mv_size = 0;
 	inst->dpb_inited = false;
 	inst->dpb_hw_mask = 0;
+
+	/* Encoder H.264 work-buffer pool (see vidc_init_enc_buffers). */
+	if (inst->enc_work_vaddr) {
+		dma_free_coherent(core->dev, inst->enc_work_size,
+				  inst->enc_work_vaddr, inst->enc_work_dma_addr);
+		inst->enc_work_vaddr = NULL;
+		inst->enc_work_dma_addr = 0;
+		inst->enc_work_size = 0;
+	}
 }
 
 void vidc_core_deinit(struct vidc_core *core)

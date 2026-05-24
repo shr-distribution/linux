@@ -391,6 +391,21 @@
 #define VIDC_REG_RECON_CHROMA_1		0x048c
 #define VIDC_MAX_RECON_BUFFERS		4
 
+/*
+ * H.264 encoder work buffers (vidc_1080p_set_h264_encode_work_buffers).
+ * Offsets from the webOS HWIO map (VIDC_BLACKBIRD_REG_BASE-relative); the
+ * firmware DMAs motion-vector / colocated / intra / neighbour / mb-info
+ * data here during encode. They MUST be programmed with valid SMIPOOL
+ * addresses before SEQ_HEADER or the firmware writes to physical 0 and
+ * corrupts kernel RAM.
+ */
+#define VIDC_REG_ENC_UP_ROW_MV		0x0600	/* REG_515200 */
+#define VIDC_REG_ENC_NBOR_INFO		0x0604	/* REG_29510  */
+#define VIDC_REG_ENC_INTRA_MD		0x0608	/* REG_256132 */
+#define VIDC_REG_ENC_COL_ZERO		0x0610	/* REG_69832  */
+#define VIDC_REG_ENC_MB_INFO		0x0720	/* REG_175929 */
+#define VIDC_REG_ENC_INTRA_PRED		0x0740	/* REG_475648 */
+
 /* Instance state */
 enum vidc_inst_state {
 	VIDC_STATE_IDLE,
@@ -731,6 +746,16 @@ struct vidc_inst {
 	u32 dpb_mv_size;
 	u32 dpb_count;
 	bool dpb_inited;
+
+	/*
+	 * H.264 encoder work-buffer pool (MV / colocated / intra-md /
+	 * intra-pred / neighbour-info / mb-info). One coherent SMIPOOL
+	 * allocation carved into the six regions programmed into the
+	 * VIDC_REG_ENC_* registers. Freed in vidc_free_buffers().
+	 */
+	void *enc_work_vaddr;
+	dma_addr_t enc_work_dma_addr;
+	size_t enc_work_size;
 	/*
 	 * DPB slot availability bitmask for DPB_RELEASE register.  Bit N=1
 	 * means slot N is free for the firmware to write into.  Initialised
