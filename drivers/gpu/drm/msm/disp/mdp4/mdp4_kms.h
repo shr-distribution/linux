@@ -53,6 +53,18 @@ struct mdp4_kms {
 	/* empty/blank cursor bo to use when cursor is "disabled" */
 	struct drm_gem_object *blank_cursor_bo;
 	uint64_t blank_cursor_iova;
+
+	/*
+	 * Permanently-mapped black scratch bo that a DISABLED pipe's
+	 * SRCP0_BASE points at instead of 0. If a pipe-disable fails to latch
+	 * (e.g. an underrun stalls the LCDC and DMA_P stops generating vsync,
+	 * so the flush never completes), the still-staged pipe keeps fetching
+	 * its base address. Pointing it at a valid mapped page makes that
+	 * stray fetch read black instead of faulting the display IOMMU at an
+	 * unmapped iova (the FAR=0x780 fault storm that wedged the device).
+	 */
+	struct drm_gem_object *blank_pipe_bo;
+	uint64_t blank_pipe_iova;
 };
 #define to_mdp4_kms(x) container_of(x, struct mdp4_kms, base)
 

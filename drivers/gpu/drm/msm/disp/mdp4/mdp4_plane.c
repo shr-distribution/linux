@@ -158,7 +158,18 @@ static void mdp4_plane_atomic_disable(struct drm_plane *plane,
 	struct mdp4_kms *mdp4_kms = get_kms(plane);
 	enum mdp4_pipe pipe = mdp4_plane->pipe;
 
-	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(pipe), 0);
+	/*
+	 * Point the base at the permanently-mapped black scratch bo rather
+	 * than 0. If this disable fails to latch (an underrun stalls the LCDC
+	 * and DMA_P stops generating vsync, so the OVERLAY_FLUSH never
+	 * completes), the still-staged pipe keeps fetching this base every
+	 * scanout. A valid mapped iova makes that stray fetch read black
+	 * instead of faulting the display IOMMU at an unmapped address
+	 * (the FAR=0x780 fault storm that otherwise wedges the device).
+	 * Falls back to 0 only when there is no IOMMU (no scratch bo).
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(pipe),
+		   mdp4_kms->blank_pipe_iova);
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(pipe), 0);
 }
 

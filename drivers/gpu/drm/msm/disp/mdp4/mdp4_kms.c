@@ -213,6 +213,12 @@ static void mdp4_destroy(struct msm_kms *kms)
 		drm_gem_object_put(mdp4_kms->blank_cursor_bo);
 	}
 
+	if (mdp4_kms->blank_pipe_bo) {
+		if (mdp4_kms->blank_pipe_iova && kms->vm)
+			msm_gem_unpin_iova(mdp4_kms->blank_pipe_bo, kms->vm);
+		drm_gem_object_put(mdp4_kms->blank_pipe_bo);
+	}
+
 	if (kms->vm) {
 		struct msm_mmu *mmu = to_msm_vm(kms->vm)->mmu;
 
@@ -633,10 +639,33 @@ static int mdp4_kms_init(struct drm_device *dev)
 			DRM_DEV_ERROR(dev->dev, "could not pin blank-cursor bo: %d\n", ret);
 			goto fail;
 		}
+
+		/*
+		 * Black scratch bo that a disabled pipe fetches from instead of
+		 * iova 0 (see mdp4_plane_atomic_disable). Sized to cover a full
+		 * panel-resolution frame so even a stray full-frame fetch by a
+		 * not-yet-quiesced pipe stays in-bounds. Pages are shmem-zeroed
+		 * (= black luma) so no memset is needed.
+		 */
+		mdp4_kms->blank_pipe_bo = msm_gem_new(dev, SZ_2M, MSM_BO_WC);
+		if (IS_ERR(mdp4_kms->blank_pipe_bo)) {
+			ret = PTR_ERR(mdp4_kms->blank_pipe_bo);
+			DRM_DEV_ERROR(dev->dev, "could not allocate blank-pipe bo: %d\n", ret);
+			mdp4_kms->blank_pipe_bo = NULL;
+			goto fail;
+		}
+		ret = msm_gem_get_and_pin_iova(mdp4_kms->blank_pipe_bo, kms->vm,
+				&mdp4_kms->blank_pipe_iova);
+		if (ret) {
+			DRM_DEV_ERROR(dev->dev, "could not pin blank-pipe bo: %d\n", ret);
+			goto fail;
+		}
 	} else {
 		DRM_DEV_INFO(dev->dev, "no IOMMU, cursor support disabled\n");
 		mdp4_kms->blank_cursor_bo = NULL;
 		mdp4_kms->blank_cursor_iova = 0;
+		mdp4_kms->blank_pipe_bo = NULL;
+		mdp4_kms->blank_pipe_iova = 0;
 	}
 
 	dev->mode_config.min_width = 0;
