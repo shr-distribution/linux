@@ -1859,6 +1859,31 @@
 	};
 
 	/*
+	 * GSBI6 UART pins as GPIO, matching the legacy webOS gpiomux SUSPENDED
+	 * config (UART1DM_SUSPENDED_*): TX(53)/RFR(56) = GPIO out-HIGH 2 mA no
+	 * pull; RX(54)/CTS(55) = GPIO input pull-up. Used only for the
+	 * msm_serial startup pin-mux "glitch" (qcom,startup-mux-glitch) that
+	 * replicates webOS btuart_pin_mux off->on to wake the CSR BT chip's
+	 * power-gated UART RX. Not a runtime/PM state.
+	 */
+	gsbi6_uart_gpio_pins: uart6-gpio-state {
+		txrts-pins {
+			pins = "gpio53", "gpio56";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-high;
+		};
+		rxcts-pins {
+			pins = "gpio54", "gpio55";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	/*
 	 * Bluetooth control GPIOs (Topaz WiFi variant)
 	 *
 	 * Verified from legacy webOS kernel gpiomux-tenderloin.h:
@@ -2907,9 +2932,23 @@
 	 * Include both UART pins and BT control GPIOs in pinctrl.
 	 * The BT GPIOs must be configured as GPIO function before the
 	 * bluetooth serdev driver probes, otherwise GPIO acquisition fails.
+	 *
+	 * "gpio" state = UART pins muxed as GPIO (webOS suspended config); used
+	 * by the startup pin-mux glitch below to wake the CSR BT chip's RX.
 	 */
-	pinctrl-names = "default";
+	pinctrl-names = "default", "gpio";
 	pinctrl-0 = <&gsbi6_uart_pins>, <&bt_pin>;
+	pinctrl-1 = <&gsbi6_uart_gpio_pins>, <&bt_pin>;
+
+	/*
+	 * Replicate the webOS btuart_pin_mux off->on dance: at port-open,
+	 * msm_serial briefly selects the "gpio" pinctrl state and back, driving
+	 * TX/RFR high momentarily to wake the power-gated CSR BlueCore UART RX
+	 * before the BCSP SYNC handshake. Without this the chip only-SYNCs and
+	 * never acts on our (byte-perfect) SYNC_RSP. See
+	 * reports/bt-trace/webos-cold-handshake-2026-05-22.log.
+	 */
+	qcom,startup-mux-glitch;
 
 	/*
 	 * UART clock for Bluetooth. WebOS used 3686400 baud highspeed.
