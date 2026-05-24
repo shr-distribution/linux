@@ -3043,7 +3043,15 @@
 		 * uses H4 protocol, but this chip requires BCSP.
 		 */
 		compatible = "palm,bcm4329-bcsp";
-		status = "okay";  /* Enable serdev for debugging */
+		/*
+		 * Disabled at boot: BT is parked at the physical TX-waveform wall
+		 * (chip only-SYNCs, never acts on our byte-perfect SYNC_RSP; needs
+		 * a scope on gpio53). With the node "okay" the serdev driver
+		 * auto-probes at boot and the BCSP link-establishment loop + HCI
+		 * reset retries spam the log. Set back to "okay" (or use the ldisc
+		 * btup path) to resume BT bring-up / scope testing.
+		 */
+		status = "disabled";
 
 		/*
 		 * Skip BCSP link-establishment SYNC handshake.
