@@ -108,7 +108,7 @@ No channel/CRCI *misassignment* anywhere — the gaps are in completion/flush/EE
 | 2 | Read `FLUSH_STATE0..5` on flush result, report real residue | qcom_adm.c | queued |
 | 3 | Result-FIFO drain loop (handle DONE+FLUSH per IRQ) | qcom_adm.c | in progress |
 | 4 | `CRCI_CTL` write at **EE=0** + blk_size=1 for CRCI 2,4,14 + `SHADOW_EN` | qcom_adm.c | queued (HW-confirmed) |
-| 5 | msm_serial RX buffer `dma_alloc_coherent` / `dma_rmb()` | msm_serial.c | queued (for BT DMA-RX) |
+| 5 | msm_serial RX buffer `dma_alloc_coherent` + `dma_rmb()` (the BT zero-data fix) | msm_serial.c | ✅ committed `641d887590d9`; BT DMA-RX re-enabled in DTS `06e18a0487db` |
 
 **Recommended test signals after each:** WiFi `ath6kl` probe (-110 gone?), eMMC stability under load (no jbd2 writeback wedge), BT DMA-RX (real SYNC bytes vs zeros).
 
