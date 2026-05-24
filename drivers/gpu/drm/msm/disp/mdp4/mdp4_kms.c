@@ -167,19 +167,7 @@ static void mdp4_disable_commit(struct msm_kms *kms)
 	mdp4_dump_bw_regs(mdp4_kms, "disable_commit");
 
 	mdp4_disable(mdp4_kms);
-
-	/*
-	 * Do NOT drop the fabric bandwidth vote to zero here. enable_commit/
-	 * disable_commit bracket EVERY atomic commit (see msm_atomic.c), but the
-	 * LCDC panel keeps scanning out continuously between commits. Voting 0
-	 * here starved the primary interface and produced PRIMARY_INTF_UDERRUN
-	 * (mdp4_irq_error 0x100) on overlay on/off transitions. Mainline mdp5
-	 * votes a fixed bandwidth once and never drops it; mirror that — the
-	 * active vote stays provisioned (re-asserted idempotently in
-	 * enable_commit) for as long as the display is up. (Releasing the vote
-	 * on genuine display-off / runtime suspend is handled separately, not
-	 * per-commit.)
-	 */
+	mdp4_icc_vote(mdp4_kms, 0, 0);
 }
 
 static void mdp4_flush_commit(struct msm_kms *kms, unsigned crtc_mask)
