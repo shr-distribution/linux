@@ -2293,7 +2293,6 @@ err_free:
 int vidc_init_enc_buffers(struct vidc_inst *inst)
 {
 	struct vidc_core *core = inst->core;
-	unsigned long flags;
 	u32 i;
 	u32 y_size, c_size, slot_size, total_size;
 	dma_addr_t slot_base;
@@ -2366,49 +2365,24 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 	writel(c_size,
 	       core->shm_vaddr + VIDC_SHM_ALLOCATED_CHROMA_DPB_SIZE);
 
-	spin_lock_irqsave(&core->irqlock, flags);
-	core->curr_inst = inst;
-	reinit_completion(&inst->done);
-	inst->error = 0;
-	inst->init_buffers_pending = true;
-	spin_unlock_irqrestore(&core->irqlock, flags);
-
-	/* INIT_CH before parameters (DDL pattern for every command) */
-	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
-	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
-	core->cmd_seq_num++;
-	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
-	vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
-
-	vidc_write(core, VIDC_REG_CH0_INST_ID,
-		   VIDC_OP_INIT_BUFFERS | inst->inst_id);
-
-	if (!wait_for_completion_timeout(&inst->done,
-					 msecs_to_jiffies(1000))) {
-		spin_lock_irqsave(&core->irqlock, flags);
-		inst->init_buffers_pending = false;
-		spin_unlock_irqrestore(&core->irqlock, flags);
-		dev_err(core->dev, "encoder INIT_BUFFERS timeout\n");
-		ret = -ETIMEDOUT;
-		goto err_free_dma;
-	}
-
-	spin_lock_irqsave(&core->irqlock, flags);
-	inst->init_buffers_pending = false;
-	spin_unlock_irqrestore(&core->irqlock, flags);
-
-	if (inst->error) {
-		dev_err(core->dev,
-			"encoder INIT_BUFFERS firmware error: %d\n",
-			inst->error);
-		ret = inst->error;
-		goto err_free_dma;
-	}
-
+	/*
+	 * The encoder takes NO separate INIT_BUFFERS command. webOS
+	 * (vcd_ddl_vidc.c) programs the RECON_LUMA/CHROMA registers above and
+	 * lets encode_seq_start latch them; issuing INIT_BUFFERS here instead
+	 * drove the firmware into the cmd=16 (EDFU) state and timed out.
+	 *
+	 * So this MUST be called BEFORE vidc_enc_send_seq_header() — the
+	 * SEQ_HEADER (encode_seq_start) the caller issues next latches the
+	 * recon addresses. Programming them is mandatory: leaving the RECON
+	 * registers at 0 makes the firmware DMA reconstructed reference
+	 * frames to physical address 0, corrupting kernel memory (the
+	 * undefined-instruction Oops in unrelated tasks / instant hard hang
+	 * seen when the encoder streamed without recon set up).
+	 */
 	inst->dpb_inited = true;
 	dev_info(core->dev,
-		 "VIDC encoder recon initialised, %u slots active\n",
-		 inst->dpb_count);
+		 "VIDC encoder recon programmed: %u slots at %pad (latched by SEQ_HEADER)\n",
+		 inst->dpb_count, &inst->dpb_y_dma_addr);
 	return 0;
 
 err_free_dma:

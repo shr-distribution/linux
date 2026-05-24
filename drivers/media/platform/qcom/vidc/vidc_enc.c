@@ -600,11 +600,24 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			printk(KERN_EMERG "VIDC: Codec config applied successfully\n");
 
 			/*
-			 * The encoder firmware requires a SEQ_HEADER round-trip
-			 * between OPEN_CH and INIT_BUFFERS to initialise its
-			 * internal rate-control and codec state.  Without this,
-			 * INIT_BUFFERS fails with error 0x51 (DIVIDE_BY_ZERO).
+			 * Program the encoder's reconstruction (recon) reference
+			 * buffers BEFORE SEQ_HEADER. The firmware latches the
+			 * RECON_LUMA/CHROMA registers at encode_seq_start; if they
+			 * are left at 0 it DMAs reconstructed reference frames to
+			 * physical address 0 and corrupts kernel memory (hard hang
+			 * with an undefined-instruction Oops in unrelated tasks).
+			 * No separate INIT_BUFFERS command is issued — see
+			 * vidc_init_enc_buffers().
 			 */
+			printk(KERN_EMERG "VIDC: Programming encoder recon buffers...\n");
+			ret = vidc_init_enc_buffers(inst);
+			if (ret) {
+				printk(KERN_EMERG "VIDC: enc recon init failed: %d\n", ret);
+				vidc_close_channel(inst);
+				pm_runtime_put(core->dev);
+				return ret;
+			}
+
 			printk(KERN_EMERG "VIDC: Sending SEQ_HEADER...\n");
 			ret = vidc_enc_send_seq_header(inst);
 			if (ret) {
@@ -616,21 +629,14 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			printk(KERN_EMERG "VIDC: SEQ_HEADER done\n");
 
 			/*
-			 * No encoder INIT_BUFFERS — webOS doesn't issue it.
-			 * The encoder firmware allocates its own recon pool
-			 * internally from the SMI region declared at SYS_INIT.
-			 * After encode_seq_start completes (cmd=4 SEQ_DONE)
-			 * the firmware is in WAIT_FOR_FRAME state and ready
-			 * for FRAME_DATA encode commands.
-			 *
-			 * Issuing INIT_BUFFERS here put the firmware into a
-			 * weird state that emitted cmd=16 (EDFU - Encoder DPB
-			 * Frame Update) as a side effect of programming the
-			 * RECON_LUMA/CHROMA register block, then it failed to
-			 * ack INIT_BUFFERS with the expected cmd=15 — we kept
-			 * timing out.  Removing the call lets the encoder
-			 * follow webOS's documented flow:
-			 *   OPEN_CH → SEQ_HEADER → FRAME_DATA
+			 * Flow (matches webOS vcd_ddl_vidc.c):
+			 *   OPEN_CH → codec_config → program RECON regs
+			 *   → SEQ_HEADER (latches recon) → FRAME_DATA
+			 * No separate INIT_BUFFERS command (that drove the fw into
+			 * the cmd=16 EDFU state and timed out). After SEQ_DONE the
+			 * firmware is in WAIT_FOR_FRAME state, ready for FRAME_DATA,
+			 * with valid recon reference buffers — so it no longer DMAs
+			 * reconstructed frames to physical address 0.
 			 */
 
 			inst->streamon_out = true;
