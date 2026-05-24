@@ -28,6 +28,7 @@
 #include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/wait.h>
 
 #define MSM_UART_MR1			0x0000
@@ -185,6 +186,16 @@ struct msm_port {
 	bool			break_detected;
 	struct msm_dma		tx_dma;
 	struct msm_dma		rx_dma;
+	/*
+	 * Optional startup pin-mux glitch (webOS btuart_pin_mux dance): briefly
+	 * flip the UART pins to a GPIO state and back at port-open, to wake a
+	 * power-gated peer UART RX (TouchPad CSR BlueCore BT). Gated on the DT
+	 * bool "qcom,startup-mux-glitch"; needs a "gpio" pinctrl state.
+	 */
+	struct pinctrl		*pinctrl;
+	struct pinctrl_state	*pinctrl_default;
+	struct pinctrl_state	*pinctrl_gpio;
+	bool			startup_mux_glitch;
 };
 
 static inline struct msm_port *to_msm_port(struct uart_port *up)
@@ -1241,6 +1252,22 @@ static int msm_startup(struct uart_port *port)
 
 	msm_init_clock(port);
 
+	/*
+	 * webOS btuart_pin_mux "dance": briefly flip the UART pins to a GPIO
+	 * state (TX/RTS driven high, 2 mA) and back to the UART function, once
+	 * at port-open before any TX. On the TouchPad this is what wakes the
+	 * CSR BlueCore BT chip's power-gated UART RX so it will accept our
+	 * (byte-perfect) SYNC_RSP. No-op unless qcom,startup-mux-glitch + a
+	 * "gpio" pinctrl state are present in DT.
+	 */
+	if (msm_port->startup_mux_glitch && msm_port->pinctrl) {
+		pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_gpio);
+		usleep_range(500, 1000);
+		pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_default);
+		usleep_range(500, 1000);
+		dev_info(port->dev, "startup pin-mux glitch applied (BT wake)\n");
+	}
+
 	if (likely(port->fifosize > 12))
 		rfr_level = port->fifosize - 12;
 	else
@@ -1889,6 +1916,32 @@ static int msm_serial_probe(struct platform_device *pdev)
 		return -ENXIO;
 	port->irq = irq;
 	port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_MSM_CONSOLE);
+
+	/*
+	 * Optional webOS-style startup pin-mux glitch (BT wake). Look up an
+	 * explicit pinctrl handle with "default" and "gpio" states; the core
+	 * already applies "default" at probe, this handle is only used to
+	 * briefly select "gpio" and back in msm_startup(). All optional.
+	 */
+	msm_port->startup_mux_glitch =
+		of_property_read_bool(pdev->dev.of_node, "qcom,startup-mux-glitch");
+	if (msm_port->startup_mux_glitch) {
+		msm_port->pinctrl = devm_pinctrl_get(&pdev->dev);
+		if (IS_ERR(msm_port->pinctrl)) {
+			msm_port->pinctrl = NULL;
+		} else {
+			msm_port->pinctrl_default =
+				pinctrl_lookup_state(msm_port->pinctrl, "default");
+			msm_port->pinctrl_gpio =
+				pinctrl_lookup_state(msm_port->pinctrl, "gpio");
+			if (IS_ERR(msm_port->pinctrl_default) ||
+			    IS_ERR(msm_port->pinctrl_gpio)) {
+				dev_warn(&pdev->dev,
+					 "startup-mux-glitch: missing default/gpio pinctrl state, disabled\n");
+				msm_port->startup_mux_glitch = false;
+			}
+		}
+	}
 
 	platform_set_drvdata(pdev, port);
 
