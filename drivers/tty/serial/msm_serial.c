@@ -274,12 +274,13 @@ static void msm_stop_dma(struct uart_port *port, struct msm_dma *dma)
 	val &= ~dma->enable_bit;
 	msm_write(port, val, UARTDM_DMEN);
 
-	if (mapped) {
-		if (dma->dir == DMA_TO_DEVICE) {
-			dma_unmap_sg(dev, &dma->tx_sg, 1, dma->dir);
-			sg_init_table(&dma->tx_sg, 1);
-		} else
-			dma_unmap_single(dev, dma->rx.phys, mapped, dma->dir);
+	/*
+	 * RX uses a coherent buffer allocated once in msm_request_rx_dma(), so
+	 * there is nothing to unmap here -- only the streaming TX scatterlist.
+	 */
+	if (mapped && dma->dir == DMA_TO_DEVICE) {
+		dma_unmap_sg(dev, &dma->tx_sg, 1, dma->dir);
+		sg_init_table(&dma->tx_sg, 1);
 	}
 }
 
@@ -299,7 +300,8 @@ static void msm_release_dma(struct msm_port *msm_port)
 	if (dma->chan) {
 		msm_stop_dma(&msm_port->uart, dma);
 		dma_release_channel(dma->chan);
-		kfree(dma->rx.virt);
+		dma_free_coherent(msm_port->uart.dev, UARTDM_RX_SIZE,
+				  dma->rx.virt, dma->rx.phys);
 	}
 
 	memset(dma, 0, sizeof(*dma));
@@ -377,7 +379,19 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 
 	of_property_read_u32(dev->of_node, "qcom,rx-crci", &crci);
 
-	dma->rx.virt = kzalloc(UARTDM_RX_SIZE, GFP_KERNEL);
+	/*
+	 * Use a coherent (uncached) RX buffer, like the legacy webOS hsuart
+	 * driver. With a streaming kzalloc buffer + dma_map/unmap_single, the
+	 * cache invalidate can win the race against the ADM3 graceful-flush
+	 * write retiring to DRAM: the CPU then reads back the original zeros
+	 * while UARTDM_RX_TOTAL_SNAP (an independent HW counter) reports the
+	 * correct byte count -- the "correct count, zero data" symptom seen on
+	 * the TouchPad BT (GSBI6) RX. A coherent buffer has no cache line to
+	 * race, so ADM writes are always visible, and its phys address is
+	 * stable for the channel's lifetime (no per-cycle map/unmap).
+	 */
+	dma->rx.virt = dma_alloc_coherent(dev, UARTDM_RX_SIZE, &dma->rx.phys,
+					  GFP_KERNEL);
 	if (!dma->rx.virt)
 		goto rel_rx;
 
@@ -407,7 +421,7 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 
 	return;
 err:
-	kfree(dma->rx.virt);
+	dma_free_coherent(dev, UARTDM_RX_SIZE, dma->rx.virt, dma->rx.phys);
 rel_rx:
 	dma_release_channel(dma->chan);
 no_rx:
@@ -596,7 +610,11 @@ static void msm_complete_rx_dma(void *args)
 
 	dma->rx.count = 0;
 
-	dma_unmap_single(port->dev, dma->rx.phys, UARTDM_RX_SIZE, dma->dir);
+	/*
+	 * Coherent buffer: no unmap needed. Order the CPU reads after the ADM
+	 * completion IRQ so the flushed RX bytes are guaranteed visible.
+	 */
+	dma_rmb();
 
 	for (i = 0; i < count; i++) {
 		char flag = TTY_NORMAL;
@@ -638,17 +656,12 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	if (!dma->chan)
 		return;
 
-	dma->rx.phys = dma_map_single(uart->dev, dma->rx.virt,
-				   UARTDM_RX_SIZE, dma->dir);
-	ret = dma_mapping_error(uart->dev, dma->rx.phys);
-	if (ret)
-		goto sw_mode;
-
+	/* Coherent RX buffer: phys is stable, no per-cycle mapping needed. */
 	dma->desc = dmaengine_prep_slave_single(dma->chan, dma->rx.phys,
 						UARTDM_RX_SIZE, DMA_DEV_TO_MEM,
 						DMA_PREP_INTERRUPT);
 	if (!dma->desc)
-		goto unmap;
+		goto sw_mode;
 
 	dma->desc->callback = msm_complete_rx_dma;
 	dma->desc->callback_param = msm_port;
@@ -656,7 +669,7 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	dma->cookie = dmaengine_submit(dma->desc);
 	ret = dma_submit_error(dma->cookie);
 	if (ret)
-		goto unmap;
+		goto sw_mode;
 	/*
 	 * Using DMA for FIFO off-load, no need for "Rx FIFO over
 	 * watermark" or "stale" interrupts, disable them
@@ -691,8 +704,6 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 		msm_write(uart, val, UARTDM_DMEN);
 
 	return;
-unmap:
-	dma_unmap_single(uart->dev, dma->rx.phys, UARTDM_RX_SIZE, dma->dir);
 
 sw_mode:
 	/*
