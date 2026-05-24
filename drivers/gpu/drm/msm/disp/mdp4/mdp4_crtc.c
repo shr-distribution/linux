@@ -6,6 +6,8 @@
 
 #include <linux/pm_runtime.h>
 
+#include <drm/drm_atomic.h>
+#include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_flip_work.h>
 #include <drm/drm_managed.h>
@@ -75,12 +77,22 @@ static void request_pending(struct drm_crtc *crtc, uint32_t pending)
 	mdp_irq_register(&get_kms(crtc)->base, &mdp4_crtc->vblank);
 }
 
-static void crtc_flush(struct drm_crtc *crtc)
+/*
+ * @extra_flush: OR-ed into the flush mask for pipes that are NOT attached to
+ * the crtc in the current state but still need their double-buffered registers
+ * latched this commit — i.e. pipes being DISABLED. mdp4_plane_atomic_disable
+ * writes PIPE_SRCP0_BASE=0, but that (and the layer-mixer unstage) only takes
+ * effect when the pipe's flush bit is set. Since a disabled plane is no longer
+ * in drm_atomic_crtc_for_each_plane(), without this the OVLP keeps compositing
+ * the pipe at base 0 and the MDP display IOMMU faults forever (FAR=0x780) once
+ * the backing buffer is freed and no later vsync re-flushes it.
+ */
+static void crtc_flush(struct drm_crtc *crtc, uint32_t extra_flush)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
 	struct drm_plane *plane;
-	uint32_t flush = 0;
+	uint32_t flush = extra_flush;
 
 	drm_atomic_crtc_for_each_plane(plane, crtc) {
 		enum mdp4_pipe pipe_id = mdp4_plane_pipe(plane);
@@ -320,7 +332,7 @@ static void mdp4_crtc_atomic_enable(struct drm_crtc *crtc,
 
 	mdp_irq_register(&mdp4_kms->base, &mdp4_crtc->err);
 
-	crtc_flush(crtc);
+	crtc_flush(crtc, 0);
 
 	mdp4_crtc->enabled = true;
 }
@@ -346,7 +358,27 @@ static void mdp4_crtc_atomic_flush(struct drm_crtc *crtc,
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
+	struct drm_crtc_state *old_cstate;
+	uint32_t disable_flush = 0;
 	unsigned long flags;
+
+	/*
+	 * Pipes attached in the OLD state but not the new one are being
+	 * disabled this commit. Their flush bits are NOT picked up by
+	 * crtc_flush() (a disabled plane has left drm_atomic_crtc_for_each_plane),
+	 * so latch them explicitly — otherwise mdp4_plane_atomic_disable's
+	 * SRCP0_BASE=0 + the layer-mixer unstage never take effect and the OVLP
+	 * keeps fetching the freed buffer (display IOMMU FAR=0x780 fault storm).
+	 * Flushing a staying pipe again is harmless, so just OR all old-state
+	 * pipes; the new-state ones get added inside crtc_flush().
+	 */
+	old_cstate = drm_atomic_get_old_crtc_state(state, crtc);
+	if (old_cstate) {
+		struct drm_plane *plane;
+
+		drm_atomic_crtc_state_for_each_plane(plane, old_cstate)
+			disable_flush |= pipe2flush(mdp4_plane_pipe(plane));
+	}
 
 	DBG("%s: event: %p", mdp4_crtc->name, crtc->state->event);
 
@@ -366,7 +398,7 @@ static void mdp4_crtc_atomic_flush(struct drm_crtc *crtc,
 	spin_unlock_irqrestore(&dev->event_lock, flags);
 
 	blend_setup(crtc);
-	crtc_flush(crtc);
+	crtc_flush(crtc, disable_flush);
 	request_pending(crtc, PENDING_FLIP);
 }
 
@@ -499,7 +531,7 @@ static int mdp4_crtc_cursor_move(struct drm_crtc *crtc, int x, int y)
 	mdp4_crtc->cursor.y = y;
 	spin_unlock_irqrestore(&mdp4_crtc->cursor.lock, flags);
 
-	crtc_flush(crtc);
+	crtc_flush(crtc, 0);
 	request_pending(crtc, PENDING_CURSOR);
 
 	return 0;
@@ -552,7 +584,7 @@ static void mdp4_crtc_err_irq(struct mdp_irq *irq, uint32_t irqstatus)
 	struct mdp4_crtc *mdp4_crtc = container_of(irq, struct mdp4_crtc, err);
 	struct drm_crtc *crtc = &mdp4_crtc->base;
 	DBG("%s: error: %08x", mdp4_crtc->name, irqstatus);
-	crtc_flush(crtc);
+	crtc_flush(crtc, 0);
 }
 
 static void mdp4_crtc_wait_for_flush_done(struct drm_crtc *crtc)
