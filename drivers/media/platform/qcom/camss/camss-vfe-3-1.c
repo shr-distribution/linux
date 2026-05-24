@@ -2640,7 +2640,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 		}
 		active_index = (ping_pong >> pp_wm) & 1;
 
-		dev_dbg(vfe->camss->dev,
+		dev_info(vfe->camss->dev,
 			"VFE31: wm_done entry: wm=%d PP=0x%x using_bit%d=%d → HW writing to %s, returning %s buffer\n",
 			wm, ping_pong, pp_wm, active_index,
 			active_index ? "PONG" : "PING",
@@ -2729,7 +2729,7 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 			u32 returning_addr = ready_buf ? (u32)ready_buf->addr[0] : 0;
 			bool addr_match = (returning_addr == expected_addr);
 
-			dev_dbg(vfe->camss->dev,
+			dev_info(vfe->camss->dev,
 				"VFE31: buf_verify seq=%d: PING=0x%08x PONG=0x%08x active=%d expect_%s=0x%08x returning=0x%08x %s\n",
 				output->sequence, hw_ping, hw_pong,
 				active_index, active_index ? "PING" : "PONG",
