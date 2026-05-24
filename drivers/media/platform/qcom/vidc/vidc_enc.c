@@ -772,11 +772,23 @@ static void vidc_enc_submit_frame(struct vidc_inst *inst,
 	 * Note: encoder does NOT use a descriptor buffer (0x204c/0x205c
 	 * are decoder-only registers).
 	 */
-	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, dst_addr >> VIDC_ADDR_SHIFT);
+	/*
+	 * All VIDC buffer addresses are FIRMWARE-RELATIVE: byte offset from
+	 * fw_dma_addr (SMI base 0x38000000), shifted right by VIDC_ADDR_SHIFT
+	 * — the firmware adds DRAM_BASE back internally. The decoder does this
+	 * (vidc_dec_submit_frame); the encoder previously wrote the ABSOLUTE
+	 * SMIPOOL addresses instead, so the firmware double-counted the base
+	 * and DMA'd the output bitstream to ~0x70000000 (high kernel RAM),
+	 * corrupting unrelated kernel structures. vb2 buffers come from the
+	 * SMIPOOL pool so (addr - fw_dma_addr) is the correct in-window offset.
+	 */
+	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
+		   (dst_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_ENC_OUT_BUF_SIZE, dst_size);
-	vidc_write(core, VIDC_REG_CH0_Y_ADDR, src_addr >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_Y_ADDR,
+		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_C_ADDR,
-		   (src_addr + y_size) >> VIDC_ADDR_SHIFT);
+		   (src_addr + y_size - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_INTRA_FRAME, 0);	/* P-frame; firmware uses I_FRM_CTRL */
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 	vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, 0);	/* input_flush = 0 */
