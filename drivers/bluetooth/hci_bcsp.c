@@ -49,6 +49,13 @@ static bool txcrc = true;
 static bool hciextn = true;
 static char *bdaddr;
 /*
+ * Number of 0xFF idle bytes to prepend before each TX frame's leading 0xc0
+ * SLIP delimiter. Gives the CSR BlueCore UART RX oversampler garbage to
+ * re-lock its baud clock on after an idle period, so it is primed for our
+ * 0xc0. 0 = disabled. Tunable at runtime via /sys/module/hci_uart/parameters.
+ */
+static uint tx_preamble;
+/*
  * Default to SKIPPING the PSKEY/WARM_RESET configuration.
  *
  * The PSKEY id #defines below (PSKEY_ANA_FREQ, PSKEY_HOST_INTERFACE, etc.)
@@ -572,11 +579,23 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	 * + 2 (0xc0 delimiters at start and end).
 	 */
 
-	nskb = alloc_skb((len + 6) * 2 + 2, GFP_ATOMIC);
+	nskb = alloc_skb((len + 6) * 2 + 2 + tx_preamble, GFP_ATOMIC);
 	if (!nskb)
 		return NULL;
 
 	hci_skb_pkt_type(nskb) = pkt_type;
+
+	/*
+	 * Optional 0xFF idle preamble (tx_preamble) before the leading 0xc0,
+	 * to let the CSR BlueCore RX re-lock its baud clock. 0xFF needs no SLIP
+	 * escaping, so it is emitted raw ahead of the framed packet.
+	 */
+	if (tx_preamble) {
+		unsigned int i;
+
+		for (i = 0; i < tx_preamble; i++)
+			skb_put_u8(nskb, 0xff);
+	}
 
 	bcsp_slip_msgdelim(nskb);
 
@@ -2571,6 +2590,27 @@ static int bcsp_open(struct hci_uart *hu)
 		 */
 		static const u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
 		struct sk_buff *skb = alloc_skb(4, GFP_KERNEL);
+
+		/*
+		 * webOS "reinit before TX": the legacy hsuart driver does a full
+		 * port disable->reinit immediately before the first SYNC
+		 * (msm_uartdm __port_disable: pin-mux OFF; __port_init: pin-mux
+		 * ON + set_baud + UART RESET; then __set_rx_flow re-asserts RTS).
+		 * The UART RESET (RESET_RX/TX/ERR/BREAK/CTS/RFR) re-arms the
+		 * chip-facing TX/RX state right before we transmit — mainline
+		 * never resets here, and our prior pin-mux-only glitch missed it.
+		 * Re-applying the baud routes through msm_set_termios ->
+		 * msm_set_baud_rate -> msm_reset, giving the same reset tightly
+		 * before TX. Because msm_reset() clears MR1 RX_RDY_CTL (auto-RFR),
+		 * it deasserts RTS, so we must re-assert RTS AFTER the reset (same
+		 * order webOS uses: port_init reset, then set_rx_flow asserts).
+		 */
+		if (hu->serdev) {
+			serdev_device_set_baudrate(hu->serdev, 115200);
+			serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);
+			BT_INFO("BCSP: UART reset + RTS re-assert before SYNC (webOS reinit)");
+		}
+
 		if (skb) {
 			skb_put_data(skb, sync_pkt, 4);
 			hci_skb_pkt_type(skb) = BCSP_LE_PKT;
@@ -2930,3 +2970,6 @@ MODULE_PARM_DESC(bdaddr, "Bluetooth device address (XX:XX:XX:XX:XX:XX)");
 
 module_param(skip_pskeys, bool, 0644);
 MODULE_PARM_DESC(skip_pskeys, "Skip PSKEY configuration (for debugging)");
+
+module_param(tx_preamble, uint, 0644);
+MODULE_PARM_DESC(tx_preamble, "Prepend N 0xFF idle bytes before each TX frame (CSR RX re-lock); 0=off");
