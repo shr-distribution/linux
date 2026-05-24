@@ -545,6 +545,21 @@ struct vidc_core {
 	 */
 	bool fw_loaded;
 	bool fw_running;
+	/*
+	 * Strategy 1 "keep-resident" pin: on this hardware the genpd VED
+	 * power-collapse does NOT produce a clean cold reset — the ved_gdsc
+	 * SW_RESET flag re-asserts VCODEC_AHB_RESET on enable, leaving
+	 * SW_RESET=0x33 and the firmware boots into recovery mode (cmd=51)
+	 * on every session after the first. Legacy/mako/htc cold-cycle the
+	 * footswitch and recover via a progressive SW_RESET sequence we
+	 * could not reproduce without wedging the AHB. So instead we keep
+	 * the firmware RESIDENT: after the first (always-clean, post-reboot)
+	 * boot we take one permanent runtime-PM ref so VED never collapses
+	 * and the firmware is never re-booted; subsequent sessions just
+	 * open/close a channel on the live firmware. fw_pinned guards the
+	 * one-shot get so it is balanced exactly once in vidc_core_deinit.
+	 */
+	bool fw_pinned;
 	u32 fw_version;
 	/*
 	 * Boot handshake completions. Legacy webOS DDL (see

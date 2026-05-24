@@ -1349,6 +1349,24 @@ int vidc_boot_firmware(struct vidc_core *core)
 		 core->fw_version);
 
 	/*
+	 * Strategy 1 "keep-resident": the first boot after a fresh reboot is
+	 * always clean (cmd=9). Re-booting on later sessions hits the broken
+	 * genpd-cold-reset (SW_RESET=0x33 -> cmd=51 recovery), so take ONE
+	 * permanent runtime-PM ref here. This keeps the device runtime-active
+	 * forever, so genpd never power-collapses VED and the firmware stays
+	 * resident; later sessions just open/close a channel on the live
+	 * firmware (vidc_load_firmware early-returns on fw_loaded, and no
+	 * suspend means vidc_runtime_resume never re-boots). Balanced exactly
+	 * once in vidc_core_deinit(). See fw_pinned in vidc_core.h.
+	 */
+	if (!core->fw_pinned) {
+		pm_runtime_get_noresume(core->dev);
+		core->fw_pinned = true;
+		dev_info(core->dev,
+			 "boot_fw: pinned VED resident (firmware kept alive across sessions)\n");
+	}
+
+	/*
 	 * Pixel-cache experiment: webOS supports PIX_CACHE_DISABLE build
 	 * variant.  With axi_a/b clocks on, full cache config, sentinel
 	 * chroma slots, the firmware STILL doesn't write to DPB.  Disable
@@ -2729,6 +2747,17 @@ void vidc_core_deinit(struct vidc_core *core)
 	}
 
 	pm_runtime_put_noidle(core->dev);
+
+	/*
+	 * Release the Strategy-1 keep-resident pin taken at first boot (see
+	 * vidc_boot_firmware / fw_pinned). put_noidle, not put, because
+	 * vidc_remove disables runtime PM immediately after this and we must
+	 * not kick off a suspend during teardown.
+	 */
+	if (core->fw_pinned) {
+		pm_runtime_put_noidle(core->dev);
+		core->fw_pinned = false;
+	}
 }
 
 static int vidc_probe(struct platform_device *pdev)
