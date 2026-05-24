@@ -297,7 +297,7 @@ void msm_gem_sync_for_gpu(struct drm_gem_object *obj)
 		dsb(sy);
 
 		if (nents > 1)
-			pr_info_ratelimited(
+			pr_debug(
 				"msm_gem sync_for_gpu: nents=%u total=%zu (FIX#1 dsb-between-L1-L2 active)\n",
 				nents, total_len);
 	}
