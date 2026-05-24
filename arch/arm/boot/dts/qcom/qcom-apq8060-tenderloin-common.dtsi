@@ -2847,12 +2847,17 @@
 	qcom,vfe31-raw-through-pix;
 
 	/*
-	 * VFE IOMMU enables scatter-gather DMA with contiguous virtual
-	 * addresses. Without this, vb2-dma-sg allocates non-contiguous
-	 * pages that VFE31 cannot handle (writes beyond first SG segment).
-	 * Stream ID 0 is the primary context bank.
+	 * No iommus here: VFE31 uses vb2-dma-contig with the 32MB CMA
+	 * region at 0x7C000000, so the DMA buffers are already physically
+	 * contiguous. The earlier "iommus = <&vfe_iommu 0>" was a leftover
+	 * from the abandoned vb2-dma-sg approach (where it stitched
+	 * scattered pages into a contiguous IOVA). With dma-contig it is
+	 * not needed, and attaching it flips the vfe_iommu context bank out
+	 * of passthrough into translation with an incomplete page table,
+	 * causing a VFE page-fault storm on the capture buffers. The VFE
+	 * writes the physical CMA addresses directly, matching the legacy
+	 * webOS PMEM model.
 	 */
-	iommus = <&vfe_iommu 0>;
 
 	ports {
 		/* CSIPHY1 (CSI_1) input - MT9M113 front camera */
@@ -4284,7 +4289,14 @@
 };
 
 &vfe_iommu {
-	status = "okay";
+	/*
+	 * Disabled: VFE31 DMA uses physically-contiguous CMA buffers and
+	 * accesses them by physical address (webOS PMEM model). Enabling
+	 * this SMMU context bank puts it in translation mode and faults on
+	 * the VFE's physical buffer writes (FAR in the 0x7C000000 CMA
+	 * range). See the camss node above.
+	 */
+	status = "disabled";
 };
 
 /*
