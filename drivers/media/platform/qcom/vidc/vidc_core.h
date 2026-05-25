@@ -363,6 +363,11 @@
 #define VIDC_REG_ENC_QP_RANGE		0xc5ac
 #define VIDC_REG_ENC_PICTURE_PERIOD	0xc504
 #define VIDC_REG_ENC_FRAME_FORMAT	0xc51c
+#define VIDC_REG_ENC_H264_ENTROPY	0xd004	/* REG_447796 0=CAVLC 1=CABAC */
+#define VIDC_REG_ENC_LF_CONFIG		0x0848	/* REG_152500 0=all-blocking */
+#define VIDC_REG_ENC_LF_ALPHA		0x084c	/* REG_266285 slice_alpha_offset */
+#define VIDC_REG_ENC_LF_BETA		0x0850	/* REG_964731 slice_beta_offset */
+#define VIDC_REG_ENC_FIELD_PICTURE	0x083c	/* REG_786024 0=progressive */
 
 /* Shared-memory offsets for encoder-only params (written via core->shm_vaddr) */
 #define VIDC_SHM_ENC_EXT_CTRL		0x0028	/* VIDC_SM_ENC_EXT_CTRL_ADDR   */

@@ -2675,7 +2675,8 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 	 * REG_559908 RC config: bit 9 = frame_level_rc, bit 8 = mb_level_rc,
 	 *                       bits 5:0 = I-frame QP.
 	 */
-	qp_range = (40 << 8) | 10;			/* max=40, min=10 */
+	/* H.264 QP range: max=51, min=10 (legacy ddl default). */
+	qp_range = (51 << 8) | 10;
 
 	vidc_write(core, VIDC_REG_ENC_FRAME_WIDTH, inst->out_width);
 	vidc_write(core, VIDC_REG_ENC_FRAME_HEIGHT, inst->out_height);
@@ -2683,10 +2684,32 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 	/* Firmware expects framerate in millifps (fps * 1000) */
 	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate * 1000);
 	vidc_write(core, VIDC_REG_ENC_PROFILE_LEVEL, profile_level);
-	/* CBR: enable frame-level RC (bit 9), I-frame QP = 26 */
-	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, (1 << 9) | 26);
-	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF, 0x14);
+	/*
+	 * Rate control, matching the legacy H.264 default: enable both
+	 * frame-level (bit 9) and MB-level (bit 8) RC with initial frame
+	 * QP = 20, and reaction coefficient 0x1f4. We previously left
+	 * MB-RC off, used QP 26 and reaction 0x14, diverging from the
+	 * validated webOS configuration.
+	 */
+	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, (1 << 9) | (1 << 8) | 20);
+	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF, 0x1f4);
 	vidc_write(core, VIDC_REG_ENC_QP_RANGE, qp_range);
+
+	/*
+	 * H.264-specific sequence config the firmware otherwise leaves at
+	 * undefined power-on defaults (legacy ddl_vidc_encode_init_codec
+	 * always writes these):
+	 *   - entropy: CAVLC (0) — required for Baseline;
+	 *   - loop filter: all-blocking-boundary (0), zero alpha/beta;
+	 *   - field picture: progressive (0).
+	 */
+	if (inst->codec == VIDC_CODEC_H264_ENC) {
+		vidc_write(core, VIDC_REG_ENC_H264_ENTROPY, 0);
+		vidc_write(core, VIDC_REG_ENC_LF_CONFIG, 0);
+		vidc_write(core, VIDC_REG_ENC_LF_ALPHA, 0);
+		vidc_write(core, VIDC_REG_ENC_LF_BETA, 0);
+	}
+	vidc_write(core, VIDC_REG_ENC_FIELD_PICTURE, 0);
 	/*
 	 * REG_783891: encode picture period (I/B-frame interval).
 	 * bit 18: ENC_PIC_TYPE_USE=1, bits 17:16: B_FRM_CTRL=0 (no B-frames),
