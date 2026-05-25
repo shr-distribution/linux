@@ -1242,13 +1242,20 @@
 			opp-266667000 {
 				opp-hz = /bits/ 64 <266667000>;
 				opp-microvolt = <1200000>;
-				opp-peak-kBps = <1673000>;
-			};
-			opp-320000000 {
-				opp-hz = /bits/ 64 <320000000>;
-				opp-microvolt = <1200000>;
 				opp-peak-kBps = <2008000>;
 			};
+			/*
+			 * NO 320 MHz OPP. The MSM8660 clock driver supports
+			 * F_GFX3D(320000000) but the HP TouchPad's legacy webOS
+			 * KGSL platform data pinned GFX3D at a FIXED 266.667 MHz
+			 * (.max_grp3d_freq = .min_grp3d_freq = 266667000) and never
+			 * used 320 MHz. Running this silicon at 320 MHz is an
+			 * overclock beyond the validated ceiling: under sustained
+			 * heavy load the GPU ramps to 320 MHz and the 3D back-end
+			 * wedges (RB/PA/SC stuck) with chronic MH AXI_WRITE_ERRORs.
+			 * Cap at 266.667 MHz to match the validated webOS ceiling.
+			 * Peak BW kept at the legacy max (2008 MB/s) at this top OPP.
+			 */
 		};
 
 		mdp: mdp@5100000 {
