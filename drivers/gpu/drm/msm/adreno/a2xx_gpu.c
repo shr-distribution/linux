@@ -27,21 +27,6 @@ static u32 a2xx_icc_bw_for_freq(unsigned long freq_hz)
 	return Bps_to_icc(freq_hz) * 8;
 }
 
-/*
- * SMI-path bandwidth (in icc kBps units). The GPU's bulk traffic
- * (textures, vertices, GMEM) goes to EBI via gfx-mem; the ONLY thing it
- * writes to SMI is the GMEM->framebuffer resolve (scanout FBs live in the
- * SMI pool on apq8060). Size the SMI vote for that resolve traffic, NOT the
- * full GPU memory bandwidth — voting the full ~2 GB/s on the small SMI
- * memory over-subscribes it and starves the MDP scanout (INTF underrun) and
- * the GPU itself. mdp4_setup_interconnect() documents the same "equal
- * SMI+EBI vote inflates aggregation" lesson. A fixed modest vote is enough
- * to provision the path (clear the AXI write error) with SMI headroom left
- * for the display.
- */
-#define A2XX_SMI_BW_AVG_KBPS	(256 * 1024)	/* 256 MB/s */
-#define A2XX_SMI_BW_PEAK_KBPS	(512 * 1024)	/* 512 MB/s */
-
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	struct msm_ringbuffer *ring = submit->ring;
@@ -729,8 +714,7 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 
 		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
 		if (a2xx_gpu->icc_path_smi)
-			icc_set_bw(a2xx_gpu->icc_path_smi,
-				   A2XX_SMI_BW_AVG_KBPS, A2XX_SMI_BW_PEAK_KBPS);
+			icc_set_bw(a2xx_gpu->icc_path_smi, bw, bw);
 	}
 
 	return 0;
@@ -764,8 +748,7 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 
 		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
 		if (a2xx_gpu->icc_path_smi)
-			icc_set_bw(a2xx_gpu->icc_path_smi,
-				   A2XX_SMI_BW_AVG_KBPS, A2XX_SMI_BW_PEAK_KBPS);
+			icc_set_bw(a2xx_gpu->icc_path_smi, bw, bw);
 	}
 
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
@@ -871,8 +854,7 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 
 		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
 		if (a2xx_gpu->icc_path_smi)
-			icc_set_bw(a2xx_gpu->icc_path_smi,
-				   A2XX_SMI_BW_AVG_KBPS, A2XX_SMI_BW_PEAK_KBPS);
+			icc_set_bw(a2xx_gpu->icc_path_smi, bw, bw);
 	}
 
 	if (adreno_is_a20x(adreno_gpu))
