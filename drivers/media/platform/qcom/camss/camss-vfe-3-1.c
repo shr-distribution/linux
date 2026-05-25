@@ -5776,6 +5776,52 @@ static int vfe31_pm_domain_on(struct vfe_device *vfe)
  * This function replaces the VFE31-specific fallback code that was previously
  * in camss-vfe.c:vfe_enable_pending_camif().
  */
+/* Program MODULE_CFG (ISP module enables) for the pending line's mode. */
+static void vfe31_config_module_cfg(struct vfe_device *vfe)
+{
+	/*
+	 * Step 2: Configure MODULE_CFG
+	 * PIX mode: Enable DEMUX and processing modules (VFE_0_MODULE_CFG_WEBOS_VALUE)
+	 * RDI mode: Disable all modules (0) - data bypasses ISP
+	 * RAW-through-PIX mode: Use PIX path but disable DEMUX (0)
+	 */
+	{
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
+
+		if (is_rdi && V31(vfe)->raw_through_pix) {
+			/*
+			 * RAW-through-PIX: use standard PIX MODULE_CFG.
+			 * Data path gates (bits 2,10) MUST remain enabled
+			 * for data to flow from CAMIF through XBAR to WMs.
+			 * ISP modules use identity defaults so raw data
+			 * passes through unmodified.
+			 */
+			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE,
+				       vfe->base + VFE_0_MODULE_CFG);
+			dev_dbg(vfe->camss->dev,
+				 "VFE31: MODULE_CFG=0x%08x (RAW-through-PIX)\n",
+				 VFE_0_MODULE_CFG_WEBOS_VALUE);
+		} else if (is_rdi) {
+			/*
+			 * RDI raw bypass (AXI=0x60): MODULE_CFG with
+			 * internal data path gates enabled for raw mode.
+			 */
+			writel_relaxed(0x00400C04, vfe->base + VFE_0_MODULE_CFG);
+			dev_dbg(vfe->camss->dev,
+				 "VFE31: MODULE_CFG=0x00400C04 (RDI raw)\n");
+		} else {
+			dev_dbg(vfe->camss->dev,
+				 "VFE31: MODULE_CFG=0x%08x (PIX with DEMUX)\n",
+				 VFE_0_MODULE_CFG_WEBOS_VALUE);
+			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE, vfe->base + VFE_0_MODULE_CFG);
+		}
+	}
+	/* Ensure module configuration is visible to hardware */
+	wmb();
+}
+
 static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 {
 	struct vfe_line *line;
@@ -5840,47 +5886,8 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/* Ensure clock gate override is applied before continuing */
 	wmb();
 
-	/*
-	 * Step 2: Configure MODULE_CFG
-	 * PIX mode: Enable DEMUX and processing modules (VFE_0_MODULE_CFG_WEBOS_VALUE)
-	 * RDI mode: Disable all modules (0) - data bypasses ISP
-	 * RAW-through-PIX mode: Use PIX path but disable DEMUX (0)
-	 */
-	{
-		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
-
-		if (is_rdi && V31(vfe)->raw_through_pix) {
-			/*
-			 * RAW-through-PIX: use standard PIX MODULE_CFG.
-			 * Data path gates (bits 2,10) MUST remain enabled
-			 * for data to flow from CAMIF through XBAR to WMs.
-			 * ISP modules use identity defaults so raw data
-			 * passes through unmodified.
-			 */
-			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE,
-				       vfe->base + VFE_0_MODULE_CFG);
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x%08x (RAW-through-PIX)\n",
-				 VFE_0_MODULE_CFG_WEBOS_VALUE);
-		} else if (is_rdi) {
-			/*
-			 * RDI raw bypass (AXI=0x60): MODULE_CFG with
-			 * internal data path gates enabled for raw mode.
-			 */
-			writel_relaxed(0x00400C04, vfe->base + VFE_0_MODULE_CFG);
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x00400C04 (RDI raw)\n");
-		} else {
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x%08x (PIX with DEMUX)\n",
-				 VFE_0_MODULE_CFG_WEBOS_VALUE);
-			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE, vfe->base + VFE_0_MODULE_CFG);
-		}
-	}
-	/* Ensure module configuration is visible to hardware */
-	wmb();
+	/* Step 2: MODULE_CFG (ISP module enables). */
+	vfe31_config_module_cfg(vfe);
 
 	/*
 	 * Step 3: Configure CORE_CFG with pixel pattern + input mux enable
