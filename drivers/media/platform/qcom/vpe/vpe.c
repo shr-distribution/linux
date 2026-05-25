@@ -385,6 +385,18 @@ static void vpe_device_run(void *priv)
 	/* Enable interrupt and start processing */
 	vpe_hw_enable_irq(vpe->base);
 	vpe_hw_start(vpe->base);
+
+	/* TEMP DEBUG: confirm device_run programmed the HW */
+	dev_info(vpe->dev,
+		 "device_run: src=%ux%u crop=%ux%u dst=%ux%u compose=%ux%u src_y=%pad dst_y=%pad | readback OP_MODE=0x%08x SRC_SIZE=0x%08x OUT_SIZE=0x%08x SRCP0=0x%08x OUTP0=0x%08x INTR_EN=0x%08x\n",
+		 ctx->src.width, ctx->src.height,
+		 ctx->crop.width, ctx->crop.height,
+		 ctx->dst.width, ctx->dst.height,
+		 ctx->compose.width, ctx->compose.height,
+		 &src_y, &dst_y,
+		 readl(vpe->base + 0x10138), readl(vpe->base + 0x10108),
+		 readl(vpe->base + 0x10164), readl(vpe->base + 0x1010C),
+		 readl(vpe->base + 0x10168), readl(vpe->base + 0x0020));
 }
 
 static irqreturn_t vpe_irq_handler(int irq, void *dev_id)
