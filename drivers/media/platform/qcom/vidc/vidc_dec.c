@@ -386,9 +386,6 @@ static int vidc_dec_streamoff(struct file *file, void *fh,
  * VIDC_CMD_FLUSH and let the existing IRQ→work path emit the LAST
  * marker buffer.
  */
-static void vidc_dec_submit_frame(struct vidc_inst *inst, dma_addr_t src_addr,
-				  u32 src_size, dma_addr_t dst_addr);
-
 static int vidc_dec_decoder_cmd(struct file *file, void *fh,
 				struct v4l2_decoder_cmd *dec_cmd)
 {
@@ -396,18 +393,25 @@ static int vidc_dec_decoder_cmd(struct file *file, void *fh,
 
 	switch (dec_cmd->cmd) {
 	case V4L2_DEC_CMD_STOP:
-		if (!inst->ch_open || !inst->seq_parsed || inst->draining)
+		if (!inst->ch_open || !inst->seq_parsed ||
+		    inst->drain_pending || inst->draining)
 			return 0;
 		/*
-		 * Drain (not flush): issue a single VIDC_OP_LAST_FRAME with an
-		 * empty stream. The firmware then emits the held reorder frames
-		 * as DISPLAY_ONLY responses, ending in DPB_EMPTY, where the
-		 * frame-done worker marks the last CAPTURE buffer
-		 * V4L2_BUF_FLAG_LAST and queues V4L2_EVENT_EOS. Flushing here
-		 * (the old behaviour) discarded those held frames instead.
+		 * Drain (not flush): mark the drain pending. Frames already
+		 * queued on the OUTPUT queue keep flowing as normal FRAME_DATA;
+		 * once the OUTPUT queue is empty, device_run issues a single
+		 * VIDC_OP_LAST_FRAME and the firmware emits the held reorder
+		 * frames as DISPLAY_ONLY responses, ending in DPB_EMPTY, where
+		 * the frame-done worker marks the last CAPTURE buffer
+		 * V4L2_BUF_FLAG_LAST and queues V4L2_EVENT_EOS.
+		 *
+		 * Kick the scheduler: if the OUTPUT queue is already empty
+		 * there is no in-flight job whose completion would otherwise
+		 * trigger the drain.
 		 */
-		inst->draining = true;
-		vidc_dec_submit_frame(inst, inst->core->fw_dma_addr, 0, 0);
+		inst->drain_pending = true;
+		inst->drain_count = 0;
+		v4l2_m2m_try_schedule(inst->m2m_ctx);
 		return 0;
 
 	case V4L2_DEC_CMD_START:
@@ -697,6 +701,7 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 
 	/* Clear any in-progress drain so a stream restart starts clean. */
 	inst->draining = false;
+	inst->drain_pending = false;
 
 	/* Return all buffers to userspace */
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
@@ -1350,7 +1355,6 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 		container_of(w, struct vidc_inst, frame_done_work);
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
-	bool draining = inst->draining;
 
 	/*
 	 * Dispatch on display_status captured by vidc_handle_frame_done().
@@ -1418,6 +1422,8 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 		break;
 
 	case VIDC_DISPLAY_STATUS_DPB_EMPTY:
+		/* Drain finished — no more held frames. */
+		inst->draining = false;
 		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
 		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
 		if (src_buf) {
@@ -1446,6 +1452,20 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 
 	case VIDC_DISPLAY_STATUS_DECODE_AND_DISPLAY:
 	default:
+		/*
+		 * During a drain there is no input frame in flight, so emit
+		 * the displayed held frame like DISPLAY_ONLY (no src buffer to
+		 * pair). Otherwise both buffers are required.
+		 */
+		if (inst->draining) {
+			dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+			if (dst_buf) {
+				dst_buf->sequence = inst->sequence_cap++;
+				vidc_dec_emit_dpb(inst, dst_buf);
+			}
+			break;
+		}
+
 		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
 		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
 
@@ -1467,21 +1487,12 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 	}
 
 	/*
-	 * Drain handling: a single LAST_FRAME produces many DISPLAY_ONLY
-	 * responses, so the firmware keeps reporting on this instance. Keep
-	 * curr_inst set so each held-frame IRQ still dispatches, and do NOT
-	 * call job_finish (the drain bypassed the m2m scheduler — there is no
-	 * running job). On DPB_EMPTY the drain is complete: clear it and
-	 * release the instance.
+	 * Normal job completion. During a drain each LAST_FRAME is its own
+	 * one-shot job: this job_finish lets the scheduler run device_run
+	 * again, which re-issues the next LAST_FRAME (job_ready stays true
+	 * while draining) until the firmware reports DPB_EMPTY — matching the
+	 * webOS handler that re-runs the EOS command per held frame.
 	 */
-	if (draining) {
-		if (inst->display_status == VIDC_DISPLAY_STATUS_DPB_EMPTY) {
-			inst->draining = false;
-			core->curr_inst = NULL;
-		}
-		return;
-	}
-
 	core->curr_inst = NULL;
 	v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
 }
@@ -1509,6 +1520,53 @@ static void vidc_dec_device_run(void *priv)
 
 	src_buf = v4l2_m2m_next_src_buf(inst->m2m_ctx);
 	dst_buf = v4l2_m2m_next_dst_buf(inst->m2m_ctx);
+
+	/*
+	 * Drain: the OUTPUT queue is empty but a STOP was requested. Issue a
+	 * single VIDC_OP_LAST_FRAME (empty stream) so the firmware flushes
+	 * the held reorder frames. draining (set here, not at STOP time)
+	 * makes submit_frame use the LAST_FRAME opcode and keeps curr_inst
+	 * alive across the resulting DISPLAY_ONLY responses. A dst buffer
+	 * must be available for the firmware to emit the first held frame.
+	 */
+	if (!src_buf && (inst->drain_pending || inst->draining) && dst_buf) {
+		inst->drain_pending = false;
+		inst->draining = true;
+
+		/*
+		 * Safety: each LAST_FRAME yields one held frame; the firmware
+		 * eventually reports DPB_EMPTY. If it never does, cap the
+		 * re-issues so we don't loop forever — force EOS and stop.
+		 */
+		if (inst->drain_count++ > inst->dpb_count + 8) {
+			static const struct v4l2_event eos = {
+				.type = V4L2_EVENT_EOS,
+			};
+			dev_warn(inst->core->dev,
+				 "drain cap reached (%u), forcing EOS\n",
+				 inst->drain_count);
+			if (dst_buf) {
+				dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
+				if (dst_buf) {
+					dst_buf->sequence = inst->sequence_cap++;
+					dst_buf->flags |= V4L2_BUF_FLAG_LAST;
+					vb2_set_plane_payload(&dst_buf->vb2_buf,
+							      0, 0);
+					v4l2_m2m_buf_done(dst_buf,
+							  VB2_BUF_STATE_DONE);
+				}
+			}
+			v4l2_event_queue_fh(&inst->fh, &eos);
+			inst->draining = false;
+			v4l2_m2m_job_finish(inst->core->m2m_dev_dec,
+					    inst->m2m_ctx);
+			return;
+		}
+
+		inst->error = 0;
+		vidc_dec_submit_frame(inst, inst->core->fw_dma_addr, 0, 0);
+		return;
+	}
 
 	if (!src_buf || !dst_buf) {
 		dev_info(inst->core->dev,
@@ -1547,8 +1605,26 @@ static void vidc_dec_job_abort(void *priv)
 	v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
 }
 
+/*
+ * The default m2m scheduler only runs device_run when BOTH queues have a
+ * buffer. We additionally allow a run when a drain is pending and the
+ * OUTPUT queue has drained (no src), provided a CAPTURE buffer is free for
+ * the firmware to emit the first held frame into.
+ */
+static int vidc_dec_job_ready(void *priv)
+{
+	struct vidc_inst *inst = priv;
+	bool have_src = v4l2_m2m_num_src_bufs_ready(inst->m2m_ctx) > 0;
+	bool have_dst = v4l2_m2m_num_dst_bufs_ready(inst->m2m_ctx) > 0;
+
+	if (!have_dst)
+		return 0;
+	return have_src || inst->drain_pending || inst->draining;
+}
+
 static const struct v4l2_m2m_ops vidc_dec_m2m_ops = {
 	.device_run = vidc_dec_device_run,
+	.job_ready = vidc_dec_job_ready,
 	.job_abort = vidc_dec_job_abort,
 };
 

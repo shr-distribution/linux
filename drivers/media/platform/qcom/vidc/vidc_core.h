@@ -743,8 +743,14 @@ struct vidc_inst {
 	 * reorder frames as DISPLAY_ONLY responses, ending in DPB_EMPTY.
 	 * curr_inst must stay set across all of those responses, so the
 	 * frame-done worker keeps it until DPB_EMPTY clears the drain.
+	 *
+	 * drain_pending is set by V4L2_DEC_CMD_STOP; the queued input frames
+	 * keep flowing as normal FRAME_DATA, and only once the OUTPUT queue
+	 * is empty does device_run issue the LAST_FRAME and set draining.
 	 */
+	bool drain_pending;
 	bool draining;
+	u32 drain_count;	/* LAST_FRAME re-issues, capped to avoid a loop */
 
 	/* Encoder: force the next submitted frame to be an IDR/keyframe. */
 	bool force_keyframe;
