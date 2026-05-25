@@ -172,7 +172,7 @@ static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable);
  *   640 "fake" pixels at 16bpp = 1280 bytes (same data)
  *
  * Enabled per-device via the "qcom,vfe31-raw-through-pix" DT property
- * (vfe->raw_through_pix), applied only to RDI lines.
+ * (V31(vfe)->raw_through_pix), applied only to RDI lines.
  */
 
 /*
@@ -200,10 +200,38 @@ enum vfe31_rec_state {
 };
 
 /*
- * Per-device runtime state lives in struct vfe_device:
- *   vfe->recording_state / vfe->zsl_state  (enum vfe31_rec_state)
- *   vfe->pix_wm_pending                     (deferred PIX WM enable flag)
+ * VFE31 backend private state, allocated in vfe31_subdev_init() and reached
+ * via vfe->priv. Keeps MSM8660/VFE31-specific runtime state out of the shared
+ * struct vfe_device. (camif_pending and vfe31_reset_done remain in vfe_device
+ * because the camss core and video layer reference them across files.)
  */
+struct vfe31_device {
+	/* MSM8660: WM/line whose CAMIF config was deferred until CSIPHY ready */
+	u8 camif_pending_wm;
+	enum vfe_line_id camif_pending_line_id;
+	/* Deferred WM addresses, written after CAMIF start */
+	u32 pending_ping_addr;
+	u32 pending_pong_addr;
+	/* Y addresses tracked for CbCr offset calculation during streaming */
+	u32 last_y_ping_addr;
+	u32 last_y_pong_addr;
+	u32 active_cbcr_offset;
+	/* Shadows for the write-only IRQ mask registers */
+	u32 irq_mask0_shadow;
+	u32 irq_mask1_shadow;
+	u32 irq_comp_mask_shadow;
+	/* "Bit bucket" buffer that unused write masters point at */
+	dma_addr_t dummy_buf_addr;
+	void *dummy_buf_vaddr;
+	/* Route RDI captures through the PIX path (DT: qcom,vfe31-raw-through-pix) */
+	bool raw_through_pix;
+	/* Per-frame-boundary state machines and deferred PIX WM enable */
+	enum vfe31_rec_state recording_state;
+	enum vfe31_rec_state zsl_state;
+	bool pix_wm_pending;
+};
+
+#define V31(vfe)	((struct vfe31_device *)(vfe)->priv)
 
 /*
  * ============================================================================
@@ -2170,9 +2198,9 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 */
 
 	/* Clear shadow registers before reset */
-	vfe->irq_mask0_shadow = 0;
-	vfe->irq_mask1_shadow = 0;
-	vfe->irq_comp_mask_shadow = 0;
+	V31(vfe)->irq_mask0_shadow = 0;
+	V31(vfe)->irq_mask1_shadow = 0;
+	V31(vfe)->irq_comp_mask_shadow = 0;
 
 	/* Step 1: Disable all IRQs before reset */
 	dev_info(vfe->camss->dev, "VFE reset: disabling IRQs (MASK=0)\n");
@@ -2246,9 +2274,9 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 	 *
 	 * Active WMs will get real buffers assigned during vfe_enable().
 	 */
-	if (vfe->dummy_buf_addr) {
+	if (V31(vfe)->dummy_buf_addr) {
 		int wm;
-		u32 dummy_addr = (u32)vfe->dummy_buf_addr;
+		u32 dummy_addr = (u32)V31(vfe)->dummy_buf_addr;
 
 		dev_info(vfe->camss->dev,
 			 "VFE reset: pointing all 7 WMs to dummy buffer 0x%08x\n",
@@ -2837,7 +2865,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		 * Samsung vfe31_start_common() does the same: CAMIF starts
 		 * but WMs are enabled later via the recording state machine.
 		 */
-		if (vfe->pix_wm_pending) {
+		if (V31(vfe)->pix_wm_pending) {
 			struct vfe_output *out = &vfe->line[VFE_LINE_PIX].output;
 
 			writel_relaxed(BIT(0), vfe->base +
@@ -2845,7 +2873,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			if (out->wm_num == 2)
 				writel_relaxed(BIT(0), vfe->base +
 					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[1]));
-			vfe->pix_wm_pending = false;
+			V31(vfe)->pix_wm_pending = false;
 			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 			dev_info(vfe->camss->dev,
 				 "VFE31: PIX WMs enabled at frame boundary (WM%d+WM%d)\n",
@@ -2854,30 +2882,30 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		}
 
 		/* Process recording state machine at frame boundary */
-		if (vfe->recording_state == VFE31_REC_START_REQUESTED) {
+		if (V31(vfe)->recording_state == VFE31_REC_START_REQUESTED) {
 			/* Enable VIDEO WMs at frame boundary */
 			writel_relaxed(BIT(0), vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
 			writel_relaxed(BIT(0), vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
-			vfe->recording_state = VFE31_REC_STARTED;
+			V31(vfe)->recording_state = VFE31_REC_STARTED;
 			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 			dev_info(vfe->camss->dev, "VFE31: VIDEO recording started (WM%d+WM%d enabled)\n",
 				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR);
-		} else if (vfe->recording_state == VFE31_REC_STOP_REQUESTED) {
+		} else if (V31(vfe)->recording_state == VFE31_REC_STOP_REQUESTED) {
 			/* Disable VIDEO WMs at frame boundary */
 			writel_relaxed(0, vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
 			writel_relaxed(0, vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
-			vfe->recording_state = VFE31_REC_STOPPED;
+			V31(vfe)->recording_state = VFE31_REC_STOPPED;
 			dev_info(vfe->camss->dev, "VFE31: VIDEO recording stopped\n");
-		} else if (vfe->recording_state == VFE31_REC_STOPPED) {
-			vfe->recording_state = VFE31_REC_IDLE;
+		} else if (V31(vfe)->recording_state == VFE31_REC_STOPPED) {
+			V31(vfe)->recording_state = VFE31_REC_IDLE;
 		}
 
 		/* Process ZSL state machine at frame boundary */
-		if (vfe->zsl_state == VFE31_REC_START_REQUESTED) {
+		if (V31(vfe)->zsl_state == VFE31_REC_START_REQUESTED) {
 			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
 
 			/* Enable ZSL Y WM at frame boundary */
@@ -2887,12 +2915,12 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			if (zsl_out->wm_num == 2)
 				writel_relaxed(BIT(0), vfe->base +
 					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
-			vfe->zsl_state = VFE31_REC_STARTED;
+			V31(vfe)->zsl_state = VFE31_REC_STARTED;
 			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 			dev_info(vfe->camss->dev, "VFE31: ZSL started (WM%d%s enabled)\n",
 				 VFE31_ZSL_WM_Y,
 				 zsl_out->wm_num == 2 ? "+WM6" : " only");
-		} else if (vfe->zsl_state == VFE31_REC_STOP_REQUESTED) {
+		} else if (V31(vfe)->zsl_state == VFE31_REC_STOP_REQUESTED) {
 			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
 
 			/* Disable ZSL WMs at frame boundary */
@@ -2901,10 +2929,10 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			if (zsl_out->wm_num == 2)
 				writel_relaxed(0, vfe->base +
 					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
-			vfe->zsl_state = VFE31_REC_STOPPED;
+			V31(vfe)->zsl_state = VFE31_REC_STOPPED;
 			dev_info(vfe->camss->dev, "VFE31: ZSL stopped\n");
-		} else if (vfe->zsl_state == VFE31_REC_STOPPED) {
-			vfe->zsl_state = VFE31_REC_IDLE;
+		} else if (V31(vfe)->zsl_state == VFE31_REC_STOPPED) {
+			V31(vfe)->zsl_state = VFE31_REC_IDLE;
 		}
 
 		for (i = 0; i < vfe->res->line_num; i++)
@@ -3026,8 +3054,8 @@ static int vfe31_enable(struct vfe_line *line)
 	int wm_idx;
 	u8 y_wm;  /* Y plane write master (WM0) */
 
-	vfe->recording_state = VFE31_REC_IDLE;
-	vfe->pix_wm_pending = false;
+	V31(vfe)->recording_state = VFE31_REC_IDLE;
+	V31(vfe)->pix_wm_pending = false;
 
 	dev_info(vfe->camss->dev, "VFE31 enable: line_id=%d (direct, not gen1)\n",
 		 line->id);
@@ -3057,7 +3085,7 @@ static int vfe31_enable(struct vfe_line *line)
 			    line->id == VFE_LINE_RDI1 ||
 			    line->id == VFE_LINE_RDI2);
 
-	if (is_rdi_line && vfe->raw_through_pix) {
+	if (is_rdi_line && V31(vfe)->raw_through_pix) {
 		/* RAW-through-PIX: use PIX path for RDI */
 		axi_mode = 0x01;
 	} else if (is_rdi_line) {
@@ -3108,12 +3136,12 @@ static int vfe31_enable(struct vfe_line *line)
 		 * For RAW-through-PIX, keep AXI=0x01 (PIX path with
 		 * DEMUX 0xCCCC routing all bytes to Y channel).
 		 */
-		if (axi_mode == 0x01 && !vfe->raw_through_pix) {
+		if (axi_mode == 0x01 && !V31(vfe)->raw_through_pix) {
 			axi_mode = 0x60;  /* Force RDI passthrough */
 		}
 		output->wm_num = 1;
 		dev_info(vfe->camss->dev, "VFE31: Packed format - 1 WM (%s)\n",
-			 vfe->raw_through_pix ? "RAW-through-PIX" : "RDI passthrough");
+			 V31(vfe)->raw_through_pix ? "RAW-through-PIX" : "RDI passthrough");
 		break;
 
 	case V4L2_PIX_FMT_NV16:
@@ -3389,10 +3417,10 @@ static int vfe31_enable(struct vfe_line *line)
 	 * will write them to hardware after CSIPHY is configured.
 	 * Also store in last_y_* for runtime CbCr address calculation.
 	 */
-	vfe->pending_ping_addr = ping_addr;
-	vfe->pending_pong_addr = pong_addr;
-	vfe->last_y_ping_addr = ping_addr;
-	vfe->last_y_pong_addr = pong_addr;
+	V31(vfe)->pending_ping_addr = ping_addr;
+	V31(vfe)->pending_pong_addr = pong_addr;
+	V31(vfe)->last_y_ping_addr = ping_addr;
+	V31(vfe)->last_y_pong_addr = pong_addr;
 
 	/*
 	 * Step 1: Configure BUS_CFG, AXI output mode and XBAR
@@ -3454,7 +3482,7 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Both 0x01 (OUTPUT_1_AND_3) and 0x200 (OUTPUT_2) use the ISP pipeline.
 	 * For RDI mode (axi=0x60), data bypasses the ISP entirely.
 	 */
-	if (is_rdi_line && vfe->raw_through_pix) {
+	if (is_rdi_line && V31(vfe)->raw_through_pix) {
 		/*
 		 * RAW-through-PIX: skip DEMUX (raw data) but configure
 		 * Scale/FOV/Crop so CAMIF knows the frame dimensions.
@@ -3515,7 +3543,7 @@ static int vfe31_enable(struct vfe_line *line)
 		if (cfg.has_cbcr) {
 			cfg.cbcr_wm.ping_addr = ping_addr + cfg.cbcr_offset;
 			cfg.cbcr_wm.pong_addr = pong_addr + cfg.cbcr_offset;
-			vfe->active_cbcr_offset = cfg.cbcr_offset;
+			V31(vfe)->active_cbcr_offset = cfg.cbcr_offset;
 		}
 
 		/* Log calculated configuration */
@@ -3572,8 +3600,8 @@ static int vfe31_enable(struct vfe_line *line)
 		 * The pending_camif handler will configure CAMIF and IRQs.
 		 */
 		vfe->camif_pending = true;
-		vfe->camif_pending_wm = y_wm;
-		vfe->camif_pending_line_id = line->id;
+		V31(vfe)->camif_pending_wm = y_wm;
+		V31(vfe)->camif_pending_line_id = line->id;
 	} else if (line->id == VFE_LINE_VIDEO && vfe->stream_count > 0) {
 		/*
 		 * VIDEO joining already-running PIX stream.
@@ -3626,9 +3654,9 @@ static int vfe31_enable(struct vfe_line *line)
 				       vfe->base + VFE_0_BUS_XBAR_CFG1);
 
 			/* Update IRQ comp mask to include Group 2 (VIDEO) */
-			vfe->irq_comp_mask_shadow =
+			V31(vfe)->irq_comp_mask_shadow =
 				VFE31_IRQ_COMP_MASK_PIX_VIDEO;
-			writel_relaxed(vfe->irq_comp_mask_shadow,
+			writel_relaxed(V31(vfe)->irq_comp_mask_shadow,
 				       vfe->base +
 				       VFE_0_IRQ_COMPOSITE_MASK_0);
 			/* Ensure IRQ composite mask is visible to hardware */
@@ -3636,7 +3664,7 @@ static int vfe31_enable(struct vfe_line *line)
 		}
 
 		/* Recording state machine enables WMs at frame boundary */
-		vfe->recording_state = VFE31_REC_START_REQUESTED;
+		V31(vfe)->recording_state = VFE31_REC_START_REQUESTED;
 		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 
 		dev_info(vfe->camss->dev,
@@ -3794,12 +3822,12 @@ static int vfe31_enable(struct vfe_line *line)
 
 			/* Update IRQ comp mask to include Group 1 (ZSL) */
 			if (video_active)
-				vfe->irq_comp_mask_shadow =
+				V31(vfe)->irq_comp_mask_shadow =
 					VFE31_IRQ_COMP_MASK_PIX_VID_ZSL;
 			else
-				vfe->irq_comp_mask_shadow =
+				V31(vfe)->irq_comp_mask_shadow =
 					VFE31_IRQ_COMP_MASK_PIX_ZSL;
-			writel_relaxed(vfe->irq_comp_mask_shadow,
+			writel_relaxed(V31(vfe)->irq_comp_mask_shadow,
 				       vfe->base +
 				       VFE_0_IRQ_COMPOSITE_MASK_0);
 			/* Ensure IRQ composite mask is visible to hardware */
@@ -3807,7 +3835,7 @@ static int vfe31_enable(struct vfe_line *line)
 		}
 
 		/* ZSL state machine enables WMs at frame boundary */
-		vfe->zsl_state = VFE31_REC_START_REQUESTED;
+		V31(vfe)->zsl_state = VFE31_REC_START_REQUESTED;
 		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 
 		dev_info(vfe->camss->dev,
@@ -3824,14 +3852,14 @@ static int vfe31_enable(struct vfe_line *line)
 			 y_wm, line->id);
 
 		vfe->camif_pending = true;
-		vfe->camif_pending_wm = y_wm;
-		vfe->camif_pending_line_id = line->id;
+		V31(vfe)->camif_pending_wm = y_wm;
+		V31(vfe)->camif_pending_line_id = line->id;
 
 		/* VIDEO/ZSL starting alone also uses recording state */
 		if (line->id == VFE_LINE_VIDEO)
-			vfe->recording_state = VFE31_REC_START_REQUESTED;
+			V31(vfe)->recording_state = VFE31_REC_START_REQUESTED;
 		if (line->id == VFE_LINE_ZSL)
-			vfe->zsl_state = VFE31_REC_START_REQUESTED;
+			V31(vfe)->zsl_state = VFE31_REC_START_REQUESTED;
 	}
 
 	/*
@@ -3903,13 +3931,13 @@ static int vfe31_disable(struct vfe_line *line)
 
 	/* Request recording stop for VIDEO line */
 	if (line->id == VFE_LINE_VIDEO &&
-	    vfe->recording_state == VFE31_REC_STARTED)
-		vfe->recording_state = VFE31_REC_STOP_REQUESTED;
+	    V31(vfe)->recording_state == VFE31_REC_STARTED)
+		V31(vfe)->recording_state = VFE31_REC_STOP_REQUESTED;
 
 	/* Request ZSL stop */
 	if (line->id == VFE_LINE_ZSL &&
-	    vfe->zsl_state == VFE31_REC_STARTED)
-		vfe->zsl_state = VFE31_REC_STOP_REQUESTED;
+	    V31(vfe)->zsl_state == VFE31_REC_STARTED)
+		V31(vfe)->zsl_state = VFE31_REC_STOP_REQUESTED;
 
 	/*
 	 * Disable IRQs before stopping CAMIF to prevent spurious
@@ -3957,9 +3985,9 @@ static int vfe31_disable(struct vfe_line *line)
 
 	/* Clear CAMIF pending state */
 	vfe->camif_pending = false;
-	vfe->recording_state = VFE31_REC_IDLE;
-	vfe->zsl_state = VFE31_REC_IDLE;
-	vfe->pix_wm_pending = false;
+	V31(vfe)->recording_state = VFE31_REC_IDLE;
+	V31(vfe)->zsl_state = VFE31_REC_IDLE;
+	V31(vfe)->pix_wm_pending = false;
 
 	return 0;
 }
@@ -4324,7 +4352,7 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 			       line->id == VFE_LINE_RDI1 ||
 			       line->id == VFE_LINE_RDI2);
 
-		if (vfe->raw_through_pix && is_rdi) {
+		if (V31(vfe)->raw_through_pix && is_rdi) {
 			even_cfg = 0xcc;
 			odd_cfg = 0xcc;
 			goto write_demux;
@@ -4681,7 +4709,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		       line_id == VFE_LINE_RDI2);
 
 	if (is_rdi_line) {
-		if (vfe->raw_through_pix)
+		if (V31(vfe)->raw_through_pix)
 			axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
 		else
 			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
@@ -4724,7 +4752,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * BUS_CFG at 0x03C must be set to enable the write paths.
 	 * webOS uses 0x02AAA771 which enables view/enc Y/CbCr paths.
 	 */
-	if (is_rdi_line && vfe->raw_through_pix) {
+	if (is_rdi_line && V31(vfe)->raw_through_pix) {
 		/*
 		 * RAW-through-PIX: RDI line routed through PIX path.
 		 * Use PIX bus config, AXI=0x01, and standard XBAR routing.
@@ -4780,7 +4808,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 */
 		{
 			bool video_active = (line_id == VFE_LINE_VIDEO);
-			bool zsl_active = (vfe->zsl_state != VFE31_REC_IDLE);
+			bool zsl_active = (V31(vfe)->zsl_state != VFE31_REC_IDLE);
 
 			xbar_value = vfe31_calc_xbar(true, video_active, zsl_active);
 		}
@@ -4788,10 +4816,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		dev_info(vfe->camss->dev,
 			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x%x, XBAR=0x%06x\n",
 			 VFE_0_BUS_CFG_WEBOS_VALUE,
-			 (vfe->zsl_state != VFE31_REC_IDLE) ? 0x101 : 0x01,
+			 (V31(vfe)->zsl_state != VFE31_REC_IDLE) ? 0x101 : 0x01,
 			 xbar_value);
 		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
-		writel_relaxed((vfe->zsl_state != VFE31_REC_IDLE) ? 0x101 :
+		writel_relaxed((V31(vfe)->zsl_state != VFE31_REC_IDLE) ? 0x101 :
 			       VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		writel_relaxed(xbar_value, vfe->base + VFE_0_BUS_XBAR_CFG1);
@@ -4811,14 +4839,14 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 
 		/* WR_PING_ADDR */
 		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d PING_ADDR=0x%08x\n", wm, vfe->pending_ping_addr);
-		writel_relaxed(vfe->pending_ping_addr,
+			 "VFE31: WM%d PING_ADDR=0x%08x\n", wm, V31(vfe)->pending_ping_addr);
+		writel_relaxed(V31(vfe)->pending_ping_addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
 
 		/* WR_PONG_ADDR */
 		dev_info(vfe->camss->dev,
-			 "VFE31: WM%d PONG_ADDR=0x%08x\n", wm, vfe->pending_pong_addr);
-		writel_relaxed(vfe->pending_pong_addr,
+			 "VFE31: WM%d PONG_ADDR=0x%08x\n", wm, V31(vfe)->pending_pong_addr);
+		writel_relaxed(V31(vfe)->pending_pong_addr,
 			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
 
 		/*
@@ -4935,11 +4963,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			 */
 			y_plane_size = width * height;
 			cbcr_offset = y_plane_size;
-			cbcr_ping = vfe->pending_ping_addr + cbcr_offset;
-			cbcr_pong = vfe->pending_pong_addr + cbcr_offset;
+			cbcr_ping = V31(vfe)->pending_ping_addr + cbcr_offset;
+			cbcr_pong = V31(vfe)->pending_pong_addr + cbcr_offset;
 
 			/* Store for runtime CbCr address calculation */
-			vfe->active_cbcr_offset = cbcr_offset;
+			V31(vfe)->active_cbcr_offset = cbcr_offset;
 
 			/*
 			 * CbCr height depends on format:
@@ -5278,10 +5306,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				 */
 				u8 wm0 = line->output.wm_idx[0];
 
-				vfe->irq_comp_mask_shadow = (1 << (wm0 + 8));
+				V31(vfe)->irq_comp_mask_shadow = (1 << (wm0 + 8));
 				dev_info(vfe->camss->dev,
 					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (RDI WM%d->group1)\n",
-					 vfe->irq_comp_mask_shadow, wm0);
+					 V31(vfe)->irq_comp_mask_shadow, wm0);
 			} else {
 				/*
 				 * Build composite mask from active lines:
@@ -5319,12 +5347,12 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				else
 					mode_str = "PIX only";
 
-				vfe->irq_comp_mask_shadow = mask;
+				V31(vfe)->irq_comp_mask_shadow = mask;
 				dev_info(vfe->camss->dev,
 					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
-					 vfe->irq_comp_mask_shadow, mode_str);
+					 V31(vfe)->irq_comp_mask_shadow, mode_str);
 			}
-			writel_relaxed(vfe->irq_comp_mask_shadow,
+			writel_relaxed(V31(vfe)->irq_comp_mask_shadow,
 				       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 			/* Ensure IRQ composite mask is visible to hardware */
 			wmb();
@@ -5345,7 +5373,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * Frame completion is signaled ONLY via IMAGE_COMPOSITE_DONE.
 	 */
 	{
-		vfe->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
+		V31(vfe)->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
 					VFE_0_IRQ_MASK_0_CAMIF_EOF |
 					VFE_0_IRQ_MASK_0_REG_UPDATE |
 					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
@@ -5361,14 +5389,14 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 *
 	 * Match webOS exactly to avoid spurious interrupts.
 	 */
-	vfe->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK;
+	V31(vfe)->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK;
 
 	dev_info(vfe->camss->dev,
 		 "VFE31: Setting IRQ_MASK_0=0x%08x IRQ_MASK_1=0x%08x\n",
-		 vfe->irq_mask0_shadow, vfe->irq_mask1_shadow);
+		 V31(vfe)->irq_mask0_shadow, V31(vfe)->irq_mask1_shadow);
 
-	writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-	writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+	writel_relaxed(V31(vfe)->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(V31(vfe)->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 	/* Ensure IRQ configuration is visible to hardware */
 	wmb();
 
@@ -5401,7 +5429,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	 * VIDEO/ZSL WMs use the recording state machine (deferred to
 	 * REG_UPDATE) since they join an already-running CAMIF.
 	 */
-	vfe->camif_pending_wm = line->output.wm_idx[0];
+	V31(vfe)->camif_pending_wm = line->output.wm_idx[0];
 	dev_info(vfe->camss->dev,
 		 "VFE31: Step 6 - WM%d+WM%d will be enabled before CAMIF start\n",
 		 line->output.wm_idx[0],
@@ -5598,9 +5626,9 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		 * Check if this is the primary Y WM for the pending line.
 		 * PIX uses WM0, VIDEO uses WM1, ZSL uses WM2.
 		 */
-		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
+		if (V31(vfe)->camif_pending_line_id == VFE_LINE_VIDEO)
 			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
-		else if (vfe->camif_pending_line_id == VFE_LINE_ZSL)
+		else if (V31(vfe)->camif_pending_line_id == VFE_LINE_ZSL)
 			is_primary_wm = (wm == VFE31_ZSL_WM_Y);
 		else
 			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
@@ -5610,7 +5638,7 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 			wm, addr);
 
 		if (is_primary_wm)
-			vfe->pending_ping_addr = addr;
+			V31(vfe)->pending_ping_addr = addr;
 	} else {
 		/*
 		 * During streaming: track Y addresses and calculate CbCr.
@@ -5624,18 +5652,18 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y || wm == VFE31_ZSL_WM_Y);
 
 		if (is_y_wm) {
-			vfe->last_y_ping_addr = addr;
+			V31(vfe)->last_y_ping_addr = addr;
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PING write 0x%08x (Y)\n", wm, addr);
-		} else if (vfe->last_y_ping_addr && vfe->active_cbcr_offset) {
+		} else if (V31(vfe)->last_y_ping_addr && V31(vfe)->active_cbcr_offset) {
 			/*
 			 * Non-Y WM with offset set = CbCr. Calculate address.
 			 * Works regardless of which WM is used for CbCr.
 			 */
-			addr = vfe->last_y_ping_addr + vfe->active_cbcr_offset;
+			addr = V31(vfe)->last_y_ping_addr + V31(vfe)->active_cbcr_offset;
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PING write 0x%08x (CbCr from Y=0x%08x)\n",
-				wm, addr, vfe->last_y_ping_addr);
+				wm, addr, V31(vfe)->last_y_ping_addr);
 		} else {
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PING write 0x%08x (direct)\n", wm, addr);
@@ -5668,9 +5696,9 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	if (vfe->camif_pending) {
 		bool is_primary_wm;
 
-		if (vfe->camif_pending_line_id == VFE_LINE_VIDEO)
+		if (V31(vfe)->camif_pending_line_id == VFE_LINE_VIDEO)
 			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
-		else if (vfe->camif_pending_line_id == VFE_LINE_ZSL)
+		else if (V31(vfe)->camif_pending_line_id == VFE_LINE_ZSL)
 			is_primary_wm = (wm == VFE31_ZSL_WM_Y);
 		else
 			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
@@ -5680,7 +5708,7 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 			wm, addr, is_primary_wm);
 
 		if (is_primary_wm)
-			vfe->pending_pong_addr = addr;
+			V31(vfe)->pending_pong_addr = addr;
 	} else {
 		/*
 		 * During streaming: track Y addresses and calculate CbCr.
@@ -5694,14 +5722,14 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		bool is_y_wm = (wm == VFE31_PREVIEW_WM_Y || wm == VFE31_VIDEO_WM_Y || wm == VFE31_ZSL_WM_Y);
 
 		if (is_y_wm) {
-			vfe->last_y_pong_addr = addr;
+			V31(vfe)->last_y_pong_addr = addr;
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PONG write 0x%08x (Y)\n", wm, addr);
-		} else if (vfe->last_y_pong_addr && vfe->active_cbcr_offset) {
-			addr = vfe->last_y_pong_addr + vfe->active_cbcr_offset;
+		} else if (V31(vfe)->last_y_pong_addr && V31(vfe)->active_cbcr_offset) {
+			addr = V31(vfe)->last_y_pong_addr + V31(vfe)->active_cbcr_offset;
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PONG write 0x%08x (CbCr from Y=0x%08x)\n",
-				wm, addr, vfe->last_y_pong_addr);
+				wm, addr, V31(vfe)->last_y_pong_addr);
 		} else {
 			dev_dbg(vfe->camss->dev,
 				"VFE31: WM%d PONG write 0x%08x (direct)\n", wm, addr);
@@ -5780,7 +5808,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		return;
 	}
 
-	line = &vfe->line[vfe->camif_pending_line_id];
+	line = &vfe->line[V31(vfe)->camif_pending_line_id];
 
 	/*
 	 * Calculate width_bytes based on INPUT format bits-per-pixel.
@@ -5821,7 +5849,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 
 	dev_info(vfe->camss->dev,
 		 "VFE31 enable_pending_camif: line=%d %ux%u stride=%u (bpp=%u code=0x%04x)\n",
-		 vfe->camif_pending_line_id,
+		 V31(vfe)->camif_pending_line_id,
 		 line->fmt[MSM_VFE_PAD_SINK].width, height, width_bytes,
 		 bpp, line->fmt[MSM_VFE_PAD_SINK].code);
 
@@ -5839,11 +5867,11 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * RAW-through-PIX mode: Use PIX path but disable DEMUX (0)
 	 */
 	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
 
-		if (is_rdi && vfe->raw_through_pix) {
+		if (is_rdi && V31(vfe)->raw_through_pix) {
 			/*
 			 * RAW-through-PIX: use standard PIX MODULE_CFG.
 			 * Data path gates (bits 2,10) MUST remain enabled
@@ -5977,9 +6005,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * RDI mode bypasses DEMUX, so no gain configuration needed.
 	 */
 	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
 
 		if (!is_rdi) {
 			writel_relaxed(0x800080, vfe->base + VFE_0_DEMUX_GAIN_0);
@@ -6008,9 +6036,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * SUBSAMPLE_CFG_1 at 0x1F8: 0xFFFFFFFF (no frame skip)
 	 */
 	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
 		u32 camif_cfg;
 
 		if (is_rdi) {
@@ -6051,9 +6079,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 *   lastPixel = (firstPixel + width * 2) - 1
 	 */
 	{
-		bool is_rdi_line = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-				    vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-				    vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		bool is_rdi_line = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+				    V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+				    V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
 		u32 camif_width;
 
 		if (is_rdi_line)
@@ -6082,13 +6110,13 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * PIX/VIDEO lines use the module parameter (typically 0x01 for DEMUX).
 	 */
 	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
-		bool zsl_active = (vfe->zsl_state != VFE31_REC_IDLE);
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
+		bool zsl_active = (V31(vfe)->zsl_state != VFE31_REC_IDLE);
 		u32 axi_mode;
 
-		if (is_rdi && vfe->raw_through_pix)
+		if (is_rdi && V31(vfe)->raw_through_pix)
 			axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
 		else if (is_rdi)
 			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
@@ -6100,13 +6128,13 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		dev_info(vfe->camss->dev,
 			 "VFE31: AXI_OUT_MODE=0x%x (%s)\n",
 			 axi_mode,
-			 (is_rdi && vfe->raw_through_pix) ? "RAW-through-PIX" :
+			 (is_rdi && V31(vfe)->raw_through_pix) ? "RAW-through-PIX" :
 			 is_rdi ? "RDI raw bypass" :
 			 zsl_active ? "ZSL dual" : "PIX/DEMUX");
 		writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 
 		/* Configure XBAR: needed for PIX and RAW-through-PIX, not RDI 0x60 */
-		if (is_rdi && !vfe->raw_through_pix) {
+		if (is_rdi && !V31(vfe)->raw_through_pix) {
 			/* RDI 0x60 bypasses XBAR - no config needed */
 		} else {
 			bool vid = (line->id == VFE_LINE_VIDEO);
@@ -6127,12 +6155,12 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * the sensor's actual bit depth.
 	 */
 	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
 		u32 bus_cfg;
 
-		if (is_rdi && !vfe->raw_through_pix) {
+		if (is_rdi && !V31(vfe)->raw_through_pix) {
 			u8 raw_bpp = camss_format_get_bpp(line->formats,
 							  line->nformats,
 							  line->fmt[MSM_VFE_PAD_SINK].code);
@@ -6144,7 +6172,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			bus_cfg = vfe31_get_bus_cfg();
 			dev_info(vfe->camss->dev,
 				 "VFE31: BUS_CFG=0x%08x (%s)\n", bus_cfg,
-				 (is_rdi && vfe->raw_through_pix) ?
+				 (is_rdi && V31(vfe)->raw_through_pix) ?
 				 "RAW-through-PIX" : "PIX/VIDEO");
 		}
 		writel_relaxed(bus_cfg, vfe->base + VFE_0_BUS_CFG);
@@ -6175,25 +6203,25 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * WM completion must use COMPOSITE_DONE interrupts.
 	 */
 	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
 
-		if (is_rdi && vfe->raw_through_pix) {
+		if (is_rdi && V31(vfe)->raw_through_pix) {
 			/* RAW-through-PIX: use PIX IRQ config */
-			vfe->irq_mask0_shadow = 0x00EFE021;
+			V31(vfe)->irq_mask0_shadow = 0x00EFE021;
 			dev_info(vfe->camss->dev,
 				 "VFE31: RAW-through-PIX IRQ_MASK_0=0x%08x\n",
-				 vfe->irq_mask0_shadow);
+				 V31(vfe)->irq_mask0_shadow);
 		} else if (is_rdi) {
 			/*
 			 * RDI mode (AXI=0x60): Samsung's exact IRQ_MASK_0
 			 * 0x00E00021 = SOF + REG_UPDATE + COMP_DONE_0/1/2
 			 */
-			vfe->irq_mask0_shadow = 0x00E00021;
+			V31(vfe)->irq_mask0_shadow = 0x00E00021;
 			dev_info(vfe->camss->dev,
 				 "VFE31: RDI IRQ_MASK_0=0x%08x (Samsung raw)\n",
-				 vfe->irq_mask0_shadow);
+				 V31(vfe)->irq_mask0_shadow);
 		} else {
 			/* PIX mode: Use webOS value with composite interrupts */
 			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
@@ -6202,23 +6230,23 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
 			bool video_needs_cbcr = video_active && (video_out->wm_num == 2);
 
-			vfe->irq_mask0_shadow = 0x00EFE021;
+			V31(vfe)->irq_mask0_shadow = 0x00EFE021;
 
 			/*
 			 * VIDEO line with CbCr uses WM1 in group 2 (COMPOSITE_DONE_2).
 			 * Add bit 23 to receive WM1 completion interrupts.
 			 */
 			if (line->id == VFE_LINE_VIDEO || video_needs_cbcr)
-				vfe->irq_mask0_shadow |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
+				V31(vfe)->irq_mask0_shadow |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 
 			dev_info(vfe->camss->dev,
 				 "VFE31: PIX IRQ_MASK_0=0x%08x (composite%s)\n",
-				 vfe->irq_mask0_shadow,
-				 (vfe->irq_mask0_shadow & 0x800000) ? "+DONE2" : "");
+				 V31(vfe)->irq_mask0_shadow,
+				 (V31(vfe)->irq_mask0_shadow & 0x800000) ? "+DONE2" : "");
 		}
-		vfe->irq_mask1_shadow = 0x00400000;
-		writel_relaxed(vfe->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-		writel_relaxed(vfe->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+		V31(vfe)->irq_mask1_shadow = 0x00400000;
+		writel_relaxed(V31(vfe)->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+		writel_relaxed(V31(vfe)->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 	}
 
 	/*
@@ -6236,11 +6264,11 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * RDI mode: RDI WM (WM2/WM3/WM6) in group 1
 	 */
 	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
 
-		if (is_rdi && vfe->raw_through_pix) {
+		if (is_rdi && V31(vfe)->raw_through_pix) {
 			/*
 			 * RAW-through-PIX: WM0 in group 0 (like PIX).
 			 * 0x01 = WM0 triggers COMPOSITE_DONE_0.
@@ -6254,11 +6282,11 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			 * RDI (AXI=0x60): Map WM to composite group 1.
 			 * COMPOSITE_DONE_1 fires when WM completes.
 			 */
-			u32 comp_mask = (1 << (vfe->camif_pending_wm + 8));
+			u32 comp_mask = (1 << (V31(vfe)->camif_pending_wm + 8));
 
 			dev_info(vfe->camss->dev,
 				 "VFE31: RDI COMPOSITE_MASK=0x%08x (WM%d->group1)\n",
-				 comp_mask, vfe->camif_pending_wm);
+				 comp_mask, V31(vfe)->camif_pending_wm);
 			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 		} else {
 			/* PIX/VIDEO/ZSL mode - check which lines are active */
@@ -6333,7 +6361,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 					mode_str = "PIX only";
 			}
 
-			vfe->irq_comp_mask_shadow = comp_mask;
+			V31(vfe)->irq_comp_mask_shadow = comp_mask;
 			dev_info(vfe->camss->dev,
 				 "VFE31 enable_camif: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
 				 comp_mask, mode_str);
@@ -6357,7 +6385,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * RDI mode: Also enable immediately (no REG_UPDATE in raw bypass).
 	 */
 	{
-		struct vfe_line *line = &vfe->line[vfe->camif_pending_line_id];
+		struct vfe_line *line = &vfe->line[V31(vfe)->camif_pending_line_id];
 		struct vfe_output *out = &line->output;
 		unsigned int i;
 
@@ -6367,7 +6395,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		}
 		/* Ensure WM enables are committed before continuing */
 		wmb();
-		vfe->pix_wm_pending = false;
+		V31(vfe)->pix_wm_pending = false;
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: WMs enabled before CAMIF start (WM%d%s)\n",
@@ -6470,9 +6498,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
  */
 static void vfe31_cleanup(struct vfe_device *vfe)
 {
-	vfe->recording_state = VFE31_REC_IDLE;
-	vfe->zsl_state = VFE31_REC_IDLE;
-	vfe->pix_wm_pending = false;
+	V31(vfe)->recording_state = VFE31_REC_IDLE;
+	V31(vfe)->zsl_state = VFE31_REC_IDLE;
+	V31(vfe)->pix_wm_pending = false;
 
 	/* Stop CAMIF and clear EFS config */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CMD);
@@ -6682,6 +6710,20 @@ static const struct camss_video_ops vfe31_video_ops = {
 
 static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 {
+	/*
+	 * Allocate the VFE31 backend-private state once for the device
+	 * lifetime (devm-managed). It holds the dummy buffer and all the
+	 * VFE31-specific runtime state reached via the V31() helper.
+	 */
+	if (!vfe->priv) {
+		vfe->priv = devm_kzalloc(dev, sizeof(struct vfe31_device),
+					 GFP_KERNEL);
+		if (!vfe->priv) {
+			dev_err(dev, "VFE31: failed to allocate private state\n");
+			return;
+		}
+	}
+
 	vfe->isr_ops = vfe31_isr_ops;
 	vfe->video_ops = vfe31_video_ops;
 
@@ -6690,22 +6732,22 @@ static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 	 * All WMs point here by default until real buffers are assigned.
 	 * This prevents crashes if XBAR routes data to an unconfigured WM.
 	 */
-	if (!vfe->dummy_buf_vaddr) {
-		vfe->dummy_buf_vaddr = dma_alloc_coherent(dev, VFE31_DUMMY_BUF_SIZE,
-							  &vfe->dummy_buf_addr,
+	if (!V31(vfe)->dummy_buf_vaddr) {
+		V31(vfe)->dummy_buf_vaddr = dma_alloc_coherent(dev, VFE31_DUMMY_BUF_SIZE,
+							  &V31(vfe)->dummy_buf_addr,
 							  GFP_KERNEL);
-		if (vfe->dummy_buf_vaddr) {
+		if (V31(vfe)->dummy_buf_vaddr) {
 			dev_info(dev, "VFE31: Allocated dummy buffer at DMA 0x%pad\n",
-				 &vfe->dummy_buf_addr);
+				 &V31(vfe)->dummy_buf_addr);
 		} else {
 			dev_warn(dev, "VFE31: Failed to allocate dummy buffer\n");
 		}
 	}
 
 	/* Check DT for RAW-through-PIX mode (APQ8060 AXI=0x60 workaround) */
-	vfe->raw_through_pix = of_property_read_bool(dev->of_node,
+	V31(vfe)->raw_through_pix = of_property_read_bool(dev->of_node,
 						     "qcom,vfe31-raw-through-pix");
-	if (vfe->raw_through_pix)
+	if (V31(vfe)->raw_through_pix)
 		dev_info(dev, "VFE31: RAW-through-PIX mode enabled via DT\n");
 
 	dev_info(dev, "VFE31 subdev_init: complete\n");

@@ -176,43 +176,16 @@ struct vfe_device {
 	struct camss_video_ops video_ops;
 	struct device *genpd;
 	struct device_link *genpd_link;
-	/* MSM8660: CAMIF config deferred until CSIPHY is configured */
+	/*
+	 * MSM8660: CAMIF config is deferred until CSIPHY is configured. The
+	 * camss core (camss-vfe.c) and the video layer (camss-video.c) test
+	 * camif_pending across files, so it stays here; vfe31_reset_done is
+	 * set by the VFE31 polled-reset path and read by the core.
+	 */
 	bool camif_pending;
-	u8 camif_pending_wm;
-	enum vfe_line_id camif_pending_line_id;
-	/* VFE31: Deferred WM config (must be written after CAMIF start) */
-	u32 pending_ping_addr;
-	u32 pending_pong_addr;
-	u16 pending_ub_offset;
-	u16 pending_ub_depth;
-	/* VFE31: Track Y addresses for CbCr offset calculation during streaming */
-	u32 last_y_ping_addr;
-	u32 last_y_pong_addr;
-	u32 active_cbcr_offset;
-	/* VFE31: Reset done flag - IRQ doesn't work, use polling */
 	bool vfe31_reset_done;
-	/* VFE31: Shadow registers for write-only IRQ_MASK registers */
-	u32 irq_mask0_shadow;
-	u32 irq_mask1_shadow;
-	u32 irq_comp_mask_shadow;  /* VFE31: Shadow for IRQ_COMPOSITE_MASK */
-	/*
-	 * VFE31: Dummy buffer for unused Write Masters.
-	 * All WMs point here by default. This prevents crashes when XBAR
-	 * routes data to a WM that doesn't have real buffers assigned.
-	 * Acts as a "bit bucket" - data written here is discarded.
-	 */
-	dma_addr_t dummy_buf_addr;
-	void *dummy_buf_vaddr;
-	/* VFE31: Route RDI captures through PIX path (DT: qcom,vfe31-raw-through-pix) */
-	bool raw_through_pix;
-	/*
-	 * VFE31: per-frame-boundary state machines (values are enum
-	 * vfe31_rec_state, private to camss-vfe-3-1.c) and the deferred
-	 * PIX write-master enable flag, applied at the REG_UPDATE IRQ.
-	 */
-	u8 recording_state;
-	u8 zsl_state;
-	bool pix_wm_pending;
+	/* Backend-private state (e.g. struct vfe31_device), allocated by the backend */
+	void *priv;
 };
 
 struct camss_subdev_resources;
