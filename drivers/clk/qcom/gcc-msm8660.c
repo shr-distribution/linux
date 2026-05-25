@@ -97,10 +97,21 @@ static const struct clk_parent_data gcc_pxo_pll8_cxo[] = {
 };
 
 static const struct freq_tbl clk_tbl_gsbi_uart[] = {
-	{  1843200, P_PLL8, 2,  6, 625 },
-	{  3686400, P_PLL8, 2, 12, 625 },
-	{  7372800, P_PLL8, 2, 24, 625 },
-	{ 14745600, P_PLL8, 2, 48, 625 },
+	/*
+	 * Match the legacy webOS gsbi_uart ftbl exactly: pre_div=1 (feed the MND
+	 * fractional divider from the full 384 MHz PLL8, not a /2 = 192 MHz
+	 * pre-divided clock) with half the M. Same output rate, but a 384 MHz MND
+	 * input quantizes the divider's output edges to ~2.6 ns instead of
+	 * ~5.2 ns => roughly half the cycle-to-cycle jitter. On the TouchPad the
+	 * CSR BlueCore BT UART RX (>=1% baud tolerance) decodes webOS's lower-
+	 * jitter 7372800 clock (115200 link-est, CSR DIV_4) but rejects mainline's
+	 * pre_div=2 version even with byte/register-identical TX. Mainline default
+	 * was pre_div=2 with 2x M for these four rates.
+	 */
+	{  1843200, P_PLL8, 1,  3, 625 },
+	{  3686400, P_PLL8, 1,  6, 625 },
+	{  7372800, P_PLL8, 1, 12, 625 },
+	{ 14745600, P_PLL8, 1, 24, 625 },
 	{ 16000000, P_PLL8, 4,  1,   6 },
 	{ 24000000, P_PLL8, 4,  1,   4 },
 	{ 32000000, P_PLL8, 4,  1,   3 },
