@@ -1033,7 +1033,7 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 	dma_addr_t src_addr;
 	u32 src_size;
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "seq_header_work: seq_parsed=%d hdr_direct=%d\n",
 		 inst->seq_parsed, inst->seq_hdr_direct);
 
@@ -1041,7 +1041,7 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 		return;
 
 	src_buf = v4l2_m2m_next_src_buf(inst->m2m_ctx);
-	dev_info(core->dev, "seq_header_work: src_buf=%p\n", src_buf);
+	dev_dbg(core->dev, "seq_header_work: src_buf=%p\n", src_buf);
 	if (!src_buf)
 		return;
 
@@ -1069,10 +1069,34 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 	 *    kept; only truncate at the first slice NAL after PPS.
 	 */
 	{
-		u8 *kva = vb2_plane_vaddr(&src_buf->vb2_buf, 0);
+		u8 *uva = vb2_plane_vaddr(&src_buf->vb2_buf, 0);
+		u32 copy = min_t(u32, src_size, VIDC_SEQ_SCRATCH_SIZE);
+		u8 *kva;
 
-		if (!kva)
+		if (!uva)
 			goto submit;
+
+		/*
+		 * Copy the head of the bitstream into a private coherent
+		 * scratch buffer and strip there. The application still owns
+		 * the OUTPUT buffer contents, so we must not rewrite it in
+		 * place (it also breaks DMABUF-imported buffers). SPS/PPS/AUD
+		 * always live in the first few KB, so copying up to the
+		 * scratch size is sufficient.
+		 */
+		if (!inst->seq_scratch_vaddr) {
+			inst->seq_scratch_vaddr = dma_alloc_coherent(core->dev,
+					VIDC_SEQ_SCRATCH_SIZE,
+					&inst->seq_scratch_dma, GFP_KERNEL);
+		}
+		if (!inst->seq_scratch_vaddr ||
+		    inst->seq_scratch_dma < core->fw_dma_addr)
+			goto submit;	/* fall back: submit original unmodified */
+
+		memcpy(inst->seq_scratch_vaddr, uva, copy);
+		kva = inst->seq_scratch_vaddr;
+		src_addr = inst->seq_scratch_dma;
+		src_size = copy;
 
 		print_hex_dump_debug("vidc seq_hdr BEFORE[0:16]: ",
 			       DUMP_PREFIX_NONE, 16, 1, kva,
@@ -1094,7 +1118,7 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 					break;
 				skip++;
 			}
-			dev_info(core->dev,
+			dev_dbg(core->dev,
 				 "seq_header_work: memmove past %u-byte AUD; next NAL=0x%02x\n",
 				 skip, kva[skip + 4] & 0x1f);
 			memmove(kva, kva + skip, src_size - skip);
@@ -1115,7 +1139,7 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 					if (nal_type == 8) {
 						after_pps = true;
 					} else if (after_pps) {
-						dev_info(core->dev,
+						dev_dbg(core->dev,
 							 "seq_header_work: truncated %u bytes at NAL type %u after PPS\n",
 							 src_size - pos, nal_type);
 						src_size = pos;
@@ -1623,6 +1647,10 @@ static int vidc_dec_close(struct file *file)
 
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
 	/* Don't release m2m_dev — it's shared and owned by vidc_core */
+
+	if (inst->seq_scratch_vaddr)
+		dma_free_coherent(inst->core->dev, VIDC_SEQ_SCRATCH_SIZE,
+				  inst->seq_scratch_vaddr, inst->seq_scratch_dma);
 
 	kfree(inst);
 

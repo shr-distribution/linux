@@ -200,6 +200,7 @@
  * FRAME_DATA.
  */
 #define VIDC_SHM_SIZE				SZ_4K	/* legacy uses 1 page */
+#define VIDC_SEQ_SCRATCH_SIZE			SZ_64K	/* SPS/PPS strip scratch */
 
 /*
  * Offset within the SHM page for the metadata input buffer.
@@ -738,6 +739,16 @@ struct vidc_inst {
 
 	/* Encoder: force the next submitted frame to be an IDR/keyframe. */
 	bool force_keyframe;
+
+	/*
+	 * Decoder SEQ_HEADER scratch buffer. The firmware wants bare SPS+PPS
+	 * (no AUD, no slice); rather than rewrite the application's OUTPUT
+	 * buffer in place (illegal, and corrupts DMABUF imports), we copy the
+	 * head of the bitstream here and strip the copy. Coherent, within the
+	 * firmware address window.
+	 */
+	void *seq_scratch_vaddr;
+	dma_addr_t seq_scratch_dma;
 	/* Encoder: set by the IRQ handler when the completed frame is an I-frame. */
 	bool enc_keyframe;
 
