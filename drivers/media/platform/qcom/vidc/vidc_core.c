@@ -2409,18 +2409,32 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 	}
 
 	/*
-	 * Program RECON register slots. Layout differs from DPB: each
-	 * slot is a (LUMA, CHROMA) pair at 8-byte stride starting from
-	 * VIDC_REG_RECON_LUMA_0 = 0x480.
+	 * Program RECON register slots. The luma/chroma registers are
+	 * NON-CONTIGUOUS in hardware (no arithmetic stride), so index them
+	 * via lookup tables matching webOS set_encode_recon_buffers().
 	 */
-	for (i = 0; i < inst->dpb_count; i++) {
-		slot_base = inst->dpb_y_dma_addr + i * slot_size;
-		fw_relative = slot_base - core->fw_dma_addr;
+	{
+		static const u16 recon_luma_reg[VIDC_MAX_RECON_BUFFERS] = {
+			VIDC_REG_RECON_LUMA_0, VIDC_REG_RECON_LUMA_1,
+			VIDC_REG_RECON_LUMA_2, VIDC_REG_RECON_LUMA_3,
+		};
+		static const u16 recon_chroma_reg[VIDC_MAX_RECON_BUFFERS] = {
+			VIDC_REG_RECON_CHROMA_0, VIDC_REG_RECON_CHROMA_1,
+			VIDC_REG_RECON_CHROMA_2, VIDC_REG_RECON_CHROMA_3,
+		};
 
-		vidc_write(core, VIDC_REG_RECON_LUMA_0 + i * 8,
-			   fw_relative >> VIDC_ADDR_SHIFT);
-		vidc_write(core, VIDC_REG_RECON_CHROMA_0 + i * 8,
-			   (fw_relative + y_size) >> VIDC_ADDR_SHIFT);
+		if (inst->dpb_count > VIDC_MAX_RECON_BUFFERS)
+			inst->dpb_count = VIDC_MAX_RECON_BUFFERS;
+
+		for (i = 0; i < inst->dpb_count; i++) {
+			slot_base = inst->dpb_y_dma_addr + i * slot_size;
+			fw_relative = slot_base - core->fw_dma_addr;
+
+			vidc_write(core, recon_luma_reg[i],
+				   fw_relative >> VIDC_ADDR_SHIFT);
+			vidc_write(core, recon_chroma_reg[i],
+				   (fw_relative + y_size) >> VIDC_ADDR_SHIFT);
+		}
 	}
 
 	dev_info(core->dev,

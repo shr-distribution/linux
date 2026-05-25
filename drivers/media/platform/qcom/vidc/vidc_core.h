@@ -385,10 +385,22 @@
 #define VIDC_H264_NB_IP_SIZE		SZ_32K
 
 /* Recon buffer registers (encode) */
-#define VIDC_REG_RECON_LUMA_0		0x0480
-#define VIDC_REG_RECON_CHROMA_0		0x0484
-#define VIDC_REG_RECON_LUMA_1		0x0488
-#define VIDC_REG_RECON_CHROMA_1		0x048c
+/*
+ * Encoder reconstruction (reference) buffer registers. These are
+ * NON-CONTIGUOUS in hardware -- there is no arithmetic stride. The
+ * offsets match the webOS reference vidc_1080p_set_encode_recon_buffers()
+ * (REG_294579/759068/616802/833502/61427/68356/23318/127855). An earlier
+ * contiguous 0x480 + i*8 layout wrote to reserved space and left the real
+ * recon pointers at their power-on defaults.
+ */
+#define VIDC_REG_RECON_LUMA_0		0x061c
+#define VIDC_REG_RECON_CHROMA_0		0x0700
+#define VIDC_REG_RECON_LUMA_1		0x0710
+#define VIDC_REG_RECON_CHROMA_1		0x0708
+#define VIDC_REG_RECON_LUMA_2		0x0620
+#define VIDC_REG_RECON_CHROMA_2		0x0704
+#define VIDC_REG_RECON_LUMA_3		0x0714
+#define VIDC_REG_RECON_CHROMA_3		0x070c
 #define VIDC_MAX_RECON_BUFFERS		4
 
 /*
