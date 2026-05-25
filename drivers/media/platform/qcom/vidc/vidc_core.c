@@ -2111,45 +2111,6 @@ err_free_vert_nb_mv:
  *
  * out_payload receives the byte count actually written (y_size + c_size).
  */
-/*
- * Samsung 64x32 tile index (serpentine Z-order), tiles_x even. Inverse of
- * the encoder's tiling; same swizzle the firmware uses for the decode DPB.
- */
-static u32 vidc_tile_index(u32 tx, u32 ty, u32 tiles_x)
-{
-	u32 k = ty >> 1, bx = tx >> 1, wbc = tx & 1;
-	u32 base = k * (tiles_x >> 1) * 4 + bx * 4;
-	u32 row = (bx & 1) ? (1 - (ty & 1)) : (ty & 1);
-
-	return base + row * 2 + wbc;
-}
-
-/*
- * De-tile a 64x32-tiled plane into a linear (row-major) plane. The tiled
- * source surface is tiled_w wide (a multiple of 64); only the lin_w x lin_h
- * visible region is emitted, at lin_stride. Used to convert the firmware's
- * tiled DPB output into linear NV12 for userspace (V4L2_PIX_FMT_NV12).
- */
-static void vidc_detile_plane(u8 *dst, u32 lin_stride, u32 lin_w, u32 lin_h,
-			      const u8 *src, u32 tiled_w)
-{
-	u32 tiles_x = tiled_w / 64;
-	u32 tx, ty, py;
-
-	for (ty = 0; ty * 32 < lin_h; ty++) {
-		for (tx = 0; tx * 64 < lin_w; tx++) {
-			const u8 *tile = src +
-				vidc_tile_index(tx, ty, tiles_x) * (64 * 32);
-			u32 rows = min(32u, lin_h - ty * 32);
-			u32 cols = min(64u, lin_w - tx * 64);
-
-			for (py = 0; py < rows; py++)
-				memcpy(dst + (ty * 32 + py) * lin_stride + tx * 64,
-				       tile + py * 64, cols);
-		}
-	}
-}
-
 int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 			 size_t dst_size, size_t *out_payload)
 {
@@ -2179,14 +2140,7 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 	c_size = inst->dpb_c_size;
 	frame_size = y_size + c_size;
 
-	/*
-	 * Size check is done per-output-format below: the tiled passthrough
-	 * needs the full DPB-slot size (y_size + c_size), while the linear
-	 * de-tile output is smaller (w*h*3/2). Don't reject the (smaller)
-	 * linear CAPTURE buffer against the tiled size here.
-	 */
-	if ((!inst->fmt_cap || inst->fmt_cap->pixfmt != V4L2_PIX_FMT_NV12) &&
-	    dst_size < frame_size) {
+	if (dst_size < frame_size) {
 		dev_err(core->dev,
 			"dst buffer too small: %zu < %zu\n",
 			dst_size, frame_size);
@@ -2227,32 +2181,8 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 			 y_offset, c_offset, y_offset + (u32)y_size);
 	}
 
-	if (inst->fmt_cap && inst->fmt_cap->pixfmt == V4L2_PIX_FMT_NV12) {
-		/*
-		 * Linear NV12 output: de-tile the firmware's tiled DPB slot
-		 * into a row-major buffer userspace can consume directly. The
-		 * DPB itself stays tiled (the firmware/MC engine require it);
-		 * only this userspace-facing copy converts. Tiled luma/chroma
-		 * surfaces are ALIGN(width,128) wide; emit the coded w x h.
-		 */
-		u32 w = inst->width, h = inst->height;
-		u32 tiled_w = ALIGN(w, 128);
-		size_t lin = (size_t)w * h + (size_t)w * (h / 2);
-
-		if (dst_size < lin) {
-			dev_err(core->dev, "dst too small for linear: %zu < %zu\n",
-				dst_size, lin);
-			return -ENOSPC;
-		}
-		vidc_detile_plane(dst_vaddr, w, w, h, slot_y, tiled_w);
-		vidc_detile_plane(dst_vaddr + (size_t)w * h, w, w, h / 2,
-				  slot_c, tiled_w);
-		frame_size = lin;
-	} else {
-		/* Tiled NV12MT: pass the DPB tiles through unchanged. */
-		memcpy(dst_vaddr, slot_y, y_size);
-		memcpy(dst_vaddr + y_size, slot_c, c_size);
-	}
+	memcpy(dst_vaddr, slot_y, y_size);
+	memcpy(dst_vaddr + y_size, slot_c, c_size);
 
 	if (out_payload)
 		*out_payload = frame_size;
