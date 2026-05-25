@@ -2399,14 +2399,21 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 		u32 sz_md      = ALIGN(mb_x * 48, SZ_2K);
 		u32 sz_pred    = ALIGN(2 * 8 * 1024, SZ_2K);
 		u32 sz_nbor    = ALIGN(8 * 24 * mb_x, SZ_2K);
-		u32 sz_mbinfo  = ALIGN(mb_x * mb_y * 6 * 8, SZ_2K);
+		/*
+		 * mb_info: the working webOS encoder programs MB_INFO=0
+		 * (disabled). Captured ground truth (debug kernel #35) shows
+		 * mb_info_offset=0x0 during a real 640x480 H.264 recording.
+		 * Enabling it makes the fw emit per-MB metadata the host is
+		 * expected to consume/ack each frame; we never do, so the fw
+		 * goes silent after FRAME_DATA (the stall we were chasing).
+		 * Match webOS: no mb_info buffer, MB_INFO register written 0.
+		 */
 		u32 o_mv      = 0;
 		u32 o_colzero = o_mv + sz_mv;
 		u32 o_md      = o_colzero + sz_colzero;
 		u32 o_pred    = o_md + sz_md;
 		u32 o_nbor    = o_pred + sz_pred;
-		u32 o_mbinfo  = o_nbor + sz_nbor;
-		u32 total     = o_mbinfo + sz_mbinfo;
+		u32 total     = o_nbor + sz_nbor;
 		u32 base_rel;
 
 		inst->enc_work_vaddr = dma_alloc_coherent(core->dev, total,
@@ -2438,13 +2445,13 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 			   (base_rel + o_pred)    >> VIDC_ADDR_SHIFT);
 		vidc_write(core, VIDC_REG_ENC_NBOR_INFO,
 			   (base_rel + o_nbor)    >> VIDC_ADDR_SHIFT);
-		vidc_write(core, VIDC_REG_ENC_MB_INFO,
-			   (base_rel + o_mbinfo)  >> VIDC_ADDR_SHIFT);
+		/* MB_INFO disabled to match webOS (see comment above). */
+		vidc_write(core, VIDC_REG_ENC_MB_INFO, 0);
 
 		dev_info(core->dev,
-			 "enc work bufs: %u B at %pad (mv=%u colz=%u md=%u pred=%u nbor=%u mbinfo=%u)\n",
+			 "enc work bufs: %u B at %pad (mv=%u colz=%u md=%u pred=%u nbor=%u mbinfo=0)\n",
 			 total, &inst->enc_work_dma_addr,
-			 sz_mv, sz_colzero, sz_md, sz_pred, sz_nbor, sz_mbinfo);
+			 sz_mv, sz_colzero, sz_md, sz_pred, sz_nbor);
 	}
 
 	inst->dpb_inited = true;
