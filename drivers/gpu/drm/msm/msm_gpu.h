@@ -234,6 +234,19 @@ struct msm_gpu {
 	 */
 	int global_faults;
 
+	/**
+	 * last_recover / recover_burst: detect a recover->replay->re-wedge loop.
+	 * The a2xx 3D back-end can deterministically lock up on a specific draw
+	 * (heavy overdraw); replaying the in-flight submits just re-hangs the GPU,
+	 * and with several submits queued the recover->re-wedge churn can stall the
+	 * whole device. recover_worker() firing repeatedly within recover_burst_ms
+	 * means we are in such a loop; after recover_burst_max no-progress
+	 * recoveries we stop replaying the poisoned submits (neutralise to
+	 * nr_cmds=0) so the GPU drains to idle and accepts fresh work.
+	 */
+	unsigned long last_recover;
+	int recover_burst;
+
 	void __iomem *mmio;
 	int irq;
 

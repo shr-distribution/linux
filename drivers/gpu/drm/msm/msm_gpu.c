@@ -466,11 +466,35 @@ static void recover_worker(struct kthread_work *work)
 	struct msm_ringbuffer *cur_ring = gpu->funcs->active_ring(gpu);
 	char *comm = NULL, *cmd = NULL;
 	struct task_struct *task;
+	bool drop_pending;
 	int i;
+
+	/* recovery-storm thresholds: > recover_burst_max recoveries each within
+	 * recover_burst_ms of the previous one means replaying isn't helping. */
+	const unsigned recover_burst_ms = 3000;
+	const int recover_burst_max = 3;
 
 	mutex_lock(&gpu->lock);
 
 	DRM_DEV_ERROR(dev->dev, "%s: hangcheck recover!\n", gpu->name);
+
+	/*
+	 * Detect a recover->replay->re-wedge loop: if recoveries keep firing in
+	 * quick succession the pending submits are deterministically re-hanging
+	 * the GPU on the same draw. Replaying them again wastes time and, with
+	 * several queued, can wedge the box. Once we have burst past the
+	 * threshold, drop (neutralise) the pending submits below instead.
+	 */
+	if (time_before(jiffies, gpu->last_recover + msecs_to_jiffies(recover_burst_ms)))
+		gpu->recover_burst++;
+	else
+		gpu->recover_burst = 0;
+	gpu->last_recover = jiffies;
+	drop_pending = gpu->recover_burst >= recover_burst_max;
+	if (drop_pending)
+		DRM_DEV_ERROR(dev->dev,
+			"%s: recovery not progressing (%d consecutive), dropping pending submits to unwedge\n",
+			gpu->name, gpu->recover_burst);
 
 	submit = find_submit(cur_ring, cur_ring->memptrs->fence + 1);
 
@@ -560,10 +584,13 @@ static void recover_worker(struct kthread_work *work)
 			spin_lock_irqsave(&ring->submit_lock, flags);
 			list_for_each_entry(submit, &ring->submits, node) {
 				/*
-				 * If the submit uses an unusable vm make sure
-				 * we don't actually run it
+				 * If the submit uses an unusable vm, or recovery
+				 * is looping (the pending submits keep re-wedging
+				 * the GPU), make sure we don't actually run it --
+				 * neutralise to a no-op so its fence still signals
+				 * and the ring drains to idle.
 				 */
-				if (to_msm_vm(submit->vm)->unusable)
+				if (drop_pending || to_msm_vm(submit->vm)->unusable)
 					submit->nr_cmds = 0;
 				gpu->funcs->submit(gpu, submit);
 			}
