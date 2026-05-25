@@ -20,33 +20,8 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
-#include <linux/workqueue.h>
-
-/*
- * Runtime-adjustable settle count for MIPI timing debug.
- * Valid range: 0x00-0xFF, default 0x14 (matches webOS MT9M113).
- * If ECC errors are high, try adjusting +/- 5 units.
- * - Too low: PHY samples while voltage unstable -> ECC errors
- * - Too high: PHY misses sync byte -> no valid packets
- */
-static int settle_cnt_override = -1;
-module_param(settle_cnt_override, int, 0644);
-MODULE_PARM_DESC(settle_cnt_override,
-		 "Override settle count (0x00-0xFF, -1=use calculated/default 0x14)");
-
-/*
- * HS termination impedance override.
- * Valid range: 0x00-0x0F, default 0x0F (matches webOS).
- * Higher values = higher impedance = less signal attenuation.
- * If ECC/DATA_CMM errors persist, try 0x07, 0x0B, or 0x0F.
- */
-static int hs_term_imp_override = -1;
-module_param(hs_term_imp_override, int, 0644);
-MODULE_PARM_DESC(hs_term_imp_override,
-		 "Override HS termination impedance (0x00-0x0F, -1=use default 0x0F)");
 
 /*
  * Calibration bypass mode (per Gemini AI analysis suggestion).
@@ -83,31 +58,6 @@ bool ecc_disable;  /* Exported for use in camss-csiphy.c stream_on */
 module_param(ecc_disable, bool, 0644);
 MODULE_PARM_DESC(ecc_disable,
 		 "Disable ECC checking to allow corrupted packets (default: false)");
-
-/*
- * Debug polling mode - poll CSIPHY status register periodically.
- *
- * When enabled, polls the INTERRUPT_STATUS register every 100ms during
- * streaming to detect if data is arriving even when interrupts aren't firing.
- * This helps diagnose:
- * - Data arriving but interrupts not working (edge vs level trigger issue)
- * - No data arriving at all (sensor/MIPI issue)
- */
-static bool debug_poll_enable;
-module_param(debug_poll_enable, bool, 0644);
-MODULE_PARM_DESC(debug_poll_enable,
-		 "Enable periodic CSIPHY status polling for debug (default: false)");
-
-/* Debug polling workqueue and state */
-static struct delayed_work debug_poll_work;
-static void __iomem *debug_poll_base;
-static int debug_poll_id;
-static bool debug_poll_active;
-static bool debug_poll_initialized;  /* Track if work was ever initialized */
-
-/* Forward declarations for debug polling */
-static void csiphy_8x60_start_debug_poll(struct csiphy_device *csiphy);
-static void csiphy_8x60_stop_debug_poll(void);
 
 /* MSM8660 MIPI CSI Controller Register Offsets */
 #define MIPI_PHY_CONTROL		0x00
@@ -317,17 +267,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 			 csiphy->id, settle_cnt, link_freq, csiphy->timer_clk_rate);
 	}
 
-	/*
-	 * Allow runtime override for debugging settle count issues.
-	 * If ECC error rate is high, try: settle_cnt_override=0x10/0x18/0x1C
-	 */
-	if (settle_cnt_override >= 0 && settle_cnt_override <= 0xFF) {
-		dev_info(csiphy->camss->dev,
-			 "CSIPHY%d: settle_cnt OVERRIDE: 0x%02x -> 0x%02x\n",
-			 csiphy->id, settle_cnt, settle_cnt_override);
-		settle_cnt = settle_cnt_override;
-	}
-
 	dev_info(csiphy->camss->dev,
 		 "CSIPHY%d: lanes_enable: lanes=%d settle_cnt=0x%02x link_freq=%lld base=%px\n",
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
@@ -361,13 +300,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 */
 	{
 		u8 hs_term_imp = 0x0F;  /* Default matches webOS */
-
-		if (hs_term_imp_override >= 0 && hs_term_imp_override <= 0x0F) {
-			dev_info(csiphy->camss->dev,
-				 "CSIPHY%d: HS_TERM_IMP OVERRIDE: 0x%02x -> 0x%02x\n",
-				 csiphy->id, hs_term_imp, hs_term_imp_override);
-			hs_term_imp = hs_term_imp_override;
-		}
 
 		val = (settle_cnt << MIPI_PHY_D0_CONTROL2_SETTLE_COUNT_SHFT) |
 		      (hs_term_imp << MIPI_PHY_D0_CONTROL2_HS_TERM_IMP_SHFT) |
@@ -482,12 +414,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 */
 	{
 		u8 hs_term_imp = 0x0F;  /* Default matches webOS */
-		if (hs_term_imp_override >= 0 && hs_term_imp_override <= 0x0F) {
-			dev_info(csiphy->camss->dev,
-				 "CSIPHY%d: HS_TERM_IMP OVERRIDE: 0x%02x -> 0x%02x\n",
-				 csiphy->id, hs_term_imp, hs_term_imp_override);
-			hs_term_imp = hs_term_imp_override;
-		}
 
 		if (calibration_mode == 1) {
 			/*
@@ -716,9 +642,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 				 csiphy->id, rb_camera_cntl & 0x7, num_lanes + 3);
 		}
 	}
-
-	/* Start debug polling if enabled */
-	csiphy_8x60_start_debug_poll(csiphy);
 }
 
 /*
@@ -729,9 +652,6 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
 				      struct csiphy_config *cfg)
 {
-	/* Stop debug polling if active */
-	csiphy_8x60_stop_debug_poll();
-
 	/* Disable PHY by asserting shutdown */
 	writel(0, csiphy->base + MIPI_PHY_D1_CONTROL);
 
@@ -768,137 +688,6 @@ static void csiphy_8x60_lanes_disable(struct csiphy_device *csiphy,
 #define MIPI_IRQ_FRAME_START	BIT(16)	/* Frame Start short packet */
 #define MIPI_IRQ_FRAME_END	BIT(17)	/* Frame End short packet */
 #define MIPI_IRQ_LONG_PKT	BIT(21)	/* Long packet header captured */
-
-/*
- * MSM8660 SOF generation state - used for software SOF when sensor
- * doesn't send MIPI Frame Start/End short packets.
- *
- * Frame boundary detection heuristic:
- * - If we see MIPI_IRQ_FRAME_START, use it directly
- * - Otherwise, detect frame start by gap in SOT interrupts
- *   (vertical blanking period creates a larger gap than inter-line gaps)
- *
- * Typical timing at 30fps, 768 lines:
- * - Line time: ~43us (1/30/768)
- * - Frame gap (vertical blanking): ~500us to several ms
- * - Threshold: 200us gap indicates frame start
- */
-/*
- * Debug polling work function - called periodically to check CSIPHY status.
- *
- * IMPORTANT: This function must check debug_poll_base validity before ANY
- * register access because clocks may be disabled asynchronously.
- */
-static void csiphy_8x60_debug_poll(struct work_struct *work)
-{
-	void __iomem *base;
-	u32 status, protocol, d1_ctrl, irq_mask;
-	static int poll_count;
-	static u32 last_polled_status;
-
-	/*
-	 * Atomic read of base pointer with memory barrier.
-	 * If NULL, clocks are being/have been disabled - abort immediately.
-	 */
-	base = READ_ONCE(debug_poll_base);
-	if (!base || !READ_ONCE(debug_poll_active))
-		return;
-
-	/*
-	 * Read registers using local base pointer captured above.
-	 * If clocks are disabled between here and the check above,
-	 * we might get garbage but won't crash.
-	 */
-	status = readl_relaxed(base + MIPI_INTERRUPT_STATUS);
-
-	/* Quick sanity check - if we get all 1s or all Fs, clocks are likely off */
-	if (status == 0xFFFFFFFF || (status & 0xF0000000) == 0xF0000000) {
-		pr_debug("CSIPHY%d POLL: Garbage read (0x%08x) - clocks likely off, stopping\n",
-			 debug_poll_id, status);
-		return;  /* Don't reschedule - we're shutting down */
-	}
-
-	protocol = readl_relaxed(base + MIPI_PROTOCOL_CONTROL);
-	d1_ctrl = readl_relaxed(base + MIPI_PHY_D1_CONTROL);
-	irq_mask = readl_relaxed(base + MIPI_INTERRUPT_MASK);
-
-	poll_count++;
-
-	/* Log if status changed or every 10th poll */
-	if (status != last_polled_status || (poll_count % 10) == 1) {
-		pr_info("CSIPHY%d POLL #%d: IRQ_STATUS=0x%08x [%s%s%s%s] MASK=0x%08x PROTOCOL=0x%08x D1_CTRL=0x%08x\n",
-			debug_poll_id, poll_count, status,
-			(status & BIT(4)) ? "SOT " : "",
-			(status & BIT(5)) ? "ECC " : "",
-			(status & BIT(16)) ? "FS " : "",
-			(status & BIT(17)) ? "FE " : "",
-			irq_mask, protocol, d1_ctrl);
-		last_polled_status = status;
-	}
-
-	/* If status bits are set but no interrupt fired, this indicates IRQ issue */
-	if (status != 0) {
-		pr_warn("CSIPHY%d POLL: Non-zero status 0x%08x detected without IRQ!\n",
-			debug_poll_id, status);
-		/* Clear status to see if new events accumulate */
-		writel(status, base + MIPI_INTERRUPT_STATUS);
-	}
-
-	/* Reschedule if still active - check again in case stop was called */
-	if (READ_ONCE(debug_poll_active) && READ_ONCE(debug_poll_base))
-		schedule_delayed_work(&debug_poll_work, msecs_to_jiffies(100));
-}
-
-/* Start debug polling */
-static void csiphy_8x60_start_debug_poll(struct csiphy_device *csiphy)
-{
-	if (!debug_poll_enable)
-		return;
-
-	debug_poll_id = csiphy->id;
-	INIT_DELAYED_WORK(&debug_poll_work, csiphy_8x60_debug_poll);
-	debug_poll_initialized = true;  /* Mark work as initialized */
-
-	/*
-	 * Set base pointer last and use WRITE_ONCE for consistency with stop.
-	 * The poll function won't run until base is non-NULL.
-	 */
-	smp_wmb();  /* Ensure work is initialized before setting base */
-	WRITE_ONCE(debug_poll_base, csiphy->base);
-	WRITE_ONCE(debug_poll_active, true);
-
-	schedule_delayed_work(&debug_poll_work, msecs_to_jiffies(500)); /* Start after 500ms */
-
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Debug polling enabled\n", csiphy->id);
-}
-
-/* Stop debug polling - must be called BEFORE disabling clocks */
-static void csiphy_8x60_stop_debug_poll(void)
-{
-	/*
-	 * Only cancel work if it was ever initialized. Calling
-	 * cancel_delayed_work_sync on uninitialized work triggers
-	 * a kernel warning.
-	 */
-	if (!debug_poll_initialized)
-		return;
-
-	/*
-	 * Order matters here to prevent race with poll function:
-	 * 1. Clear base pointer first (poll function checks this first)
-	 * 2. Memory barrier to ensure visibility
-	 * 3. Clear active flag
-	 * 4. Cancel work (may wait for in-progress work to complete)
-	 *
-	 * The poll function will see NULL base and exit immediately,
-	 * even if it was already past the active flag check.
-	 */
-	WRITE_ONCE(debug_poll_base, NULL);
-	smp_wmb();  /* Ensure NULL write is visible before clearing active */
-	WRITE_ONCE(debug_poll_active, false);
-
-	cancel_delayed_work_sync(&debug_poll_work);
-}
 
 /*
  * csiphy_8x60_isr - CSIPHY interrupt service routine
