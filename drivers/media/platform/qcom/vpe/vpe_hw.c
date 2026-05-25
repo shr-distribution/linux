@@ -156,9 +156,16 @@ void vpe_hw_set_src_size(void __iomem *base, u32 img_w, u32 img_h,
 	       base + VPE_SRC_IMAGE_SIZE);
 	writel(stride, base + VPE_SRC_YSTRIDE1);
 
-	/* Set source format for NV12 */
-	writel(0x00000002, base + VPE_SRC_FORMAT);
-	writel(0x03020100, base + VPE_SRC_UNPACK_PATTERN1);
+	/*
+	 * Source format + unpack pattern for NV12 (pseudo-planar Y + CbCr).
+	 * These are the exact words the msm camera HAL programs for the VPE
+	 * input plane (confirmed identical across the Sony nozomi, HTC and
+	 * Samsung msm8660 liboemcamera.so / mm_vpe_set_input_plane). Our prior
+	 * placeholder 0x2 / 0x03020100 left the engine unable to interpret the
+	 * surface, so it consumed the kick but produced no output.
+	 */
+	writel(VPE_SRC_FORMAT_NV12, base + VPE_SRC_FORMAT);
+	writel(VPE_PACK_PATTERN_NV12, base + VPE_SRC_UNPACK_PATTERN1);
 }
 
 void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride)
@@ -168,9 +175,11 @@ void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride)
 	writel(size, base + VPE_OUT_SIZE);
 	writel(stride, base + VPE_OUT_YSTRIDE1);
 
-	/* Set output format for NV12 */
-	writel(0x00000002, base + VPE_OUT_FORMAT);
-	writel(0x03020100, base + VPE_OUT_PACK_PATTERN1);
+	/* Output format + pack pattern for NV12, from the camera HAL's VPE
+	 * output-plane config (mm_vpe_set_output_plane). Note the format word
+	 * differs from the source one (byte2 = 0x09 vs 0x12). */
+	writel(VPE_OUT_FORMAT_NV12, base + VPE_OUT_FORMAT);
+	writel(VPE_PACK_PATTERN_NV12, base + VPE_OUT_PACK_PATTERN1);
 }
 
 static void vpe_hw_load_scale_coeff(void __iomem *base, u32 phase_step)

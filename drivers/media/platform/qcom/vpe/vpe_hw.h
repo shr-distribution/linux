@@ -86,6 +86,17 @@
 #define VPE_CGC_ENABLE_VALUE		0xffff
 #define VPE_DEFAULT_SCALE_CONFIG	0x3c
 
+/*
+ * NV12 (pseudo-planar Y + interleaved CbCr) surface descriptors, taken from
+ * the msm8660 camera HAL's VPE input/output plane config (mm_vpe_set_input_plane
+ * / mm_vpe_set_output_plane in liboemcamera.so -- identical on Sony nozomi,
+ * HTC and Samsung). The format word encodes fetch mode, plane count, chroma
+ * sampling and component widths; the source and output words differ in byte 2.
+ */
+#define VPE_SRC_FORMAT_NV12		0x0012223f
+#define VPE_OUT_FORMAT_NV12		0x0009223f
+#define VPE_PACK_PATTERN_NV12		0x00000201
+
 /* VPE Clock rate */
 #define VPE_CLOCK_RATE			160000000
 
