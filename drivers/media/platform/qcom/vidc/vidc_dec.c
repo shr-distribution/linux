@@ -37,6 +37,18 @@
 static const struct vidc_format vidc_dec_fmts[] = {
 	/* Capture formats (decoded output) */
 	{
+		/*
+		 * Linear NV12 (default): the driver de-tiles the firmware's
+		 * tiled DPB into row-major NV12 in the DPB->CAPTURE copy, so
+		 * generic userspace gets a standard buffer. Listed first.
+		 */
+		.pixfmt = V4L2_PIX_FMT_NV12,
+		.num_planes = 1,
+		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+		.codec = 0, /* raw format */
+	},
+	{
+		/* Tiled NV12MT: zero-copy passthrough of the DPB tiles. */
 		.pixfmt = V4L2_PIX_FMT_NV12MT,
 		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
@@ -156,6 +168,9 @@ static u32 vidc_dec_get_framesize(u32 pixfmt, u32 width, u32 height)
 		uv_plane = ALIGN(uv_stride * ALIGN(height / 2, 32),
 				 VIDC_DPB_TILE_MULTIPLY_FACTOR);
 		return y_plane + uv_plane;
+	case V4L2_PIX_FMT_NV12:
+		/* Linear NV12 (de-tiled): contiguous Y then interleaved CbCr. */
+		return width * height + width * (height / 2);
 	default:
 		/* Compressed formats - estimate based on resolution */
 		return (width * height * 3) / 2;
@@ -224,7 +239,10 @@ static int vidc_dec_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 
 	if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		pixmp->plane_fmt[0].sizeimage = szimage;
-		pixmp->plane_fmt[0].bytesperline = ALIGN(pixmp->width, 128);
+		/* linear NV12 stride = width; tiled NV12MT stride = ALIGN 128 */
+		pixmp->plane_fmt[0].bytesperline =
+			(pixmp->pixelformat == V4L2_PIX_FMT_NV12) ?
+			pixmp->width : ALIGN(pixmp->width, 128);
 	} else {
 		pixmp->plane_fmt[0].sizeimage =
 			clamp_t(u32, pixmp->plane_fmt[0].sizeimage, szimage,
@@ -1691,7 +1709,8 @@ static int vidc_dec_open(struct file *file)
 	/* Set default formats */
 	inst->fmt_out = vidc_dec_find_format(V4L2_PIX_FMT_H264,
 					     V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
-	inst->fmt_cap = vidc_dec_find_format(V4L2_PIX_FMT_NV12MT,
+	/* Default to linear NV12 (de-tiled) so generic userspace works. */
+	inst->fmt_cap = vidc_dec_find_format(V4L2_PIX_FMT_NV12,
 					     V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 	inst->codec = VIDC_CODEC_H264_DEC;
 	inst->width = VIDC_DEFAULT_WIDTH;
