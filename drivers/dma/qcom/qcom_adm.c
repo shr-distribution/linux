@@ -1103,9 +1103,22 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			u32 fstate = readl_relaxed(adev->regs +
 					ADM_CH_FLUSH_STATE0(i, adev->ee));
 
-			dev_dbg(adev->dev,
-				"ADM ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x\n",
-				i, result, fstate);
+			/*
+			 * For the SDCC channels (ADM1 ch2=eMMC/CRCI1,
+			 * ch5=WiFi/CRCI5) log FLUSH at warn level so it can be
+			 * correlated by timestamp with the mmci DIAG[DATACRCFAIL]
+			 * dump. A FLUSH on the SDCC channel coincident with an
+			 * SDCC RXOVERRUN means the ADM stopped draining the FIFO
+			 * (fabric/EBI drain starvation) rather than a card error.
+			 */
+			if (i == 2 || i == 5)
+				dev_warn(adev->dev,
+					"ADM-DIAG ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x (SDCC drain stalled)\n",
+					i, result, fstate);
+			else
+				dev_dbg(adev->dev,
+					"ADM ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x\n",
+					i, result, fstate);
 		}
 
 		/*
@@ -1424,11 +1437,17 @@ static int adm_dma_probe(struct platform_device *pdev)
 
 	if (adev->icc_path) {
 		/*
-		 * Vote for minimum EBI bandwidth to keep the path active.
-		 * Legacy kernel used clk_set_rate(ebiclk, 27) for 27 MHz minimum.
-		 * Using 128 MB/s as a reasonable floor for DMA operations.
+		 * Vote a SUSTAINED EBI floor to keep the ADM->SFAB->AFAB->EBI
+		 * path from collapsing while the ADM drains the SDCC FIFOs.
+		 * Legacy webOS used clk_set_rate(ebi1_adm_clk, 27) — a minimal
+		 * EBI keep-alive (the heavy data-path vote was the per-SDCC
+		 * dfab=64MHz in msm_sdcc, not the ADM). Vote it as avg_bw too
+		 * (not just peak) so the floor holds across RPM active/sleep
+		 * contexts during sustained concurrent eMMC+WiFi DMA; with avg=0
+		 * the ADM's own EBI floor lapsed and the drain could starve.
+		 * 128 MB/s is comfortably above legacy's keep-alive.
 		 */
-		ret = icc_set_bw(adev->icc_path, 0, 128000);
+		ret = icc_set_bw(adev->icc_path, 128000, 128000);
 		if (ret) {
 			dev_err(adev->dev, "failed to set interconnect bandwidth: %d\n", ret);
 			goto err_disable_clks;

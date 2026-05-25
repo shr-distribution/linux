@@ -2109,6 +2109,29 @@ static void mmci_diag_dump_state(struct mmci_host *host, const char *reason)
 		 "DIAG[%s]: STATUS=0x%08x DATACTRL=0x%08x DATALEN=%u DATACNT=%u MASK0=0x%08x FIFOCNT=%u\n",
 		 reason, status_reg, dctrl_reg, dlen_reg, dcnt_reg,
 		 mask0_reg, fifocnt_reg);
+	/*
+	 * Decode the latched error bits by name. The disambiguation we care
+	 * about for the eMMC-under-WiFi fabric-starvation hypothesis:
+	 *   RXOVERRUN set  -> the ADM stopped draining the RX FIFO in time
+	 *                     (FIFO overflowed) => ADM/fabric drain starvation.
+	 *   DATACRCFAIL only (no RXOVERRUN) -> trailing CRC16 mismatch from a
+	 *                     byte-shift, also consistent with a transient
+	 *                     overrun the controller swallowed, but check
+	 *                     CRCI pacing / bus error too.
+	 *   DATATIMEOUT/STARTBITERR -> card/link side, not fabric.
+	 * Pair this with the ADM-side ADM_CH_RSLT / FLUSH_STATE0 dump
+	 * (qcom_adm.c logs them for CRCI 1/5 on flush/error) by timestamp.
+	 */
+	dev_warn(mmc_dev(host->mmc),
+		 "DIAG[%s]: errbits:%s%s%s%s%s%s  (RXOVERRUN=fabric/ADM drain starvation)\n",
+		 reason,
+		 (status_reg & MCI_RXOVERRUN)   ? " RXOVERRUN"   : "",
+		 (status_reg & MCI_TXUNDERRUN)  ? " TXUNDERRUN"  : "",
+		 (status_reg & MCI_DATACRCFAIL) ? " DATACRCFAIL" : "",
+		 (status_reg & MCI_DATATIMEOUT) ? " DATATIMEOUT" : "",
+		 (status_reg & MCI_STARTBITERR) ? " STARTBITERR" : "",
+		 (status_reg & (MCI_RXOVERRUN | MCI_TXUNDERRUN | MCI_DATACRCFAIL |
+				MCI_DATATIMEOUT | MCI_STARTBITERR)) ? "" : " (none latched)");
 	dev_warn(mmc_dev(host->mmc),
 		 "DIAG[%s]: cur_cmd=%p CMD_reg=0x%08x ARG=0x%08x RESP0=0x%08x dma=%s\n",
 		 reason, cmd, cmd_reg, arg_reg, resp0, dma_state);
@@ -3425,17 +3448,25 @@ static int mmci_probe(struct amba_device *dev,
 		 * Vote for DFAB bandwidth to keep the fabric active.
 		 *
 		 * Legacy webOS msm_sdcc force-votes dfab_sdc_clk=64MHz on
-		 * every SDCC instance with pclk_src_dfab=1 (board-tenderloin
-		 * sets it on both SDC1/eMMC and SDC4/WiFi). At 64MHz on the
-		 * 64-bit DFAB that's ~512 MB/s peak. Below ~256 MB/s the
-		 * SDIO init chain (CMD52 / CMD5 / CMD55) sees CMDTIMEOUTs
-		 * because the SDCC peripheral clock stalls relative to the
-		 * card; high-speed eMMC reads also fall back to bus-width 1.
+		 * every active SDCC with pclk_src_dfab=1 (board-tenderloin sets
+		 * it on both SDC1/eMMC and SDC4/WiFi; msm_sdcc.c does
+		 * clk_set_rate(dfab_pclk, 64000000) + a persistent clk_enable).
+		 * On the 64-bit DFAB that is 64e6 * 8 = 512 MB/s, and it is held
+		 * SUSTAINED (clk_enable), not a transient ceiling. The mainline
+		 * msm8660 ICC provider uses buswidth=8 and rate = bw/8, so
+		 * 512000 kBps maps to exactly 64 MHz DFAB.
 		 *
-		 * Match legacy: 512 MB/s peak. avg=0 because the vote is a
-		 * floor (we don't actually expect sustained 512 MB/s).
+		 * IMPORTANT: vote it as avg_bw (sustained), not just peak. The
+		 * earlier (0, 512000) vote put 512 MB/s only in the peak slot;
+		 * while max(avg,peak) yields 64 MHz in the ACTIVE state, avg=0
+		 * lets the floor lapse across RPM active/sleep context changes.
+		 * Under sustained concurrent eMMC+WiFi DMA the ADM must drain
+		 * the SDCC FIFO to EBI continuously; if DFAB drops to the RPM
+		 * minimum the ADM starves mid-transfer and the SDCC latches
+		 * DATACRCFAIL/RXOVERRUN (the recurring eMMC-under-WiFi failure).
+		 * avg=peak=512000 replicates legacy's persistent 64 MHz hold.
 		 */
-		ret = icc_set_bw(host->icc_path, 0, 512000);
+		ret = icc_set_bw(host->icc_path, 512000, 512000);
 		if (ret) {
 			dev_err(&dev->dev, "failed to set interconnect bw: %d\n", ret);
 			goto clk_disable;
