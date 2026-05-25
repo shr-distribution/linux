@@ -18,7 +18,8 @@ struct a2xx_gpu {
 	struct adreno_gpu base;
 	bool pm_enabled;
 	bool protection_disabled;
-	struct icc_path *icc_path;
+	struct icc_path *icc_path;	/* gfx-mem: GPU -> EBI/DRAM */
+	struct icc_path *icc_path_smi;	/* gfx-smi: GPU -> SMI (scanout FBs live here) */
 };
 #define to_a2xx_gpu(x) container_of(x, struct a2xx_gpu, base)
 

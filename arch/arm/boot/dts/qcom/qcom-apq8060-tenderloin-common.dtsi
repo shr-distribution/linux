@@ -1174,9 +1174,23 @@
 			 * Without this, GPU activity can starve USB and other
 			 * peripherals by not voting for fabric bandwidth.
 			 */
+			/*
+			 * The GPU votes BOTH the EBI and SMI fabric slaves: most
+			 * buffers live in EBI/DRAM, but the display scanout
+			 * framebuffers are allocated from the MMSS-local SMI pool
+			 * (0x38300000, shared with the VIDC video core) and the
+			 * GPU resolve-writes rendered tiles into them. Without the
+			 * SMI vote those writes hit an unprovisioned fabric slave
+			 * and the MH raises an AXI write error (eventually wedging
+			 * the bus). MDP (MMFAB_MAS_MDP_PORT*) and VIDC
+			 * (MMFAB_MAS_HD_CODEC_PORT0) already declare both paths;
+			 * GRAPHICS_3D needs them too.
+			 */
 			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D
-					 &apps_fabric AFAB_SLV_EBI_CH0>;
-			interconnect-names = "gfx-mem";
+					 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&mmss_fabric MMFAB_MAS_GRAPHICS_3D
+					 &mmss_fabric MMFAB_SLV_SMI>;
+			interconnect-names = "gfx-mem", "gfx-smi";
 		};
 
 		gpu_opp_table: gpu-opp-table {
