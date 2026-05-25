@@ -2657,6 +2657,7 @@ out_unlock:
 static irqreturn_t vfe31_isr(int irq, void *dev)
 {
 	struct vfe_device *vfe = dev;
+	unsigned long flags;
 	u32 value0, value1, ping_pong;
 	int i;
 
@@ -2691,15 +2692,9 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 	}
 
 	/*
-	 * Handle IMAGE_COMPOSITE_DONE_1 (RDI line: WM0 in Group 1).
-	 *
-	 * RDI raw bypass (AXI=0x60) uses WM0 routed to COMPOSITE group 1.
-	 * This is separate from PIX's group 0 so RDI and PIX can coexist.
+	 * IMAGE_COMPOSITE_DONE_1 (Group 1: ZSL WM2+WM6, or RDI raw-bypass WM0)
+	 * is handled once, further down (see the consolidated handler).
 	 */
-	if (value0 & VFE_0_IRQ_STATUS_0_IMAGE_COMPOSITE_DONE_n(1)) {
-		if (vfe->wm_output_map[0] != VFE_LINE_NONE)
-			vfe31_wm_done(vfe, 0, ping_pong);
-	}
 
 	/*
 	 * Handle IMAGE_COMPOSITE_DONE_2 (VIDEO line: WM1+WM5 in Group 2).
@@ -2806,7 +2801,15 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		 *
 		 * Samsung vfe31_start_common() does the same: CAMIF starts
 		 * but WMs are enabled later via the recording state machine.
+		 *
+		 * Serialise these WM-enable/state-machine register writes against
+		 * vfe31_wm_done() and the enable/disable paths, which also touch
+		 * the WM config and the recording/zsl/pix-pending state under
+		 * output_lock. The reg_update loop below must run unlocked - the
+		 * reg_update op takes output_lock itself.
 		 */
+		spin_lock_irqsave(&vfe->output_lock, flags);
+
 		if (V31(vfe)->pix_wm_pending) {
 			struct vfe_output *out = &vfe->line[VFE_LINE_PIX].output;
 
@@ -2876,6 +2879,8 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		} else if (V31(vfe)->zsl_state == VFE31_REC_STOPPED) {
 			V31(vfe)->zsl_state = VFE31_REC_IDLE;
 		}
+
+		spin_unlock_irqrestore(&vfe->output_lock, flags);
 
 		for (i = 0; i < vfe->res->line_num; i++)
 			vfe->isr_ops.reg_update(vfe, i);
