@@ -735,6 +735,26 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		return;
 
 	/*
+	 * The a2xx GFX3D core clock is NOT glitch-free across a rate change:
+	 * switching it while the 3D pipe is rendering wedges the back-end
+	 * (RB/PA/SC stuck busy, CP parked) and hard-hangs the device. Legacy
+	 * KGSL avoids this in kgsl_pwrctrl_pwrlevel_change() by idling the GPU
+	 * before clk_set_rate whenever pdata->idle_needed is set (true for
+	 * a2xx-class parts) -- "instability is caused on changing clock freq
+	 * when the core is busy". We have no GMU to coordinate the switch, and
+	 * must not take gpu->lock here (gpu_set_freq runs under the devfreq
+	 * lock, while the submit path takes active_lock -> devfreq lock; the
+	 * reverse order would deadlock). So quiesce the 3D pipe by draining the
+	 * ringbuffer to idle before the switch. Because the GPU is idle across
+	 * the rate change, a multi-OPP jump settles harmlessly (no need for
+	 * KGSL's one-level-at-a-time stepping, which guarded against switching
+	 * while busy). Frame-paced workloads idle between frames so this
+	 * normally catches an idle window; the recovery-storm guard in
+	 * recover_worker() backs the rare case where it can't.
+	 */
+	a2xx_idle(gpu);
+
+	/*
 	 * Set both avg and peak bandwidth proportional to frequency,
 	 * matching the legacy webOS msm_bus grp3d_max_vectors pattern
 	 * (ab = ib = clock × 8 bytes/cycle).
