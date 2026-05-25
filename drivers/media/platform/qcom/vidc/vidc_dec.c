@@ -449,6 +449,38 @@ static int vidc_dec_subscribe_event(struct v4l2_fh *fh,
 	}
 }
 
+/*
+ * Report the visible (crop) rectangle within the coded CAPTURE frame.
+ * The firmware-reported H.264 crop offsets are captured at SEQ_DONE; the
+ * coded buffer is tile-aligned and padded, so userspace needs the compose
+ * rectangle to present only the valid picture area.
+ */
+static int vidc_dec_g_selection(struct file *file, void *fh,
+				struct v4l2_selection *s)
+{
+	struct vidc_inst *inst = vidc_file_to_inst(file);
+
+	if (s->type != V4L2_BUF_TYPE_VIDEO_CAPTURE &&
+	    s->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
+		return -EINVAL;
+
+	switch (s->target) {
+	case V4L2_SEL_TGT_COMPOSE:
+	case V4L2_SEL_TGT_COMPOSE_DEFAULT:
+	case V4L2_SEL_TGT_COMPOSE_PADDED:
+	case V4L2_SEL_TGT_COMPOSE_BOUNDS:
+		s->r.left = inst->crop_left;
+		s->r.top = inst->crop_top;
+		s->r.width = inst->crop_width ? inst->crop_width : inst->width;
+		s->r.height = inst->crop_height ? inst->crop_height :
+						  inst->height;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
 static const struct v4l2_ioctl_ops vidc_dec_ioctl_ops = {
 	.vidioc_querycap = vidc_dec_querycap,
 	.vidioc_enum_fmt_vid_cap = vidc_dec_enum_fmt,
@@ -468,6 +500,7 @@ static const struct v4l2_ioctl_ops vidc_dec_ioctl_ops = {
 	.vidioc_expbuf = vidc_dec_expbuf,
 	.vidioc_streamon = vidc_dec_streamon,
 	.vidioc_streamoff = vidc_dec_streamoff,
+	.vidioc_g_selection = vidc_dec_g_selection,
 	.vidioc_decoder_cmd = vidc_dec_decoder_cmd,
 	.vidioc_subscribe_event = vidc_dec_subscribe_event,
 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
@@ -1296,6 +1329,24 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 	 *   NOOP / others      — unexpected; log and treat as
 	 *                        DECODE_AND_DISPLAY for safety.
 	 */
+	/*
+	 * Mid-stream resolution change: the firmware flagged that the coded
+	 * size changed (new SPS). Notify userspace so it can renegotiate the
+	 * CAPTURE queue; emitting frames at the stale geometry would produce
+	 * corrupt output.
+	 */
+	if (inst->display_resl_change) {
+		static const struct v4l2_event ev = {
+			.type = V4L2_EVENT_SOURCE_CHANGE,
+			.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
+		};
+
+		dev_info(core->dev,
+			 "mid-stream resolution change reported by firmware\n");
+		v4l2_event_queue_fh(&inst->fh, &ev);
+		inst->display_resl_change = 0;
+	}
+
 	switch (inst->display_status) {
 	case VIDC_DISPLAY_STATUS_DECODE_ONLY:
 		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);

@@ -753,6 +753,12 @@ struct vidc_inst {
 	u32 display_frame_tag;	/* tag of the just-displayed frame (from IRQ) */
 	u32 display_resl_change;	/* nonzero = mid-stream resolution change */
 
+	/* Decoder visible (crop) rectangle within the coded frame. */
+	u32 crop_left;
+	u32 crop_top;
+	u32 crop_width;
+	u32 crop_height;
+
 	/*
 	 * display_status from VIDC_REG_DEC_DISPLAY_STATUS, low nibble.
 	 * Tells frame_done_work whether the current FRAME_DONE event
