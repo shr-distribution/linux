@@ -214,11 +214,18 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_SQ_PS_PROGRAM, 0x00000000);
 
 	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0);
-	/* A22x (Leia) requires 0x1a0 for proper clock gating per Palm kernel */
+	/*
+	 * A22x (Leia) requires 0x1a0 for proper clock gating per Palm kernel.
+	 * Bit 0x40 keeps the RBBM performance-monitor block clocked so the RBBM
+	 * busy perfcounter (the devfreq load source, enabled via CP_PERFMON_CNTL
+	 * below) actually counts -- KGSL sets (PM_OVERRIDE2 | 0x40) in
+	 * a2xx_busy_cycles() for exactly this. Without it the counter stays
+	 * frozen, devfreq sees ~0 load and parks the GPU at its minimum OPP.
+	 */
 	if (!adreno_is_a20x(adreno_gpu))
-		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0);
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0 | 0x40);
 	else
-		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0);
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x40);
 
 	/*
 	 * Initialize SQ_GPR_MANAGEMENT to the legacy KGSL value
@@ -251,10 +258,18 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 			break;
 	gpu_write(gpu, REG_A2XX_RB_EDRAM_INFO, i);
 
-	/* Set up performance counter 1 to count busy cycles for devfreq
-	 * RBBM1_RB_BUSY counts when render backend is active (graphics work)
+	/*
+	 * Select RBBM perfcounter 1 as the devfreq busy-cycle source.
+	 * RBBM1_NRT_BUSY (general non-real-time 3D-pipe busy) is what legacy
+	 * KGSL a2xx_busy_cycles() selects -- broader than RB_BUSY, so it also
+	 * tracks vertex/shader-bound work, giving devfreq a truer load signal.
+	 * NOTE: the counter only advances while the perfmon is ENABLED via
+	 * CP_PERFMON_CNTL, which Mesa owns per-batch (freedreno fd2_emit_restore
+	 * writes it every batch); stock Mesa writes CP_PERFMON_CNTL=0 (perfmon
+	 * frozen) so this never counted and devfreq parked the GPU at min. The
+	 * paired Mesa change makes fd2_emit_restore emit CP_PERFMON_CNTL=1.
 	 */
-	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER1_SELECT, RBBM1_RB_BUSY);
+	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER1_SELECT, RBBM1_NRT_BUSY);
 
 	ret = adreno_hw_init(gpu);
 	if (ret)
@@ -737,22 +752,20 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 	/*
 	 * The a2xx GFX3D core clock is NOT glitch-free across a rate change:
 	 * switching it while the 3D pipe is rendering wedges the back-end
-	 * (RB/PA/SC stuck busy, CP parked) and hard-hangs the device. Legacy
-	 * KGSL avoids this in kgsl_pwrctrl_pwrlevel_change() by idling the GPU
-	 * before clk_set_rate whenever pdata->idle_needed is set (true for
-	 * a2xx-class parts) -- "instability is caused on changing clock freq
-	 * when the core is busy". We have no GMU to coordinate the switch, and
-	 * must not take gpu->lock here (gpu_set_freq runs under the devfreq
-	 * lock, while the submit path takes active_lock -> devfreq lock; the
-	 * reverse order would deadlock). So quiesce the 3D pipe by draining the
-	 * ringbuffer to idle before the switch. Because the GPU is idle across
-	 * the rate change, a multi-OPP jump settles harmlessly (no need for
-	 * KGSL's one-level-at-a-time stepping, which guarded against switching
-	 * while busy). Frame-paced workloads idle between frames so this
-	 * normally catches an idle window; the recovery-storm guard in
-	 * recover_worker() backs the rare case where it can't.
+	 * (RB/PA/SC stuck busy, CP parked). Legacy KGSL idles the GPU before the
+	 * switch (kgsl_pwrctrl_pwrlevel_change, idle_needed) -- "instability is
+	 * caused on changing clock freq when the core is busy". We have no GMU
+	 * and must not take gpu->lock here (gpu_set_freq runs under the devfreq
+	 * lock; the submit path takes active_lock -> devfreq lock, so the reverse
+	 * order would deadlock). So only switch when the 3D pipe is already idle:
+	 * if it is busy right now, skip this change -- devfreq retries next tick
+	 * and the clock holds until an idle window (the idle->active transition
+	 * and inter-frame gaps provide them). This never switches mid-render and
+	 * never blocks or spams the log (no ring-drain wait). The recover_worker()
+	 * recovery-storm guard backs any rare idle-race miss.
 	 */
-	a2xx_idle(gpu);
+	if (gpu_read(gpu, REG_A2XX_RBBM_STATUS) & A2XX_RBBM_BUSY_MASK)
+		return;
 
 	/*
 	 * Set both avg and peak bandwidth proportional to frequency,
