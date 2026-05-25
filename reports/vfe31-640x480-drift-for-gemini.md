@@ -1,6 +1,25 @@
 # VFE31 640x480 Frame Drift - Final Analysis
 
-> **RESOLVED 2026-05-25 — root cause confirmed on-device. NOT a HW limit.**
+> **PARKED 2026-05-25 — known limitation; not blocking. Both sensor-side fixes falsified on-device.**
+> The 640x480 (Context A, *binned*, ~15fps) image walks ~30 lines/frame; 1280x1024
+> (Context B, full readout) is always perfectly aligned (span 0). Two hypotheses were
+> implemented and **empirically falsified** by on-device back-to-back capture:
+>  1. MIPI frame-sync short packets (R0x3404 enabled every stream) — still drifts.
+>  2. Frame-period re-apply (FRAME_LENGTH_A/LINE_LENGTH_PCK_A re-written every context
+>     config) — still drifts.
+> Both commits are kept as legitimate hygiene (re-applying frame geometry was a real
+> omission; FS/FE packets are standard MIPI) but neither is the fix. The differentiator
+> is **binning + frame rate**, and buffer selection is always correct (buf_verify MATCH),
+> so the cause is **VFE/CAMIF-side frame-lock timing in binned mode**, not the sensor.
+> **Decision:** parked as a known limitation — it is a binned-*preview* artifact (single
+> still frames are clean, a viewfinder shows the latest frame), so it does not block the
+> camera use case or upstreaming. Next time, investigate the VFE/CAMIF side via runtime
+> register experiments (CAMIF EPOCH/SOF, deferred-CAMIF start timing, CSI pixel clock)
+> *before* any commit+build. See `reports/audit/` and the project memory for full history.
+>
+> ---
+>
+> ~~**RESOLVED 2026-05-25 — root cause confirmed on-device. NOT a HW limit.**~~ (premature; see above)
 > The drift is a CAMIF frame-lock failure caused by the MT9M113 sending **no MIPI
 > Frame-Start/End short packets** (R0x3404=0 by default; `mt9m113_skip_short_pkt=1`).
 > With no frame-end marker the VFE CAMIF runs APS mode and counts lines internally,
