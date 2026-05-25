@@ -48,6 +48,8 @@ enum {
 };
 
 #define F_MN(f, s, _m, _n) { .freq = f, .src = s, .pre_div = 1, .m = _m, .n = _n }
+/* Pure divider+source RCG (no MND), e.g. VPE on MSM8660: NS_DIVSRC(15,12,d,2,0,s) */
+#define F_DIV(f, s, d) { .freq = f, .src = s, .pre_div = d }
 
 static struct clk_pll pll2 = {
 	.l_reg = 0x320,
@@ -1638,15 +1640,22 @@ static struct clk_branch vcodec_clk = {
 	},
 };
 
+/*
+ * VPE source is a simple divider+source RCG (no MND), per legacy clock-8x60.c
+ * (NS_DIVSRC(15,12,d,2,0,s), set_rate_nop). The divisor lives in NS[15:12]
+ * (4 bits); 160 MHz = PLL2 / 5. Using F_MN here silently forces pre_div=1 and
+ * drops the divisor into the nonexistent MND, leaving vpe_src grossly
+ * misclocked -> the first VPE register access hangs the AXI bus.
+ */
 static const struct freq_tbl clk_tbl_vpe[] = {
-	F_MN( 27000000, P_PXO,  1,  0),
-	F_MN( 34909000, P_PLL8, 1, 11),
-	F_MN( 38400000, P_PLL8, 1, 10),
-	F_MN( 64000000, P_PLL8, 1,  6),
-	F_MN( 76800000, P_PLL8, 1,  5),
-	F_MN( 96000000, P_PLL8, 1,  4),
-	F_MN(100000000, P_PLL2, 1,  8),
-	F_MN(160000000, P_PLL2, 1,  5),
+	F_DIV( 27000000, P_PXO,   1),
+	F_DIV( 34909000, P_PLL8, 11),
+	F_DIV( 38400000, P_PLL8, 10),
+	F_DIV( 64000000, P_PLL8,  6),
+	F_DIV( 76800000, P_PLL8,  5),
+	F_DIV( 96000000, P_PLL8,  4),
+	F_DIV(100000000, P_PLL2,  8),
+	F_DIV(160000000, P_PLL2,  5),
 	{ }
 };
 
@@ -1654,7 +1663,7 @@ static struct clk_rcg vpe_src = {
 	.ns_reg = 0x0118,
 	.p = {
 		.pre_div_shift = 12,
-		.pre_div_width = 2,
+		.pre_div_width = 4,	/* NS[15:12], legacy BM(15,12); holds /11 */
 	},
 	.s = {
 		.src_sel_shift = 0,
