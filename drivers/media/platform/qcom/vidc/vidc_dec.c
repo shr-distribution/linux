@@ -867,6 +867,23 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, dpb_config);
 
 		/*
+		 * Per-frame shared memory (legacy ddl_vidc_decode_frame_run /
+		 * input_done):
+		 *  - frame tag: the firmware echoes it on the displayed frame
+		 *    (VIDC_SHM_GET_FRAME_TAG_TOP); record the input timestamp
+		 *    against the tag so reordered output keeps the right PTS;
+		 *  - start_byte_number reset to 0 each frame.
+		 */
+		{
+			u32 tag = inst->frame_tag_next++;
+
+			inst->frame_tag_ts[tag % VIDC_DPB_REG_SLOTS] =
+				inst->src_buf->vb2_buf.timestamp;
+			writel(tag, core->shm_vaddr + VIDC_SHM_SET_FRAME_TAG);
+			writel(0, core->shm_vaddr + VIDC_SHM_SET_START_BYTE_NUMBER);
+		}
+
+		/*
 		 * Pixel-cache per-frame setup — webOS ddl_vidc_decode_frame_run
 		 * (vcd_ddl_vidc.c:840-853).  Decoded macroblocks flow through
 		 * the pix cache on the way to DRAM; without telling the cache
@@ -1229,6 +1246,13 @@ static int vidc_dec_emit_dpb(struct vidc_inst *inst,
 		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
 	} else {
+		/*
+		 * Restore the input timestamp for this displayed frame from
+		 * the tag the firmware echoed (output order != input order).
+		 */
+		dst_buf->vb2_buf.timestamp =
+			inst->frame_tag_ts[inst->display_frame_tag %
+					   VIDC_DPB_REG_SLOTS];
 		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
 	}

@@ -532,13 +532,23 @@ static void vidc_handle_frame_done(struct vidc_core *core,
 	 */
 	status = vidc_read(core, VIDC_REG_DEC_DISPLAY_STATUS);
 	inst->display_status = status & VIDC_DISPLAY_STATUS_MASK;
+	/* Bits 4-5 flag a mid-stream resolution change (RG7 DISPLAY_RES). */
+	inst->display_resl_change = (status & VIDC_DISPLAY_RES_MASK) >>
+				    VIDC_DISPLAY_RES_SHIFT;
+
+	/*
+	 * Tag the firmware echoes for the just-displayed frame; used to
+	 * restore the originating input timestamp (output is reordered).
+	 */
+	inst->display_frame_tag = readl(core->shm_vaddr +
+					VIDC_SHM_GET_FRAME_TAG_TOP);
 
 	dev_dbg(core->dev,
-		"Frame done: Y_raw=0x%x C_raw=0x%x (offsets 0x%x / 0x%x) status=%u\n",
+		"Frame done: Y_raw=0x%x C_raw=0x%x (offsets 0x%x / 0x%x) status=%u resl_chg=%u\n",
 		inst->display_y_raw, inst->display_c_raw,
 		inst->display_y_raw << VIDC_ADDR_SHIFT,
 		 inst->display_c_raw << VIDC_ADDR_SHIFT,
-		 inst->display_status);
+		 inst->display_status, inst->display_resl_change);
 
 	/* Read the decoded compressed-frame consumed size */
 	inst->result_size = vidc_read(core, VIDC_REG_SEQ_FRAME_SIZE);
@@ -547,10 +557,12 @@ static void vidc_handle_frame_done(struct vidc_core *core,
 static void vidc_handle_enc_complete(struct vidc_core *core,
 				     struct vidc_inst *inst)
 {
-	/* Read encoded frame size */
+	/* Read encoded frame size and type (1 = I-frame / keyframe) */
 	inst->result_size = vidc_read(core, VIDC_REG_ENC_FRAME_SIZE);
+	inst->enc_keyframe = (vidc_read(core, VIDC_REG_ENC_FRAME_TYPE) == 1);
 
-	dev_dbg(core->dev, "Encode complete: size=%u\n", inst->result_size);
+	dev_dbg(core->dev, "Encode complete: size=%u key=%d\n",
+		inst->result_size, inst->enc_keyframe);
 }
 
 static void vidc_handle_seq_done(struct vidc_core *core,

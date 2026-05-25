@@ -211,6 +211,11 @@
  */
 #define VIDC_META_INPUT_OFF			0x200
 
+#define VIDC_SHM_SET_FRAME_TAG			0x0004
+#define VIDC_SHM_GET_FRAME_TAG_TOP		0x0008
+#define VIDC_SHM_SET_START_BYTE_NUMBER		0x0018
+#define VIDC_SHM_CROP_INFO1			0x0020	/* right<<16 | left  */
+#define VIDC_SHM_CROP_INFO2			0x0024	/* bottom<<16 | top   */
 #define VIDC_SHM_METADATA_ENABLE		0x0038
 #define VIDC_SHM_EXT_METADATA_START_ADDR	0x0044
 #define VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE	0x0064
@@ -285,7 +290,9 @@
  * higher bits encode display-coding and resolution-change flags
  * we don't yet consume.
  */
-#define VIDC_DISPLAY_STATUS_MASK		0xF
+#define VIDC_DISPLAY_STATUS_MASK		0x7	/* RG7 status field is bits 0-2 */
+#define VIDC_DISPLAY_RES_MASK			0x30	/* RG7 resolution-change field */
+#define VIDC_DISPLAY_RES_SHIFT			4
 #define VIDC_DISPLAY_STATUS_DECODE_ONLY		0
 #define VIDC_DISPLAY_STATUS_DECODE_AND_DISPLAY	1
 #define VIDC_DISPLAY_STATUS_DISPLAY_ONLY	2
@@ -723,6 +730,23 @@ struct vidc_inst {
 	 * bit so the firmware drops its reference frames.
 	 */
 	bool flush_pending;
+
+	/* Encoder: force the next submitted frame to be an IDR/keyframe. */
+	bool force_keyframe;
+	/* Encoder: set by the IRQ handler when the completed frame is an I-frame. */
+	bool enc_keyframe;
+
+	/*
+	 * Frame-tag timestamp passthrough. The firmware echoes the tag we
+	 * write to VIDC_SHM_SET_FRAME_TAG back at completion
+	 * (VIDC_SHM_GET_FRAME_TAG_TOP). On the decoder, output order differs
+	 * from input order (reorder), so we map tag -> input timestamp here
+	 * and restore it on the displayed CAPTURE buffer.
+	 */
+	u32 frame_tag_next;
+	u64 frame_tag_ts[VIDC_DPB_REG_SLOTS];
+	u32 display_frame_tag;	/* tag of the just-displayed frame (from IRQ) */
+	u32 display_resl_change;	/* nonzero = mid-stream resolution change */
 
 	/*
 	 * display_status from VIDC_REG_DEC_DISPLAY_STATUS, low nibble.

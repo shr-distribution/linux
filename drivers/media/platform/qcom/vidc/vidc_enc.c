@@ -789,9 +789,24 @@ static void vidc_enc_submit_frame(struct vidc_inst *inst,
 		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_C_ADDR,
 		   (src_addr + y_size - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
-	vidc_write(core, VIDC_REG_CH0_INTRA_FRAME, 0);	/* P-frame; firmware uses I_FRM_CTRL */
+	vidc_write(core, VIDC_REG_CH0_INTRA_FRAME,
+		   inst->force_keyframe ? 1 : 0);
+	inst->force_keyframe = false;
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
 	vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, 0);	/* input_flush = 0 */
+
+	/*
+	 * Per-frame shared memory, matching legacy ddl_vidc_encode_frame_run:
+	 *  - frame tag: echoed back by the firmware on completion (we pair
+	 *    src/dst in-order, so it is informational here);
+	 *  - VOP timing: enable | time_resolution(fps*2) | per-frame delta.
+	 *    A constant-frame-rate delta of 2 (= time_resolution / fps) keeps
+	 *    the firmware rate-control pacing correct; the init-time write
+	 *    left the delta at 0.
+	 */
+	writel(core->cmd_seq_num, core->shm_vaddr + VIDC_SHM_SET_FRAME_TAG);
+	writel((1u << 31) | ((inst->framerate * 2) << 16) | 2,
+	       core->shm_vaddr + VIDC_SHM_ENC_VOP_TIMING);
 
 	/* Increment and write command sequence number */
 	core->cmd_seq_num++;
@@ -837,17 +852,29 @@ static void vidc_enc_complete_work(struct work_struct *w)
 	src_buf->sequence = inst->sequence_out++;
 	dst_buf->sequence = inst->sequence_cap++;
 
+	/* Carry the input timestamp to the encoded buffer (in-order). */
+	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf, false);
+
 	if (inst->error) {
 		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
 	} else {
 		/* result_size = compressed bitstream bytes the firmware
-		 * wrote to the dst buffer (VIDC_REG_ENC_FRAME_SIZE) */
-		u32 payload = inst->result_size;
+		 * wrote to the dst buffer (VIDC_REG_ENC_FRAME_SIZE), clamped
+		 * to the destination plane (the size is firmware-reported). */
+		unsigned long dst_cap = vb2_plane_size(&dst_buf->vb2_buf, 0);
+		u32 payload = min_t(u32, inst->result_size, dst_cap);
 
 		if (payload == 0)
-			payload = vidc_enc_get_framesize_compressed(inst->width,
-								    inst->height);
+			payload = min_t(u32, dst_cap,
+					vidc_enc_get_framesize_compressed(inst->width,
+									  inst->height));
+
+		/* Flag keyframes so muxers/packetizers can sync. */
+		if (inst->enc_keyframe)
+			dst_buf->flags |= V4L2_BUF_FLAG_KEYFRAME;
+		else
+			dst_buf->flags |= V4L2_BUF_FLAG_PFRAME;
 
 		/*
 		 * Prepend the captured SPS/PPS to the first encoded frame so
@@ -889,7 +916,15 @@ static void vidc_enc_complete_work(struct work_struct *w)
 	}
 
 out:
-	core->curr_inst = NULL;
+	/* curr_inst is read by the IRQ handler — clear it under irqlock. */
+	{
+		unsigned long flags;
+
+		spin_lock_irqsave(&core->irqlock, flags);
+		if (core->curr_inst == inst)
+			core->curr_inst = NULL;
+		spin_unlock_irqrestore(&core->irqlock, flags);
+	}
 	v4l2_m2m_job_finish(inst->core->m2m_dev_enc, inst->m2m_ctx);
 }
 
