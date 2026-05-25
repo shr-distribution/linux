@@ -693,8 +693,6 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 	 */
 	if (a2xx_gpu->icc_path)
 		icc_set_bw(a2xx_gpu->icc_path, 0, 0);
-	if (a2xx_gpu->icc_path_smi)
-		icc_set_bw(a2xx_gpu->icc_path_smi, 0, 0);
 
 	return msm_gpu_pm_suspend(gpu);
 }
@@ -713,8 +711,6 @@ static int a2xx_pm_resume(struct msm_gpu *gpu)
 		u32 bw = a2xx_icc_bw_for_freq(gpu->fast_rate);
 
 		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
-		if (a2xx_gpu->icc_path_smi)
-			icc_set_bw(a2xx_gpu->icc_path_smi, bw, bw);
 	}
 
 	return 0;
@@ -747,8 +743,6 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		u32 bw = a2xx_icc_bw_for_freq(freq);
 
 		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
-		if (a2xx_gpu->icc_path_smi)
-			icc_set_bw(a2xx_gpu->icc_path_smi, bw, bw);
 	}
 
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
@@ -813,7 +807,7 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	if (ret)
 		goto fail;
 
-	/* Get interconnect path for memory bandwidth voting (GPU -> EBI) */
+	/* Get interconnect path for memory bandwidth voting */
 	a2xx_gpu->icc_path = devm_of_icc_get(&pdev->dev, "gfx-mem");
 	if (IS_ERR(a2xx_gpu->icc_path)) {
 		ret = PTR_ERR(a2xx_gpu->icc_path);
@@ -826,25 +820,6 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	}
 
 	/*
-	 * GPU -> SMI path. On apq8060 the display scanout framebuffers are
-	 * allocated from the MMSS-local SMI pool (where the VIDC firmware also
-	 * lives), and the GPU resolves rendered tiles into them. Without a vote
-	 * on this fabric slave the GPU's AXI writes to SMI error (MH AXI write
-	 * error), and under load the unprovisioned writes wedge the bus. MDP and
-	 * VIDC already declare both SMI and EBI paths; the GPU must too. Optional
-	 * (older DTs / platforms without an SMI pool won't have it).
-	 */
-	a2xx_gpu->icc_path_smi = devm_of_icc_get(&pdev->dev, "gfx-smi");
-	if (IS_ERR(a2xx_gpu->icc_path_smi)) {
-		ret = PTR_ERR(a2xx_gpu->icc_path_smi);
-		if (ret != -ENODATA) {
-			DRM_DEV_ERROR(dev->dev, "failed to get gfx-smi interconnect path: %d\n", ret);
-			goto fail;
-		}
-		a2xx_gpu->icc_path_smi = NULL;
-	}
-
-	/*
 	 * Set initial interconnect bandwidth to max (avg = peak), matching
 	 * legacy webOS grp3d_max_vectors. Adjusted during runtime PM and
 	 * devfreq scaling.
@@ -853,8 +828,6 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 		u32 bw = a2xx_icc_bw_for_freq(gpu->fast_rate);
 
 		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
-		if (a2xx_gpu->icc_path_smi)
-			icc_set_bw(a2xx_gpu->icc_path_smi, bw, bw);
 	}
 
 	if (adreno_is_a20x(adreno_gpu))
