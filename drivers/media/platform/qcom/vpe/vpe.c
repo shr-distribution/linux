@@ -642,15 +642,9 @@ static int vpe_runtime_suspend(struct device *dev)
 
 	icc_set_bw(vpe->icc_path, 0, 0);
 
-	/*
-	 * Disable the core branch while the iface (ahb) clock is still on so
-	 * clk_branch_toggle can read the branch halt status; keep ahb last
-	 * (and enable it first in resume). Otherwise the core disable times
-	 * out with "vpe_clk status stuck at 'on'" (same as the rotator).
-	 */
+	clk_disable_unprepare(vpe->ahb_clk);
 	clk_disable_unprepare(vpe->axi_clk);
 	clk_disable_unprepare(vpe->core_clk);
-	clk_disable_unprepare(vpe->ahb_clk);
 
 	return 0;
 }
@@ -670,27 +664,26 @@ static int vpe_runtime_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	/* iface (ahb) first so the core-branch toggle can read halt status. */
-	ret = clk_prepare_enable(vpe->ahb_clk);
-	if (ret)
-		return ret;
-
 	ret = clk_prepare_enable(vpe->core_clk);
 	if (ret)
-		goto err_ahb;
+		return ret;
 
 	ret = clk_prepare_enable(vpe->axi_clk);
 	if (ret)
 		goto err_core;
 
+	ret = clk_prepare_enable(vpe->ahb_clk);
+	if (ret)
+		goto err_axi;
+
 	icc_set_bw(vpe->icc_path, VPE_ICC_AVG_BW, VPE_ICC_PEAK_BW);
 
 	return 0;
 
+err_axi:
+	clk_disable_unprepare(vpe->axi_clk);
 err_core:
 	clk_disable_unprepare(vpe->core_clk);
-err_ahb:
-	clk_disable_unprepare(vpe->ahb_clk);
 	return ret;
 }
 
