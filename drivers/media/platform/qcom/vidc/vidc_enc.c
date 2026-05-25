@@ -133,13 +133,16 @@ static u32 vidc_enc_get_framesize_raw(u32 pixfmt, u32 width, u32 height)
 
 	if (vidc_enc_is_linear(pixfmt)) {
 		/*
-		 * Linear NV12: row-major Y then interleaved CbCr, contiguous
-		 * (C immediately after Y, standard V4L2 layout). The firmware
-		 * is told TILE_LINEAR and reads Cb/Cr from CH0_C_ADDR, which we
-		 * point at the Y-plane end.
+		 * Linear NV12 (Qualcomm NV12_16M2KA): row-major Y then
+		 * interleaved CbCr. The CbCr plane MUST start at a 2048-byte
+		 * aligned offset because the CH0_C_ADDR register has 2048-byte
+		 * (VIDC_ADDR_SHIFT) granularity — a non-aligned offset is
+		 * truncated, so the firmware would read chroma from the wrong
+		 * place (shifted color). The Y plane is therefore padded up to
+		 * 2048. Matches webOS DDL_LINEAR_MULTIPLY_FACTOR.
 		 */
 		y_stride = VIDC_LINEAR_STRIDE(width);
-		y_plane = y_stride * height;
+		y_plane = ALIGN(y_stride * height, SZ_2K);
 		uv_plane = y_stride * (height / 2);
 		return y_plane + uv_plane;
 	}
@@ -157,7 +160,8 @@ static u32 vidc_enc_get_framesize_raw(u32 pixfmt, u32 width, u32 height)
 static u32 vidc_enc_c_offset(u32 pixfmt, u32 width, u32 height)
 {
 	if (vidc_enc_is_linear(pixfmt))
-		return VIDC_LINEAR_STRIDE(width) * height;
+		/* 2048-aligned so CH0_C_ADDR (>>11 granularity) is exact */
+		return ALIGN(VIDC_LINEAR_STRIDE(width) * height, SZ_2K);
 	return ALIGN(width, 128) * ALIGN(height, 32);
 }
 
