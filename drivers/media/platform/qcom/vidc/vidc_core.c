@@ -2743,8 +2743,14 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 	 */
 	vidc_write(core, VIDC_REG_ENC_PICTURE_PERIOD,
 		   (1 << 18) | (inst->gop_size ? inst->gop_size : 30));
-	/* REG_645603: input frame format. 3 = TILE_64x32 for NV12MT. */
-	vidc_write(core, VIDC_REG_ENC_FRAME_FORMAT, 3);
+	/*
+	 * REG_645603: input frame format / memory-access method.
+	 *   0 = TILE_LINEAR (V4L2_PIX_FMT_NV12, the firmware's native input)
+	 *   3 = TILE_64x32  (V4L2_PIX_FMT_NV12MT)
+	 */
+	vidc_write(core, VIDC_REG_ENC_FRAME_FORMAT,
+		   (inst->fmt_out && inst->fmt_out->pixfmt == V4L2_PIX_FMT_NV12)
+		   ? 0 : 3);
 
 	/*
 	 * Shared-memory encoder params (VIDC_SM_* offsets from

@@ -33,6 +33,18 @@
 static const struct vidc_format vidc_enc_fmts[] = {
 	/* Output formats (raw input) */
 	{
+		/*
+		 * Linear NV12 — the firmware's native input format
+		 * (TILE_LINEAR; webOS's default encoder input,
+		 * VCD_BUFFER_FORMAT_NV12_16M2KA). Listed first so it is the
+		 * default, since generic userspace produces linear, not tiled.
+		 */
+		.pixfmt = V4L2_PIX_FMT_NV12,
+		.num_planes = 1,
+		.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
+		.codec = 0, /* raw format */
+	},
+	{
 		.pixfmt = V4L2_PIX_FMT_NV12MT,
 		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
@@ -107,18 +119,46 @@ static const struct vidc_format *vidc_enc_find_format_by_index(unsigned int inde
 	return NULL;
 }
 
-static u32 vidc_enc_get_framesize_raw(u32 width, u32 height)
+/* Linear NV12 luma stride (matches webOS DDL_LINEAR_ALIGN_WIDTH). */
+#define VIDC_LINEAR_STRIDE(w)	ALIGN((w), 16)
+
+static bool vidc_enc_is_linear(u32 pixfmt)
+{
+	return pixfmt == V4L2_PIX_FMT_NV12;
+}
+
+static u32 vidc_enc_get_framesize_raw(u32 pixfmt, u32 width, u32 height)
 {
 	u32 y_stride, uv_stride, y_plane, uv_plane;
 
-	/* Tile-NV12 (V4L2_PIX_FMT_NV12MT) - same total bytes as linear
-	 * NV12 with the standard 128-pixel stride alignment. */
+	if (vidc_enc_is_linear(pixfmt)) {
+		/*
+		 * Linear NV12: row-major Y then interleaved CbCr, contiguous
+		 * (C immediately after Y, standard V4L2 layout). The firmware
+		 * is told TILE_LINEAR and reads Cb/Cr from CH0_C_ADDR, which we
+		 * point at the Y-plane end.
+		 */
+		y_stride = VIDC_LINEAR_STRIDE(width);
+		y_plane = y_stride * height;
+		uv_plane = y_stride * (height / 2);
+		return y_plane + uv_plane;
+	}
+
+	/* Tile-NV12 (V4L2_PIX_FMT_NV12MT): 128x32-aligned tile planes. */
 	y_stride = ALIGN(width, 128);
 	uv_stride = y_stride;
 	y_plane = y_stride * ALIGN(height, 32);
 	uv_plane = uv_stride * ALIGN(height / 2, 32);
 
 	return y_plane + uv_plane;
+}
+
+/* Byte offset of the CbCr plane within a raw input buffer. */
+static u32 vidc_enc_c_offset(u32 pixfmt, u32 width, u32 height)
+{
+	if (vidc_enc_is_linear(pixfmt))
+		return VIDC_LINEAR_STRIDE(width) * height;
+	return ALIGN(width, 128) * ALIGN(height, 32);
 }
 
 static u32 vidc_enc_get_framesize_compressed(u32 width, u32 height)
@@ -190,10 +230,13 @@ static int vidc_enc_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 
 	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		/* Raw input */
-		szimage = vidc_enc_get_framesize_raw(pixmp->width,
-						     pixmp->height);
+		szimage = vidc_enc_get_framesize_raw(pixmp->pixelformat,
+						     pixmp->width, pixmp->height);
 		pixmp->plane_fmt[0].sizeimage = szimage;
-		pixmp->plane_fmt[0].bytesperline = ALIGN(pixmp->width, 128);
+		pixmp->plane_fmt[0].bytesperline =
+			vidc_enc_is_linear(pixmp->pixelformat) ?
+			VIDC_LINEAR_STRIDE(pixmp->width) :
+			ALIGN(pixmp->width, 128);
 		pixmp->colorspace = V4L2_COLORSPACE_REC709;
 	} else {
 		/* Compressed output */
@@ -479,7 +522,10 @@ static int vidc_enc_queue_setup(struct vb2_queue *q,
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		/* Raw input */
-		size = vidc_enc_get_framesize_raw(inst->out_width,
+		u32 ipfmt = inst->fmt_out ? inst->fmt_out->pixfmt :
+					    V4L2_PIX_FMT_NV12;
+
+		size = vidc_enc_get_framesize_raw(ipfmt, inst->out_width,
 						  inst->out_height);
 		dev_dbg(inst->core->dev, "queue_setup: OUTPUT size=%u\n", size);
 	} else {
@@ -523,8 +569,10 @@ static int vidc_enc_buf_prepare(struct vb2_buffer *vb)
 	u32 size;
 
 	if (vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
-		size = vidc_enc_get_framesize_raw(inst->out_width,
-						  inst->out_height);
+		size = vidc_enc_get_framesize_raw(
+				inst->fmt_out ? inst->fmt_out->pixfmt :
+						V4L2_PIX_FMT_NV12,
+				inst->out_width, inst->out_height);
 	else
 		size = vidc_enc_get_framesize_compressed(inst->width,
 							 inst->height);
@@ -755,9 +803,13 @@ static void vidc_enc_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_ENC_TARGET_BITRATE, inst->bitrate);
 	vidc_write(core, VIDC_REG_ENC_FRAME_RATE, inst->framerate * 1000);
 
-	/* Calculate Y plane size for NV12 format */
-	y_stride = ALIGN(inst->out_width, 128);
-	y_size = y_stride * ALIGN(inst->out_height, 32);
+	/*
+	 * CbCr-plane byte offset within the input buffer (tiled vs linear).
+	 * The firmware reads Cb/Cr from CH0_C_ADDR, so this just needs to
+	 * point at the start of the chroma plane for the active layout.
+	 */
+	y_stride = inst->fmt_out ? inst->fmt_out->pixfmt : V4L2_PIX_FMT_NV12;
+	y_size = vidc_enc_c_offset(y_stride, inst->out_width, inst->out_height);
 
 	/*
 	 * Encoder command parameter layout (vidc_1080p_encode_frame_start_ch0):
@@ -1081,7 +1133,8 @@ static int vidc_enc_open(struct file *file)
 	INIT_WORK(&inst->enc_complete_work, vidc_enc_complete_work);
 
 	/* Set default formats */
-	inst->fmt_out = vidc_enc_find_format(V4L2_PIX_FMT_NV12MT,
+	/* Default to linear NV12 (the firmware-native input format). */
+	inst->fmt_out = vidc_enc_find_format(V4L2_PIX_FMT_NV12,
 					     V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
 	inst->fmt_cap = vidc_enc_find_format(V4L2_PIX_FMT_H264,
 					     V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
