@@ -2741,7 +2741,8 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 	 * zero during SEQ_HEADER processing (error 0x51 = DIVIDE_BY_ZERO).
 	 * Use I_FRM_CTRL=30 (every 30th frame is an I-frame at 30fps).
 	 */
-	vidc_write(core, VIDC_REG_ENC_PICTURE_PERIOD, (1 << 18) | 30);
+	vidc_write(core, VIDC_REG_ENC_PICTURE_PERIOD,
+		   (1 << 18) | (inst->gop_size ? inst->gop_size : 30));
 	/* REG_645603: input frame format. 3 = TILE_64x32 for NV12MT. */
 	vidc_write(core, VIDC_REG_ENC_FRAME_FORMAT, 3);
 

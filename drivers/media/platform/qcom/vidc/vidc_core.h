@@ -751,6 +751,11 @@ struct vidc_inst {
 	dma_addr_t seq_scratch_dma;
 	/* Encoder: set by the IRQ handler when the completed frame is an I-frame. */
 	bool enc_keyframe;
+	/* Encoder: GOP size (I-frame period), from V4L2_CID_MPEG_VIDEO_GOP_SIZE. */
+	u32 gop_size;
+
+	/* Decoder: read-only MIN_BUFFERS_FOR_CAPTURE, updated after SEQ parse. */
+	struct v4l2_ctrl *ctrl_min_cap;
 
 	/*
 	 * Frame-tag timestamp passthrough. The firmware echoes the tag we

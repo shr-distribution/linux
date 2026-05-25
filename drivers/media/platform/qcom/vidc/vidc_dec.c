@@ -8,6 +8,7 @@
 
 #include <linux/clk.h>
 #include <linux/module.h>
+#include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
@@ -501,6 +502,7 @@ static const struct v4l2_ioctl_ops vidc_dec_ioctl_ops = {
 	.vidioc_streamon = vidc_dec_streamon,
 	.vidioc_streamoff = vidc_dec_streamoff,
 	.vidioc_g_selection = vidc_dec_g_selection,
+	.vidioc_try_decoder_cmd = v4l2_m2m_ioctl_try_decoder_cmd,
 	.vidioc_decoder_cmd = vidc_dec_decoder_cmd,
 	.vidioc_subscribe_event = vidc_dec_subscribe_event,
 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
@@ -1205,6 +1207,10 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 
 	inst->seq_parsed = true;
 
+	/* Publish the firmware minimum so userspace can size CAPTURE. */
+	if (inst->ctrl_min_cap && inst->min_dpb_count)
+		v4l2_ctrl_s_ctrl(inst->ctrl_min_cap, inst->min_dpb_count);
+
 	dev_info(core->dev,
 		 "Sequence parsed: %ux%u, min_dpb=%u — initialising DPB\n",
 		 inst->seq_width, inst->seq_height, inst->min_dpb_count);
@@ -1401,6 +1407,13 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
 			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
 		}
+		/* Drain complete — signal end of stream to userspace. */
+		{
+			static const struct v4l2_event eos = {
+				.type = V4L2_EVENT_EOS,
+			};
+			v4l2_event_queue_fh(&inst->fh, &eos);
+		}
 		break;
 
 	case VIDC_DISPLAY_STATUS_NOOP:
@@ -1579,9 +1592,26 @@ static int vidc_dec_open(struct file *file)
 		goto err_free;
 	}
 
-	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 0);
+	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 1);
 	if (ret)
 		goto err_m2m_ctx_release;
+
+	/*
+	 * Required by the V4L2 stateful decoder uAPI: userspace reads this
+	 * to size the CAPTURE queue. Read-only; updated with the firmware
+	 * minimum after the sequence header is parsed (vidc_dec_seq_done_work).
+	 */
+	inst->ctrl_min_cap = v4l2_ctrl_new_std(&inst->ctrl_handler, NULL,
+					       V4L2_CID_MIN_BUFFERS_FOR_CAPTURE,
+					       1, 32, 1, 4);
+	if (inst->ctrl_min_cap)
+		inst->ctrl_min_cap->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+
+	if (inst->ctrl_handler.error) {
+		ret = inst->ctrl_handler.error;
+		v4l2_ctrl_handler_free(&inst->ctrl_handler);
+		goto err_m2m_ctx_release;
+	}
 
 	v4l2_fh_init(&inst->fh, core->vfd_dec);
 	inst->fh.ctrl_handler = &inst->ctrl_handler;

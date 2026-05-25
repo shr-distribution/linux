@@ -76,6 +76,7 @@ static const struct vidc_format vidc_enc_fmts[] = {
 
 /* Default framerate */
 #define VIDC_DEFAULT_FRAMERATE	30
+#define VIDC_DEFAULT_GOP	30
 
 static const struct vidc_format *vidc_enc_find_format(u32 pixfmt, u32 type)
 {
@@ -1025,6 +1026,42 @@ static void vidc_enc_seq_done_work(struct work_struct *w)
 	complete(&inst->done);
 }
 
+static int vidc_enc_s_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct vidc_inst *inst =
+		container_of(ctrl->handler, struct vidc_inst, ctrl_handler);
+
+	switch (ctrl->id) {
+	case V4L2_CID_MPEG_VIDEO_BITRATE:
+		inst->bitrate = ctrl->val;
+		break;
+	case V4L2_CID_MPEG_VIDEO_GOP_SIZE:
+		inst->gop_size = ctrl->val ? ctrl->val : 1;
+		break;
+	case V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME:
+		inst->force_keyframe = true;
+		break;
+	case V4L2_CID_MPEG_VIDEO_BITRATE_MODE:
+	case V4L2_CID_MPEG_VIDEO_HEADER_MODE:
+	case V4L2_CID_MPEG_VIDEO_H264_PROFILE:
+	case V4L2_CID_MPEG_VIDEO_H264_LEVEL:
+		/*
+		 * Accepted for negotiation. The hardware is driven as
+		 * constrained-baseline with a joined header (see
+		 * vidc_apply_enc_codec_config / the SPS/PPS prepend); these
+		 * stay at the validated configuration for now.
+		 */
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static const struct v4l2_ctrl_ops vidc_enc_ctrl_ops = {
+	.s_ctrl = vidc_enc_s_ctrl,
+};
+
 static int vidc_enc_open(struct file *file)
 {
 	struct vidc_core *core = video_drvdata(file);
@@ -1055,6 +1092,7 @@ static int vidc_enc_open(struct file *file)
 	inst->out_height = VIDC_DEFAULT_HEIGHT;
 	inst->framerate = VIDC_DEFAULT_FRAMERATE;
 	inst->bitrate = VIDC_DEFAULT_BITRATE;
+	inst->gop_size = VIDC_DEFAULT_GOP;
 
 	/* Initialize M2M context (uses shared m2m_dev from core) */
 	inst->m2m_ctx = v4l2_m2m_ctx_init(core->m2m_dev_enc, inst,
@@ -1076,31 +1114,55 @@ static int vidc_enc_open(struct file *file)
 	 * V4L2_CID_MPEG_VIDEO_FRAME_RATE so applications can tune
 	 * rate-control without resorting to S_PARM.
 	 */
-	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 4);
+	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 8);
 	if (ret)
 		goto err_m2m_ctx_release;
 
 	v4l2_ctrl_new_std_menu(&inst->ctrl_handler,
-			       NULL,
+			       &vidc_enc_ctrl_ops,
 			       V4L2_CID_MPEG_VIDEO_H264_PROFILE,
 			       V4L2_MPEG_VIDEO_H264_PROFILE_HIGH,
 			       0,
 			       V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE);
 
 	v4l2_ctrl_new_std_menu(&inst->ctrl_handler,
-			       NULL,
+			       &vidc_enc_ctrl_ops,
 			       V4L2_CID_MPEG_VIDEO_H264_LEVEL,
 			       V4L2_MPEG_VIDEO_H264_LEVEL_4_0,
 			       0,
 			       V4L2_MPEG_VIDEO_H264_LEVEL_1_0);
 
 	v4l2_ctrl_new_std(&inst->ctrl_handler,
-			  NULL,
+			  &vidc_enc_ctrl_ops,
 			  V4L2_CID_MPEG_VIDEO_BITRATE,
 			  VIDC_MIN_BITRATE,
 			  VIDC_MAX_BITRATE,
 			  1,
 			  VIDC_DEFAULT_BITRATE);
+
+	v4l2_ctrl_new_std_menu(&inst->ctrl_handler,
+			       &vidc_enc_ctrl_ops,
+			       V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
+			       V4L2_MPEG_VIDEO_BITRATE_MODE_CBR,
+			       0,
+			       V4L2_MPEG_VIDEO_BITRATE_MODE_CBR);
+
+	v4l2_ctrl_new_std(&inst->ctrl_handler,
+			  &vidc_enc_ctrl_ops,
+			  V4L2_CID_MPEG_VIDEO_GOP_SIZE,
+			  1, 300, 1, VIDC_DEFAULT_GOP);
+
+	v4l2_ctrl_new_std(&inst->ctrl_handler,
+			  &vidc_enc_ctrl_ops,
+			  V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME,
+			  0, 0, 0, 0);
+
+	v4l2_ctrl_new_std_menu(&inst->ctrl_handler,
+			       &vidc_enc_ctrl_ops,
+			       V4L2_CID_MPEG_VIDEO_HEADER_MODE,
+			       V4L2_MPEG_VIDEO_HEADER_MODE_JOINED_WITH_1ST_FRAME,
+			       0,
+			       V4L2_MPEG_VIDEO_HEADER_MODE_JOINED_WITH_1ST_FRAME);
 
 	if (inst->ctrl_handler.error) {
 		ret = inst->ctrl_handler.error;
