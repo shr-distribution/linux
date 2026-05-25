@@ -6599,28 +6599,22 @@ static void vfe31_isr_sof(struct vfe_device *vfe, enum vfe_line_id line_id)
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 }
 
-static void vfe31_isr_comp_done_nop(struct vfe_device *vfe, u8 comp)
-{
-	/* VFE31 handles composite done in vfe31_isr directly */
-}
-
-static void vfe31_isr_wm_done_nop(struct vfe_device *vfe, u8 wm)
-{
-	/* VFE31 handles WM done in vfe31_isr/vfe31_wm_done directly */
-}
-
+/*
+ * VFE31 is a self-contained backend: like the gen2/gen3 backends it does not
+ * use the camss-vfe-gen1.c buffer-lifecycle layer (vfe->ops_gen1 is left NULL).
+ * vfe31_isr() dispatches frame completion to vfe31_wm_done() directly, so the
+ * generic comp_done/wm_done isr_ops are intentionally unset here.
+ */
 static const struct vfe_isr_ops vfe31_isr_ops = {
 	.reset_ack = vfe31_isr_reset_ack,
 	.halt_ack = vfe31_isr_halt_ack,
 	.reg_update = vfe31_isr_reg_update,
 	.sof = vfe31_isr_sof,
-	.comp_done = vfe31_isr_comp_done_nop,
-	.wm_done = vfe31_isr_wm_done_nop,
 };
 
 /*
- * VFE31 queue_buffer - directly writes ping/pong addresses instead of
- * going through ops_gen1 which would NULL-dereference.
+ * VFE31 queue_buffer - directly writes ping/pong addresses (the backend does
+ * not use the gen1 ops_gen1 buffer path).
  */
 static int vfe31_queue_buffer(struct camss_video *vid, struct camss_buffer *buf)
 {
