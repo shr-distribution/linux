@@ -65,7 +65,7 @@ int main(int argc, char **argv)
     int forcekey = getenv("VIDC_FORCEKEY") ? atoi(getenv("VIDC_FORCEKEY")) : -1;
     int linear   = getenv("VIDC_LINEAR")   ? atoi(getenv("VIDC_LINEAR"))   : 0;
     /* linear NV12 320x240 = 320*240 + 320*120 = 115200; tiled NV12MT = 147456 */
-    unsigned frame_bytes = linear ? (WIDTH * HEIGHT * 3 / 2) : 147456;
+    unsigned frame_bytes = linear ? (((WIDTH*HEIGHT+2047)&~2047) + WIDTH*HEIGHT/2) : 147456;
 
     int fd = open(dev_path, O_RDWR | O_NONBLOCK);
     if (fd < 0) die("open dev");
