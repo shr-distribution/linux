@@ -827,9 +827,16 @@ static int rotator_runtime_suspend(struct device *dev)
 {
 	struct rotator_dev *rot = dev_get_drvdata(dev);
 
+	/*
+	 * Disable the core branch while the iface (ahb) clock is still
+	 * running: clk_branch_toggle polls the branch halt status over the
+	 * iface, and with ahb already gated the read never updates, so the
+	 * core disable times out with "rot_clk status stuck at 'on'". Keep
+	 * ahb last (and enable it first in resume).
+	 */
 	clk_disable_unprepare(rot->axi_clk);
-	clk_disable_unprepare(rot->ahb_clk);
 	clk_disable_unprepare(rot->core_clk);
+	clk_disable_unprepare(rot->ahb_clk);
 
 	if (rot->icc_path)
 		icc_set_bw(rot->icc_path, 0, 0);
@@ -861,24 +868,29 @@ static int rotator_runtime_resume(struct device *dev)
 	if (ret)
 		goto err_icc;
 
-	ret = clk_prepare_enable(rot->core_clk);
+	/*
+	 * Enable the iface (ahb) clock first so the core-branch enable (and
+	 * the later disable in runtime_suspend) can read the branch halt
+	 * status over the iface. core, then axi.
+	 */
+	ret = clk_prepare_enable(rot->ahb_clk);
 	if (ret)
 		goto err_icc;
 
-	ret = clk_prepare_enable(rot->ahb_clk);
-	if (ret)
-		goto err_core;
-
-	ret = clk_prepare_enable(rot->axi_clk);
+	ret = clk_prepare_enable(rot->core_clk);
 	if (ret)
 		goto err_ahb;
 
+	ret = clk_prepare_enable(rot->axi_clk);
+	if (ret)
+		goto err_core;
+
 	return 0;
 
-err_ahb:
-	clk_disable_unprepare(rot->ahb_clk);
 err_core:
 	clk_disable_unprepare(rot->core_clk);
+err_ahb:
+	clk_disable_unprepare(rot->ahb_clk);
 err_icc:
 	if (rot->icc_path)
 		icc_set_bw(rot->icc_path, 0, 0);
