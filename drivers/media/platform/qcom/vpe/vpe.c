@@ -10,6 +10,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/interconnect.h>
@@ -702,6 +703,29 @@ static int vpe_probe(struct platform_device *pdev)
 
 	mutex_init(&vpe->lock);
 	spin_lock_init(&vpe->irqlock);
+
+	/*
+	 * Set up DMA parameters. Without this:
+	 *   - vb2_mmap NULL-derefs on dev->dma_parms->max_segment_size
+	 *   - vb2_dma_contig_plane_dma_addr returns raw CMA physical addresses
+	 *     instead of IOMMU-translated iovas, which then fault when the VPE
+	 *     reads/writes them through its own SMMU (vpe_iommu @ 0x7400000).
+	 *     The fault never completes the frame, so the DONE interrupt never
+	 *     fires and the m2m job hangs forever.
+	 *
+	 * 32-bit DMA mask is correct: the VPE addresses sub-4GB and the
+	 * CMA/SMI buffers live well below the 4 GB boundary. Mirrors the
+	 * qcom-rotator probe, which had the identical bug.
+	 */
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret) {
+		dev_err(dev, "failed to set DMA mask: %d\n", ret);
+		return ret;
+	}
+	dev->dma_parms = devm_kzalloc(dev, sizeof(*dev->dma_parms), GFP_KERNEL);
+	if (!dev->dma_parms)
+		return -ENOMEM;
+	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
 
 	/* Get resources */
 	vpe->base = devm_platform_ioremap_resource(pdev, 0);
