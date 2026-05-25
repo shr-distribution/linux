@@ -199,15 +199,11 @@ enum vfe31_rec_state {
 	VFE31_REC_STOPPED,
 };
 
-static enum vfe31_rec_state vfe31_recording_state = VFE31_REC_IDLE;
-static enum vfe31_rec_state vfe31_zsl_state = VFE31_REC_IDLE;
-
 /*
- * Deferred PIX WM enable flag. Set after CAMIF start, cleared when
- * REG_UPDATE ISR enables WMs at the first frame boundary. This prevents
- * starting DMA mid-frame which causes progressive frame wrap at 640x480.
+ * Per-device runtime state lives in struct vfe_device:
+ *   vfe->recording_state / vfe->zsl_state  (enum vfe31_rec_state)
+ *   vfe->pix_wm_pending                     (deferred PIX WM enable flag)
  */
-static bool vfe31_pix_wm_pending;
 
 /*
  * ============================================================================
@@ -2691,11 +2687,6 @@ out_unlock:
 static irqreturn_t vfe31_isr(int irq, void *dev)
 {
 	struct vfe_device *vfe = dev;
-	static ktime_t first_irq_time;
-	static int irq_count;
-	static int camif_error_count;
-	static u32 last_ping_pong;  /* Track PP transitions between IRQs */
-	ktime_t now;
 	u32 value0, value1, ping_pong;
 	int i;
 
@@ -2703,30 +2694,6 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 
 	/* Read ping-pong status to see if data is reaching AXI bus */
 	ping_pong = readl_relaxed(vfe->base + VFE_0_BUS_PING_PONG_STATUS);
-
-	now = ktime_get();
-
-	/*
-	 * Detect new streaming session: if >1 second since last IRQ,
-	 * reset all per-session counters. This ensures debug dumps and
-	 * CAMIF error warnings work correctly across stream restarts.
-	 */
-	if (irq_count == 0 || ktime_ms_delta(now, first_irq_time) > 1000 * (irq_count + 1)) {
-		irq_count = 0;
-		camif_error_count = 0;
-	}
-
-	irq_count++;
-	if (irq_count == 1) {
-		first_irq_time = now;
-		last_ping_pong = ping_pong;
-	}
-
-	/*
-	 * Note: Per-frame debug logging removed to prevent soft lockups.
-	 * The console subsystem can't keep up with ~30fps dev_info() calls.
-	 * Use trace events or dynamic debug for per-frame diagnostics.
-	 */
 
 	/*
 	 * VFE31 frame completion: Use IMAGE_COMPOSITE_DONE interrupts.
@@ -2817,14 +2784,10 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		u32 received_lines = (camif_status >> 16) & 0x3FFF;
 		u32 received_pixels = camif_status & 0x3FFF;
 
-		camif_error_count++;
-		if (camif_error_count <= 3) {
-			dev_warn(vfe->camss->dev,
-				 "CAMIF_ERROR #%d: status=0x%08x (pixels=%d/%d lines=%d/%d)\n",
-				 camif_error_count, camif_status,
-				 received_pixels, expected_pixels,
-				 received_lines, expected_lines);
-		}
+		dev_warn_ratelimited(vfe->camss->dev,
+				     "CAMIF_ERROR: status=0x%08x (pixels=%d/%d lines=%d/%d)\n",
+				     camif_status, received_pixels, expected_pixels,
+				     received_lines, expected_lines);
 
 		/*
 		 * CAMIF_ERROR typically fires when MIPI Frame End packet is missing.
@@ -2874,7 +2837,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		 * Samsung vfe31_start_common() does the same: CAMIF starts
 		 * but WMs are enabled later via the recording state machine.
 		 */
-		if (vfe31_pix_wm_pending) {
+		if (vfe->pix_wm_pending) {
 			struct vfe_output *out = &vfe->line[VFE_LINE_PIX].output;
 
 			writel_relaxed(BIT(0), vfe->base +
@@ -2882,7 +2845,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			if (out->wm_num == 2)
 				writel_relaxed(BIT(0), vfe->base +
 					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(out->wm_idx[1]));
-			vfe31_pix_wm_pending = false;
+			vfe->pix_wm_pending = false;
 			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 			dev_info(vfe->camss->dev,
 				 "VFE31: PIX WMs enabled at frame boundary (WM%d+WM%d)\n",
@@ -2891,30 +2854,30 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 		}
 
 		/* Process recording state machine at frame boundary */
-		if (vfe31_recording_state == VFE31_REC_START_REQUESTED) {
+		if (vfe->recording_state == VFE31_REC_START_REQUESTED) {
 			/* Enable VIDEO WMs at frame boundary */
 			writel_relaxed(BIT(0), vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
 			writel_relaxed(BIT(0), vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
-			vfe31_recording_state = VFE31_REC_STARTED;
+			vfe->recording_state = VFE31_REC_STARTED;
 			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 			dev_info(vfe->camss->dev, "VFE31: VIDEO recording started (WM%d+WM%d enabled)\n",
 				 VFE31_VIDEO_WM_Y, VFE31_VIDEO_WM_CBCR);
-		} else if (vfe31_recording_state == VFE31_REC_STOP_REQUESTED) {
+		} else if (vfe->recording_state == VFE31_REC_STOP_REQUESTED) {
 			/* Disable VIDEO WMs at frame boundary */
 			writel_relaxed(0, vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_Y));
 			writel_relaxed(0, vfe->base +
 				VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_VIDEO_WM_CBCR));
-			vfe31_recording_state = VFE31_REC_STOPPED;
+			vfe->recording_state = VFE31_REC_STOPPED;
 			dev_info(vfe->camss->dev, "VFE31: VIDEO recording stopped\n");
-		} else if (vfe31_recording_state == VFE31_REC_STOPPED) {
-			vfe31_recording_state = VFE31_REC_IDLE;
+		} else if (vfe->recording_state == VFE31_REC_STOPPED) {
+			vfe->recording_state = VFE31_REC_IDLE;
 		}
 
 		/* Process ZSL state machine at frame boundary */
-		if (vfe31_zsl_state == VFE31_REC_START_REQUESTED) {
+		if (vfe->zsl_state == VFE31_REC_START_REQUESTED) {
 			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
 
 			/* Enable ZSL Y WM at frame boundary */
@@ -2924,12 +2887,12 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			if (zsl_out->wm_num == 2)
 				writel_relaxed(BIT(0), vfe->base +
 					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
-			vfe31_zsl_state = VFE31_REC_STARTED;
+			vfe->zsl_state = VFE31_REC_STARTED;
 			writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 			dev_info(vfe->camss->dev, "VFE31: ZSL started (WM%d%s enabled)\n",
 				 VFE31_ZSL_WM_Y,
 				 zsl_out->wm_num == 2 ? "+WM6" : " only");
-		} else if (vfe31_zsl_state == VFE31_REC_STOP_REQUESTED) {
+		} else if (vfe->zsl_state == VFE31_REC_STOP_REQUESTED) {
 			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
 
 			/* Disable ZSL WMs at frame boundary */
@@ -2938,10 +2901,10 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			if (zsl_out->wm_num == 2)
 				writel_relaxed(0, vfe->base +
 					VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(VFE31_ZSL_WM_CBCR));
-			vfe31_zsl_state = VFE31_REC_STOPPED;
+			vfe->zsl_state = VFE31_REC_STOPPED;
 			dev_info(vfe->camss->dev, "VFE31: ZSL stopped\n");
-		} else if (vfe31_zsl_state == VFE31_REC_STOPPED) {
-			vfe31_zsl_state = VFE31_REC_IDLE;
+		} else if (vfe->zsl_state == VFE31_REC_STOPPED) {
+			vfe->zsl_state = VFE31_REC_IDLE;
 		}
 
 		for (i = 0; i < vfe->res->line_num; i++)
@@ -2981,9 +2944,6 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 				vfe31_wm_done(vfe, 0, ping_pong);
 		}
 	}
-
-	/* Track last PP status for debug purposes */
-	last_ping_pong = ping_pong;
 
 	return IRQ_HANDLED;
 }
@@ -3066,8 +3026,8 @@ static int vfe31_enable(struct vfe_line *line)
 	int wm_idx;
 	u8 y_wm;  /* Y plane write master (WM0) */
 
-	vfe31_recording_state = VFE31_REC_IDLE;
-	vfe31_pix_wm_pending = false;
+	vfe->recording_state = VFE31_REC_IDLE;
+	vfe->pix_wm_pending = false;
 
 	dev_info(vfe->camss->dev, "VFE31 enable: line_id=%d (direct, not gen1)\n",
 		 line->id);
@@ -3676,7 +3636,7 @@ static int vfe31_enable(struct vfe_line *line)
 		}
 
 		/* Recording state machine enables WMs at frame boundary */
-		vfe31_recording_state = VFE31_REC_START_REQUESTED;
+		vfe->recording_state = VFE31_REC_START_REQUESTED;
 		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 
 		dev_info(vfe->camss->dev,
@@ -3847,7 +3807,7 @@ static int vfe31_enable(struct vfe_line *line)
 		}
 
 		/* ZSL state machine enables WMs at frame boundary */
-		vfe31_zsl_state = VFE31_REC_START_REQUESTED;
+		vfe->zsl_state = VFE31_REC_START_REQUESTED;
 		writel_relaxed(1, vfe->base + VFE_0_REG_UPDATE_CMD);
 
 		dev_info(vfe->camss->dev,
@@ -3869,9 +3829,9 @@ static int vfe31_enable(struct vfe_line *line)
 
 		/* VIDEO/ZSL starting alone also uses recording state */
 		if (line->id == VFE_LINE_VIDEO)
-			vfe31_recording_state = VFE31_REC_START_REQUESTED;
+			vfe->recording_state = VFE31_REC_START_REQUESTED;
 		if (line->id == VFE_LINE_ZSL)
-			vfe31_zsl_state = VFE31_REC_START_REQUESTED;
+			vfe->zsl_state = VFE31_REC_START_REQUESTED;
 	}
 
 	/*
@@ -3943,13 +3903,13 @@ static int vfe31_disable(struct vfe_line *line)
 
 	/* Request recording stop for VIDEO line */
 	if (line->id == VFE_LINE_VIDEO &&
-	    vfe31_recording_state == VFE31_REC_STARTED)
-		vfe31_recording_state = VFE31_REC_STOP_REQUESTED;
+	    vfe->recording_state == VFE31_REC_STARTED)
+		vfe->recording_state = VFE31_REC_STOP_REQUESTED;
 
 	/* Request ZSL stop */
 	if (line->id == VFE_LINE_ZSL &&
-	    vfe31_zsl_state == VFE31_REC_STARTED)
-		vfe31_zsl_state = VFE31_REC_STOP_REQUESTED;
+	    vfe->zsl_state == VFE31_REC_STARTED)
+		vfe->zsl_state = VFE31_REC_STOP_REQUESTED;
 
 	/*
 	 * Disable IRQs before stopping CAMIF to prevent spurious
@@ -3997,9 +3957,9 @@ static int vfe31_disable(struct vfe_line *line)
 
 	/* Clear CAMIF pending state */
 	vfe->camif_pending = false;
-	vfe31_recording_state = VFE31_REC_IDLE;
-	vfe31_zsl_state = VFE31_REC_IDLE;
-	vfe31_pix_wm_pending = false;
+	vfe->recording_state = VFE31_REC_IDLE;
+	vfe->zsl_state = VFE31_REC_IDLE;
+	vfe->pix_wm_pending = false;
 
 	return 0;
 }
@@ -4820,7 +4780,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 */
 		{
 			bool video_active = (line_id == VFE_LINE_VIDEO);
-			bool zsl_active = (vfe31_zsl_state != VFE31_REC_IDLE);
+			bool zsl_active = (vfe->zsl_state != VFE31_REC_IDLE);
 
 			xbar_value = vfe31_calc_xbar(true, video_active, zsl_active);
 		}
@@ -4828,10 +4788,10 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		dev_info(vfe->camss->dev,
 			 "VFE31: Step 1 - PIX mode: BUS_CFG=0x%08x, AXI=0x%x, XBAR=0x%06x\n",
 			 VFE_0_BUS_CFG_WEBOS_VALUE,
-			 (vfe31_zsl_state != VFE31_REC_IDLE) ? 0x101 : 0x01,
+			 (vfe->zsl_state != VFE31_REC_IDLE) ? 0x101 : 0x01,
 			 xbar_value);
 		writel_relaxed(vfe31_get_bus_cfg(), vfe->base + VFE_0_BUS_CFG);
-		writel_relaxed((vfe31_zsl_state != VFE31_REC_IDLE) ? 0x101 :
+		writel_relaxed((vfe->zsl_state != VFE31_REC_IDLE) ? 0x101 :
 			       VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
 		writel_relaxed(xbar_value, vfe->base + VFE_0_BUS_XBAR_CFG1);
@@ -6125,7 +6085,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
 			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
-		bool zsl_active = (vfe31_zsl_state != VFE31_REC_IDLE);
+		bool zsl_active = (vfe->zsl_state != VFE31_REC_IDLE);
 		u32 axi_mode;
 
 		if (is_rdi && vfe->raw_through_pix)
@@ -6407,7 +6367,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		}
 		/* Ensure WM enables are committed before continuing */
 		wmb();
-		vfe31_pix_wm_pending = false;
+		vfe->pix_wm_pending = false;
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: WMs enabled before CAMIF start (WM%d%s)\n",
@@ -6510,9 +6470,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
  */
 static void vfe31_cleanup(struct vfe_device *vfe)
 {
-	vfe31_recording_state = VFE31_REC_IDLE;
-	vfe31_zsl_state = VFE31_REC_IDLE;
-	vfe31_pix_wm_pending = false;
+	vfe->recording_state = VFE31_REC_IDLE;
+	vfe->zsl_state = VFE31_REC_IDLE;
+	vfe->pix_wm_pending = false;
 
 	/* Stop CAMIF and clear EFS config */
 	writel_relaxed(0, vfe->base + VFE_0_CAMIF_CMD);

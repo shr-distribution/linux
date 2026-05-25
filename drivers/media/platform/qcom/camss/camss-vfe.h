@@ -205,6 +205,14 @@ struct vfe_device {
 	void *dummy_buf_vaddr;
 	/* VFE31: Route RDI captures through PIX path (DT: qcom,vfe31-raw-through-pix) */
 	bool raw_through_pix;
+	/*
+	 * VFE31: per-frame-boundary state machines (values are enum
+	 * vfe31_rec_state, private to camss-vfe-3-1.c) and the deferred
+	 * PIX write-master enable flag, applied at the REG_UPDATE IRQ.
+	 */
+	u8 recording_state;
+	u8 zsl_state;
+	bool pix_wm_pending;
 };
 
 struct camss_subdev_resources;
