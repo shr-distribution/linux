@@ -737,6 +737,15 @@ struct vidc_inst {
 	 */
 	bool flush_pending;
 
+	/*
+	 * Decoder: set while draining (V4L2_DEC_CMD_STOP). A single
+	 * VIDC_OP_LAST_FRAME is issued and the firmware emits the held
+	 * reorder frames as DISPLAY_ONLY responses, ending in DPB_EMPTY.
+	 * curr_inst must stay set across all of those responses, so the
+	 * frame-done worker keeps it until DPB_EMPTY clears the drain.
+	 */
+	bool draining;
+
 	/* Encoder: force the next submitted frame to be an IDR/keyframe. */
 	bool force_keyframe;
 

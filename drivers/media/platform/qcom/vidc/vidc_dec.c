@@ -386,6 +386,9 @@ static int vidc_dec_streamoff(struct file *file, void *fh,
  * VIDC_CMD_FLUSH and let the existing IRQ→work path emit the LAST
  * marker buffer.
  */
+static void vidc_dec_submit_frame(struct vidc_inst *inst, dma_addr_t src_addr,
+				  u32 src_size, dma_addr_t dst_addr);
+
 static int vidc_dec_decoder_cmd(struct file *file, void *fh,
 				struct v4l2_decoder_cmd *dec_cmd)
 {
@@ -393,16 +396,19 @@ static int vidc_dec_decoder_cmd(struct file *file, void *fh,
 
 	switch (dec_cmd->cmd) {
 	case V4L2_DEC_CMD_STOP:
-		if (!inst->ch_open)
+		if (!inst->ch_open || !inst->seq_parsed || inst->draining)
 			return 0;
 		/*
-		 * Also arm the per-frame DPB flush so the firmware drops its
-		 * reference frames on the next FRAME_DATA, matching legacy
-		 * seek/flush behaviour (the standalone VIDC_CMD_FLUSH only
-		 * drains the input/output queues, not the DPB references).
+		 * Drain (not flush): issue a single VIDC_OP_LAST_FRAME with an
+		 * empty stream. The firmware then emits the held reorder frames
+		 * as DISPLAY_ONLY responses, ending in DPB_EMPTY, where the
+		 * frame-done worker marks the last CAPTURE buffer
+		 * V4L2_BUF_FLAG_LAST and queues V4L2_EVENT_EOS. Flushing here
+		 * (the old behaviour) discarded those held frames instead.
 		 */
-		inst->flush_pending = true;
-		return vidc_flush_channel(inst, VIDC_FLUSH_ALL);
+		inst->draining = true;
+		vidc_dec_submit_frame(inst, inst->core->fw_dma_addr, 0, 0);
+		return 0;
 
 	case V4L2_DEC_CMD_START:
 		/*
@@ -689,6 +695,9 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 	cancel_work_sync(&inst->frame_done_work);
 	cancel_work_sync(&inst->seq_done_work);
 
+	/* Clear any in-progress drain so a stream restart starts clean. */
+	inst->draining = false;
+
 	/* Return all buffers to userspace */
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		while ((vbuf = v4l2_m2m_src_buf_remove(inst->m2m_ctx)))
@@ -773,7 +782,12 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	unsigned long flags;
 	u32 op;
 
-	op = inst->seq_parsed ? VIDC_OP_FRAME_DATA : VIDC_OP_SEQ_HEADER;
+	if (!inst->seq_parsed)
+		op = VIDC_OP_SEQ_HEADER;
+	else if (inst->draining)
+		op = VIDC_OP_LAST_FRAME;	/* drain: flush held reorder frames */
+	else
+		op = VIDC_OP_FRAME_DATA;
 
 	spin_lock_irqsave(&core->irqlock, flags);
 
@@ -886,7 +900,7 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	 *
 	 * DPB_CONFIG = dpb_count: tell firmware how many DPB slots exist.
 	 */
-	if (op == VIDC_OP_FRAME_DATA) {
+	if (op == VIDC_OP_FRAME_DATA || op == VIDC_OP_LAST_FRAME) {
 		u32 dpb_config = inst->dpb_count;
 
 		/*
@@ -901,6 +915,13 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		vidc_write(core, VIDC_REG_CH0_DPB_RELEASE, inst->dpb_hw_mask);
 		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, dpb_config);
 
+		/*
+		 * The rest (per-frame frame tag + pixel-cache setup) only
+		 * applies to a real input frame. A LAST_FRAME drain carries no
+		 * input (zero stream), so skip it — held reorder frames keep
+		 * the tags they were given when first decoded.
+		 */
+		if (op == VIDC_OP_FRAME_DATA) {
 		/*
 		 * Per-frame shared memory (legacy ddl_vidc_decode_frame_run /
 		 * input_done):
@@ -982,6 +1003,7 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 			vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
 				   fw & ~VIDC_PIX_CACHE_TAG_CLEAR_BIT);
 		}
+		}	/* end if (op == VIDC_OP_FRAME_DATA) */
 	}
 
 	dev_dbg(core->dev,
@@ -1328,6 +1350,7 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 		container_of(w, struct vidc_inst, frame_done_work);
 	struct vidc_core *core = inst->core;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
+	bool draining = inst->draining;
 
 	/*
 	 * Dispatch on display_status captured by vidc_handle_frame_done().
@@ -1441,6 +1464,22 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 		else
 			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
 		break;
+	}
+
+	/*
+	 * Drain handling: a single LAST_FRAME produces many DISPLAY_ONLY
+	 * responses, so the firmware keeps reporting on this instance. Keep
+	 * curr_inst set so each held-frame IRQ still dispatches, and do NOT
+	 * call job_finish (the drain bypassed the m2m scheduler — there is no
+	 * running job). On DPB_EMPTY the drain is complete: clear it and
+	 * release the instance.
+	 */
+	if (draining) {
+		if (inst->display_status == VIDC_DISPLAY_STATUS_DPB_EMPTY) {
+			inst->draining = false;
+			core->curr_inst = NULL;
+		}
+		return;
 	}
 
 	core->curr_inst = NULL;
