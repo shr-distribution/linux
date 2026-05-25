@@ -847,7 +847,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		break;
 
 	case VIDC_RESP_FRAME_DONE:
-		if (inst) {
+		if (inst && inst->decoder) {
 			vidc_handle_frame_done(core, inst);
 			inst->error = 0;
 			/*
@@ -857,20 +857,36 @@ static irqreturn_t vidc_isr(int irq, void *data)
 			 * cannot be acquired from IRQ context.
 			 */
 			queue_work(system_wq, &inst->frame_done_work);
+		} else if (inst) {
+			/*
+			 * The 1080p firmware reports encoder PER-FRAME
+			 * completion as FRAME_DONE_RET (cmd 5) — the same
+			 * code as decode frame-done — NOT as ENC_COMPLETE_RET
+			 * (cmd 7, which is end-of-stream).  webOS
+			 * ddl_frame_run_callback branches on ddl->decoding the
+			 * same way.  Route encoder frames to the encoder work
+			 * item; frame_done_work is only INIT_WORK'd on decoder
+			 * instances, so queueing it here on an encoder tripped
+			 * the WARN in __queue_work and dropped the completion
+			 * (the encode "hang").
+			 */
+			vidc_handle_enc_complete(core, inst);
+			inst->error = 0;
+			queue_work(system_wq, &inst->enc_complete_work);
 		}
 		break;
 
 	case VIDC_RESP_ENC_COMPLETE:
+		/*
+		 * ENC_COMPLETE_RET (cmd 7) is the encoder END-OF-STREAM
+		 * acknowledgement (webOS ddl_encoder_eos_done), not a
+		 * per-frame event — per-frame encode completion arrives as
+		 * FRAME_DONE_RET above.  We don't issue an explicit EOS yet,
+		 * so just note it and wake any synchronous waiter.
+		 */
 		if (inst) {
-			vidc_handle_enc_complete(core, inst);
-			inst->error = 0;
-			/*
-			 * Encoder-side analog of the decoder FRAME_DONE
-			 * dispatch: post-frame work (buf_done, payload set,
-			 * m2m_job_finish) lives in vidc_enc_complete_work
-			 * because vb2 locks aren't acquirable from IRQ.
-			 */
-			queue_work(system_wq, &inst->enc_complete_work);
+			dev_dbg(core->dev, "Encoder EOS complete\n");
+			complete(&inst->done);
 		}
 		break;
 
