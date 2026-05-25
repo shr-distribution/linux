@@ -30,3 +30,9 @@ ARM V4L2 m2m clients used to validate the encoder/decoder driver additions
 ## Known gap (as of g68599f53): EOS drain — DECODER_CMD STOP flushes held
 ## B-frames instead of draining; LAST/EOS not emitted. Needs VIDC_OP_LAST_FRAME
 ## pump (audit issue #6).
+
+## Linear NV12 encoder input (VIDC_LINEAR=1)
+The encoder now accepts linear V4L2_PIX_FMT_NV12 (no tile swizzle):
+    VIDC_LINEAR=1 ./vidc_encode real_nv12.raw out.h264 /dev/video7
+Generate linear NV12 from any image (Y plane then interleaved CbCr,
+contiguous, 16-aligned stride): 320x240 = 115200 bytes/frame.

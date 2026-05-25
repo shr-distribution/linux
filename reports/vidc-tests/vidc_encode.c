@@ -30,7 +30,7 @@
 #define HEIGHT   240
 #define OUT_BUFS 4
 #define CAP_BUFS 4
-#define FRAME_BYTES 147456  /* NV12MT 320x240 = Y(384x256) + UV(384x128) */
+/* frame_bytes is set at runtime (linear vs tiled) */
 #define MAXREC   512
 #define TS_UNIT  1000       /* per-frame input timestamp step (us) */
 
@@ -63,6 +63,9 @@ int main(int argc, char **argv)
     int gop      = getenv("VIDC_GOP")      ? atoi(getenv("VIDC_GOP"))      : 0;
     int bitrate  = getenv("VIDC_BITRATE")  ? atoi(getenv("VIDC_BITRATE"))  : 0;
     int forcekey = getenv("VIDC_FORCEKEY") ? atoi(getenv("VIDC_FORCEKEY")) : -1;
+    int linear   = getenv("VIDC_LINEAR")   ? atoi(getenv("VIDC_LINEAR"))   : 0;
+    /* linear NV12 320x240 = 320*240 + 320*120 = 115200; tiled NV12MT = 147456 */
+    unsigned frame_bytes = linear ? (WIDTH * HEIGHT * 3 / 2) : 147456;
 
     int fd = open(dev_path, O_RDWR | O_NONBLOCK);
     if (fd < 0) die("open dev");
@@ -73,9 +76,10 @@ int main(int argc, char **argv)
 
     struct v4l2_format f = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE };
     f.fmt.pix_mp.width = WIDTH; f.fmt.pix_mp.height = HEIGHT;
-    f.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12MT;
+    f.fmt.pix_mp.pixelformat = linear ? V4L2_PIX_FMT_NV12 : V4L2_PIX_FMT_NV12MT;
     f.fmt.pix_mp.num_planes = 1;
     if (ioctl(fd, VIDIOC_S_FMT, &f)) die("S_FMT OUTPUT");
+    fprintf(stderr, "input format: %s\n", linear ? "NV12 (linear)" : "NV12MT (tiled)");
 
     struct v4l2_format fc = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE };
     fc.fmt.pix_mp.width = WIDTH; fc.fmt.pix_mp.height = HEIGHT;
@@ -123,7 +127,7 @@ int main(int argc, char **argv)
     int in_fd = open(in_path, O_RDONLY);
     if (in_fd < 0) die("open input");
     off_t in_total = lseek(in_fd, 0, SEEK_END); lseek(in_fd, 0, SEEK_SET);
-    size_t n_frames = in_total / FRAME_BYTES;
+    size_t n_frames = in_total / frame_bytes;
     unsigned char *in_data = malloc(in_total);
     if (!in_data || read(in_fd, in_data, in_total) != in_total) die("read input");
     close(in_fd);
@@ -145,8 +149,8 @@ int main(int argc, char **argv)
         unsigned _qi = (idx);                                                \
         if (forcekey >= 0 && (int)next_frame == forcekey)                    \
             set_ctrl(fd, V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME, 1, "FORCE_KEY");\
-        size_t _cl = FRAME_BYTES; if (_cl > out_size[_qi]) _cl = out_size[_qi];\
-        memcpy(out_mmap[_qi], in_data + next_frame*FRAME_BYTES, _cl);        \
+        size_t _cl = frame_bytes; if (_cl > out_size[_qi]) _cl = out_size[_qi];\
+        memcpy(out_mmap[_qi], in_data + next_frame*frame_bytes, _cl);        \
         struct v4l2_plane _qpl = { .bytesused = _cl };                       \
         struct v4l2_buffer _qb = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,\
             .memory = V4L2_MEMORY_MMAP, .index = _qi, .m.planes = &_qpl,     \
