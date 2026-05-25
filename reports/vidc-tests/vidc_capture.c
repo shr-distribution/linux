@@ -61,12 +61,15 @@ int main(int argc, char **argv)
     f.fmt.pix_mp.plane_fmt[0].sizeimage = 1024 * 1024;
     if (ioctl(fd, VIDIOC_S_FMT, &f)) die("S_FMT OUTPUT");
 
-    /* CAPTURE format */
+    /* CAPTURE format: VIDC_LINEAR=1 -> linear NV12 (de-tiled), else tiled TM12 */
+    int linear = getenv("VIDC_LINEAR") ? atoi(getenv("VIDC_LINEAR")) : 0;
     struct v4l2_format fc = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE };
     fc.fmt.pix_mp.width       = WIDTH;
     fc.fmt.pix_mp.height      = HEIGHT;
-    fc.fmt.pix_mp.pixelformat = v4l2_fourcc('T', 'M', '1', '2');
+    fc.fmt.pix_mp.pixelformat = linear ? V4L2_PIX_FMT_NV12 :
+				v4l2_fourcc('T', 'M', '1', '2');
     fc.fmt.pix_mp.num_planes  = 1;
+    fprintf(stderr, "CAPTURE format: %s\n", linear ? "NV12 (linear)" : "NV12MT (tiled)");
     if (ioctl(fd, VIDIOC_S_FMT, &fc)) die("S_FMT CAPTURE");
     fprintf(stderr, "CAP fmt: %ux%u size=%u\n",
             fc.fmt.pix_mp.width, fc.fmt.pix_mp.height,
