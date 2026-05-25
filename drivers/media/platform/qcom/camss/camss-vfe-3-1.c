@@ -4626,6 +4626,196 @@ static void vfe31_wm_frame_based(struct vfe_device *vfe, u8 wm, u8 enable)
  * This is called from wm_enable() when camif_pending is set. All WM
  * configuration must be complete before calling this.
  */
+/* Configure the CAMIF capture window / frame-sync registers. */
+static void vfe31_config_camif_window(struct vfe_device *vfe,
+				      struct vfe_line *line)
+{
+	u32 val;
+
+	/*
+	 * Step 3: Configure CAMIF registers
+	 *
+	 * VFE31 CAMIF register layout (from webOS vfe_camifcfg structure):
+	 * 0x1E4: EFS_CFG - Embedded Frame Sync codes (0 for APS mode)
+	 * 0x1E8: FRAME_CFG - pixelsPerLine[13:0] | linesPerFrame[29:16]
+	 * 0x1EC: WINDOW_WIDTH_CFG - lastPixel[13:0] | firstPixel[29:16]
+	 * 0x1F0: WINDOW_HEIGHT_CFG - lastLine[13:0] | firstLine[29:16]
+	 * 0x1F4: SUBSAMPLE_CFG_0 - pixelSkip[15:0] | lineSkip[31:16]
+	 * 0x1F8: SUBSAMPLE_CFG_1 - frame subsample config
+	 *
+	 * NOTE: VFE31 does NOT have camif2vfeEnable/camif2busEnable bits like VFE8x!
+	 * Data routing is controlled via AXI_OUT_MODE (0x040) only.
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31: Step 3 - CAMIF configuration\n");
+
+	/*
+	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
+	 * This enables some timing/sync feature needed for proper operation.
+	 */
+	/*
+	 * Set CAMIF data routing early - must match the mode we're
+	 * configuring. RDI needs camif2bus from the start, not just
+	 * at enable_pending_camif time.
+	 */
+	/*
+	 * EFS_CFG (0x1E4): webOS uses 0x40 for all modes.
+	 * Bit 6 enables MIPI APS (Automatic Packet Sync) mode.
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31: EFS_CFG=0x40 (MIPI APS mode)\n");
+	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
+
+	/*
+	 * VFE31 CAMIF register layout (based on WebOS register dump):
+	 *
+	 * FRAME_CFG at 0x1E8: WebOS does NOT set this register (leaves at 0).
+	 *
+	 * WINDOW_WIDTH_CFG (0x1EC): Frame dimensions
+	 *   [29:16] = height (lines per frame)
+	 *   [13:0]  = width (pixels/bytes per line)
+	 *   WebOS example: 0x01E00500 = (480 << 16) | 1280
+	 *
+	 * WINDOW_HEIGHT_CFG (0x1F0): Last pixel index
+	 *   [13:0]  = lastPixel = width - 1
+	 *   WebOS example: 0x000004FF = 1279 = 1280 - 1
+	 */
+	{
+		u32 width = line->fmt[MSM_VFE_PAD_SINK].width;
+		u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
+		u32 code = line->fmt[MSM_VFE_PAD_SINK].code;
+		u32 width_bytes;
+
+		/*
+		 * Calculate bytes per line based on format:
+		 * - RAW8 formats (Bayer): 1 byte per pixel
+		 * - RAW10 formats (packed): 10 bits per pixel (5 bytes per 4 pixels)
+		 * - YUV422 formats: 2 bytes per pixel
+		 */
+		switch (code) {
+		case MEDIA_BUS_FMT_SBGGR8_1X8:
+		case MEDIA_BUS_FMT_SGBRG8_1X8:
+		case MEDIA_BUS_FMT_SGRBG8_1X8:
+		case MEDIA_BUS_FMT_SRGGB8_1X8:
+			width_bytes = width;  /* 1 byte per pixel */
+			break;
+		case MEDIA_BUS_FMT_SBGGR10_1X10:
+		case MEDIA_BUS_FMT_SGBRG10_1X10:
+		case MEDIA_BUS_FMT_SGRBG10_1X10:
+		case MEDIA_BUS_FMT_SRGGB10_1X10:
+			width_bytes = (width * 10 + 7) / 8;  /* 10-bit packed */
+			break;
+		default:
+			width_bytes = width * 2;  /* YUV422: 2 bytes per pixel */
+			break;
+		}
+
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: Step 3 - CAMIF config (code=0x%x width=%u bpl=%u)\n",
+			 code, width, width_bytes);
+
+		/* WINDOW_WIDTH_CFG: (height << 16) | width_bytes */
+		val = (height << 16) | (width_bytes & 0x3FFF);
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: WINDOW_WIDTH_CFG (0x1EC) = 0x%08x (lines=%u, pixels=%u)\n",
+			 val, height, width_bytes);
+		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+
+		/* WINDOW_HEIGHT_CFG: lastPixel = width_bytes - 1 */
+		val = (width_bytes - 1) & 0x3FFF;
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: WINDOW_HEIGHT_CFG (0x1F0) = 0x%08x (lastPixel=%u)\n",
+			 val, width_bytes - 1);
+		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+	}
+
+	/*
+	 * SUBSAMPLE_CFG_0 at 0x1F4: webOS uses (height - 1) = 0x1DF for 480 lines
+	 * This appears to be the last line number, not a skip pattern.
+	 */
+	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+	dev_dbg(vfe->camss->dev, "VFE31: SUBSAMPLE_CFG_0 (0x1F4) = 0x%08x (height-1)\n", val);
+	writel_relaxed(val, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+
+	/*
+	 * SUBSAMPLE_CFG_1 at 0x1F8: webOS uses 0xFFFFFFFF (no frame skip)
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31: SUBSAMPLE_CFG_1 (0x1F8) = 0xFFFFFFFF (no skip)\n");
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+	/* Ensure subsample configuration is visible to hardware */
+	wmb();
+
+	dev_dbg(vfe->camss->dev, "VFE31: Step 3 - CAMIF registers configured\n");
+}
+
+/* Program CORE_CFG pixel pattern + input mux for the sink format. */
+static void vfe31_config_core_cfg(struct vfe_device *vfe,
+				  struct vfe_line *line)
+{
+	u32 val;
+
+	/*
+	 * Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY)
+	 *
+	 * IMPORTANT: Samsung/HTC analysis shows that Bayer pixel pattern MUST
+	 * be set correctly even for RAW bypass mode (AXI=0x60). Setting val=0
+	 * for all RAW formats caused CAMIF to not recognize input data.
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
+	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
+		break;
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
+		break;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
+		break;
+	case MEDIA_BUS_FMT_VYUY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
+		break;
+	/* RAW Bayer SBGGR formats - pattern 2 (BGBGBG) */
+	case MEDIA_BUS_FMT_SBGGR8_1X8:
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BGBGBG;
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: RAW SBGGR - CORE_CFG pattern=2\n");
+		break;
+	/* RAW Bayer SGBRG formats - pattern 3 (GBGBGB) */
+	case MEDIA_BUS_FMT_SGBRG8_1X8:
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GBGBGB;
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: RAW SGBRG - CORE_CFG pattern=3\n");
+		break;
+	/* RAW Bayer SGRBG formats - pattern 1 (GRGRGR) */
+	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GRGRGR;
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: RAW SGRBG - CORE_CFG pattern=1\n");
+		break;
+	/* RAW Bayer SRGGB formats - pattern 0 (RGRGRG) */
+	case MEDIA_BUS_FMT_SRGGB8_1X8:
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_RGRGRG;
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: RAW SRGGB - CORE_CFG pattern=0\n");
+		break;
+	default:
+		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
+		break;
+	}
+	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
+	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
+	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
+	/* Ensure core configuration is visible to hardware */
+	wmb();
+}
+
 static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 {
 	enum vfe_line_id line_id = vfe->wm_output_map[wm];
@@ -5005,181 +5195,11 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		}
 	}
 
-	/*
-	 * Step 3: Configure CAMIF registers
-	 *
-	 * VFE31 CAMIF register layout (from webOS vfe_camifcfg structure):
-	 * 0x1E4: EFS_CFG - Embedded Frame Sync codes (0 for APS mode)
-	 * 0x1E8: FRAME_CFG - pixelsPerLine[13:0] | linesPerFrame[29:16]
-	 * 0x1EC: WINDOW_WIDTH_CFG - lastPixel[13:0] | firstPixel[29:16]
-	 * 0x1F0: WINDOW_HEIGHT_CFG - lastLine[13:0] | firstLine[29:16]
-	 * 0x1F4: SUBSAMPLE_CFG_0 - pixelSkip[15:0] | lineSkip[31:16]
-	 * 0x1F8: SUBSAMPLE_CFG_1 - frame subsample config
-	 *
-	 * NOTE: VFE31 does NOT have camif2vfeEnable/camif2busEnable bits like VFE8x!
-	 * Data routing is controlled via AXI_OUT_MODE (0x040) only.
-	 */
-	dev_dbg(vfe->camss->dev, "VFE31: Step 3 - CAMIF configuration\n");
+	/* Step 3: CAMIF window + frame-sync configuration. */
+	vfe31_config_camif_window(vfe, line);
 
-	/*
-	 * EFS_CFG at 0x1E4: webOS uses 0x40 (bit 6 set)
-	 * This enables some timing/sync feature needed for proper operation.
-	 */
-	/*
-	 * Set CAMIF data routing early - must match the mode we're
-	 * configuring. RDI needs camif2bus from the start, not just
-	 * at enable_pending_camif time.
-	 */
-	/*
-	 * EFS_CFG (0x1E4): webOS uses 0x40 for all modes.
-	 * Bit 6 enables MIPI APS (Automatic Packet Sync) mode.
-	 */
-	dev_dbg(vfe->camss->dev, "VFE31: EFS_CFG=0x40 (MIPI APS mode)\n");
-	writel_relaxed(VFE_0_CAMIF_CFG_CAMIF2VFE, vfe->base + VFE_0_CAMIF_CFG);
-
-	/*
-	 * VFE31 CAMIF register layout (based on WebOS register dump):
-	 *
-	 * FRAME_CFG at 0x1E8: WebOS does NOT set this register (leaves at 0).
-	 *
-	 * WINDOW_WIDTH_CFG (0x1EC): Frame dimensions
-	 *   [29:16] = height (lines per frame)
-	 *   [13:0]  = width (pixels/bytes per line)
-	 *   WebOS example: 0x01E00500 = (480 << 16) | 1280
-	 *
-	 * WINDOW_HEIGHT_CFG (0x1F0): Last pixel index
-	 *   [13:0]  = lastPixel = width - 1
-	 *   WebOS example: 0x000004FF = 1279 = 1280 - 1
-	 */
-	{
-		u32 width = line->fmt[MSM_VFE_PAD_SINK].width;
-		u32 height = line->fmt[MSM_VFE_PAD_SINK].height;
-		u32 code = line->fmt[MSM_VFE_PAD_SINK].code;
-		u32 width_bytes;
-
-		/*
-		 * Calculate bytes per line based on format:
-		 * - RAW8 formats (Bayer): 1 byte per pixel
-		 * - RAW10 formats (packed): 10 bits per pixel (5 bytes per 4 pixels)
-		 * - YUV422 formats: 2 bytes per pixel
-		 */
-		switch (code) {
-		case MEDIA_BUS_FMT_SBGGR8_1X8:
-		case MEDIA_BUS_FMT_SGBRG8_1X8:
-		case MEDIA_BUS_FMT_SGRBG8_1X8:
-		case MEDIA_BUS_FMT_SRGGB8_1X8:
-			width_bytes = width;  /* 1 byte per pixel */
-			break;
-		case MEDIA_BUS_FMT_SBGGR10_1X10:
-		case MEDIA_BUS_FMT_SGBRG10_1X10:
-		case MEDIA_BUS_FMT_SGRBG10_1X10:
-		case MEDIA_BUS_FMT_SRGGB10_1X10:
-			width_bytes = (width * 10 + 7) / 8;  /* 10-bit packed */
-			break;
-		default:
-			width_bytes = width * 2;  /* YUV422: 2 bytes per pixel */
-			break;
-		}
-
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: Step 3 - CAMIF config (code=0x%x width=%u bpl=%u)\n",
-			 code, width, width_bytes);
-
-		/* WINDOW_WIDTH_CFG: (height << 16) | width_bytes */
-		val = (height << 16) | (width_bytes & 0x3FFF);
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: WINDOW_WIDTH_CFG (0x1EC) = 0x%08x (lines=%u, pixels=%u)\n",
-			 val, height, width_bytes);
-		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-
-		/* WINDOW_HEIGHT_CFG: lastPixel = width_bytes - 1 */
-		val = (width_bytes - 1) & 0x3FFF;
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: WINDOW_HEIGHT_CFG (0x1F0) = 0x%08x (lastPixel=%u)\n",
-			 val, width_bytes - 1);
-		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
-	}
-
-	/*
-	 * SUBSAMPLE_CFG_0 at 0x1F4: webOS uses (height - 1) = 0x1DF for 480 lines
-	 * This appears to be the last line number, not a skip pattern.
-	 */
-	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
-	dev_dbg(vfe->camss->dev, "VFE31: SUBSAMPLE_CFG_0 (0x1F4) = 0x%08x (height-1)\n", val);
-	writel_relaxed(val, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-
-	/*
-	 * SUBSAMPLE_CFG_1 at 0x1F8: webOS uses 0xFFFFFFFF (no frame skip)
-	 */
-	dev_dbg(vfe->camss->dev, "VFE31: SUBSAMPLE_CFG_1 (0x1F8) = 0xFFFFFFFF (no skip)\n");
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
-	/* Ensure subsample configuration is visible to hardware */
-	wmb();
-
-	dev_dbg(vfe->camss->dev, "VFE31: Step 3 - CAMIF registers configured\n");
-
-	/*
-	 * Configure pixel pattern in CORE_CFG + bit 6 (webOS uses 0x46 for UYVY)
-	 *
-	 * IMPORTANT: Samsung/HTC analysis shows that Bayer pixel pattern MUST
-	 * be set correctly even for RAW bypass mode (AXI=0x60). Setting val=0
-	 * for all RAW formats caused CAMIF to not recognize input data.
-	 */
-	dev_dbg(vfe->camss->dev, "VFE31: Step 4b - CORE_CFG pixel pattern\n");
-	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
-	case MEDIA_BUS_FMT_YUYV8_1X16:
-	case MEDIA_BUS_FMT_YUYV8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
-		break;
-	case MEDIA_BUS_FMT_YVYU8_1X16:
-	case MEDIA_BUS_FMT_YVYU8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB;
-		break;
-	case MEDIA_BUS_FMT_UYVY8_1X16:
-	case MEDIA_BUS_FMT_UYVY8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
-		break;
-	case MEDIA_BUS_FMT_VYUY8_1X16:
-	case MEDIA_BUS_FMT_VYUY8_2X8:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY;
-		break;
-	/* RAW Bayer SBGGR formats - pattern 2 (BGBGBG) */
-	case MEDIA_BUS_FMT_SBGGR8_1X8:
-	case MEDIA_BUS_FMT_SBGGR10_1X10:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BGBGBG;
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: RAW SBGGR - CORE_CFG pattern=2\n");
-		break;
-	/* RAW Bayer SGBRG formats - pattern 3 (GBGBGB) */
-	case MEDIA_BUS_FMT_SGBRG8_1X8:
-	case MEDIA_BUS_FMT_SGBRG10_1X10:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GBGBGB;
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: RAW SGBRG - CORE_CFG pattern=3\n");
-		break;
-	/* RAW Bayer SGRBG formats - pattern 1 (GRGRGR) */
-	case MEDIA_BUS_FMT_SGRBG8_1X8:
-	case MEDIA_BUS_FMT_SGRBG10_1X10:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_GRGRGR;
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: RAW SGRBG - CORE_CFG pattern=1\n");
-		break;
-	/* RAW Bayer SRGGB formats - pattern 0 (RGRGRG) */
-	case MEDIA_BUS_FMT_SRGGB8_1X8:
-	case MEDIA_BUS_FMT_SRGGB10_1X10:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_RGRGRG;
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: RAW SRGGB - CORE_CFG pattern=0\n");
-		break;
-	default:
-		val = VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY;
-		break;
-	}
-	/* Add bit 6 - webOS always sets this (0x46 instead of 0x06) */
-	val |= VFE_0_CORE_CFG_INPUT_MUX_ENABLE;
-	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
-	/* Ensure core configuration is visible to hardware */
-	wmb();
+	/* Step 4b: CORE_CFG pixel pattern + input mux. */
+	vfe31_config_core_cfg(vfe, line);
 
 	/*
 	 * Step 4.5: Enable IRQs BEFORE starting CAMIF
