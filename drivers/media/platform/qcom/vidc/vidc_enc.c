@@ -843,14 +843,46 @@ static void vidc_enc_complete_work(struct work_struct *w)
 	} else {
 		/* result_size = compressed bitstream bytes the firmware
 		 * wrote to the dst buffer (VIDC_REG_ENC_FRAME_SIZE) */
-		if (inst->result_size > 0)
-			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
-					      inst->result_size);
-		else
-			vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
-					      vidc_enc_get_framesize_compressed(
-						      inst->width,
-						      inst->height));
+		u32 payload = inst->result_size;
+
+		if (payload == 0)
+			payload = vidc_enc_get_framesize_compressed(inst->width,
+								    inst->height);
+
+		/*
+		 * Prepend the captured SPS/PPS to the first encoded frame so
+		 * the elementary stream is standalone-decodable. The firmware
+		 * emits SPS/PPS only once (at SEQ_HEADER) and writes the raw
+		 * IDR at offset 0 of this buffer, so shift the IDR forward and
+		 * copy the header in front of it.
+		 */
+		if (inst->seq_hdr_pending_out && inst->seq_hdr &&
+		    inst->result_size > 0) {
+			void *vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
+			unsigned long cap =
+				vb2_plane_size(&dst_buf->vb2_buf, 0);
+
+			if (vaddr && cap >= (unsigned long)inst->seq_hdr_size +
+						     inst->result_size) {
+				memmove(vaddr + inst->seq_hdr_size, vaddr,
+					inst->result_size);
+				memcpy(vaddr, inst->seq_hdr,
+				       inst->seq_hdr_size);
+				payload = inst->seq_hdr_size +
+					  inst->result_size;
+				inst->seq_hdr_pending_out = false;
+				dev_info(core->dev,
+					 "prepended %u-byte SPS/PPS to first frame (total %u)\n",
+					 inst->seq_hdr_size, payload);
+			} else {
+				dev_warn(core->dev,
+					 "cannot prepend SPS/PPS (vaddr=%p cap=%lu need=%u)\n",
+					 vaddr, cap,
+					 inst->seq_hdr_size + inst->result_size);
+			}
+		}
+
+		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
 
 		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
@@ -1097,6 +1129,7 @@ static int vidc_enc_close(struct file *file)
 	v4l2_m2m_ctx_release(inst->m2m_ctx);
 	/* Don't release m2m_dev — it's shared and owned by vidc_core */
 
+	kfree(inst->seq_hdr);
 	kfree(inst);
 
 	return 0;

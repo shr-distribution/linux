@@ -693,6 +693,18 @@ struct vidc_inst {
 	u32 display_c_raw;
 
 	/*
+	 * Encoder SPS/PPS sequence header, captured from the firmware's
+	 * SEQ_HEADER output (vidc_enc_send_seq_header). The firmware does
+	 * not re-emit it with each IDR, so we stash it here and prepend it
+	 * to the first encoded CAPTURE buffer (seq_hdr_pending_out) to make
+	 * the bitstream standalone-decodable. webOS keeps the equivalent
+	 * encoder->seq_header buffer for the same reason.
+	 */
+	u8 *seq_hdr;
+	u32 seq_hdr_size;
+	bool seq_hdr_pending_out;
+
+	/*
 	 * display_status from VIDC_REG_DEC_DISPLAY_STATUS, low nibble.
 	 * Tells frame_done_work whether the current FRAME_DONE event
 	 * means "decoded a new frame and want to display it now"

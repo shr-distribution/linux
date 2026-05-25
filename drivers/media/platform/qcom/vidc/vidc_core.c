@@ -2270,7 +2270,45 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 		goto err_free;
 	}
 
-	dev_info(core->dev, "encoder SEQ_HEADER done\n");
+	/*
+	 * Capture the SPS/PPS the firmware just wrote into hdr_vaddr. The
+	 * header byte count is reported in VIDC_REG_ENC_FRAME_SIZE (webOS
+	 * vidc_1080p_get_encoder_sequence_header_size reads the same
+	 * register, REG_845544, used for per-frame size). The firmware does
+	 * not re-emit SPS/PPS with each IDR, so stash a copy here and
+	 * prepend it to the first encoded frame in vidc_enc_complete_work.
+	 */
+	{
+		u32 hdr_size = vidc_read(core, VIDC_REG_ENC_FRAME_SIZE);
+
+		if (hdr_size == 0 || hdr_size > SZ_4K) {
+			dev_warn(core->dev,
+				 "encoder SEQ_HEADER size out of range (%u) — stream will lack SPS/PPS\n",
+				 hdr_size);
+		} else {
+			kfree(inst->seq_hdr);
+			inst->seq_hdr = kmemdup(hdr_vaddr, hdr_size, GFP_KERNEL);
+			if (inst->seq_hdr) {
+				inst->seq_hdr_size = hdr_size;
+				inst->seq_hdr_pending_out = true;
+				/*
+				 * Match webOS: force constraint_set0/1 flags in
+				 * the SPS profile-compatibility byte so the
+				 * stream is tagged constrained-baseline. Byte
+				 * layout: [00 00 00 01][67][profile][compat]...
+				 * compat is offset 6 from the start code.
+				 */
+				if (hdr_size > 6)
+					inst->seq_hdr[6] = 0xC0;
+				dev_info(core->dev,
+					 "encoder SEQ_HEADER done (%u byte SPS/PPS captured)\n",
+					 hdr_size);
+			} else {
+				inst->seq_hdr_size = 0;
+				inst->seq_hdr_pending_out = false;
+			}
+		}
+	}
 	ret = 0;
 
 err_free:
