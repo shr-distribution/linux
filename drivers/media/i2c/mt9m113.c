@@ -108,12 +108,16 @@
 #define MT9M113_MODE_SENSOR_ROW_END_A		0x2711
 #define MT9M113_MODE_SENSOR_COL_END_A		0x2713
 #define MT9M113_MODE_SENSOR_ROW_SPEED_A		0x2715
+#define MT9M113_MODE_SENSOR_FRAME_LENGTH_A	0x271F
+#define MT9M113_MODE_SENSOR_LINE_LENGTH_PCK_A	0x2721
 
 #define MT9M113_MODE_SENSOR_ROW_START_B		0x2723
 #define MT9M113_MODE_SENSOR_COL_START_B		0x2725
 #define MT9M113_MODE_SENSOR_ROW_END_B		0x2727
 #define MT9M113_MODE_SENSOR_COL_END_B		0x2729
 #define MT9M113_MODE_SENSOR_ROW_SPEED_B		0x272B
+#define MT9M113_MODE_SENSOR_FRAME_LENGTH_B	0x2735
+#define MT9M113_MODE_SENSOR_LINE_LENGTH_PCK_B	0x2737
 
 /* Context A sensor config values (from webOS driver, 640x480 binned) */
 #define MT9M113_CONTEXT_A_ROW_START		0x0000
@@ -122,6 +126,8 @@
 #define MT9M113_CONTEXT_A_COL_END		0x050D	/* 1293 */
 #define MT9M113_CONTEXT_A_ROW_SPEED		0x2111
 #define MT9M113_CONTEXT_A_READ_MODE		0x046C	/* Binning enabled */
+#define MT9M113_CONTEXT_A_FRAME_LENGTH		0x032E	/* 814 lines (incl vblank) */
+#define MT9M113_CONTEXT_A_LINE_LENGTH_PCK	0x04CC	/* 1228 pixclks/line */
 
 /* Context B sensor config values (from webOS driver, 1280x1024 full res) */
 #define MT9M113_CONTEXT_B_ROW_START		0x0004
@@ -130,6 +136,8 @@
 #define MT9M113_CONTEXT_B_COL_END		0x050B	/* 1291 */
 #define MT9M113_CONTEXT_B_ROW_SPEED		0x2111
 #define MT9M113_CONTEXT_B_READ_MODE		0x0024	/* Full resolution */
+#define MT9M113_CONTEXT_B_FRAME_LENGTH		0x0559	/* 1369 lines (incl vblank) */
+#define MT9M113_CONTEXT_B_LINE_LENGTH_PCK	0x0722	/* 1826 pixclks/line */
 
 /* Auto Exposure MCU variables (for preview vs snapshot optimization) */
 #define MT9M113_AE_MAX_INDEX			0xa20c
@@ -475,6 +483,23 @@ static int mt9m113_configure_sensor_context(struct mt9m113 *sensor,
 					    MT9M113_CONTEXT_B_READ_MODE);
 		if (ret)
 			return ret;
+		/*
+		 * Frame/line length define the total frame period (active +
+		 * blanking). They must be re-applied with the rest of the
+		 * context geometry: the VFE CAMIF counts lines to find frame
+		 * boundaries (no MIPI FE short packet), so a stale period makes
+		 * the captured image walk vertically frame-over-frame.
+		 */
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_FRAME_LENGTH_B,
+					    MT9M113_CONTEXT_B_FRAME_LENGTH);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_LINE_LENGTH_PCK_B,
+					    MT9M113_CONTEXT_B_LINE_LENGTH_PCK);
+		if (ret)
+			return ret;
 	} else {
 		/* Context A: 640x480 binned preview */
 		dev_dbg(dev, "MT9M113: Configuring Context A sensor params\n");
@@ -507,6 +532,17 @@ static int mt9m113_configure_sensor_context(struct mt9m113 *sensor,
 		ret = mt9m113_write_mcu_var(sensor,
 					    MT9M113_SENSOR_READ_MODE_A,
 					    MT9M113_CONTEXT_A_READ_MODE);
+		if (ret)
+			return ret;
+		/* See Context B above: frame period must track the geometry. */
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_FRAME_LENGTH_A,
+					    MT9M113_CONTEXT_A_FRAME_LENGTH);
+		if (ret)
+			return ret;
+		ret = mt9m113_write_mcu_var(sensor,
+					    MT9M113_MODE_SENSOR_LINE_LENGTH_PCK_A,
+					    MT9M113_CONTEXT_A_LINE_LENGTH_PCK);
 		if (ret)
 			return ret;
 	}
