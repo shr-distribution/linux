@@ -46,11 +46,6 @@ module_param(mt9m113_cont_mipi_clk, int, 0644);
 MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
 		 "Use continuous MIPI clock (0=LP default, 1=continuous)");
 
-static int mt9m113_skip_short_pkt = 1;
-module_param(mt9m113_skip_short_pkt, int, 0644);
-MODULE_PARM_DESC(mt9m113_skip_short_pkt,
-		 "Skip CUSTOM_SHORT_PKT write to match webOS (1=skip default)");
-
 /* MT9M113 Context V4L2 Control */
 #define V4L2_CID_MT9M113_CONTEXT	(V4L2_CID_USER_BASE + 0x1001)
 #define MT9M113_CONTEXT_A		0	/* 640x480 preview */
@@ -1252,13 +1247,17 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 		return ret;
 	}
 
-	/* Configure short packets */
-	if (!mt9m113_skip_short_pkt) {
-		ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
-				MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
-		if (ret < 0)
-			return ret;
-	}
+	/*
+	 * Enable MIPI Frame-Start/End short packets. Without them the VFE CAMIF
+	 * has no per-frame boundary marker and runs in line-counting (APS) mode,
+	 * which slips against the sensor's free-running readout and makes the
+	 * captured image walk vertically (~tens of lines/frame, resolution
+	 * dependent). Emitting the frame-sync short packets locks every frame.
+	 */
+	ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+			MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+	if (ret < 0)
+		return ret;
 
 	/*
 	 * IMPORTANT: Do NOT enable MIPI output here!
