@@ -4,6 +4,7 @@
 #include <linux/delay.h>
 #include <linux/interconnect.h>
 #include <linux/pm_opp.h>
+#include <linux/pm_runtime.h>
 
 #include "a2xx_gpu.h"
 #include "msm_gem.h"
@@ -355,6 +356,27 @@ static void a2xx_recover(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
 	msleep(30);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
+
+	/*
+	 * Power-cycle the GPU through runtime PM so the gfx3d GDSC collapses and
+	 * re-fires the GFX3D *core* reset on re-enable (mmcc-msm8660 gfx3d_gdsc
+	 * .resets — the same reset that fixed the period-8 cycle). A register-
+	 * level RBBM_SOFT_RESET does NOT clear the core's hung SQ / parameter-
+	 * cache SRAM; only the GDSC GFX3D reset does. Without this, the post-
+	 * recover a2xx_hw_init() -> a2xx_me_init() -> a2xx_idle() times out and
+	 * hw_init returns -EINVAL ("gpu hw init failed: -22"), turning every GPU
+	 * lockup into an unrecoverable hangcheck -> recover death-spiral.
+	 *
+	 * recover_worker() has already retired the hung submit and holds a single
+	 * runtime-PM reference here, so put_sync_suspend drops the usage count to
+	 * zero -> genpd suspend -> GDSC off; get_sync -> genpd resume ->
+	 * gdsc_enable asserts GFX3D_RESET. a2xx_pm_suspend() already handles the
+	 * not-idle (hung) case during the collapse. If some other ref is held the
+	 * collapse is skipped and we fall back to the old (soft-reset-only)
+	 * behaviour -- no worse than before.
+	 */
+	pm_runtime_put_sync_suspend(&gpu->pdev->dev);
+	pm_runtime_get_sync(&gpu->pdev->dev);
 
 	adreno_recover(gpu);
 }
