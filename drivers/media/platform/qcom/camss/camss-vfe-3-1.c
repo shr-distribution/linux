@@ -4816,61 +4816,10 @@ static void vfe31_config_core_cfg(struct vfe_device *vfe,
 	wmb();
 }
 
-static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
+/* Program AXI output mode, BUS_CFG and XBAR routing for this line. */
+static void vfe31_config_axi_bus(struct vfe_device *vfe, struct vfe_line *line,
+				 u32 axi_mode, bool is_rdi_line)
 {
-	enum vfe_line_id line_id = vfe->wm_output_map[wm];
-	struct vfe_line *line;
-	u32 val;
-	bool is_rdi_line;
-	bool fmt_is_420;
-	u32 axi_mode;
-
-	if (line_id == VFE_LINE_NONE || line_id >= vfe->res->line_num) {
-		dev_err(vfe->camss->dev, "VFE31: Invalid line_id %d for WM%d\n",
-			line_id, wm);
-		return;
-	}
-
-	line = &vfe->line[line_id];
-
-	/*
-	 * Determine AXI mode based on line type:
-	 * - RDI lines (RDI0, RDI1, RDI2) MUST use 0x60 (raw bypass)
-	 * - PIX/VIDEO lines use module parameter (default 0x01 for DEMUX)
-	 */
-	is_rdi_line = (line_id == VFE_LINE_RDI0 ||
-		       line_id == VFE_LINE_RDI1 ||
-		       line_id == VFE_LINE_RDI2);
-
-	if (is_rdi_line) {
-		if (V31(vfe)->raw_through_pix)
-			axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
-		else
-			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
-	} else {
-		axi_mode = VFE31_AXI_OUT_MODE_PIX;
-	}
-
-	dev_dbg(vfe->camss->dev,
-		 "VFE31: Starting CAMIF for WM%d line%d (fmt %ux%u code=0x%x axi=0x%x)\n",
-		 wm, line_id, line->fmt[MSM_VFE_PAD_SINK].width,
-		 line->fmt[MSM_VFE_PAD_SINK].height,
-		 line->fmt[MSM_VFE_PAD_SINK].code, axi_mode);
-
-	/*
-	 * VFE31 raw capture initialization - matching webOS sequence:
-	 * 1. Configure AXI output mode (0x60 for raw WM0)
-	 * 2. Configure WM registers (ping/pong, image_size, etc.)
-	 * 3. Configure CAMIF frame/window dimensions
-	 * 4. Configure pixel pattern in CORE_CFG
-	 * 5. Enable IRQs and start CAMIF
-	 *
-	 * NOTE: VFE31 EFS_CFG (0x1E4) does NOT have camif2vfe/camif2bus bits
-	 * (those are VFE8x only). Data routing is via AXI output mode (0x040).
-	 *
-	 * Critical: AXI mode and WM addresses must be set BEFORE CAMIF starts.
-	 */
-
 	/*
 	 * Step 1: Configure AXI output mode, BUS_CFG, and XBAR
 	 *
@@ -4941,7 +4890,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * been configured before enable_pending_camif runs.
 		 */
 		{
-			bool video_active = (line_id == VFE_LINE_VIDEO);
+			bool video_active = (line->id == VFE_LINE_VIDEO);
 			bool zsl_active = (V31(vfe)->zsl_state != VFE31_REC_IDLE);
 
 			xbar_value = vfe31_calc_xbar(true, video_active, zsl_active);
@@ -4960,6 +4909,250 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	}
 	/* Ensure bus and XBAR configuration is committed before continuing */
 	wmb();
+}
+
+/* Configure composite/IRQ masks and issue REG_UPDATE (CAMIF stays deferred). */
+static void vfe31_config_irqs(struct vfe_device *vfe, struct vfe_line *line,
+			      bool is_rdi_line)
+{
+	/*
+	 * Step 4.5: Enable IRQs BEFORE starting CAMIF
+	 *
+	 * webOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
+	 * - Bit 0: SOF
+	 * - Bit 5: REG_UPDATE
+	 * - Bits 8-14: PING_PONG for WM0-6
+	 * - etc.
+	 *
+	 * For RDI/raw mode we need at minimum: SOF + REG_UPDATE + PING_PONG for WM0
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31: Step 4.5 - Enable IRQs\n");
+	/*
+	 * CRITICAL: Configure IRQ_COMPOSITE_MASK (0x034) to map WMs to composite
+	 * interrupt groups. Without this, IMAGE_COMPOSITE_DONE IRQs never fire!
+	 *
+	 * Bit layout:
+	 * - Bits 0-7:   WMs mapped to COMPOSITE_DONE_0 (IRQ_STATUS_0 bit 21)
+	 * - Bits 8-15:  WMs mapped to COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
+	 * - Bits 16-23: WMs mapped to COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
+	 *
+	 * webOS mapping (from msm_vfe31.c):
+	 * - Preview/PIX mode (OUTPUT_2, 0x200): WMs mapped to COMPOSITE_DONE_0
+	 *     irq_comp_mask |= BIT(out0.ch0) | BIT(out0.ch1);  // bits 0-7
+	 * - Raw snapshot mode (CAMIF_TO_AXI, 0x60): WM0 mapped to COMPOSITE_DONE_1
+	 *     irq_comp_mask |= BIT(out1.ch0 + 8);  // bits 8-15
+	 */
+	{
+		/*
+		 * IRQ_COMPOSITE_MASK is write-only, use shadow register.
+		 *
+		 * Using webOS offset-by-4 WM pairing:
+		 *   - PIX:   WM0 (Y) + WM4 (CbCr) → mask 0x11
+		 *   - VIDEO: WM1 (Y) + WM5 (CbCr) → mask 0x22
+		 *   - Both:  WM0+WM1+WM4+WM5     → mask 0x33
+		 *
+		 * All WMs are in Group 0 (bits 0-7), so COMPOSITE_DONE_0 fires
+		 * when all enabled WMs complete. This ensures we deliver one
+		 * frame per completion, not multiple partial frames.
+		 */
+		{
+			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
+			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
+			/* Consider the line being started as active */
+			bool starting_pix = (line->id == VFE_LINE_PIX);
+			bool starting_video = (line->id == VFE_LINE_VIDEO);
+			bool starting_zsl = (line->id == VFE_LINE_ZSL);
+			bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
+					     video_out->state == VFE_OUTPUT_RESERVED ||
+					     video_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
+					   pix_out->state == VFE_OUTPUT_RESERVED ||
+					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool zsl_state_active = (zsl_out->state == VFE_OUTPUT_ON ||
+					   zsl_out->state == VFE_OUTPUT_RESERVED ||
+					   zsl_out->state == VFE_OUTPUT_CONTINUOUS);
+			bool video_active = starting_video || video_state_active;
+			bool pix_active = starting_pix || pix_state_active;
+			bool zsl_active = starting_zsl || zsl_state_active;
+
+			if (is_rdi_line) {
+				/*
+				 * RDI mode: Map WM to composite group 1 (bits 8-15).
+				 * COMPOSITE_DONE_1 (IRQ bit 22) fires when WM completes.
+				 * This matches webOS raw snapshot mode.
+				 */
+				u8 wm0 = line->output.wm_idx[0];
+
+				V31(vfe)->irq_comp_mask_shadow = (1 << (wm0 + 8));
+				dev_dbg(vfe->camss->dev,
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (RDI WM%d->group1)\n",
+					 V31(vfe)->irq_comp_mask_shadow, wm0);
+			} else {
+				/*
+				 * Build composite mask from active lines:
+				 *   PIX:   Group 0 (WM0+WM4)
+				 *   ZSL:   Group 1 (WM2+WM6)
+				 *   VIDEO: Group 2 (WM1+WM5)
+				 */
+				u32 mask = 0;
+				const char *mode_str;
+
+				if (pix_active)
+					mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
+				if (zsl_active) {
+					if (zsl_out->wm_num == 2)
+						mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
+					else
+						mask |= (1 << (VFE31_ZSL_WM_Y + 8));
+				}
+				if (video_active)
+					mask |= VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
+
+				if (!mask)
+					mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+
+				if (pix_active && video_active && zsl_active)
+					mode_str = "PIX+VIDEO+ZSL";
+				else if (pix_active && zsl_active)
+					mode_str = "PIX+ZSL";
+				else if (pix_active && video_active)
+					mode_str = "PIX+VIDEO";
+				else if (video_active)
+					mode_str = "VIDEO only";
+				else if (zsl_active)
+					mode_str = "ZSL only";
+				else
+					mode_str = "PIX only";
+
+				V31(vfe)->irq_comp_mask_shadow = mask;
+				dev_dbg(vfe->camss->dev,
+					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
+					 V31(vfe)->irq_comp_mask_shadow, mode_str);
+			}
+			writel_relaxed(V31(vfe)->irq_comp_mask_shadow,
+				       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+			/* Ensure IRQ composite mask is visible to hardware */
+			wmb();
+		}
+	}
+
+	/*
+	 * Configure IRQ masks dynamically based on active WMs.
+	 *
+	 * WebOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
+	 *   - Bit 0: CAMIF_SOF
+	 *   - Bit 5: REG_UPDATE
+	 *   - Bits 13-19: Stats IRQs (AEC, AF, AWB, RS, CS, IHIST, SKIN)
+	 *   - Bits 21-23: IMAGE_COMPOSITE_DONE_0-2
+	 *
+	 * NOTE: Bits 8-13 are NOT per-WM PING_PONG IRQs on VFE31!
+	 * They are bus overflow errors (IMG_MAST_n_BUS_OVFL) in STATUS_1.
+	 * Frame completion is signaled ONLY via IMAGE_COMPOSITE_DONE.
+	 */
+	{
+		V31(vfe)->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
+					VFE_0_IRQ_MASK_0_CAMIF_EOF |
+					VFE_0_IRQ_MASK_0_REG_UPDATE |
+					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
+					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1) |
+					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
+	}
+	/*
+	 * IRQ_MASK_1: webOS uses 0x00400000 (only RESET_ACK, bit 22).
+	 *
+	 * webOS does NOT mask VIOLATION or CAMIF_ERROR - these are considered
+	 * informational and don't prevent frame capture. Masking VIOLATION
+	 * causes spurious IRQs with status=0x00000000.
+	 *
+	 * Match webOS exactly to avoid spurious interrupts.
+	 */
+	V31(vfe)->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK;
+
+	dev_dbg(vfe->camss->dev,
+		 "VFE31: Setting IRQ_MASK_0=0x%08x IRQ_MASK_1=0x%08x\n",
+		 V31(vfe)->irq_mask0_shadow, V31(vfe)->irq_mask1_shadow);
+
+	writel_relaxed(V31(vfe)->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(V31(vfe)->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+	/* Ensure IRQ configuration is visible to hardware */
+	wmb();
+
+	/*
+	 * Issue REG_UPDATE to latch shadow registers.
+	 *
+	 * Do NOT start CAMIF here. CAMIF must only be started by
+	 * enable_pending_camif() which runs AFTER the sensor starts
+	 * streaming. Starting CAMIF before the sensor is ready causes
+	 * the VFE to run with no input data, corrupting IRQ state.
+	 *
+	 * webOS sequence: REG_UPDATE + CAMIF_START happen together in
+	 * vfe31_start_common(), but that's called AFTER sensor s_stream.
+	 * Our configure_pending_camif runs BEFORE sensor s_stream.
+	 */
+	dev_dbg(vfe->camss->dev, "VFE31: Issuing REG_UPDATE_CMD (CAMIF deferred to enable_pending)\n");
+	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
+	/* Ensure REG_UPDATE command is dispatched to hardware */
+	wmb();
+}
+
+static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
+{
+	enum vfe_line_id line_id = vfe->wm_output_map[wm];
+	struct vfe_line *line;
+	u32 val;
+	bool is_rdi_line;
+	bool fmt_is_420;
+	u32 axi_mode;
+
+	if (line_id == VFE_LINE_NONE || line_id >= vfe->res->line_num) {
+		dev_err(vfe->camss->dev, "VFE31: Invalid line_id %d for WM%d\n",
+			line_id, wm);
+		return;
+	}
+
+	line = &vfe->line[line_id];
+
+	/*
+	 * Determine AXI mode based on line type:
+	 * - RDI lines (RDI0, RDI1, RDI2) MUST use 0x60 (raw bypass)
+	 * - PIX/VIDEO lines use module parameter (default 0x01 for DEMUX)
+	 */
+	is_rdi_line = (line_id == VFE_LINE_RDI0 ||
+		       line_id == VFE_LINE_RDI1 ||
+		       line_id == VFE_LINE_RDI2);
+
+	if (is_rdi_line) {
+		if (V31(vfe)->raw_through_pix)
+			axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
+		else
+			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
+	} else {
+		axi_mode = VFE31_AXI_OUT_MODE_PIX;
+	}
+
+	dev_dbg(vfe->camss->dev,
+		 "VFE31: Starting CAMIF for WM%d line%d (fmt %ux%u code=0x%x axi=0x%x)\n",
+		 wm, line_id, line->fmt[MSM_VFE_PAD_SINK].width,
+		 line->fmt[MSM_VFE_PAD_SINK].height,
+		 line->fmt[MSM_VFE_PAD_SINK].code, axi_mode);
+
+	/*
+	 * VFE31 raw capture initialization - matching webOS sequence:
+	 * 1. Configure AXI output mode (0x60 for raw WM0)
+	 * 2. Configure WM registers (ping/pong, image_size, etc.)
+	 * 3. Configure CAMIF frame/window dimensions
+	 * 4. Configure pixel pattern in CORE_CFG
+	 * 5. Enable IRQs and start CAMIF
+	 *
+	 * NOTE: VFE31 EFS_CFG (0x1E4) does NOT have camif2vfe/camif2bus bits
+	 * (those are VFE8x only). Data routing is via AXI output mode (0x040).
+	 *
+	 * Critical: AXI mode and WM addresses must be set BEFORE CAMIF starts.
+	 */
+
+	/* Step 1: AXI output mode, BUS_CFG and XBAR routing. */
+	vfe31_config_axi_bus(vfe, line, axi_mode, is_rdi_line);
 
 	/* Step 2: Configure WM registers (must be BEFORE CAMIF start) */
 	{
@@ -5201,185 +5394,8 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	/* Step 4b: CORE_CFG pixel pattern + input mux. */
 	vfe31_config_core_cfg(vfe, line);
 
-	/*
-	 * Step 4.5: Enable IRQs BEFORE starting CAMIF
-	 *
-	 * webOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
-	 * - Bit 0: SOF
-	 * - Bit 5: REG_UPDATE
-	 * - Bits 8-14: PING_PONG for WM0-6
-	 * - etc.
-	 *
-	 * For RDI/raw mode we need at minimum: SOF + REG_UPDATE + PING_PONG for WM0
-	 */
-	dev_dbg(vfe->camss->dev, "VFE31: Step 4.5 - Enable IRQs\n");
-	/*
-	 * CRITICAL: Configure IRQ_COMPOSITE_MASK (0x034) to map WMs to composite
-	 * interrupt groups. Without this, IMAGE_COMPOSITE_DONE IRQs never fire!
-	 *
-	 * Bit layout:
-	 * - Bits 0-7:   WMs mapped to COMPOSITE_DONE_0 (IRQ_STATUS_0 bit 21)
-	 * - Bits 8-15:  WMs mapped to COMPOSITE_DONE_1 (IRQ_STATUS_0 bit 22)
-	 * - Bits 16-23: WMs mapped to COMPOSITE_DONE_2 (IRQ_STATUS_0 bit 23)
-	 *
-	 * webOS mapping (from msm_vfe31.c):
-	 * - Preview/PIX mode (OUTPUT_2, 0x200): WMs mapped to COMPOSITE_DONE_0
-	 *     irq_comp_mask |= BIT(out0.ch0) | BIT(out0.ch1);  // bits 0-7
-	 * - Raw snapshot mode (CAMIF_TO_AXI, 0x60): WM0 mapped to COMPOSITE_DONE_1
-	 *     irq_comp_mask |= BIT(out1.ch0 + 8);  // bits 8-15
-	 */
-	{
-		/*
-		 * IRQ_COMPOSITE_MASK is write-only, use shadow register.
-		 *
-		 * Using webOS offset-by-4 WM pairing:
-		 *   - PIX:   WM0 (Y) + WM4 (CbCr) → mask 0x11
-		 *   - VIDEO: WM1 (Y) + WM5 (CbCr) → mask 0x22
-		 *   - Both:  WM0+WM1+WM4+WM5     → mask 0x33
-		 *
-		 * All WMs are in Group 0 (bits 0-7), so COMPOSITE_DONE_0 fires
-		 * when all enabled WMs complete. This ensures we deliver one
-		 * frame per completion, not multiple partial frames.
-		 */
-		{
-			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
-			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
-			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
-			/* Consider the line being started as active */
-			bool starting_pix = (line->id == VFE_LINE_PIX);
-			bool starting_video = (line->id == VFE_LINE_VIDEO);
-			bool starting_zsl = (line->id == VFE_LINE_ZSL);
-			bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
-					     video_out->state == VFE_OUTPUT_RESERVED ||
-					     video_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
-					   pix_out->state == VFE_OUTPUT_RESERVED ||
-					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool zsl_state_active = (zsl_out->state == VFE_OUTPUT_ON ||
-					   zsl_out->state == VFE_OUTPUT_RESERVED ||
-					   zsl_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool video_active = starting_video || video_state_active;
-			bool pix_active = starting_pix || pix_state_active;
-			bool zsl_active = starting_zsl || zsl_state_active;
-
-			if (is_rdi_line) {
-				/*
-				 * RDI mode: Map WM to composite group 1 (bits 8-15).
-				 * COMPOSITE_DONE_1 (IRQ bit 22) fires when WM completes.
-				 * This matches webOS raw snapshot mode.
-				 */
-				u8 wm0 = line->output.wm_idx[0];
-
-				V31(vfe)->irq_comp_mask_shadow = (1 << (wm0 + 8));
-				dev_dbg(vfe->camss->dev,
-					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (RDI WM%d->group1)\n",
-					 V31(vfe)->irq_comp_mask_shadow, wm0);
-			} else {
-				/*
-				 * Build composite mask from active lines:
-				 *   PIX:   Group 0 (WM0+WM4)
-				 *   ZSL:   Group 1 (WM2+WM6)
-				 *   VIDEO: Group 2 (WM1+WM5)
-				 */
-				u32 mask = 0;
-				const char *mode_str;
-
-				if (pix_active)
-					mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
-				if (zsl_active) {
-					if (zsl_out->wm_num == 2)
-						mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
-					else
-						mask |= (1 << (VFE31_ZSL_WM_Y + 8));
-				}
-				if (video_active)
-					mask |= VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
-
-				if (!mask)
-					mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
-
-				if (pix_active && video_active && zsl_active)
-					mode_str = "PIX+VIDEO+ZSL";
-				else if (pix_active && zsl_active)
-					mode_str = "PIX+ZSL";
-				else if (pix_active && video_active)
-					mode_str = "PIX+VIDEO";
-				else if (video_active)
-					mode_str = "VIDEO only";
-				else if (zsl_active)
-					mode_str = "ZSL only";
-				else
-					mode_str = "PIX only";
-
-				V31(vfe)->irq_comp_mask_shadow = mask;
-				dev_dbg(vfe->camss->dev,
-					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
-					 V31(vfe)->irq_comp_mask_shadow, mode_str);
-			}
-			writel_relaxed(V31(vfe)->irq_comp_mask_shadow,
-				       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
-			/* Ensure IRQ composite mask is visible to hardware */
-			wmb();
-		}
-	}
-
-	/*
-	 * Configure IRQ masks dynamically based on active WMs.
-	 *
-	 * WebOS uses IRQ_MASK_0 = 0x00EFE021 which includes:
-	 *   - Bit 0: CAMIF_SOF
-	 *   - Bit 5: REG_UPDATE
-	 *   - Bits 13-19: Stats IRQs (AEC, AF, AWB, RS, CS, IHIST, SKIN)
-	 *   - Bits 21-23: IMAGE_COMPOSITE_DONE_0-2
-	 *
-	 * NOTE: Bits 8-13 are NOT per-WM PING_PONG IRQs on VFE31!
-	 * They are bus overflow errors (IMG_MAST_n_BUS_OVFL) in STATUS_1.
-	 * Frame completion is signaled ONLY via IMAGE_COMPOSITE_DONE.
-	 */
-	{
-		V31(vfe)->irq_mask0_shadow = VFE_0_IRQ_MASK_0_CAMIF_SOF |
-					VFE_0_IRQ_MASK_0_CAMIF_EOF |
-					VFE_0_IRQ_MASK_0_REG_UPDATE |
-					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(0) |
-					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(1) |
-					VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
-	}
-	/*
-	 * IRQ_MASK_1: webOS uses 0x00400000 (only RESET_ACK, bit 22).
-	 *
-	 * webOS does NOT mask VIOLATION or CAMIF_ERROR - these are considered
-	 * informational and don't prevent frame capture. Masking VIOLATION
-	 * causes spurious IRQs with status=0x00000000.
-	 *
-	 * Match webOS exactly to avoid spurious interrupts.
-	 */
-	V31(vfe)->irq_mask1_shadow = VFE_0_IRQ_MASK_1_RESET_ACK;
-
-	dev_dbg(vfe->camss->dev,
-		 "VFE31: Setting IRQ_MASK_0=0x%08x IRQ_MASK_1=0x%08x\n",
-		 V31(vfe)->irq_mask0_shadow, V31(vfe)->irq_mask1_shadow);
-
-	writel_relaxed(V31(vfe)->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-	writel_relaxed(V31(vfe)->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
-	/* Ensure IRQ configuration is visible to hardware */
-	wmb();
-
-	/*
-	 * Issue REG_UPDATE to latch shadow registers.
-	 *
-	 * Do NOT start CAMIF here. CAMIF must only be started by
-	 * enable_pending_camif() which runs AFTER the sensor starts
-	 * streaming. Starting CAMIF before the sensor is ready causes
-	 * the VFE to run with no input data, corrupting IRQ state.
-	 *
-	 * webOS sequence: REG_UPDATE + CAMIF_START happen together in
-	 * vfe31_start_common(), but that's called AFTER sensor s_stream.
-	 * Our configure_pending_camif runs BEFORE sensor s_stream.
-	 */
-	dev_dbg(vfe->camss->dev, "VFE31: Issuing REG_UPDATE_CMD (CAMIF deferred to enable_pending)\n");
-	writel(1, vfe->base + VFE_0_REG_UPDATE_CMD);
-	/* Ensure REG_UPDATE command is dispatched to hardware */
-	wmb();
+	/* Step 4.5: composite/IRQ masks + REG_UPDATE (CAMIF deferred). */
+	vfe31_config_irqs(vfe, line, is_rdi_line);
 
 	/*
 	 * Step 6: Store WM index for enable_pending_camif.
