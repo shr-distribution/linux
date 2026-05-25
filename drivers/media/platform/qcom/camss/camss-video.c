@@ -340,35 +340,6 @@ static int video_prepare_streaming(struct vb2_queue *q)
 	struct video_device *vdev = &video->vdev;
 	int ret;
 
-	/*
-	 * VFE31 testgen mode: Power up VFE directly here instead of using
-	 * pipeline PM. This ensures vfe_init_outputs() is called BEFORE
-	 * buffers are queued (buf_queue happens between prepare_streaming
-	 * and start_streaming), so pending_bufs list is initialized.
-	 */
-	if (vfe31_use_testgen) {
-		struct vfe_line *line;
-		struct vfe_device *vfe;
-
-		dev_info(video->camss->dev,
-			 "[TESTGEN] Powering up VFE directly (bypassing pipeline PM)\n");
-
-		line = container_of(video, struct vfe_line, video_out);
-		vfe = to_vfe(line);
-
-		ret = vfe_get(vfe);
-		if (ret < 0) {
-			dev_err(video->camss->dev,
-				"[TESTGEN] Failed to power up VFE: %d\n", ret);
-			return ret;
-		}
-
-		dev_info(video->camss->dev,
-			 "[TESTGEN] VFE%d powered up, outputs initialized\n",
-			 vfe->id);
-		return 0;
-	}
-
 	ret = v4l2_pipeline_pm_get(&vdev->entity);
 	if (ret < 0) {
 		dev_err(video->camss->dev, "Failed to power up pipeline: %d\n",
@@ -389,25 +360,6 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 
 	dev_dbg(video->camss->dev, "start_streaming: %s count=%d\n",
 		vdev->entity.name, count);
-
-	/*
-	 * VFE31 testgen mode: bypass media pipeline validation and upstream
-	 * entity setup. The test generator produces data internally within
-	 * VFE, so no sensor/CSIPHY/CSID configuration is needed.
-	 */
-	if (vfe31_use_testgen) {
-		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
-		struct vfe_device *vfe = to_vfe(line);
-
-		dev_info(video->camss->dev, "testgen: starting VFE%d\n", vfe->id);
-		line->output.state = VFE_OUTPUT_RESERVED;
-		ret = vfe->res->hw_ops->vfe_enable(line);
-		if (ret < 0) {
-			dev_err(video->camss->dev, "testgen: VFE enable failed: %d\n", ret);
-			goto flush_buffers;
-		}
-		return 0;
-	}
 
 	/*
 	 * VFE31 VIDEO/ZSL joining active PIX stream: bypass pipeline
@@ -548,30 +500,6 @@ static void video_stop_streaming(struct vb2_queue *q)
 	int ret;
 
 	/*
-	 * VFE31 testgen mode: bypass pipeline walk and directly disable VFE.
-	 * Note: vfe_put() is called in unprepare_streaming to match vfe_get()
-	 * from prepare_streaming.
-	 */
-	if (vfe31_use_testgen) {
-		struct vfe_line *line;
-		struct vfe_device *vfe;
-
-		dev_info(video->camss->dev,
-			 "[TESTGEN] Stopping testgen mode\n");
-
-		line = container_of(video, struct vfe_line, video_out);
-		vfe = to_vfe(line);
-
-		ret = vfe->res->hw_ops->vfe_disable(line);
-		if (ret)
-			dev_err(video->camss->dev,
-				"[TESTGEN] VFE disable failed: %d\n", ret);
-
-		video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
-		return;
-	}
-
-	/*
 	 * VFE31 VIDEO/ZSL that joined an active stream bypassed pipeline
 	 * start, so we must bypass pipeline stop too. Directly call
 	 * vfe_disable and flush buffers without walking the pipeline.
@@ -628,20 +556,6 @@ static void video_unprepare_streaming(struct vb2_queue *q)
 {
 	struct camss_video *video = vb2_get_drv_priv(q);
 	struct video_device *vdev = &video->vdev;
-
-	/*
-	 * VFE31 testgen mode: call vfe_put() to match vfe_get() from
-	 * prepare_streaming (instead of pipeline PM).
-	 */
-	if (vfe31_use_testgen) {
-		struct vfe_line *line;
-		struct vfe_device *vfe;
-
-		line = container_of(video, struct vfe_line, video_out);
-		vfe = to_vfe(line);
-		vfe_put(vfe);
-		return;
-	}
 
 	v4l2_pipeline_pm_put(&vdev->entity);
 }

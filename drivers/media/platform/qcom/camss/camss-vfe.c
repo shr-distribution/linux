@@ -951,47 +951,6 @@ int vfe_reset(struct vfe_device *vfe)
 	return 0;
 }
 
-
-/* Module parameter to enable VFE test generator mode */
-int vfe31_use_testgen;
-module_param(vfe31_use_testgen, int, 0644);
-MODULE_PARM_DESC(vfe31_use_testgen, "VFE31: Use internal test generator instead of camera (0=camera, 1=testgen)");
-EXPORT_SYMBOL(vfe31_use_testgen);
-
-/*
- * Testgen dimensions format parameter
- * Some VFE versions expect pixel width in TESTGEN_DIMS, others expect byte width.
- * 0 = byte width (default, width_bytes = width * 2 for UYVY)
- * 1 = pixel width (just the pixel count)
- */
-int vfe31_testgen_pixel_dims;
-module_param(vfe31_testgen_pixel_dims, int, 0644);
-MODULE_PARM_DESC(vfe31_testgen_pixel_dims, "VFE31 testgen dimensions format (0=bytes, 1=pixels)");
-EXPORT_SYMBOL(vfe31_testgen_pixel_dims);
-
-/*
- * Software EOF workaround for sensors that don't send MIPI Frame End packets.
- *
- * The MT9M113 sensor doesn't send MIPI FS/FE short packets, causing VFE to
- * fire CAMIF_ERROR on every frame (missing EOF) and REG_UPDATE never fires.
- * This prevents DMA completion and no frames are captured.
- *
- * When enabled, this workaround:
- * 1. Sets EPOCH_CFG to fire at (height - 1) line (near end of frame)
- * 2. When EPOCH1 fires, manually:
- *    - Clear CAMIF_STATUS error state
- *    - Trigger a manual REG_UPDATE
- *    - Signal frame completion to DMA
- *
- * Use with software_sof_enable for complete frame boundary emulation.
- */
-int software_eof_enable;
-module_param(software_eof_enable, int, 0644);
-MODULE_PARM_DESC(software_eof_enable, "Enable software EOF workaround for sensors without MIPI FE packets");
-EXPORT_SYMBOL(software_eof_enable);
-
-
-
 /*
  * vfe_enable_pending_camif - Configure and enable deferred CAMIF
  * @vfe: VFE device
@@ -1242,77 +1201,6 @@ void vfe_isr_reset_ack(struct vfe_device *vfe)
 {
 	complete(&vfe->reset_complete);
 }
-
-/*
- * vfe_trigger_software_sof - Trigger software-generated SOF for VFE
- * @vfe: VFE device
- * @line_id: VFE line to send SOF to (usually VFE_LINE_PIX for raw)
- *
- * MSM8660 workaround: Some sensors (like MT9M113) don't send MIPI Frame
- * Start/End short packets, so VFE never receives CAMIF_SOF interrupts.
- * This function allows CSIPHY to trigger software SOF when it detects
- * frame boundaries through other means (e.g., SOT after idle gap).
- */
-void vfe_trigger_software_sof(struct vfe_device *vfe, enum vfe_line_id line_id)
-{
-	if (!vfe || line_id >= VFE_LINE_NUM_MAX)
-		return;
-
-	/*
-	 * Call the VFE's SOF handler directly. This will update frame
-	 * counters and notify any waiting clients of the frame start.
-	 */
-	if (vfe->isr_ops.sof)
-		vfe->isr_ops.sof(vfe, line_id);
-}
-EXPORT_SYMBOL_GPL(vfe_trigger_software_sof);
-
-/*
- * vfe_trigger_software_reg_update - Trigger software REG_UPDATE for VFE
- * @vfe: VFE device
- *
- * MSM8660 workaround: Force REG_UPDATE to latch shadow registers and
- * swap DMA buffers when the sensor doesn't send proper frame sync.
- *
- * This writes to VFE REG_UPDATE_CMD register to trigger the latch operation.
- * Combined with software SOF, this enables frame capture on sensors like
- * MT9M113 that don't send MIPI Frame Start/End short packets.
- */
-void vfe_trigger_software_reg_update(struct vfe_device *vfe)
-{
-	if (!vfe || !vfe->base)
-		return;
-
-	/*
-	 * MSM8660/MT9M113 aggressive frame sync workaround:
-	 *
-	 * The sensor doesn't send MIPI FS/FE packets, so CAMIF accumulates
-	 * frame sync errors (NO_SOT, EOF_MISMATCH). These errors cause CAMIF
-	 * to halt and prevent data from reaching the Write Master.
-	 *
-	 * At each frame boundary (detected via CSIPHY BIT(22)):
-	 * 1. Clear CAMIF status to reset error state
-	 * 2. Restart CAMIF to resume data flow
-	 * 3. Trigger REG_UPDATE to latch shadow registers
-	 *
-	 * VFE31 register offsets:
-	 *   0x018: REG_UPDATE_CMD
-	 *   0x1E0: CAMIF_CMD (1=start, 2=stop, 4=clear_status)
-	 */
-
-	/* Clear CAMIF status to reset error flags */
-	writel(4, vfe->base + 0x1E0);  /* CAMIF_CMD = CLEAR_STATUS */
-	wmb();
-
-	/* Restart CAMIF to resume data acceptance */
-	writel(1, vfe->base + 0x1E0);  /* CAMIF_CMD = START */
-	wmb();
-
-	/* Trigger REG_UPDATE to latch shadow registers */
-	writel(1, vfe->base + 0x018);  /* REG_UPDATE_CMD */
-	wmb();
-}
-EXPORT_SYMBOL_GPL(vfe_trigger_software_reg_update);
 
 /*
  * vfe_pm_domain_off - Disable power domains specific to this VFE.

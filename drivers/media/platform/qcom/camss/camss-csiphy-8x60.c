@@ -15,7 +15,6 @@
  */
 
 #include "camss-csiphy.h"
-#include "camss-vfe.h"
 #include "camss.h"
 
 #include <linux/delay.h>
@@ -25,22 +24,6 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/workqueue.h>
-
-/*
- * Software SOF generation - disabled by default.
- *
- * When enabled, CSIPHY generates software SOF interrupts to VFE based on
- * MIPI SOT timing gaps. This is a workaround for sensors that don't send
- * MIPI Frame Start/End short packets.
- *
- * The hardware path (CSIPHY -> CSID -> VFE CAMIF) should generate proper
- * CAMIF_SOF interrupts without this. Enable only for debugging or if the
- * hardware path doesn't work.
- */
-static bool software_sof_enable;
-module_param(software_sof_enable, bool, 0644);
-MODULE_PARM_DESC(software_sof_enable,
-		 "Enable software SOF generation from CSIPHY (default: false)");
 
 /*
  * Runtime-adjustable settle count for MIPI timing debug.
@@ -917,8 +900,6 @@ static void csiphy_8x60_stop_debug_poll(void)
 	cancel_delayed_work_sync(&debug_poll_work);
 }
 
-#define CSIPHY_FRAME_GAP_THRESHOLD_NS	200000	/* 200us in nanoseconds */
-
 /*
  * csiphy_8x60_isr - CSIPHY interrupt service routine
  * @irq: Interrupt line
@@ -929,117 +910,12 @@ static void csiphy_8x60_stop_debug_poll(void)
 static irqreturn_t csiphy_8x60_isr(int irq, void *dev)
 {
 	struct csiphy_device *csiphy = dev;
-	struct vfe_device *vfe;
 	u32 status;
-	ktime_t now;
-	s64 gap_ns;
-	bool frame_start_detected = false;
-	static ktime_t last_sot_time;
-	static int irq_count;
-	static int sof_count;
-	static u32 last_status;
-	static bool first_sot = true;
 
 	status = readl_relaxed(csiphy->base + MIPI_INTERRUPT_STATUS);
 
-	/* Clear the interrupt */
+	/* Acknowledge and clear the interrupt. */
 	writel(status, csiphy->base + MIPI_INTERRUPT_STATUS);
-
-	/* Count IRQs */
-	irq_count++;
-
-	/*
-	 * Frame start detection:
-	 * 1. If MIPI_IRQ_FRAME_START bit is set, use it (preferred)
-	 * 2. If BIT(22) is set - observed on MT9M113 at frame boundaries
-	 * 3. Otherwise, use timing-based detection from SOT gaps
-	 *
-	 * BIT(22) fires at exactly frame rate on MSM8660/MT9M113 combo and
-	 * appears to be an undocumented frame boundary indicator.
-	 */
-	if (status & MIPI_IRQ_FRAME_START) {
-		frame_start_detected = true;
-	} else if (status & BIT(22)) {
-		/* BIT(22) fires at frame boundaries on MT9M113 */
-		frame_start_detected = true;
-	} else if (status & (MIPI_IRQ_SOT_SYNC | MIPI_IRQ_DATA_DL)) {
-		/*
-		 * Use SOT or DATA interrupts for timing-based frame detection.
-		 * With ECC disabled, we may only get DATA (BIT 11) without SOT,
-		 * so include both as triggers for the timing gap check.
-		 */
-		now = ktime_get();
-
-		if (first_sot) {
-			/* First data after reset - treat as frame start */
-			frame_start_detected = true;
-			first_sot = false;
-		} else {
-			/* Check gap since last data interrupt */
-			gap_ns = ktime_to_ns(ktime_sub(now, last_sot_time));
-			if (gap_ns > CSIPHY_FRAME_GAP_THRESHOLD_NS) {
-				/* Large gap - this is a new frame */
-				frame_start_detected = true;
-			}
-		}
-		last_sot_time = now;
-	}
-
-	/*
-	 * Trigger software SOF + REG_UPDATE if frame start detected AND software SOF is enabled.
-	 *
-	 * This is disabled by default because the hardware path (CSIPHY -> CSID ->
-	 * VFE CAMIF) should generate proper CAMIF_SOF interrupts. Enable via:
-	 *   echo 1 > /sys/module/qcom_camss/parameters/software_sof_enable
-	 *
-	 * MSM8660/MT9M113 workaround: The sensor doesn't send MIPI Frame Start/End
-	 * short packets, so VFE CAMIF cannot sync frame boundaries. When BIT(22)
-	 * fires (undocumented frame boundary indicator), we:
-	 * 1. Trigger software SOF to update frame counters
-	 * 2. Trigger software REG_UPDATE to force buffer swap
-	 *
-	 * This enables frame capture despite missing hardware frame sync.
-	 */
-	if (software_sof_enable && frame_start_detected &&
-	    csiphy->camss && csiphy->camss->vfe) {
-		int line;
-
-		vfe = &csiphy->camss->vfe[0];  /* Use first VFE */
-
-		/* Trigger REG_UPDATE to force buffer swap at frame boundary */
-		vfe_trigger_software_reg_update(vfe);
-
-		/* Send SOF to all VFE lines, just like VFE31 IRQ handler does */
-		for (line = 0; line < vfe->res->line_num; line++)
-			vfe_trigger_software_sof(vfe, line);
-		sof_count++;
-
-		/* Log SOF generation periodically */
-		if ((sof_count % 30) == 1) {
-			dev_info(csiphy->camss->dev,
-				 "CSIPHY%d: Software SOF+REG_UPDATE #%d triggered (IRQ #%d)\n",
-				 csiphy->id, sof_count, irq_count);
-		}
-	}
-
-	/*
-	 * Log interrupt status - only first 3 IRQs to verify hardware is
-	 * responding. Per-frame logging causes soft lockups from printk flood.
-	 */
-	if (irq_count <= 3) {
-		dev_info(csiphy->camss->dev,
-			 "CSIPHY%d: IRQ #%d status=0x%08x [%s%s%s%s%s%s%s] sof_count=%d\n",
-			 csiphy->id, irq_count, status,
-			 (status & MIPI_IRQ_LP_RX) ? "LP " : "",
-			 (status & MIPI_IRQ_SOT_SYNC) ? "SOT " : "",
-			 (status & MIPI_IRQ_ECC_ERROR) ? "ECC " : "",
-			 (status & MIPI_IRQ_DATA_DL) ? "DATA " : "",
-			 (status & MIPI_IRQ_FRAME_START) ? "FS " : "",
-			 (status & MIPI_IRQ_FRAME_END) ? "FE " : "",
-			 (status & MIPI_IRQ_LONG_PKT) ? "LPKT " : "",
-			 sof_count);
-	}
-	last_status = status;
 
 	return IRQ_HANDLED;
 }

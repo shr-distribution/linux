@@ -262,32 +262,6 @@ int vfe_reset(struct vfe_device *vfe);
 void vfe_enable_pending_camif(struct vfe_device *vfe);
 
 /*
- * vfe_trigger_software_sof - Trigger software-generated SOF for VFE
- * @vfe: VFE device
- * @line_id: VFE line to send SOF to (usually VFE_LINE_PIX for raw)
- *
- * MSM8660 workaround: Some sensors (like MT9M113) don't send MIPI Frame
- * Start/End short packets, so VFE never receives CAMIF_SOF interrupts.
- * This function allows CSIPHY to trigger software SOF when it detects
- * frame boundaries through other means (e.g., SOT after idle gap).
- */
-void vfe_trigger_software_sof(struct vfe_device *vfe, enum vfe_line_id line_id);
-
-/*
- * vfe_trigger_software_reg_update - Trigger software REG_UPDATE for VFE
- * @vfe: VFE device
- *
- * MSM8660 workaround: When the sensor doesn't send MIPI Frame Start/End
- * short packets, the VFE CAMIF cannot properly sync frame boundaries.
- * This function triggers a REG_UPDATE to force the VFE to latch shadow
- * registers and swap DMA buffers, enabling frame capture.
- *
- * Called from CSIPHY when BIT(22) (undocumented frame boundary indicator)
- * fires on MT9M113.
- */
-void vfe_trigger_software_reg_update(struct vfe_device *vfe);
-
-/*
  * vfe_disable - Disable streaming on VFE line
  * @line: VFE line
  *
@@ -389,19 +363,5 @@ int vfe_enable_output_v2(struct vfe_line *line);
  */
 int vfe_queue_buffer_v2(struct camss_video *vid,
 			struct camss_buffer *buf);
-
-/* VFE31 test generator mode (extern from camss-vfe.c) */
-extern int vfe31_use_testgen;
-extern int vfe31_testgen_pixel_dims;
-
-/*
- * vfe31_configure_testgen - Configure VFE31 internal test generator
- * @vfe: VFE device
- * @enable: true to enable, false to disable
- * @width: test pattern width
- * @height: test pattern height
- */
-void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
-			     u16 width, u16 height);
 
 #endif /* QC_MSM_CAMSS_VFE_H */
