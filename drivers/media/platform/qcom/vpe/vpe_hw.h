@@ -73,8 +73,14 @@
 #define VPE_SCALE_COEFF_LSP_0		0x50400
 #define VPE_SCALE_COEFF_MSP_0		0x50404
 
-#define VPE_SCALE_COEFF_LSBn(n)		(0x50400 + 8 * (n))
-#define VPE_SCALE_COEFF_MSBn(n)		(0x50404 + 8 * (n))
+/*
+ * The FIR scaler has four polyphase coefficient SRAM banks (luma/chroma x
+ * horizontal/vertical). Each bank is 32 phases of {LSB, MSB} 8 bytes apart.
+ */
+#define VPE_SCALE_COEFF_LUMA_X		0x50000
+#define VPE_SCALE_COEFF_LUMA_Y		0x50400
+#define VPE_SCALE_COEFF_CHROMA_X	0x50800
+#define VPE_SCALE_COEFF_CHROMA_Y	0x50c00
 #define VPE_SCALE_COEFF_NUM		32
 
 /* Hardware version and reset values */

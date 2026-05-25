@@ -232,30 +232,40 @@ void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride)
 	writel(VPE_PACK_PATTERN_NV12, base + VPE_OUT_PACK_PATTERN1);
 }
 
-static void vpe_hw_load_scale_coeff(void __iomem *base, u32 phase_step)
+/*
+ * Select the polyphase table by phase_step (input/output ratio) in the 3.29
+ * fixed-point the scaler uses (1.0 = 0x20000000): the camera HAL splits the
+ * range into <0.4 / 0.4-0.6 / 0.6-0.8 / >=0.8 (the last band covers 1:1 and
+ * all downscale).
+ */
+static const u32 *vpe_scale_coeff_for(u32 phase_step)
 {
-	const u32 *coeff;
+	if (phase_step < 0x0ccccccd)		/* < 0.4  : ~2.5x-5x upscale */
+		return vpe_scale_coeff_0p2_0p4;
+	if (phase_step < 0x13333333)		/* 0.4-0.6: ~1.7x-2.5x upscale */
+		return vpe_scale_coeff_0p4_0p6;
+	if (phase_step < 0x1999999a)		/* 0.6-0.8: ~1.25x-1.7x upscale */
+		return vpe_scale_coeff_0p6_0p8;
+	return vpe_scale_coeff_0p8_20p0;	/* >= 0.8 : 1:1 .. 20x downscale */
+}
+
+/*
+ * Load one polyphase coefficient bank. The VPE FIR scaler has FOUR separate
+ * coefficient SRAM banks and processes X then Y for both planes; with
+ * SCALE_CONFIG enabling X-FIR, Y-FIR and Chroma-FIR, ALL four must be loaded
+ * or the missing axis multiplies the source by uninitialised (zero) SRAM,
+ * producing a near-black image (only edge ringing survives). The banks are
+ * persistent AHB SRAM (not consumed on DL0_START); note the active scaler
+ * locks the SRAM port so CPU read-back returns 0 mid-operation.
+ */
+static void vpe_hw_load_coeff_bank(void __iomem *base, u32 bank_off,
+				   const u32 *coeff)
+{
 	int i;
 
-	/*
-	 * Select coefficient table by phase_step (input/output ratio) in the
-	 * 3.29 fixed-point the scaler uses (1.0 = 0x20000000): the camera HAL
-	 * splits the range into <0.4 / 0.4-0.6 / 0.6-0.8 / >=0.8 (the last band
-	 * covers 1:1 and all downscale).
-	 */
-	if (phase_step < 0x0ccccccd)		/* < 0.4  : ~2.5x-5x upscale */
-		coeff = vpe_scale_coeff_0p2_0p4;
-	else if (phase_step < 0x13333333)	/* 0.4-0.6: ~1.7x-2.5x upscale */
-		coeff = vpe_scale_coeff_0p4_0p6;
-	else if (phase_step < 0x1999999a)	/* 0.6-0.8: ~1.25x-1.7x upscale */
-		coeff = vpe_scale_coeff_0p6_0p8;
-	else					/* >= 0.8 : 1:1 .. 20x downscale */
-		coeff = vpe_scale_coeff_0p8_20p0;
-
-	/* Load coefficients */
 	for (i = 0; i < VPE_SCALE_COEFF_NUM; i++) {
-		writel(coeff[i * 2], base + VPE_SCALE_COEFF_LSBn(i));
-		writel(coeff[i * 2 + 1], base + VPE_SCALE_COEFF_MSBn(i));
+		writel(coeff[i * 2],     base + bank_off + 8 * i);
+		writel(coeff[i * 2 + 1], base + bank_off + 8 * i + 4);
 	}
 }
 
@@ -286,8 +296,20 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 		op_mode |= VPE_OP_MODE_SCALE_EN;
 	writel(op_mode, base + VPE_OP_MODE);
 
-	/* Load scale coefficients based on maximum phase step */
-	vpe_hw_load_scale_coeff(base, max(step_x, step_y));
+	/*
+	 * Load all four coefficient banks: luma X/Y and chroma X/Y. X banks use
+	 * the horizontal phase step, Y banks the vertical; for NV12 4:2:0 the
+	 * chroma plane scales by the same ratio as luma, so it reuses the same
+	 * per-axis tables.
+	 */
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_LUMA_X,
+			       vpe_scale_coeff_for(step_x));
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_LUMA_Y,
+			       vpe_scale_coeff_for(step_y));
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_CHROMA_X,
+			       vpe_scale_coeff_for(step_x));
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_CHROMA_Y,
+			       vpe_scale_coeff_for(step_y));
 
 	/* Set phase init to 0 */
 	writel(0, base + VPE_SCALE_PHASEX_INIT);
