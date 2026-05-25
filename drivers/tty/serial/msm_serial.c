@@ -1243,8 +1243,16 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	watermark = (port->fifosize * 3) / 4;
 	msm_write(port, watermark, MSM_UART_RFWR);
 
-	/* set TX watermark */
-	msm_write(port, 10, MSM_UART_TFWR);
+	/*
+	 * Set TX watermark (level at which the TX-FIFO "need more data" IRQ
+	 * fires). Mainline default is 10 = refill late = little headroom =
+	 * prone to TX-FIFO underrun -> inter-byte gaps when the ISR is slow.
+	 * The legacy webOS hsuart uses 32 on the BT UART (msm_uart_dm.c:1641)
+	 * = refill early = no underrun. The CSR BlueCore chip's RX flushes on
+	 * a mid-frame gap, so match webOS=32 on GSBI6 (BT) to keep our SYNC_RSP
+	 * gap-free. Other UARTs keep 10 (work fine).
+	 */
+	msm_write(port, (port->mapbase == 0x16540000) ? 32 : 10, MSM_UART_TFWR);
 
 	msm_write(port, MSM_UART_CR_CMD_PROTECTION_EN, MSM_UART_CR);
 	msm_reset(port);
