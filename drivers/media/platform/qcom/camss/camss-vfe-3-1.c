@@ -78,9 +78,9 @@ static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable);
  *   - Preview CbCr → WM4
  *   - Video CbCr → WM5 (but disabled by XBAR 0x1A1B)
  *
- * IMPORTANT: WebOS DISABLED CbCr write masters in register dumps!
- *   See reports/webos-video-mode-dump.txt. They only captured Y planes.
- *   We're attempting what webOS never actually tested.
+ * Note: the webOS register dumps only captured Y planes (CbCr write
+ * masters were disabled there); the CbCr routing here is derived from the
+ * cross-vendor WM pairing rather than a webOS streaming dump.
  */
 
 /*
@@ -464,8 +464,8 @@ static void vfe31_calc_rdi_config(struct vfe31_line_config *cfg,
  * UB_CFG and IMAGE_SIZE use INPUT stride (width*2 for VFE timing).
  * ADDR_CFG burst uses OUTPUT stride (actual DMA writes).
  *
- * From Gemini validation:
- * - CHROMA_V_IMAGE does vertical scaling (480→240 for NV12)
+ * Chroma path:
+ * - CHROMA_V_IMAGE does vertical scaling (480->240 for NV12)
  * - CHROMA_SUBS_CFG tells CbCr DMA how many lines to expect
  * - Both must be configured consistently for the hardware to work
  */
@@ -514,7 +514,7 @@ static void vfe31_calc_pix_config(struct vfe31_line_config *cfg,
 	cfg->cbcr_offset = cfg->y_plane_size;
 
 	/*
-	 * Chroma scaling configuration (from Gemini validation):
+	 * Chroma scaling configuration:
 	 * - CHROMA_V_IMAGE: (output_height << 16) | input_height
 	 * - CHROMA_SUBS_CFG: 0x30 for NV12 (Enable + vsubSample), 0x10 for NV16
 	 */
@@ -1875,6 +1875,10 @@ static inline u32 vfe31_get_bus_cfg_for_raw(u8 raw_bpp)
  *    Unlike VFE4x, VFE31 does NOT have dedicated CROP_ENC registers.
  *    Output cropping in VFE31 is handled by FOV (0x360) and scaler configuration.
  */
+/* Scaler/chroma phase multiplier: 1:1 (no scaling) and 2:1 (halve). */
+#define VFE31_SCALE_PHASE_1_1		0x00310000
+#define VFE31_SCALE_PHASE_2_1		0x00320000
+
 #define VFE_0_SCALE_Y_CFG		0x368
 #define VFE_0_SCALE_Y_H_IMAGE		0x36C	/* (out << 16) | in */
 #define VFE_0_SCALE_Y_H_PHASE		0x370
@@ -2601,10 +2605,10 @@ static void vfe31_wm_done(struct vfe_device *vfe, u8 wm, u32 ping_pong)
 	 * No bus_reload (corrupts UB SRAM at 64-byte burst boundaries),
 	 * no REG_UPDATE (no effect on PING/PONG address registers).
 	 *
-	 * At 640x480 (~15fps), pipeline latency > VBLANK causes ~27 line
-	 * progressive drift per frame (SRAM Overlap Paradox). This is a
-	 * VFE31 hardware limitation - invisible in viewfinder streaming.
-	 * At 1280x1024 (~7fps), sufficient VBLANK gives perfect alignment.
+	 * At 640x480 binned (Context A) the captured image walks ~30
+	 * lines/frame; 1280x1024 (Context B) stays aligned. This is a known
+	 * binned-mode CAMIF frame-lock limitation, invisible in a viewfinder
+	 * (single frames are clean); see reports/vfe31-640x480-drift-*.
 	 */
 	for (i = 0; i < output->wm_num; i++) {
 		if (active_index)
@@ -4404,9 +4408,6 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 *    - 0x4F0: CHROMA_V_IMAGE (out<<16 | in)
 	 *    - 0x4F4: CHROMA_V_PHASE
 	 *    - 0x4F8: CHROMA_SUBS_CFG (webOS: 0x30)
-	 *
-	 * Phase value 0x00310000 = 1:1 scaling
-	 * Phase value 0x00320000 = 2:1 scaling
 	 */
 
 	/* FOV - Field of View (input cropping) */
@@ -4416,9 +4417,9 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	/* Main Scaler - Y channel (1:1 scaling) */
 	writel_relaxed(0x03, vfe->base + VFE_0_SCALE_Y_CFG);
 	writel_relaxed((width << 16) | width, vfe->base + VFE_0_SCALE_Y_H_IMAGE);
-	writel_relaxed(0x00310000, vfe->base + VFE_0_SCALE_Y_H_PHASE);
+	writel_relaxed(VFE31_SCALE_PHASE_1_1, vfe->base + VFE_0_SCALE_Y_H_PHASE);
 	writel_relaxed((height << 16) | height, vfe->base + VFE_0_SCALE_Y_V_IMAGE);
-	writel_relaxed(0x00310000, vfe->base + VFE_0_SCALE_Y_V_PHASE);
+	writel_relaxed(VFE31_SCALE_PHASE_1_1, vfe->base + VFE_0_SCALE_Y_V_PHASE);
 	dev_dbg(vfe->camss->dev,
 		 "VFE31: SCALE_Y: CFG=0x03 H=0x%08x V=0x%08x (%dx%d)\n",
 		 (width << 16) | width, (height << 16) | height,
@@ -4427,9 +4428,9 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	/* Scaler 2 - Y pass-through */
 	writel_relaxed(0x03, vfe->base + VFE_0_S2Y_CFG);
 	writel_relaxed((width << 16) | width, vfe->base + VFE_0_S2Y_H_IMAGE);
-	writel_relaxed(0x00310000, vfe->base + VFE_0_S2Y_H_PHASE);
+	writel_relaxed(VFE31_SCALE_PHASE_1_1, vfe->base + VFE_0_S2Y_H_PHASE);
 	writel_relaxed((height << 16) | height, vfe->base + VFE_0_S2Y_V_IMAGE);
-	writel_relaxed(0x00310000, vfe->base + VFE_0_S2Y_V_PHASE);
+	writel_relaxed(VFE31_SCALE_PHASE_1_1, vfe->base + VFE_0_S2Y_V_PHASE);
 	dev_dbg(vfe->camss->dev,
 		 "VFE31: S2Y: CFG=0x03 H=0x%08x V=0x%08x (%dx%d)\n",
 		 (width << 16) | width, (height << 16) | height,
@@ -4444,7 +4445,7 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 * Input = width, Output = width/2 (in samples, not bytes)
 	 */
 	writel_relaxed(((width / 2) << 16) | width, vfe->base + VFE_0_CHROMA_H_IMAGE);
-	writel_relaxed(0x00320000, vfe->base + VFE_0_CHROMA_H_PHASE);
+	writel_relaxed(VFE31_SCALE_PHASE_2_1, vfe->base + VFE_0_CHROMA_H_PHASE);
 
 	/*
 	 * Chroma vertical: depends on output format
@@ -4461,12 +4462,12 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 		v_out = vfe31_calc_cbcr_height(p, height);
 
 		/* Auto: based on scaling ratio */
-		v_phase = (v_out < height) ? 0x00320000 : 0x00310000;
+		v_phase = (v_out < height) ? VFE31_SCALE_PHASE_2_1 : VFE31_SCALE_PHASE_1_1;
 
 		/*
 		 * CHROMA_SUBS_CFG (0x4F8) - Chroma subsampling block control.
 		 *
-		 * Bit layout (from webOS HTC analysis and Gemini validation):
+		 * Bit layout (from webOS/HTC register analysis):
 		 *   Bit 4: Enable - MUST always be set (0x10)
 		 *   Bit 5: vsubSampleEnable - controls vertical chroma subsampling
 		 *
