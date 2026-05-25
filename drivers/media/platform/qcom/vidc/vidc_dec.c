@@ -1707,6 +1707,16 @@ static int vidc_dec_open(struct file *file)
 		goto err_free;
 	}
 
+	/*
+	 * Mark the OUTPUT (bitstream) queue "buffered" so the m2m scheduler
+	 * still consults job_ready when no source buffer is queued. Without
+	 * this, v4l2_m2m_try_schedule() bails on an empty OUTPUT queue and
+	 * device_run() is never called for the EOS drain (which issues
+	 * LAST_FRAME with no input). job_ready() gates the no-source case to
+	 * an active drain only.
+	 */
+	v4l2_m2m_set_src_buffered(inst->m2m_ctx, true);
+
 	ret = v4l2_ctrl_handler_init(&inst->ctrl_handler, 1);
 	if (ret)
 		goto err_m2m_ctx_release;
