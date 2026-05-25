@@ -63,8 +63,8 @@ SMI is **not** in System RAM (correct — it's separate MMSS memory).
 
 ## Net
 The SMI/EBI/interconnect split now matches legacy exactly ("FBs in EBI, SMI for
-VIDC only, GPU votes EBI"), and the CMA layout is a clean non-overlapping
-32+32 MiB (display carveout + camera CMA). Remaining open item: display pool is
-32 vs legacy ~69 MiB — enlarge only if FB-allocation pressure appears.
+VIDC only, GPU votes EBI"). Final EBI layout: scanout-fb 69 MiB @0x60000000
+(= legacy MSM_FB ~5 + MSM_PMEM_SF 64) + linux,cma 32 MiB @0x7c000000 (camera).
+Display pool now matches legacy headroom (finding 4 resolved).
 WATCH: total CMA dropped 64->32 MiB; with FBs out of CMA this should be ample
 for the camera, but if VFE hits cma_alloc failures, enlarge linux,cma@7c000000.
