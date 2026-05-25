@@ -40,11 +40,18 @@ static void wrhex(unsigned long v)
 }
 
 static const unsigned long addrs[] = {
-	0x00902A70, 0x00902A74,                                     /* GSBI6 UART_APPS MD / NS (clock synthesis!) */
-	0x16500000,                                                 /* GSBI6_CTRL */
-	0x16540000, 0x16540004, 0x16540008,                         /* UART MR1/MR2/SR(CSR) */
-	0x16540018, 0x1654001C, 0x16540020,                         /* UART IPR / TFWR / RFWR */
-	0x801350, 0x801360, 0x801370, 0x801380,                     /* GPIO 53/54/55/56 ctl */
+	/* ADM1 CONF (0x240+ch*4) EE0 then EE1 : ch2=eMMC ch5=WiFi ch6=BTtx ch7=BTrx */
+	0x18420248, 0x18420A48,   /* ch2 eMMC CONF EE0/EE1 */
+	0x18420254, 0x18420A54,   /* ch5 WiFi CONF EE0/EE1 */
+	0x18420258, 0x18420A58,   /* ch6 BT-TX CONF EE0/EE1 */
+	0x1842025C, 0x18420A5C,   /* ch7 BT-RX CONF EE0/EE1 */
+	/* ADM1 CMD_PTR (0x000+ch*4) ch2 eMMC EE0/EE1 (live transfer ptr) */
+	0x18420008, 0x18420808,
+	/* ADM1 CRCI_CTL (0x400+crci*4) EE0 then EE1 : crci1=eMMC 5=WiFi 8=BTtx 9=BTrx */
+	0x18420404, 0x18420C04,   /* crci1 eMMC EE0/EE1 */
+	0x18420414, 0x18420C14,   /* crci5 WiFi EE0/EE1 */
+	0x18420420, 0x18420C20,   /* crci8 BT-TX EE0/EE1 */
+	0x18420424, 0x18420C24,   /* crci9 BT-RX EE0/EE1 */
 };
 
 void run(void)

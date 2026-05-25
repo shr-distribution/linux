@@ -1,5 +1,22 @@
 # VFE31 640x480 Frame Drift - Final Analysis
 
+> **UPDATE 2026-05-24 — still open; two earlier conclusions corrected.**
+> 1. A massive **VFE IOMMU page-fault storm** (292K+, `7900000.iommu`, FAR in the
+>    `0x7C000000` CMA range) was found and **fixed** (DT commit `438415bc4a3e`:
+>    drop the vestigial `iommus = <&vfe_iommu 0>` + disable `vfe_iommu`; it was a
+>    leftover from the abandoned vb2-dma-sg model — with vb2-dma-contig+CMA the
+>    VFE writes physical CMA addresses directly). **This was a SEPARATE bug; it did
+>    NOT fix the drift.** Retest on `ge6c568b6176b`: 0 IOMMU faults, 12/12 frames,
+>    yet the frame still wraps **−30 lines/frame** (confirmed static scene,
+>    `reports/fb-captures/a220-gmem-tile-noise-2026-05-24/cam640_frame0|3.png`).
+> 2. The "hardware DMA-fetch-engine limitation" verdict below is **unconfirmed**:
+>    the ping-pong buffer *selection* is provably correct (driver `buf_verify` logs
+>    `MATCH` every frame), so the drift is a **within-buffer write-position / CAMIF
+>    SOF-sync slip**, not a buffer-bookkeeping race. Legacy webOS VFE31 ran the
+>    *identical* sensor timing (FRAME_LENGTH_A=814, LINE_LENGTH_PCK_A=1228) with no
+>    drift, so the difference is in the mainline camss per-frame address-commit /
+>    SOF timing vs legacy, not the sensor. Next lever under investigation.
+
 ## Summary
 On APQ8060/MSM8660 VFE31 (HW version 0x00030217), 640x480 capture at ~15fps shows progressive ~27 line vertical drift per frame that never stabilizes. 1280x1024 at ~7fps is perfectly aligned. We've exhausted all standard approaches and conclusively proven which mechanisms work and don't work.
 

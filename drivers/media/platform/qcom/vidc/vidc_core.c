@@ -1791,9 +1791,18 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		}
 	}
 
+	/*
+	 * Program min_dpb + headroom, matching legacy: the DDL always sizes
+	 * the decoded-picture buffer at the firmware-reported minimum plus
+	 * at least 4 extra slots (ddl actual_output_buf_req = min_dpb + 4).
+	 * The minimum alone leaves no slot to decode into while earlier
+	 * frames await display, so reorder/B-frame streams stall or recycle
+	 * a slot still pending display (reference corruption).
+	 */
 	inst->dpb_count = inst->min_dpb_count;
 	if (!inst->dpb_count)
 		inst->dpb_count = 4;	/* sane default if firmware skipped it */
+	inst->dpb_count += 4;
 	if (inst->dpb_count > VIDC_DPB_REG_SLOTS)
 		inst->dpb_count = VIDC_DPB_REG_SLOTS;
 

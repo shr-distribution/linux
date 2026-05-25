@@ -40,11 +40,12 @@ static void wrhex(unsigned long v)
 }
 
 static const unsigned long addrs[] = {
-	0x00902A70, 0x00902A74,                                     /* GSBI6 UART_APPS MD / NS (clock synthesis!) */
-	0x16500000,                                                 /* GSBI6_CTRL */
-	0x16540000, 0x16540004, 0x16540008,                         /* UART MR1/MR2/SR(CSR) */
-	0x16540018, 0x1654001C, 0x16540020,                         /* UART IPR / TFWR / RFWR */
-	0x801350, 0x801360, 0x801370, 0x801380,                     /* GPIO 53/54/55/56 ctl */
+	0x00902828,  /* SDC1 APPS MD (M/N) */
+	0x0090282c,  /* SDC1 APPS NS (src[2:0], prediv[5:3], mnd_en bit8) */
+	0x00902820,  /* SDC1 HCLK CTL (enable bit4) */
+	0x00902fc8,  /* CLK_HALT_DFAB_STATE (SDC1 bit6, SDC1_P bit11) */
+	0x18420248,  /* ADM1 ch2(eMMC) CONF EE0 */
+	0x18420404,  /* ADM1 crci1(eMMC) CRCI_CTL EE0 */
 };
 
 void run(void)

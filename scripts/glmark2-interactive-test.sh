@@ -87,6 +87,15 @@ DEBUGFS_BASE="/sys/kernel/debug"
 DRI_DEBUGFS="/sys/kernel/debug/dri"
 GPU_DEBUGFS=""  # Will be detected
 
+# GPU runtime-PM sysfs (Adreno 220 platform device). Used to record whether the
+# GPU power-collapsed (gfx3d GDSC off -> GFX3D core reset) between runs, which is
+# what determines if a launch starts from a clean param-cache phase.
+GPU_PM=""
+for d in /sys/bus/platform/devices/4300000.adreno /sys/bus/platform/devices/*adreno* /sys/bus/platform/devices/*.gpu; do
+    [ -e "$d/power/runtime_status" ] && { GPU_PM="$d/power"; break; }
+done
+PM_LAST_SUSP=-1   # previous runtime_suspended_time, to detect a collapse since last run
+
 # Counters
 smooth_count=0
 faceted_count=0
@@ -385,6 +394,54 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Dump GPU runtime-PM / power-domain state for the current iteration. The key
+# question: did the GPU power-collapse (and thus GFX3D-reset the param cache)
+# since the previous run? If runtime_status was "suspended" before this launch,
+# the param cache was reset clean; if "active", it inherited the previous run's
+# (possibly drifted/bad) phase. Correlate the printed status with the
+# good/bad result you give each run.
+#   $1 = iteration number
+dump_gpu_power() {
+    local iter="$1"
+    local out="${GPU_DUMP_DIR}/gpupower_${BENCHMARK}_${iter}.txt"
+    if [ -z "$GPU_PM" ]; then
+        echo -e "${YELLOW}[gpu-pm] adreno power sysfs not found${NC}"
+        return
+    fi
+    local status ctrl asd act susp gfx3d delta
+    status=$(cat "$GPU_PM/runtime_status" 2>/dev/null)
+    ctrl=$(cat "$GPU_PM/control" 2>/dev/null)
+    asd=$(cat "$GPU_PM/autosuspend_delay_ms" 2>/dev/null)
+    act=$(cat "$GPU_PM/runtime_active_time" 2>/dev/null)
+    susp=$(cat "$GPU_PM/runtime_suspended_time" 2>/dev/null)
+    gfx3d=$(grep -iE "^[[:space:]]*gfx3d" /sys/kernel/debug/pm_genpd/pm_genpd_summary 2>/dev/null | awk '{print $2}')
+
+    # did the GPU collapse since the previous iteration?
+    local collapsed="?"
+    if [ "$PM_LAST_SUSP" != "-1" ] && [ -n "$susp" ]; then
+        if [ "$susp" -gt "$PM_LAST_SUSP" ]; then collapsed="YES (suspended_time +$((susp-PM_LAST_SUSP))ms)"; else collapsed="NO (no collapse since last run)"; fi
+    fi
+    PM_LAST_SUSP="${susp:-$PM_LAST_SUSP}"
+
+    {
+        echo "=== GPU power state, iteration $iter, $(date '+%H:%M:%S') ==="
+        echo "runtime_status      = $status   (suspended => GPU collapsed => GFX3D reset => clean phase)"
+        echo "control             = $ctrl"
+        echo "autosuspend_delay_ms= $asd"
+        echo "runtime_active_time = $act ms"
+        echo "runtime_suspended_time = $susp ms"
+        echo "gfx3d genpd         = $gfx3d"
+        echo "collapsed since last run = $collapsed"
+        echo "--- recent GPU hang/recover (dmesg) ---"
+        dmesg 2>/dev/null | grep -iE "hangcheck|recover|gpu lockup|CP_SCRATCH|RBBM_STATUS" | tail -5
+    } > "$out" 2>&1
+
+    # one-line summary to console + results file so the bad runs are easy to spot
+    local line="[gpu-pm] iter $iter: status=$status gfx3d=$gfx3d collapsed_since_last=$collapsed"
+    echo -e "${CYAN}${line}${NC}"
+    echo "# $line" >> "$RESULTS_FILE"
+}
+
 # Main test loop
 for i in $(seq 1 $ITERATIONS); do
     echo ""
@@ -400,6 +457,11 @@ for i in $(seq 1 $ITERATIONS); do
         pre_state=$(capture_debugfs_state "pre" "$i" "PENDING" "$GPU_DUMP_DIR")
         echo -e "${CYAN}Pre-iteration state saved${NC}"
     fi
+
+    # Capture GPU power state RIGHT BEFORE launch (suspended=>reset/clean,
+    # active=>inherited previous phase). This is the bit that tells us whether a
+    # bad run correlates with the GPU not having collapsed since the last run.
+    dump_gpu_power "$i"
 
     # Run glmark2 in background, capture Mesa debug output
     ITERATION_LOG="${OUTPUT_BASE}/iteration_${i}_${TIMESTAMP}.log"

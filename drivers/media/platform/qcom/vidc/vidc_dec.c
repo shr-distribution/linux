@@ -394,6 +394,13 @@ static int vidc_dec_decoder_cmd(struct file *file, void *fh,
 	case V4L2_DEC_CMD_STOP:
 		if (!inst->ch_open)
 			return 0;
+		/*
+		 * Also arm the per-frame DPB flush so the firmware drops its
+		 * reference frames on the next FRAME_DATA, matching legacy
+		 * seek/flush behaviour (the standalone VIDC_CMD_FLUSH only
+		 * drains the input/output queues, not the DPB references).
+		 */
+		inst->flush_pending = true;
 		return vidc_flush_channel(inst, VIDC_FLUSH_ALL);
 
 	case V4L2_DEC_CMD_START:
@@ -845,8 +852,19 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	 * DPB_CONFIG = dpb_count: tell firmware how many DPB slots exist.
 	 */
 	if (op == VIDC_OP_FRAME_DATA) {
+		u32 dpb_config = inst->dpb_count;
+
+		/*
+		 * On a pending flush (seek / DECODER_CMD STOP), set the
+		 * DPB_FLUSH bit so the firmware drops its reference frames
+		 * with this FRAME_DATA. Legacy ORs dpb_flush<<14 the same way.
+		 */
+		if (inst->flush_pending) {
+			dpb_config |= 1u << VIDC_DPB_FLUSH_SHIFT;
+			inst->flush_pending = false;
+		}
 		vidc_write(core, VIDC_REG_CH0_DPB_RELEASE, inst->dpb_hw_mask);
-		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, inst->dpb_count);
+		vidc_write(core, VIDC_REG_CH0_DPB_CONFIG, dpb_config);
 
 		/*
 		 * Pixel-cache per-frame setup — webOS ddl_vidc_decode_frame_run

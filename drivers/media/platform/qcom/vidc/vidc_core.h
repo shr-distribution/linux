@@ -253,6 +253,7 @@
 #define VIDC_REG_CH0_DPB_RELEASE	0x2060	/* REG_86830 */
 #define VIDC_REG_CH0_SHARED_MEM		0x2064	/* REG_889944 */
 #define VIDC_REG_CH0_DPB_CONFIG		0x2068	/* REG_404623 */
+#define VIDC_DPB_FLUSH_SHIFT		14	/* DPB_CONFIG bit14 = flush DPB */
 #define VIDC_REG_CH0_CMD_SEQ_NUM	0x206c	/* REG_397087 */
 
 /* Encoder input frame addresses (same 0x2040-0x206c block, encoder usage) */
@@ -715,6 +716,13 @@ struct vidc_inst {
 	u8 *seq_hdr;
 	u32 seq_hdr_size;
 	bool seq_hdr_pending_out;
+
+	/*
+	 * Decoder: set when userspace requests a flush (seek / DECODER_CMD
+	 * STOP). Consumed by the next FRAME_DATA, which sets the DPB_FLUSH
+	 * bit so the firmware drops its reference frames.
+	 */
+	bool flush_pending;
 
 	/*
 	 * display_status from VIDC_REG_DEC_DISPLAY_STATUS, low nibble.
