@@ -1388,6 +1388,17 @@ static struct clk_dyn_rcg rot_src = {
 static struct clk_branch rot_clk = {
 	.halt_reg = 0x01d0,
 	.halt_bit = 15,
+	/*
+	 * The rotator core branch is fed through the 'rot' GDSC, which uses
+	 * the legacy footswitch sequence. During rotator_runtime_suspend the
+	 * clock is disabled before genpd collapses the footswitch, and the
+	 * branch halt status does not assert while the legacy footswitch is
+	 * still powered — so clk_branch_toggle() times out with "rot_clk
+	 * status stuck at 'on'". The enable bit is still cleared (the clock
+	 * is gated); only the readback is unreliable, exactly like the
+	 * rot_axi / gfx3d_axi / vcodec_axi branches below. Skip the poll.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x00e0,
 		.enable_mask = BIT(0),
@@ -1665,6 +1676,13 @@ static struct clk_rcg vpe_src = {
 static struct clk_branch vpe_clk = {
 	.halt_reg = 0x01c8,
 	.halt_bit = 28,
+	/*
+	 * Same as rot_clk: the VPE core branch runs through the legacy-
+	 * footswitch 'vpe' GDSC, so its halt status is unreliable at
+	 * runtime-suspend disable time ("vpe_clk status stuck at 'on'").
+	 * The enable bit still gates the clock; skip the readback poll.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0110,
 		.enable_mask = BIT(0),
