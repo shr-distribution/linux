@@ -154,7 +154,14 @@ void vpe_hw_set_src_size(void __iomem *base, u32 img_w, u32 img_h,
 	writel(((crop_h & 0xfff) << 16) | (crop_w & 0xfff), base + VPE_SRC_SIZE);
 	writel(((img_h & 0xfff) << 16) | (img_w & 0xfff),
 	       base + VPE_SRC_IMAGE_SIZE);
-	writel(stride, base + VPE_SRC_YSTRIDE1);
+	/*
+	 * YSTRIDE1 packs TWO strides: Y (luma) in bits [15:0] and CbCr (chroma)
+	 * in bits [31:16] -- the camera HAL's mm_vpe_set_input_plane writes both
+	 * (struct offsets 12 and 14). For NV12 the chroma plane has the same row
+	 * stride as luma. Writing only the low half left chroma stride at 0, so
+	 * the chroma DMA stalled: empty chroma plane and no DONE on a plain copy.
+	 */
+	writel((stride & 0xffff) | (stride << 16), base + VPE_SRC_YSTRIDE1);
 
 	/*
 	 * Source format + unpack pattern for NV12 (pseudo-planar Y + CbCr).
@@ -173,7 +180,8 @@ void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride)
 	u32 size = ((height & 0xfff) << 16) | (width & 0xfff);
 
 	writel(size, base + VPE_OUT_SIZE);
-	writel(stride, base + VPE_OUT_YSTRIDE1);
+	/* Y stride [15:0] + chroma stride [31:16], same as the source plane. */
+	writel((stride & 0xffff) | (stride << 16), base + VPE_OUT_YSTRIDE1);
 
 	/* Output format + pack pattern for NV12, from the camera HAL's VPE
 	 * output-plane config (mm_vpe_set_output_plane). Note the format word
