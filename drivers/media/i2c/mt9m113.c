@@ -1370,6 +1370,19 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		}
 	}
 
+	/*
+	 * Re-assert the MIPI Frame-Start/End short packets on every stream
+	 * start. The MCU clears CUSTOM_SHORT_PKT across standby/refresh
+	 * cycles, and mt9m113_sensor_init() (which also sets it) only runs on
+	 * the MCU-recovery path - so without this the bit is lost after the
+	 * first stream. Without the per-frame boundary marker the VFE CAMIF
+	 * falls back to line-counting and the image walks vertically.
+	 */
+	ret = cci_write(sensor->regmap, MT9M113_CUSTOM_SHORT_PKT,
+			MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN, NULL);
+	if (ret < 0)
+		goto error;
+
 	/* Apply all V4L2 controls (color effects, etc.) before streaming */
 	ret = __v4l2_ctrl_handler_setup(&sensor->ifp.hdl);
 	if (ret) {
