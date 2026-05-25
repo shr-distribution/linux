@@ -240,17 +240,10 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		AXXX_CP_INT_CNTL_IB1_INT_MASK |
 		AXXX_CP_INT_CNTL_RB_INT_MASK);
 	gpu_write(gpu, REG_A2XX_SQ_INT_CNTL, 0);
-	/*
-	 * EXPERIMENT: mask MMU_PAGE_FAULT. There is a chronic per-submit MH MMU
-	 * page fault at VA 0 (out of the gpummu VA range, so BEH_TRAN_RNG redirects
-	 * it to the TRAN_ERROR page). The build scene renders correctly at full FPS
-	 * despite ~2-3 faults/sec, so the access appears benign; this masks only the
-	 * fault IRQ (AXI read/write errors stay enabled) to test whether the IRQ
-	 * storm itself is what stalls pulsar. Revert if rendering corrupts.
-	 */
 	gpu_write(gpu, REG_A2XX_MH_INTERRUPT_MASK,
 		A2XX_MH_INTERRUPT_MASK_AXI_READ_ERROR |
-		A2XX_MH_INTERRUPT_MASK_AXI_WRITE_ERROR);
+		A2XX_MH_INTERRUPT_MASK_AXI_WRITE_ERROR |
+		A2XX_MH_INTERRUPT_MASK_MMU_PAGE_FAULT);
 
 	for (i = 3; i <= 5; i++)
 		if ((SZ_16K << i) == adreno_gpu->info->gmem)
@@ -446,9 +439,17 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_MH_INT_STAT) {
 		status = gpu_read(gpu, REG_A2XX_MH_INTERRUPT_STATUS);
 
+		/*
+		 * MH_INT bit0=AXI_READ_ERR, bit1=AXI_WRITE_ERR, bit2=MMU_PAGE_FAULT.
+		 * The chronic fault is bit1 (AXI write error) — a GPU write the bus
+		 * rejected — NOT a page fault (PF reads 0). AXI_ERR (raw reg 0x0a45 =
+		 * MH_AXI_ERROR, between MH_INTERRUPT_CLEAR 0xa44 and PERFCOUNTER0 0xa46)
+		 * holds the offending AXI address.
+		 */
 		dev_warn_ratelimited(gpu->dev->dev,
-			"MH_INT: %08X PF: %08X RBBM: %08X IB1: %08X/%u IB2: %08X COPY_DEST: %08X COLOR_INFO: %08X\n",
+			"MH_INT: %08X AXI_ERR: %08X PF: %08X RBBM: %08X IB1: %08X/%u IB2: %08X COPY_DEST: %08X COLOR_INFO: %08X\n",
 			status,
+			gpu_read(gpu, 0x0a45 /* MH_AXI_ERROR */),
 			gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT),
 			gpu_read(gpu, REG_A2XX_RBBM_STATUS),
 			gpu_read(gpu, REG_AXXX_CP_IB1_BASE),
