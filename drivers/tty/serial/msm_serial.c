@@ -29,6 +29,20 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/ktime.h>
+#include <linux/moduleparam.h>
+
+/*
+ * Debug: trace BT (GSBI6, mapbase 0x16540000) UART TX bursts to detect
+ * inter-byte/wire gaps without a scope (Gemini 2026-05-25). Logs per burst:
+ * requested vs written bytes, feed time, on-wire floor, gap since previous
+ * burst. A SYNC_RSP fed in one burst (wrote==req) drains contiguously = no
+ * gap; a split burst (TX_READY dropped) = FIFO refill = potential wire gap.
+ * Enable: echo 1 > /sys/module/msm_serial/parameters/bt_tx_trace
+ */
+static bool bt_tx_trace;
+module_param(bt_tx_trace, bool, 0644);
+MODULE_PARM_DESC(bt_tx_trace, "Trace GSBI6 BT UART TX bursts for inter-byte gap detection");
 #include <linux/wait.h>
 
 #define MSM_UART_MR1			0x0000
@@ -882,6 +896,10 @@ static void msm_handle_tx_pio(struct uart_port *port, unsigned int tx_count)
 	unsigned int num_chars;
 	unsigned int tf_pointer = 0;
 	void __iomem *tf;
+	/* BT TX gap trace (bt_tx_trace param + GSBI6): detect inter-byte gaps. */
+	bool trace = bt_tx_trace && port->mapbase == 0x16540000;
+	ktime_t t0 = trace ? ktime_get() : 0;
+	u32 sr_enter = trace ? msm_read(port, MSM_UART_SR) : 0;
 
 	if (msm_port->is_uartdm)
 		tf = port->membase + UARTDM_TF;
@@ -906,6 +924,24 @@ static void msm_handle_tx_pio(struct uart_port *port, unsigned int tx_count)
 		num_chars = uart_fifo_out(port, buf, num_chars);
 		iowrite32_rep(tf, buf, 1);
 		tf_pointer += num_chars;
+	}
+
+	if (trace) {
+		static ktime_t prev_end;
+		ktime_t t1 = ktime_get();
+		s64 feed_us = ktime_us_delta(t1, t0);
+		s64 gap_us = prev_end ? ktime_us_delta(t0, prev_end) : -1;
+		/* on-wire time floor for this burst: bytes * 10 bits / baud */
+		unsigned int floor_us =
+			tx_count ? (tx_count * 10u * 1000000u) / 115200u : 0;
+		dev_info(port->dev,
+			 "BTTX: req=%u wrote=%u feed=%lldus floor=%uus gap_since_prev=%lldus SR_in=0x%x SR_out=0x%x%s\n",
+			 tx_count, tf_pointer, feed_us, floor_us, gap_us,
+			 sr_enter, msm_read(port, MSM_UART_SR),
+			 (tf_pointer < tx_count) ?
+			 " [TX_READY dropped mid-frame -> FIFO refill needed -> potential WIRE GAP]" :
+			 " [whole burst fed -> drains contiguously, no intra-burst gap]");
+		prev_end = t1;
 	}
 
 	/* disable tx interrupts if nothing more to send */
