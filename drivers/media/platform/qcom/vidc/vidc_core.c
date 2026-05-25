@@ -126,7 +126,7 @@ static int vidc_clk_enable(struct vidc_core *core)
 	 * try to gate them out from under VIDC.
 	 */
 
-	printk(KERN_EMERG "VIDC: clk_enable: core=%lu iface=%lu axi=%lu (axi_a/b managed at probe)\n",
+	pr_debug("VIDC: clk_enable: core=%lu iface=%lu axi=%lu (axi_a/b managed at probe)\n",
 	       clk_get_rate(core->core_clk),
 	       clk_get_rate(core->iface_clk),
 	       clk_get_rate(core->axi_clk));
@@ -200,7 +200,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * — same behaviour as legacy, no surprise transitions.
 	 */
 	sw_reset = vidc_read(core, VIDC_REG_SW_RESET);
-	printk(KERN_EMERG "VIDC: hw_reset: entry SW_RESET=0x%08x\n", sw_reset);
+	pr_debug("VIDC: hw_reset: entry SW_RESET=0x%08x\n", sw_reset);
 
 	/*
 	 * ALWAYS normalize entry state to RESET_NONE & ~RISC (0x3fe), the
@@ -223,7 +223,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * clean restart matching the cold-boot path.
 	 */
 	if (sw_reset != (VIDC_RESET_NONE & ~VIDC_RESET_RISC)) {
-		printk(KERN_EMERG "VIDC: hw_reset: normalizing 0x%08x -> 0x3fe -> 0x000 -> 0x3fe\n",
+		pr_debug("VIDC: hw_reset: normalizing 0x%08x -> 0x3fe -> 0x000 -> 0x3fe\n",
 		       sw_reset);
 		/*
 		 * Three-step pulse so EVERY block sees a clean 1→0 reset edge
@@ -309,11 +309,11 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * returns 0x00000000 even after writing. This matches webOS kernel
 	 * behavior which never reads these registers back.
 	 */
-	printk(KERN_EMERG "VIDC: hw_reset: writing DRAM_BASE=0x%08x to offsets 0x%03x/0x%03x\n",
+	pr_debug("VIDC: hw_reset: writing DRAM_BASE=0x%08x to offsets 0x%03x/0x%03x\n",
 	       dram_base_addr, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
 	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_addr);
 	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_addr);
-	printk(KERN_EMERG "VIDC: hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
+	pr_debug("VIDC: hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
 	       vidc_read(core, VIDC_REG_DRAM_BASE_A),
 	       vidc_read(core, VIDC_REG_DRAM_BASE_B));
 
@@ -323,7 +323,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * DRAM_BASE init and before releasing RISC. This register is used by
 	 * firmware to return channel IDs after OPEN_CH commands.
 	 */
-	printk(KERN_EMERG "VIDC: hw_reset: clearing RETURNED_CH_INST_ID\n");
+	pr_debug("VIDC: hw_reset: clearing RETURNED_CH_INST_ID\n");
 	vidc_write(core, VIDC_REG_RETURNED_CH_INST_ID, VIDC_INIT_CH_INST_ID);
 
 	/*
@@ -334,16 +334,16 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	msleep(10);
 
 	/* Halt AXI */
-	printk(KERN_EMERG "VIDC: hw_reset: about to halt AXI\n");
+	pr_debug("VIDC: hw_reset: about to halt AXI\n");
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_HALT_REQ);
-	printk(KERN_EMERG "VIDC: hw_reset: AXI halt request sent\n");
+	pr_debug("VIDC: hw_reset: AXI halt request sent\n");
 
 	/* Wait for AXI halt acknowledgment */
-	printk(KERN_EMERG "VIDC: hw_reset: polling for AXI halt ack (need 0x3)\n");
+	pr_debug("VIDC: hw_reset: polling for AXI halt ack (need 0x3)\n");
 	do {
 		axi_status = vidc_read(core, VIDC_REG_AXI_STATUS);
 		if (timeout % 50 == 0)  /* Log every ~5ms */
-			printk(KERN_EMERG "VIDC: hw_reset: AXI_STATUS=0x%08x\n", axi_status);
+			pr_debug("VIDC: hw_reset: AXI_STATUS=0x%08x\n", axi_status);
 		axi_status = axi_status & VIDC_AXI_HALT_ACK_MASK;  /* Bits 1:0, no shift */
 		if (axi_status == 0x3)
 			break;
@@ -351,24 +351,24 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	} while (--timeout > 0);
 
 	if (timeout == 0) {
-		printk(KERN_EMERG "VIDC: hw_reset: AXI halt timeout, final status=0x%08x\n",
+		pr_debug("VIDC: hw_reset: AXI halt timeout, final status=0x%08x\n",
 		       vidc_read(core, VIDC_REG_AXI_STATUS));
 		dev_err(core->dev, "AXI halt timeout\n");
 		return -ETIMEDOUT;
 	}
-	printk(KERN_EMERG "VIDC: hw_reset: AXI halt ack received\n");
+	pr_debug("VIDC: hw_reset: AXI halt ack received\n");
 
 	/* Reset AXI */
-	printk(KERN_EMERG "VIDC: hw_reset: about to reset AXI\n");
+	pr_debug("VIDC: hw_reset: about to reset AXI\n");
 	vidc_write(core, VIDC_REG_AXI_CTRL, VIDC_AXI_RESET);
-	printk(KERN_EMERG "VIDC: hw_reset: AXI reset bit set\n");
+	pr_debug("VIDC: hw_reset: AXI reset bit set\n");
 	vidc_write(core, VIDC_REG_AXI_CTRL, 0);
-	printk(KERN_EMERG "VIDC: hw_reset: AXI reset cleared\n");
+	pr_debug("VIDC: hw_reset: AXI reset cleared\n");
 
 	/* Configure burst sizes */
-	printk(KERN_EMERG "VIDC: hw_reset: about to configure burst sizes\n");
+	pr_debug("VIDC: hw_reset: about to configure burst sizes\n");
 	vidc_write(core, VIDC_REG_BURST_CONFIG, (8 << 8) | 8);
-	printk(KERN_EMERG "VIDC: hw_reset: burst config done\n");
+	pr_debug("VIDC: hw_reset: burst config done\n");
 
 	/*
 	 * Re-copy firmware and zero the post-firmware region (context pool,
@@ -423,12 +423,12 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 				u32 exp = fw32[chk_off / 4];
 				u32 exp_swab = (core->fw_size == 500140) ?
 						swab32(exp) : exp;
-				printk(KERN_EMERG
+				pr_debug(
 				       "VIDC: fw recopy rb[0x%x]=0x%08x exp=0x%08x (raw=0x%08x) %s\n",
 				       chk_off, rb, exp_swab, exp,
 				       rb == exp_swab ? "OK" : "MISMATCH");
 			} else {
-				printk(KERN_EMERG "VIDC: fw recopy: first 1KB all zeros, cannot verify\n");
+				pr_debug("VIDC: fw recopy: first 1KB all zeros, cannot verify\n");
 			}
 		}
 
@@ -456,7 +456,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 			axi_st = vidc_read(core, VIDC_REG_AXI_STATUS);
 			sw_rst = vidc_read(core, VIDC_REG_SW_RESET);
 			fwver  = vidc_read(core, VIDC_REG_FW_VERSION);
-			printk(KERN_EMERG "VIDC: post-release[%d]: AXI_STATUS=0x%08x SW_RESET=0x%08x FW_VERSION=0x%08x\n",
+			pr_debug("VIDC: post-release[%d]: AXI_STATUS=0x%08x SW_RESET=0x%08x FW_VERSION=0x%08x\n",
 			       i, axi_st, sw_rst, fwver);
 			usleep_range(2000, 2100);
 		}
@@ -1064,7 +1064,7 @@ int vidc_load_firmware(struct vidc_core *core)
 	}
 
 	/* CPU reads from SMI return 0; readback is not meaningful. */
-	printk(KERN_EMERG "VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
+	pr_debug("VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
 	       (u32)core->fw_dma_addr, core->fw_alloc_size, core->fw_size);
 
 	/*
@@ -1333,11 +1333,11 @@ int vidc_boot_firmware(struct vidc_core *core)
 		dev_err(core->dev, "hw reset failed: %d\n", ret);
 		return ret;
 	}
-	printk(KERN_EMERG "VIDC: boot_fw: about to read post-reset registers\n");
+	pr_debug("VIDC: boot_fw: about to read post-reset registers\n");
 	dev_info(core->dev, "boot_fw: post-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
 		 vidc_read(core, VIDC_REG_SW_RESET),
 		 vidc_read(core, VIDC_REG_FW_VERSION));
-	printk(KERN_EMERG "VIDC: boot_fw: post-reset register reads completed\n");
+	pr_debug("VIDC: boot_fw: post-reset register reads completed\n");
 
 	/*
 	 * Poll RISC2HOST_CMD and INTERRUPT register directly to detect RISC
@@ -1355,7 +1355,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 			intr  = vidc_read(core, VIDC_REG_INTERRUPT);
 			fwver = vidc_read(core, VIDC_REG_FW_VERSION);
 			if (r2h || intr || fwver) {
-				printk(KERN_EMERG
+				pr_debug(
 				       "VIDC: poll[%d]: RISC2HOST_CMD=0x%08x INTR=0x%08x FW_VERSION=0x%08x\n",
 				       poll, r2h, intr, fwver);
 				break;
@@ -1363,7 +1363,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 			usleep_range(10000, 11000);
 		}
 		if (!r2h && !intr && !fwver)
-			printk(KERN_EMERG "VIDC: poll: no RISC activity after 2s (RISC not executing)\n");
+			pr_debug("VIDC: poll: no RISC activity after 2s (RISC not executing)\n");
 	}
 
 	dev_info(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (2000ms)\n");

@@ -992,7 +992,7 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		 core->shm_offset + VIDC_META_INPUT_OFF);
 
 	if (op == VIDC_OP_SEQ_HEADER) {
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "SEQ_HDR SHM[0x38]=0x%08x SHM[0x44]=0x%08x meta_hdr[v/p/t]=0x%08x/0x%08x/0x%08x\n",
 			 readl(core->shm_vaddr + VIDC_SHM_METADATA_ENABLE),
 			 readl(core->shm_vaddr + VIDC_SHM_EXT_METADATA_START_ADDR),
@@ -1209,7 +1209,7 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 			memset(inst->h264_nb_ip_vaddr, 0xcc,
 			       VIDC_H264_NB_IP_SIZE);
 		wmb();
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "SMIPOOL sentinel: filled %zu+%u+%u bytes (DPB+vert_nb_mv+nb_ip) with 0xCC\n",
 			 total,
 			 VIDC_H264_VERT_NB_MV_SIZE,

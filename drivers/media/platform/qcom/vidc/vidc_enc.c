@@ -474,18 +474,18 @@ static int vidc_enc_queue_setup(struct vb2_queue *q,
 	struct vidc_inst *inst = vb2_get_drv_priv(q);
 	u32 size;
 
-	dev_info(inst->core->dev, "queue_setup: type=%d num_buffers=%d\n", q->type, *num_buffers);
+	dev_dbg(inst->core->dev, "queue_setup: type=%d num_buffers=%d\n", q->type, *num_buffers);
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		/* Raw input */
 		size = vidc_enc_get_framesize_raw(inst->out_width,
 						  inst->out_height);
-		dev_info(inst->core->dev, "queue_setup: OUTPUT size=%u\n", size);
+		dev_dbg(inst->core->dev, "queue_setup: OUTPUT size=%u\n", size);
 	} else {
 		/* Compressed output */
 		size = vidc_enc_get_framesize_compressed(inst->width,
 							 inst->height);
-		dev_info(inst->core->dev, "queue_setup: CAPTURE size=%u\n", size);
+		dev_dbg(inst->core->dev, "queue_setup: CAPTURE size=%u\n", size);
 	}
 
 	if (*num_planes) {
@@ -546,19 +546,19 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct vidc_core *core = inst->core;
 	int ret;
 
-	printk(KERN_EMERG "VIDC: start_streaming called, type=%d count=%d\n", q->type, count);
+	pr_debug("VIDC: start_streaming called, type=%d count=%d\n", q->type, count);
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		printk(KERN_EMERG "VIDC: OUTPUT queue streaming, streamon_out=%d\n", inst->streamon_out);
+		pr_debug("VIDC: OUTPUT queue streaming, streamon_out=%d\n", inst->streamon_out);
 		/* Start encode session */
 		if (!inst->streamon_out) {
-			printk(KERN_EMERG "VIDC: First OUTPUT stream, calling pm_runtime_resume_and_get\n");
+			pr_debug("VIDC: First OUTPUT stream, calling pm_runtime_resume_and_get\n");
 			ret = pm_runtime_resume_and_get(core->dev);
 			if (ret < 0) {
-				printk(KERN_EMERG "VIDC: pm_runtime_resume_and_get failed: %d\n", ret);
+				pr_debug("VIDC: pm_runtime_resume_and_get failed: %d\n", ret);
 				return ret;
 			}
-			printk(KERN_EMERG "VIDC: pm_runtime resumed successfully\n");
+			pr_debug("VIDC: pm_runtime resumed successfully\n");
 
 			/*
 			 * Open the firmware channel for this encoder instance.
@@ -573,14 +573,14 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			 * vidc_enc_submit_frame() target a channel the firmware
 			 * doesn't recognise and ENC_COMPLETE never arrives.
 			 */
-			printk(KERN_EMERG "VIDC: Calling vidc_open_channel...\n");
+			pr_debug("VIDC: Calling vidc_open_channel...\n");
 			ret = vidc_open_channel(inst);
 			if (ret) {
-				printk(KERN_EMERG "VIDC: vidc_open_channel failed: %d\n", ret);
+				pr_debug("VIDC: vidc_open_channel failed: %d\n", ret);
 				pm_runtime_put(core->dev);
 				return ret;
 			}
-			printk(KERN_EMERG "VIDC: vidc_open_channel succeeded\n");
+			pr_debug("VIDC: vidc_open_channel succeeded\n");
 
 			/*
 			 * Apply codec-specific session-stable config (profile/
@@ -589,15 +589,15 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			 * framerate, width/height) are programmed in
 			 * vidc_enc_submit_frame on every QBUF.
 			 */
-			printk(KERN_EMERG "VIDC: Applying codec config...\n");
+			pr_debug("VIDC: Applying codec config...\n");
 			ret = vidc_apply_enc_codec_config(inst);
 			if (ret) {
-				printk(KERN_EMERG "VIDC: codec config failed: %d\n", ret);
+				pr_debug("VIDC: codec config failed: %d\n", ret);
 				vidc_close_channel(inst);
 				pm_runtime_put(core->dev);
 				return ret;
 			}
-			printk(KERN_EMERG "VIDC: Codec config applied successfully\n");
+			pr_debug("VIDC: Codec config applied successfully\n");
 
 			/*
 			 * Program the encoder's reconstruction (recon) reference
@@ -609,24 +609,24 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 			 * No separate INIT_BUFFERS command is issued — see
 			 * vidc_init_enc_buffers().
 			 */
-			printk(KERN_EMERG "VIDC: Programming encoder recon buffers...\n");
+			pr_debug("VIDC: Programming encoder recon buffers...\n");
 			ret = vidc_init_enc_buffers(inst);
 			if (ret) {
-				printk(KERN_EMERG "VIDC: enc recon init failed: %d\n", ret);
+				pr_debug("VIDC: enc recon init failed: %d\n", ret);
 				vidc_close_channel(inst);
 				pm_runtime_put(core->dev);
 				return ret;
 			}
 
-			printk(KERN_EMERG "VIDC: Sending SEQ_HEADER...\n");
+			pr_debug("VIDC: Sending SEQ_HEADER...\n");
 			ret = vidc_enc_send_seq_header(inst);
 			if (ret) {
-				printk(KERN_EMERG "VIDC: SEQ_HEADER failed: %d\n", ret);
+				pr_debug("VIDC: SEQ_HEADER failed: %d\n", ret);
 				vidc_close_channel(inst);
 				pm_runtime_put(core->dev);
 				return ret;
 			}
-			printk(KERN_EMERG "VIDC: SEQ_HEADER done\n");
+			pr_debug("VIDC: SEQ_HEADER done\n");
 
 			/*
 			 * Flow (matches webOS vcd_ddl_vidc.c):
@@ -641,18 +641,18 @@ static int vidc_enc_start_streaming(struct vb2_queue *q, unsigned int count)
 
 			inst->streamon_out = true;
 			inst->sequence_out = 0;
-			printk(KERN_EMERG "VIDC: OUTPUT streaming fully initialized\n");
+			pr_debug("VIDC: OUTPUT streaming fully initialized\n");
 		}
 	} else {
-		printk(KERN_EMERG "VIDC: CAPTURE queue streaming\n");
+		pr_debug("VIDC: CAPTURE queue streaming\n");
 		if (!inst->streamon_cap) {
 			inst->streamon_cap = true;
 			inst->sequence_cap = 0;
-			printk(KERN_EMERG "VIDC: CAPTURE streaming initialized\n");
+			pr_debug("VIDC: CAPTURE streaming initialized\n");
 		}
 	}
 
-	printk(KERN_EMERG "VIDC: start_streaming returning success\n");
+	pr_debug("VIDC: start_streaming returning success\n");
 	return 0;
 }
 
@@ -898,7 +898,7 @@ static void vidc_enc_complete_work(struct work_struct *w)
 				payload = inst->seq_hdr_size +
 					  inst->result_size;
 				inst->seq_hdr_pending_out = false;
-				dev_info(core->dev,
+				dev_dbg(core->dev,
 					 "prepended %u-byte SPS/PPS to first frame (total %u)\n",
 					 inst->seq_hdr_size, payload);
 			} else {
