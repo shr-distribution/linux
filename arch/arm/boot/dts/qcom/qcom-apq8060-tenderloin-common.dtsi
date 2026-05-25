@@ -4244,24 +4244,25 @@
 		 * 32 MiB ~= compositor double/triple-buffer + a few 3 MiB clients.
 		 */
 		/*
-		 * FIXED base, not size+alloc-ranges: a dynamic placement raced the
-		 * global CMA reservation and both landed at 0x7a000000, double-
-		 * claiming memory -> scanout FBs overlapped CMA buffers -> corruption.
-		 * 0x60000000 is clear of the linux,cma pool (0x7c000000), moboot's
-		 * staging (0x70000000) and MEMBASE (0x50000000), and the kernel image
-		 * (loads near 0x40208000). It is live DRAM in System RAM bank 2
-		 * (0x48000000-0x7f5fffff); 0x60000000+69 MiB = 0x64500000, below
-		 * moboot staging.
+		 * Dynamic placement (size + alloc-ranges), NOT a fixed reg: the
+		 * reserved-memory framework places this after the kernel image,
+		 * DTB and initrd/initramfs are already memblock-reserved, so it
+		 * avoids them automatically. A fixed reg=<0x60000000 ...> collided
+		 * with the initrd ("failed to reserve memory for node 'scanout-fb'"
+		 * -> mdp of_reserved_mem_device_init -22 -> FBs fell back to CMA).
+		 * The earlier dynamic attempt only failed because it raced the
+		 * global config CMA at 0x7a000000 -- that CMA is now removed
+		 * (CONFIG_CMA_SIZE_MBYTES=0), so dynamic placement is safe again.
 		 *
-		 * Sized to match legacy webOS display memory: MSM_FB (~5 MiB scanout
-		 * framebuffer) + MSM_PMEM_SF (64 MiB surfaceflinger/composition) =
-		 * ~69 MiB in EBI. Gives the compositor + multiple GLES clients the
-		 * same headroom legacy had.
+		 * Sized to match legacy webOS display memory: MSM_FB (~5 MiB) +
+		 * MSM_PMEM_SF (64 MiB) = ~69 MiB in EBI. no-map (like vidc-smipool)
+		 * keeps it out of the cached linear map.
 		 */
 		scanout_mem: scanout-fb {
 			compatible = "shared-dma-pool";
 			no-map;
-			reg = <0x60000000 0x4500000>;	/* 69 MiB (legacy MSM_FB + MSM_PMEM_SF) */
+			size = <0x4500000>;			/* 69 MiB */
+			alloc-ranges = <0x40000000 0x3c000000>;	/* EBI, below linux,cma@0x7c000000 */
 		};
 
 		/*
