@@ -146,7 +146,7 @@ static int vpe_enum_fmt(struct file *file, void *priv, struct v4l2_fmtdesc *f)
 
 static int vpe_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
 {
-	struct vpe_ctx *ctx = vpe_fh_to_ctx(priv);
+	struct vpe_ctx *ctx = vpe_fh_to_ctx(file->private_data);
 	struct vpe_frame *frame;
 	struct v4l2_pix_format *pix = &f->fmt.pix;
 
@@ -193,7 +193,7 @@ static int vpe_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 
 static int vpe_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 {
-	struct vpe_ctx *ctx = vpe_fh_to_ctx(priv);
+	struct vpe_ctx *ctx = vpe_fh_to_ctx(file->private_data);
 	struct vpe_frame *frame;
 	struct v4l2_pix_format *pix = &f->fmt.pix;
 	int ret;
