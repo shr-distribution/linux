@@ -240,10 +240,17 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		AXXX_CP_INT_CNTL_IB1_INT_MASK |
 		AXXX_CP_INT_CNTL_RB_INT_MASK);
 	gpu_write(gpu, REG_A2XX_SQ_INT_CNTL, 0);
+	/*
+	 * EXPERIMENT: mask MMU_PAGE_FAULT. There is a chronic per-submit MH MMU
+	 * page fault at VA 0 (out of the gpummu VA range, so BEH_TRAN_RNG redirects
+	 * it to the TRAN_ERROR page). The build scene renders correctly at full FPS
+	 * despite ~2-3 faults/sec, so the access appears benign; this masks only the
+	 * fault IRQ (AXI read/write errors stay enabled) to test whether the IRQ
+	 * storm itself is what stalls pulsar. Revert if rendering corrupts.
+	 */
 	gpu_write(gpu, REG_A2XX_MH_INTERRUPT_MASK,
 		A2XX_MH_INTERRUPT_MASK_AXI_READ_ERROR |
-		A2XX_MH_INTERRUPT_MASK_AXI_WRITE_ERROR |
-		A2XX_MH_INTERRUPT_MASK_MMU_PAGE_FAULT);
+		A2XX_MH_INTERRUPT_MASK_AXI_WRITE_ERROR);
 
 	for (i = 3; i <= 5; i++)
 		if ((SZ_16K << i) == adreno_gpu->info->gmem)
