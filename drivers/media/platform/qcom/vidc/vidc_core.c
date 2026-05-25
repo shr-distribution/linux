@@ -1834,35 +1834,56 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	 * frames await display, so reorder/B-frame streams stall or recycle
 	 * a slot still pending display (reference corruption).
 	 */
-	inst->dpb_count = inst->min_dpb_count;
-	if (!inst->dpb_count)
-		inst->dpb_count = 4;	/* sane default if firmware skipped it */
-	inst->dpb_count += 4;
-	if (inst->dpb_count > VIDC_DPB_REG_SLOTS)
-		inst->dpb_count = VIDC_DPB_REG_SLOTS;
+	{
+		u32 min_count = inst->min_dpb_count ? inst->min_dpb_count : 4;
 
-	vidc_dpb_calc_sizes(inst->seq_width, inst->seq_height,
-			    &y_size, &c_size);
-	mv_size = (inst->codec == VIDC_CODEC_H264_DEC) ?
-		  vidc_dpb_calc_mv_size(inst->seq_width, inst->seq_height) : 0;
+		inst->dpb_count = min_count + 4;
+		if (inst->dpb_count > VIDC_DPB_REG_SLOTS)
+			inst->dpb_count = VIDC_DPB_REG_SLOTS;
 
-	inst->dpb_y_size = y_size;
-	inst->dpb_c_size = c_size;
-	inst->dpb_mv_size = mv_size;
+		vidc_dpb_calc_sizes(inst->seq_width, inst->seq_height,
+				    &y_size, &c_size);
+		mv_size = (inst->codec == VIDC_CODEC_H264_DEC) ?
+			  vidc_dpb_calc_mv_size(inst->seq_width,
+						inst->seq_height) : 0;
 
-	slot_size = ALIGN(y_size + c_size + mv_size, SZ_4K);
-	total_size = slot_size * inst->dpb_count;
+		inst->dpb_y_size = y_size;
+		inst->dpb_c_size = c_size;
+		inst->dpb_mv_size = mv_size;
 
-	inst->dpb_y_vaddr = dma_alloc_coherent(core->dev, total_size,
-					       &inst->dpb_y_dma_addr,
-					       GFP_KERNEL);
-	if (!inst->dpb_y_vaddr) {
-		dev_err(core->dev,
-			"DPB pool alloc failed (%u slots × %u bytes)\n",
-			inst->dpb_count, slot_size);
-		return -ENOMEM;
+		slot_size = ALIGN(y_size + c_size + mv_size, SZ_4K);
+
+		/*
+		 * The whole DPB is one contiguous coherent allocation. The +4
+		 * display headroom can push that over what the SMI pool can
+		 * serve contiguously at high resolution (e.g. 1280x1024 ->
+		 * ~23 MB). Retry with progressively fewer slots, never going
+		 * below the firmware-reported minimum (which is required for
+		 * correct reorder).
+		 */
+		for (;;) {
+			total_size = slot_size * inst->dpb_count;
+			inst->dpb_y_vaddr = dma_alloc_coherent(core->dev,
+					total_size, &inst->dpb_y_dma_addr,
+					GFP_KERNEL);
+			if (inst->dpb_y_vaddr)
+				break;
+			if (inst->dpb_count <= min_count) {
+				dev_err(core->dev,
+					"DPB pool alloc failed (%u slots × %u bytes)\n",
+					inst->dpb_count, slot_size);
+				return -ENOMEM;
+			}
+			dev_warn(core->dev,
+				 "DPB alloc of %u slots (%u bytes) failed; retrying with fewer\n",
+				 inst->dpb_count, total_size);
+			inst->dpb_count -= (inst->dpb_count - min_count >= 2) ?
+					   2 : 1;
+		}
+		inst->dpb_y_alloc_size = total_size;
+		dev_info(core->dev, "DPB pool: %u slots × %u bytes = %u\n",
+			 inst->dpb_count, slot_size, total_size);
 	}
-	inst->dpb_y_alloc_size = total_size;
 
 	/*
 	 * DPB pool must be addressable as a positive offset from
