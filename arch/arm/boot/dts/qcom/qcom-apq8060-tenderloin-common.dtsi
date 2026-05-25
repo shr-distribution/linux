@@ -3044,14 +3044,18 @@
 		 */
 		compatible = "palm,bcm4329-bcsp";
 		/*
-		 * Disabled at boot: BT is parked at the physical TX-waveform wall
-		 * (chip only-SYNCs, never acts on our byte-perfect SYNC_RSP; needs
-		 * a scope on gpio53). With the node "okay" the serdev driver
-		 * auto-probes at boot and the BCSP link-establishment loop + HCI
-		 * reset retries spam the log. Set back to "okay" (or use the ldisc
-		 * btup path) to resume BT bring-up / scope testing.
+		 * 2026-05-25: re-enabled as an ADM1 DMA concurrency STRESSOR.
+		 * RX is on ADM1 ch7/CRCI9 DMA (above); with the serdev driver
+		 * probing, the BCSP SYNC-retry loop runs continuously and
+		 * generates steady ADM1 RX-DMA traffic — a controlled second
+		 * master to run alongside an eMMC DMA read stress and reproduce
+		 * (or rule out) the dual-master CRCI-arbitration DATACRCFAIL.
+		 * (BT link still parked at the TX-waveform wall; that's fine —
+		 * we only need the RX-DMA traffic, not a working link.) The BCSP
+		 * link-est loop + RXWIRE dump WILL spam the log; filter it.
+		 * Set back to "disabled" to silence BT once the test is done.
 		 */
-		status = "disabled";
+		status = "okay";
 
 		/*
 		 * Skip BCSP link-establishment SYNC handshake.
