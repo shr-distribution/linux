@@ -24,9 +24,6 @@
 #include "camss-vfe.h"
 #include "camss.h"
 
-/* Import ecc_disable from camss-csiphy-8x60.c for stream_on SW_RST handling */
-extern bool ecc_disable;
-
 #define MSM_CSIPHY_NAME "msm_csiphy"
 
 static const struct csiphy_format_info formats_8x16[] = {
@@ -464,15 +461,11 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 			 * Re-apply DATA_FORMAT stored during lanes_enable,
 			 * since SW_RST clears the register.
 			 */
-			val = BIT(21) | BIT(18); /* LONG_PKT | DECODE_ID */
-			if (!ecc_disable)
-				val |= BIT(17); /* ECC_EN */
+			val = BIT(21) | BIT(18) | BIT(17); /* LONG_PKT | DECODE_ID | ECC_EN */
 			val |= (u32)csiphy->data_format << 19;
-			dev_info(csiphy->camss->dev,
-				 "CSIPHY%d: stream_on PROTOCOL_CONTROL=0x%08x (ECC %s, data_fmt=%d)\n",
-				 csiphy->id, val,
-				 ecc_disable ? "DISABLED" : "enabled",
-				 csiphy->data_format);
+			dev_dbg(csiphy->camss->dev,
+				"CSIPHY%d: stream_on PROTOCOL_CONTROL=0x%08x (data_fmt=%d)\n",
+				csiphy->id, val, csiphy->data_format);
 			writel(val, csiphy->base + 0x04);
 
 			/* Small delay for reset to take effect */
