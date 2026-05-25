@@ -40,14 +40,10 @@ static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable);
  *   0x200 = OUTPUT_2 preview mode (semi-planar Y+CbCr)
  *   0x60  = CAMIF_TO_AXI raw snapshot mode (WM0 only, no XBAR)
  *
- * WebOS uses 0x01 with XBAR CFG1=0x1a1b (VIDEO_MODE routing).
- * Can be changed at runtime via:
- *   echo 0x01 > /sys/module/qcom_camss/parameters/vfe31_axi_output_mode
+ * WebOS uses 0x01 with XBAR CFG1=0x1a1b (VIDEO_MODE routing). RDI/raw lines
+ * override this to 0x60 (CAMIF_TO_AXI) in vfe31_enable().
  */
-int vfe31_axi_output_mode = 0x01;
-module_param(vfe31_axi_output_mode, int, 0644);
-MODULE_PARM_DESC(vfe31_axi_output_mode,
-		 "VFE31 AXI output mode (0x200=preview, 0x01=preview+video, 0x60=raw)");
+#define VFE31_AXI_OUT_MODE_PIX		0x01
 
 /*
  * VFE31 video output enable:
@@ -155,12 +151,6 @@ MODULE_PARM_DESC(vfe31_axi_output_mode,
 /* Default: 0x1A1B (webOS Topaz register dump, PIX+VIDEO mode) */
 #define VFE31_XBAR_CFG1		VFE31_XBAR_PIX_VIDEO
 
-/* Module param for manual override/testing */
-int vfe31_xbar_cfg1;  /* 0 = auto-select based on mode */
-module_param(vfe31_xbar_cfg1, int, 0644);
-MODULE_PARM_DESC(vfe31_xbar_cfg1,
-		 "VFE31 XBAR_CFG1 override (0=auto, 0x1a03=PIX, 0x1a1b=PIX+VIDEO)");
-
 /*
  * ============================================================================
  * RAW-through-PIX mode (Y-Plane Hack)
@@ -181,14 +171,9 @@ MODULE_PARM_DESC(vfe31_xbar_cfg1,
  *   1280 input pixels at 8bpp = 1280 bytes
  *   640 "fake" pixels at 16bpp = 1280 bytes (same data)
  *
- * Values:
- *   0 = Normal PIX mode with DEMUX (default)
- *   1 = RAW-through-PIX mode (MODULE_CFG=0, WM0 only)
+ * Enabled per-device via the "qcom,vfe31-raw-through-pix" DT property
+ * (vfe->raw_through_pix), applied only to RDI lines.
  */
-static int vfe31_raw_pix_mode;
-module_param(vfe31_raw_pix_mode, int, 0644);
-MODULE_PARM_DESC(vfe31_raw_pix_mode,
-		 "VFE31 RAW-through-PIX mode (0=normal PIX+DEMUX, 1=bypass DEMUX for RAW)");
 
 /*
  * VFE31 Write Master assignments (cross-vendor verified):
@@ -201,15 +186,6 @@ MODULE_PARM_DESC(vfe31_raw_pix_mode,
  * line runs at a time. XBAR 0x1A1B routes Y to WM0+WM1 and CbCr
  * to WM4. WM1/WM5 are configured by XBAR but not enabled.
  */
-
-/*
- * Debug: dump WM registers during first IRQs of each streaming session.
- * Set to 1 to enable verbose register dumps in dmesg.
- */
-static int vfe31_dump_wm_regs;
-module_param(vfe31_dump_wm_regs, int, 0644);
-MODULE_PARM_DESC(vfe31_dump_wm_regs,
-		 "VFE31 dump WM registers (0=off, 1=on)");
 
 /*
  * VFE31 recording state machine (from Samsung msm_vfe31.c).
@@ -232,23 +208,6 @@ static enum vfe31_rec_state vfe31_zsl_state = VFE31_REC_IDLE;
  * starting DMA mid-frame which causes progressive frame wrap at 640x480.
  */
 static bool vfe31_pix_wm_pending;
-
-/*
- * ============================================================================
- * VFE31 FORMAT OVERRIDE - For testing NV16 (4:2:2) vs NV12 (4:2:0)
- * ============================================================================
- *
- * Controls how the driver interprets format for hardware configuration.
- * This affects chroma subsampling, CbCr WM height, UB height, etc.
- *
- *   0 = Auto - use actual requested format (default)
- *   1 = Force 4:2:0 - treat all semi-planar formats as NV12/NV21
- *   2 = Force 4:2:2 - treat all semi-planar formats as NV16/NV61
- */
-int vfe31_force_422;
-module_param(vfe31_force_422, int, 0644);
-MODULE_PARM_DESC(vfe31_force_422,
-		 "VFE31 format mode: 0=auto, 1=force 4:2:0, 2=force 4:2:2");
 
 /*
  * ============================================================================
@@ -299,46 +258,6 @@ MODULE_PARM_DESC(vfe31_force_422,
 #define VFE31_IRQ_COMP_MASK_PIX_ZSL	0x00004411  /* Group 0: WM0+WM4, Group 1: WM2+WM6 */
 #define VFE31_IRQ_COMP_MASK_PIX_VID_ZSL	0x00224411  /* Group 0: WM0+WM4, Group 1: WM2+WM6, Group 2: WM1+WM5 */
 
-/* Module param for manual override/testing */
-static int vfe31_irq_comp_mask;  /* 0 = auto-select based on active lines */
-module_param(vfe31_irq_comp_mask, int, 0644);
-MODULE_PARM_DESC(vfe31_irq_comp_mask,
-		 "VFE31 IRQ composite mask (0=auto, 0x11=pix, 0x13=pix+video, 0x02=video)");
-
-/*
- * RDI/raw mode EFS_CFG override.
- * -1 = use default (0x40, same as PIX mode)
- *  0 = APS mode (EFS codes ignored, CAMIF counts lines internally)
- * >0 = use this value directly
- *
- * If RDI mode doesn't count lines properly, try setting this to 0.
- * EFS_CFG 0x40 (bit 6) enables some timing/sync feature from webOS.
- * For raw capture without MIPI embedded sync, 0 (APS mode) might work better.
- */
-static int vfe31_rdi_efs_cfg = -1;
-module_param(vfe31_rdi_efs_cfg, int, 0644);
-MODULE_PARM_DESC(vfe31_rdi_efs_cfg,
-		 "VFE31 RDI EFS_CFG: -1=default (0x40), 0=APS mode, >0=use value");
-
-/*
- * RDI mode force 16bpp input.
- *
- * Some sensors (like MT9M113 with IFP) always output 2 bytes per pixel
- * even when configured for "Processed Bayer" mode. The MIPI data type
- * might be RAW8 (0x2A) but the actual data width is still 16 bits.
- *
- * When enabled, the CAMIF is configured to expect 16 bpp input for RDI
- * regardless of the mbus format. This allows capture of 1280 bytes for
- * 640 pixels instead of the expected 640 bytes.
- *
- * 0 = use format's actual bpp (8 for RAW8, 10 for RAW10, etc.)
- * 1 = force 16 bpp for all RDI formats
- */
-static int vfe31_rdi_force_16bpp;
-module_param(vfe31_rdi_force_16bpp, int, 0644);
-MODULE_PARM_DESC(vfe31_rdi_force_16bpp,
-		 "VFE31 RDI force 16bpp: 0=use format bpp, 1=force 16bpp (for MT9M113 IFP)");
-
 /*
  * BUS_CFG default value per webOS register dumps.
  */
@@ -358,11 +277,6 @@ static inline u32 vfe31_get_bus_cmd_reload(void)
 /*
  * Helper to determine if format should use 4:2:0 chroma subsampling.
  * Returns true for 4:2:0 formats (NV12/NV21), false for 4:2:2 (NV16/NV61).
- *
- * When vfe31_force_422 is set:
- *   0 = auto (based on actual format)
- *   1 = force 4:2:0 (return true for all semi-planar)
- *   2 = force 4:2:2 (return false for all semi-planar)
  */
 static inline bool vfe31_is_420_format(u32 pixelformat)
 {
@@ -377,21 +291,7 @@ static inline bool vfe31_is_420_format(u32 pixelformat)
 	if (!is_semiplanar)
 		return false;  /* Not semi-planar, doesn't apply */
 
-	/*
-	 * Check format override - but NEVER allow force_422=2 (4:2:2) on
-	 * a 4:2:0 format (NV12/NV21) because the buffer is sized for half-height
-	 * CbCr and writing full-height would overflow. This prevents crashes
-	 * when switching formats at runtime.
-	 *
-	 * force_422=1 (force 4:2:0) is always safe - it reduces CbCr height.
-	 * force_422=2 (force 4:2:2) is only safe on NV16/NV61 buffers.
-	 */
-	if (vfe31_force_422 == 1)
-		return true;   /* Force 4:2:0 - always safe */
-	if (vfe31_force_422 == 2 && !is_native_420)
-		return false;  /* Force 4:2:2 - only safe on NV16/NV61 */
-
-	/* Auto or force_422=2 on NV12: based on actual format */
+	/* 4:2:0 (NV12/NV21) => true; 4:2:2 (NV16/NV61) => false. */
 	return is_native_420;
 }
 
@@ -2926,16 +2826,6 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			vfe31_wm_done(vfe, 0, ping_pong);
 	}
 
-	/* Debug: dump WM0 registers on first few IRQs to verify DMA config */
-	if (vfe31_dump_wm_regs && irq_count <= 10) {
-		u32 wm0_ping = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(0));
-		u32 wm0_pong = readl_relaxed(vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(0));
-
-		dev_info(vfe->camss->dev,
-			 "VFE IRQ#%d S0=0x%08x S1=0x%08x PP=0x%x PING=0x%08x PONG=0x%08x\n",
-			 irq_count, value0, value1, ping_pong, wm0_ping, wm0_pong);
-	}
-
 	/* VFE31 reset acknowledge is in STATUS_1 bit 22, not STATUS_0 bit 31 */
 	if (value1 & VFE_0_IRQ_STATUS_1_RESET_ACK)
 		vfe->isr_ops.reset_ack(vfe);
@@ -3252,7 +3142,7 @@ static int vfe31_enable(struct vfe_line *line)
 			 line->id);
 	} else {
 		/* PIX/VIDEO lines use module parameter */
-		axi_mode = vfe31_axi_output_mode;
+		axi_mode = VFE31_AXI_OUT_MODE_PIX;
 	}
 
 	/*
@@ -3319,13 +3209,12 @@ static int vfe31_enable(struct vfe_line *line)
 
 	default:
 		/* Other formats: follow axi_mode setting */
-		if (axi_mode == 0x01 && !vfe31_raw_pix_mode) {
+		if (axi_mode == 0x01) {
 			output->wm_num = 2;
 			dev_info(vfe->camss->dev, "VFE31: PIX mode - using 2 WMs (Y+CbCr)\n");
 		} else {
 			output->wm_num = 1;
-			dev_info(vfe->camss->dev, "VFE31: %s - using 1 WM\n",
-				 vfe31_raw_pix_mode ? "RAW-through-PIX" : "Raw/RDI");
+			dev_info(vfe->camss->dev, "VFE31: Raw/RDI - using 1 WM\n");
 		}
 		break;
 	}
@@ -3520,14 +3409,14 @@ static int vfe31_enable(struct vfe_line *line)
 	height = pix->height;
 
 	/*
-	 * CbCr height depends on format (controllable via vfe31_force_422):
+	 * CbCr height depends on format:
 	 * - 4:2:0 (NV12/NV21): CbCr height = Y height / 2
 	 * - 4:2:2 (NV16/NV61): CbCr height = Y height (full)
 	 */
 	cbcr_height = vfe31_calc_cbcr_height(pix->pixelformat, height);
 	dev_info(vfe->camss->dev,
-		 "VFE31: format=0x%x cbcr_height=%d (Y height=%d) force_422=%d\n",
-		 pix->pixelformat, cbcr_height, height, vfe31_force_422);
+		 "VFE31: format=0x%x cbcr_height=%d (Y height=%d)\n",
+		 pix->pixelformat, cbcr_height, height);
 
 	/*
 	 * Semi-planar output: DEMUX separates UYVY input into Y and CbCr planes.
@@ -3581,7 +3470,7 @@ static int vfe31_enable(struct vfe_line *line)
 
 	/*
 	 * Step 1: Configure BUS_CFG, AXI output mode and XBAR
-	 * Use module parameter vfe31_axi_output_mode:
+	 * AXI output mode:
 	 *   0x60  = Raw/RDI mode (CAMIF_TO_AXI bypassing ISP)
 	 *   0x01  = PIX/Preview mode (OUTPUT_2 with XBAR routing)
 	 *
@@ -3623,14 +3512,9 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Note: This is an initial setup. The final XBAR value is set in
 	 * enable_pending_camif() which uses auto-select logic based on
 	 * whether VIDEO line is active. Use PIX_ONLY as default here.
-	 *
-	 * When vfe31_xbar_cfg1 module param is 0 (auto mode), use the
-	 * PIX_ONLY default. If param is set explicitly, use that value.
 	 */
 	if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE) {
-		u32 xbar_initial = (vfe31_xbar_cfg1 != 0) ?
-				   vfe31_xbar_cfg1 :
-				   vfe31_calc_xbar(true, false, false);
+		u32 xbar_initial = vfe31_calc_xbar(true, false, false);
 		dev_info(vfe->camss->dev,
 			 "VFE31: PIX mode - XBAR CFG1=0x%04x\n", xbar_initial);
 		writel_relaxed(xbar_initial, vfe->base + VFE_0_BUS_XBAR_CFG1);
@@ -3660,23 +3544,11 @@ static int vfe31_enable(struct vfe_line *line)
 		vfe31_set_scale_cfg(vfe, line);
 		vfe31_set_crop_cfg(vfe, line);
 	} else if (axi_mode == VFE_0_BUS_XBAR_CFG0_PIX_MODE || axi_mode == 0x200) {
-		if (vfe31_raw_pix_mode) {
-			/*
-			 * RAW via PIX: configure DEMUX for data flow but
-			 * skip ISP modules. DEMUX_CFG must be non-zero for
-			 * data to pass through the DEMUX data path gate.
-			 */
-			dev_info(vfe->camss->dev, "VFE31: Step 1b - raw_pix_mode: demux+scale/crop\n");
-			vfe31_set_demux_cfg(vfe, line);
-			vfe31_set_scale_cfg(vfe, line);
-			vfe31_set_crop_cfg(vfe, line);
-		} else {
-			dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure ISP pipeline (axi=0x%x)\n", axi_mode);
-			vfe31_set_demux_cfg(vfe, line);
-			vfe31_set_scale_cfg(vfe, line);
-			vfe31_set_crop_cfg(vfe, line);
-			vfe31_set_isp_modules(vfe, line);
-		}
+		dev_info(vfe->camss->dev, "VFE31: Step 1b - Configure ISP pipeline (axi=0x%x)\n", axi_mode);
+		vfe31_set_demux_cfg(vfe, line);
+		vfe31_set_scale_cfg(vfe, line);
+		vfe31_set_crop_cfg(vfe, line);
+		vfe31_set_isp_modules(vfe, line);
 	} else {
 		dev_info(vfe->camss->dev, "VFE31: Step 1b - Skip ISP config (RDI mode)\n");
 	}
@@ -4558,8 +4430,7 @@ static void vfe31_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 			       line->id == VFE_LINE_RDI1 ||
 			       line->id == VFE_LINE_RDI2);
 
-		if (vfe31_raw_pix_mode ||
-		    (vfe->raw_through_pix && is_rdi)) {
+		if (vfe->raw_through_pix && is_rdi) {
 			even_cfg = 0xcc;
 			odd_cfg = 0xcc;
 			goto write_demux;
@@ -4722,12 +4593,11 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	 */
 	/*
 	 * Chroma vertical scaling - auto-detect based on format.
-	 * vfe31_force_422 affects the format detection.
 	 */
 	{
 		u32 v_out, v_phase, subs_cfg;
 
-		/* Auto: based on format (respects vfe31_force_422) */
+		/* Auto: based on format */
 		v_out = vfe31_calc_cbcr_height(p, height);
 
 		/* Auto: based on scaling ratio */
@@ -4784,10 +4654,9 @@ static void vfe31_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 	}
 
 	dev_info(vfe->camss->dev,
-		 "VFE31: Scale/FOV configured: %ux%u, format=0x%x, chroma_v=%s (force_422=%d)\n",
+		 "VFE31: Scale/FOV configured: %ux%u, format=0x%x, chroma_v=%s\n",
 		 width, height, p,
-		 vfe31_is_420_format(p) ? "2:1 (4:2:0)" : "1:1 (4:2:2)",
-		 vfe31_force_422);
+		 vfe31_is_420_format(p) ? "2:1 (4:2:0)" : "1:1 (4:2:2)");
 }
 
 static void vfe31_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line)
@@ -4897,7 +4766,6 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	struct vfe_line *line;
 	u32 val;
 	bool is_rdi_line;
-	bool rdi_use_16bpp;
 	bool fmt_is_420;
 	u32 axi_mode;
 
@@ -4918,21 +4786,13 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		       line_id == VFE_LINE_RDI1 ||
 		       line_id == VFE_LINE_RDI2);
 
-	/*
-	 * Determine if we should use 16bpp stride for this RDI line.
-	 * When vfe31_rdi_force_16bpp is set, RDI mode uses 2 bytes/pixel
-	 * instead of the format's actual bpp. This is needed for sensors
-	 * like MT9M113 that output 2 bytes/pixel even in "Bayer" mode.
-	 */
-	rdi_use_16bpp = is_rdi_line && vfe31_rdi_force_16bpp;
-
 	if (is_rdi_line) {
 		if (vfe->raw_through_pix)
 			axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
 		else
 			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
 	} else {
-		axi_mode = vfe31_axi_output_mode;
+		axi_mode = VFE31_AXI_OUT_MODE_PIX;
 	}
 
 	dev_info(vfe->camss->dev,
@@ -5023,11 +4883,8 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * Dynamic XBAR: build from active WM configuration.
 		 * Check all active lines including ZSL which may have
 		 * been configured before enable_pending_camif runs.
-		 * Module param overrides for testing.
 		 */
-		if (vfe31_xbar_cfg1 != 0) {
-			xbar_value = vfe31_xbar_cfg1;
-		} else {
+		{
 			bool video_active = (line_id == VFE_LINE_VIDEO);
 			bool zsl_active = (vfe31_zsl_state != VFE31_REC_IDLE);
 
@@ -5084,7 +4941,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * Using output stride causes half-frame capture.
 		 */
 		{
-			u16 image_stride = (is_rdi_line && !rdi_use_16bpp) ? width : (width * 2);
+			u16 image_stride = is_rdi_line ? width : (width * 2);
 
 			reg = ((image_stride / 16) & 0xFFFF) << 16;
 			reg |= ((height - 1) << 4) | 2;
@@ -5153,7 +5010,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		 * - RAW8 (RDI): width * 1
 		 * - RDI with force_16bpp: width * 2
 		 */
-		wpl = ((is_rdi_line && !rdi_use_16bpp) ? width : (width * 2)) / 4;
+		wpl = (is_rdi_line ? width : (width * 2)) / 4;
 		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
 		reg |= (height - 1) & 0xFFFF;
 		dev_info(vfe->camss->dev,
@@ -5191,15 +5048,15 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			vfe->active_cbcr_offset = cbcr_offset;
 
 			/*
-			 * CbCr height depends on format (controllable via vfe31_force_422):
+			 * CbCr height depends on format:
 			 * - 4:2:0 (NV12/NV21): CbCr height = Y height / 2
 			 * - 4:2:2 (NV16/NV61): CbCr height = Y height (full)
 			 */
 			cbcr_height = vfe31_calc_cbcr_height(pix->pixelformat, height);
 
 			dev_info(vfe->camss->dev,
-				 "VFE31: WM%d (CbCr) offset=0x%x PING=0x%08x cbcr_height=%d force_422=%d\n",
-				 cbcr_wm, cbcr_offset, cbcr_ping, cbcr_height, vfe31_force_422);
+				 "VFE31: WM%d (CbCr) offset=0x%x PING=0x%08x cbcr_height=%d\n",
+				 cbcr_wm, cbcr_offset, cbcr_ping, cbcr_height);
 
 			/* CbCr WM PING/PONG addresses */
 			writel_relaxed(cbcr_ping,
@@ -5519,13 +5376,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 			bool pix_active = starting_pix || pix_state_active;
 			bool zsl_active = starting_zsl || zsl_state_active;
 
-			/* Module param override takes priority */
-			if (vfe31_irq_comp_mask != 0) {
-				vfe->irq_comp_mask_shadow = vfe31_irq_comp_mask;
-				dev_info(vfe->camss->dev,
-					 "VFE31: IRQ_COMPOSITE_MASK=0x%08x (module param)\n",
-					 vfe->irq_comp_mask_shadow);
-			} else if (is_rdi_line) {
+			if (is_rdi_line) {
 				/*
 				 * RDI mode: Map WM to composite group 1 (bits 8-15).
 				 * COMPOSITE_DONE_1 (IRQ bit 22) fires when WM completes.
@@ -5547,12 +5398,8 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 				u32 mask = 0;
 				const char *mode_str;
 
-				if (pix_active) {
-					if (vfe31_raw_pix_mode && pix_out->wm_num == 1)
-						mask |= 0x01; /* WM0 only */
-					else
-						mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
-				}
+				if (pix_active)
+					mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
 				if (zsl_active) {
 					if (zsl_out->wm_num == 2)
 						mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
@@ -6152,8 +5999,7 @@ void vfe31_configure_testgen(struct vfe_device *vfe, bool enable,
 		writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE, vfe->base + VFE_0_MODULE_CFG);
 		writel_relaxed(VFE_0_BUS_XBAR_CFG0_PIX_MODE,
 			       vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-		writel_relaxed((vfe31_xbar_cfg1 != 0) ? vfe31_xbar_cfg1 :
-			       vfe31_calc_xbar(true, false, false),
+		writel_relaxed(vfe31_calc_xbar(true, false, false),
 			       vfe->base + VFE_0_BUS_XBAR_CFG1);
 		/* Ensure bus and XBAR configuration is committed before continuing */
 		wmb();
@@ -6295,24 +6141,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	 * RAW8 input:   8 bpp  -> width * 1 byte
 	 * RAW10 input:  10 bpp -> width * 10/8 bytes (packed)
 	 */
-	/*
-	 * Check if this is an RDI line for format-specific handling.
-	 */
+	/* Bytes-per-pixel is derived from the sink mbus format. */
 	{
-		bool is_rdi = (line->id == VFE_LINE_RDI0 ||
-			       line->id == VFE_LINE_RDI1 ||
-			       line->id == VFE_LINE_RDI2);
-
-		/*
-		 * Force 16 bpp for RDI mode if vfe31_rdi_force_16bpp is set.
-		 * This is needed for sensors like MT9M113 where the IFP always
-		 * outputs 2 bytes per pixel even in "Processed Bayer" mode.
-		 */
-		if (is_rdi && vfe31_rdi_force_16bpp) {
-			bpp = 16;
-			dev_info(vfe->camss->dev,
-				 "VFE31: RDI force 16bpp enabled (actual format bpp ignored)\n");
-		} else {
+		{
 			switch (line->fmt[MSM_VFE_PAD_SINK].code) {
 			case MEDIA_BUS_FMT_UYVY8_1X16:
 			case MEDIA_BUS_FMT_UYVY8_2X8:
@@ -6381,17 +6212,6 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 			writel_relaxed(0x00400C04, vfe->base + VFE_0_MODULE_CFG);
 			dev_info(vfe->camss->dev,
 				 "VFE31: MODULE_CFG=0x00400C04 (RDI raw)\n");
-		} else if (vfe31_raw_pix_mode) {
-			/*
-			 * RAW-through-PIX via module param: use standard PIX
-			 * MODULE_CFG to keep data path gates open. ISP modules
-			 * use identity defaults so raw data passes unmodified.
-			 */
-			dev_info(vfe->camss->dev,
-				 "VFE31: MODULE_CFG=0x%08x (raw_pix_mode)\n",
-				 VFE_0_MODULE_CFG_WEBOS_VALUE);
-			writel_relaxed(VFE_0_MODULE_CFG_WEBOS_VALUE,
-				       vfe->base + VFE_0_MODULE_CFG);
 		} else {
 			dev_info(vfe->camss->dev,
 				 "VFE31: MODULE_CFG=0x%08x (PIX with DEMUX)\n",
@@ -6629,7 +6449,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		else if (zsl_active)
 			axi_mode = 0x101;  /* ZSL dual output */
 		else
-			axi_mode = vfe31_axi_output_mode;
+			axi_mode = VFE31_AXI_OUT_MODE_PIX;
 
 		dev_info(vfe->camss->dev,
 			 "VFE31: AXI_OUT_MODE=0x%x (%s)\n",
@@ -6643,15 +6463,9 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		if (is_rdi && !vfe->raw_through_pix) {
 			/* RDI 0x60 bypasses XBAR - no config needed */
 		} else {
-			u32 xbar_val;
+			bool vid = (line->id == VFE_LINE_VIDEO);
+			u32 xbar_val = vfe31_calc_xbar(true, vid, zsl_active);
 
-			if (vfe31_xbar_cfg1 != 0) {
-				xbar_val = vfe31_xbar_cfg1;
-			} else {
-				bool vid = (line->id == VFE_LINE_VIDEO);
-
-				xbar_val = vfe31_calc_xbar(true, vid, zsl_active);
-			}
 			dev_info(vfe->camss->dev,
 				 "VFE31: XBAR=0x%06x\n", xbar_val);
 			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
@@ -6831,11 +6645,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 "VFE31: comp_mask select: line=%d starting_pix=%d starting_video=%d starting_zsl=%d\n",
 				 line->id, starting_pix, starting_video, starting_zsl);
 
-			/* Module param override takes priority */
-			if (vfe31_irq_comp_mask != 0) {
-				comp_mask = vfe31_irq_comp_mask;
-				mode_str = "module param";
-			} else {
+			{
 				/*
 				 * Build composite mask from active lines:
 				 *   PIX:   Group 0 (WM0+WM4)
@@ -6843,14 +6653,8 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 				 *   VIDEO: Group 2 (WM1+WM5)
 				 */
 				comp_mask = 0;
-				if (pix_active) {
-					if (vfe31_raw_pix_mode &&
-					    pix_out->wm_num == 1)
-						comp_mask |= 0x01;
-					else
-						comp_mask |=
-						    VFE31_IRQ_COMP_MASK_PIX_ONLY;
-				}
+				if (pix_active)
+					comp_mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
 				if (zsl_active) {
 					/*
 					 * ZSL composite mask depends on wm_num:

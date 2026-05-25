@@ -35,16 +35,8 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
-/* Module parameters for MT9M113 tuning */
-static int mt9m113_pre_mipi_delay_ms = 10;
-module_param(mt9m113_pre_mipi_delay_ms, int, 0644);
-MODULE_PARM_DESC(mt9m113_pre_mipi_delay_ms,
-		 "Delay (ms) before enabling MIPI output (default 10)");
-
-static int mt9m113_cont_mipi_clk;
-module_param(mt9m113_cont_mipi_clk, int, 0644);
-MODULE_PARM_DESC(mt9m113_cont_mipi_clk,
-		 "Use continuous MIPI clock (0=LP default, 1=continuous)");
+/* Delay before enabling MIPI output, allowing CSIPHY to stabilize. */
+#define MT9M113_PRE_MIPI_DELAY_MS	10
 
 /* MT9M113 Context V4L2 Control */
 #define V4L2_CID_MT9M113_CONTEXT	(V4L2_CID_USER_BASE + 0x1001)
@@ -1567,7 +1559,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/* Wait for CSIPHY stabilization */
-	msleep(mt9m113_pre_mipi_delay_ms);
+	msleep(MT9M113_PRE_MIPI_DELAY_MS);
 
 	/* Configure output interface (MIPI CSI-2 or Parallel) */
 	if (sensor->bus_cfg.bus_type == V4L2_MBUS_CSI2_DPHY) {
@@ -1627,9 +1619,6 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			dev_info(dev, "MT9M113: MIPI YUV mode (code=0x%04x)\n",
 				 format->code);
 		}
-
-		if (mt9m113_cont_mipi_clk)
-			output_ctrl_val |= 0x0004;
 	} else {
 		/*
 		 * Parallel output configuration - UNTESTED
