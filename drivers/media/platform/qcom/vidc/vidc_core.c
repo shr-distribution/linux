@@ -2236,6 +2236,20 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 	if (!hdr_vaddr)
 		return -ENOMEM;
 
+	/*
+	 * The firmware addresses the output bitstream buffer FW-RELATIVE
+	 * ((addr - fw_dma_addr) >> VIDC_ADDR_SHIFT), the same way
+	 * vidc_enc_submit_frame programs the per-frame STREAM_ADDR. Passing
+	 * the absolute address made the firmware write the SPS/PPS to the
+	 * wrong location, so our buffer came back zeroed.
+	 */
+	if (hdr_dma < core->fw_dma_addr) {
+		dev_err(core->dev, "seq-hdr buffer below fw base (%pad < %pad)\n",
+			&hdr_dma, &core->fw_dma_addr);
+		dma_free_coherent(core->dev, SZ_4K, hdr_vaddr, hdr_dma);
+		return -ERANGE;
+	}
+
 	spin_lock_irqsave(&core->irqlock, flags);
 	core->curr_inst = inst;
 	reinit_completion(&inst->done);
@@ -2244,7 +2258,8 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 	vidc_write(core, VIDC_REG_RISC2HOST_CMD, VIDC_RESP_EMPTY);
 	/* INIT_CH before parameters (vidc_1080p_encode_seq_start_ch0 pattern) */
 	vidc_write(core, VIDC_REG_CH0_INST_ID, VIDC_INIT_CH_INST_ID);
-	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR, hdr_dma >> VIDC_ADDR_SHIFT);
+	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
+		   (hdr_dma - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	/* Encoder uses 0x204c (VIDC_REG_ENC_OUT_BUF_SIZE) for total output capacity */
 	vidc_write(core, VIDC_REG_ENC_OUT_BUF_SIZE, SZ_4K);
 	vidc_write(core, VIDC_REG_CH0_SHARED_MEM, core->shm_offset);
