@@ -30,11 +30,6 @@
 #include "camss-vfe.h"
 #include "camss.h"
 
-/* Module parameters from camss-vfe-3-1.c for VFE31 configuration */
-extern int vfe31_axi_output_mode;
-extern int vfe31_video_output_enable;
-extern int vfe31_xbar_cfg1;
-extern int vfe31_force_422;
 
 /*
  * MSM8660 CSI routing is configured via direct register writes to MISC_CC_REG
@@ -2798,14 +2793,6 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 			video_out->stride_factor = vfe->res->pix_stride_factor;
 			dev_info(dev, "VFE line %d: stride_factor=%u\n",
 				 i, video_out->stride_factor);
-			/*
-			 * VFE31 vsub_override: adjust buffer size based on
-			 * force_422 parameter. When force_422=2 (force 4:2:2),
-			 * allocate NV16-sized buffers (2x height) even for
-			 * NV12 format requests.
-			 */
-			if (video_out->stride_factor && vfe31_force_422 == 2)
-				video_out->vsub_override = 0x0102; /* NV16: 2x height */
 		}
 
 		video_out->nformats = vfe->line[i].nformats;

@@ -6382,18 +6382,12 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		writel_relaxed(camif_cfg, vfe->base + VFE_0_CAMIF_CFG);
 	}
 
-	{
-		bool is_rdi = (vfe->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       vfe->camif_pending_line_id == VFE_LINE_RDI2);
-
-		/*
-		 * FRAME_CFG: Samsung/Opal leave at 0 for both PIX and raw modes.
-		 * webOS also never sets it. The CAMIF uses WINDOW registers
-		 * for frame dimensions instead.
-		 */
-		writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-	}
+	/*
+	 * FRAME_CFG: Samsung/Opal leave at 0 for both PIX and raw modes.
+	 * webOS also never sets it. The CAMIF uses WINDOW registers
+	 * for frame dimensions instead.
+	 */
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
 
 	/*
 	 * WINDOW registers: CAMIF always counts in 16-bit pixel units.
