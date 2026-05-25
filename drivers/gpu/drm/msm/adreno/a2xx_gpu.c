@@ -439,8 +439,8 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_MH_INT_STAT) {
 		status = gpu_read(gpu, REG_A2XX_MH_INTERRUPT_STATUS);
 
-		dev_warn(gpu->dev->dev, "MH_INT: %08X\n", status);
-		dev_warn(gpu->dev->dev, "MMU_PAGE_FAULT: %08X\n",
+		dev_warn_ratelimited(gpu->dev->dev, "MH_INT: %08X\n", status);
+		dev_warn_ratelimited(gpu->dev->dev, "MMU_PAGE_FAULT: %08X\n",
 			gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT));
 
 		gpu_write(gpu, REG_A2XX_MH_INTERRUPT_CLEAR, status);
