@@ -1,5 +1,28 @@
 # VFE31 640x480 Frame Drift - Final Analysis
 
+> **RESOLVED 2026-05-25 — root cause confirmed on-device. NOT a HW limit.**
+> The drift is a CAMIF frame-lock failure caused by the MT9M113 sending **no MIPI
+> Frame-Start/End short packets** (R0x3404=0 by default; `mt9m113_skip_short_pkt=1`).
+> With no frame-end marker the VFE CAMIF runs APS mode and counts lines internally,
+> so the capture window walks relative to the sensor's free-running readout.
+>
+> **Confirmed by A/B test (runtime sysfs toggle, no reboot), 12 frames @640x480 NV12,
+> row-profile cross-correlation (`reports/audit/drift_measure.py`):**
+> - `mt9m113_skip_short_pkt=1` (default): progressive vertical walk, span **16 lines**
+>   (0,0,0,-1,-4,-6,-10,-12,-14,-16,-16,-16).
+> - `mt9m113_skip_short_pkt=0` (FS/FE short packets ON): **0 lines drift, all 12 frames**
+>   (corr 0.995-1.0). Rock-solid.
+> Evidence images: `reports/audit/drift_skip{0,1}_f{00,06,11}.png`.
+>
+> **Fix (for upstream, no module param):** unconditionally enable the MT9M113 frame-sync
+> short packets — write `CUSTOM_SHORT_PKT` (R0x3404) = `FRAME_CNT_EN` (0x0080) in the
+> sensor start path, and delete `mt9m113_skip_short_pkt`. The webOS-faithful alternative
+> (re-apply FRAME_LENGTH/LINE_LENGTH_PCK in `mt9m113_configure_sensor_context()`, or stop
+> re-writing context geometry at runtime) is untested but should also restore lock.
+> See `reports/audit/CAMSS_VFE31_MAINLINE_AUDIT.md` §2.
+>
+> ---
+>
 > **UPDATE 2026-05-24 — still open; two earlier conclusions corrected.**
 > 1. A massive **VFE IOMMU page-fault storm** (292K+, `7900000.iommu`, FAR in the
 >    `0x7C000000` CMA range) was found and **fixed** (DT commit `438415bc4a3e`:
