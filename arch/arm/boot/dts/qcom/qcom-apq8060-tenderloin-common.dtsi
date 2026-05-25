@@ -1284,13 +1284,16 @@
 			status = "okay";
 
 			/*
-			 * NOTE: webOS actually used EBI (system RAM) for framebuffers,
-			 * not SMI. The pmem_smipool existed but wasn't used for display.
-			 * Using SMI may cause display underruns due to different access
-			 * characteristics. The drm_smi_mem region is available if needed
-			 * but we match webOS behavior by not forcing SMI allocation.
+			 * Scanout framebuffers go in EBI (system RAM), matching webOS
+			 * and the GPU's EBI-only fabric vote (SMI scanout underruns).
+			 * Bind the dedicated PINNED scanout pool so framebuffer
+			 * dma_alloc_wc() lands in a non-migratable carveout instead of
+			 * the movable default CMA — movable CMA pages migrating under
+			 * the GPU's live resolve DMA caused intermittent MH AXI write
+			 * errors and cma_alloc() migration stalls. of_reserved_mem_
+			 * device_init() in mdp4_kms_init() picks this up.
 			 */
-			/* memory-region = <&drm_smi_mem>; */
+			memory-region = <&scanout_mem>;
 
 			/*
 			 * Use LSB pack alignment to match webOS configuration.
@@ -1459,12 +1462,6 @@
 			#clock-cells = <0>;
 		};
 
-		/* 32MiB for scanouts in EBI memory */
-		scanout_mem: scanout_mem@0 {
-			compatible = "shared-dma-pool";
-			reg = <0x0 0x2000000>;
-			/* no-map removed to allow kernel to clear framebuffer */
-		};
 	};
 
 	backlight: backlight {
@@ -4222,6 +4219,35 @@
 			reg = <0x7c000000 0x2000000>; /* 32MB at fixed address */
 			reusable;
 			linux,cma-default;
+		};
+
+		/*
+		 * Dedicated PINNED scanout framebuffer pool in EBI/main DDR.
+		 *
+		 * MSM8660 framebuffers belong in EBI (legacy webOS + reference
+		 * kernels; the GPU votes only the EBI fabric slave, and MDP
+		 * scanout from SMI underruns). The bug we are fixing: routing
+		 * scanout to the *movable* default CMA (linux,cma@7c000000) means
+		 * the GPU resolve-writes the framebuffer while CMA can migrate the
+		 * backing pages (compaction/reclaim) -> the in-flight write lands
+		 * on a page that just moved -> intermittent MH AXI write errors,
+		 * and cma_alloc() blocking on that same migration is the "looks
+		 * like a hang" stall.
+		 *
+		 * A *static* (non-reusable) shared-dma-pool is a fixed carveout:
+		 * its pages are never migrated, exactly like the legacy PMEM
+		 * framebuffer region. no-map (same as vidc_smipool_mem) keeps it
+		 * out of the cached linear map so the write-combine FB mapping has
+		 * no cacheable alias. Bound to the mdp device via memory-region;
+		 * of_reserved_mem_device_init() in mdp4_kms_init() makes scanout
+		 * dma_alloc_wc() allocate from here instead of the movable CMA.
+		 * 32 MiB ~= compositor double/triple-buffer + a few 3 MiB clients.
+		 */
+		scanout_mem: scanout-fb {
+			compatible = "shared-dma-pool";
+			no-map;
+			size = <0x2000000>;			/* 32 MiB */
+			alloc-ranges = <0x40000000 0x3c000000>;	/* EBI, below the CMA at 0x7c000000 */
 		};
 
 		/*

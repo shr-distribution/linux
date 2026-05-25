@@ -490,10 +490,10 @@ static struct page **get_pages(struct drm_gem_object *obj)
 			msm_obj->dma_addr = dma_addr;
 			msm_obj->nomap_backed = !virt_addr_valid(vaddr);
 
-			dev_dbg(dev->dev,
-				"allocated %zu bytes contiguous at %pad (%s)\n",
+			dev_info_ratelimited(dev->dev,
+				"scanout/contig: %zu bytes at phys %pad (%s)\n",
 				obj->size, &dma_addr,
-				msm_obj->nomap_backed ? "no-map pool" : "linear map");
+				msm_obj->nomap_backed ? "pinned no-map pool" : "movable linear/CMA");
 
 			if (msm_obj->nomap_backed) {
 				struct sg_table *sgt;
