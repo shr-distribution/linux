@@ -4243,11 +4243,20 @@
 		 * dma_alloc_wc() allocate from here instead of the movable CMA.
 		 * 32 MiB ~= compositor double/triple-buffer + a few 3 MiB clients.
 		 */
+		/*
+		 * FIXED base, not size+alloc-ranges: a dynamic placement raced the
+		 * global CMA reservation and both landed at 0x7a000000, double-
+		 * claiming the same 32 MiB (pinned pool AND movable CMA) -> scanout
+		 * FBs overlapped CMA buffers -> corruption. 0x60000000 is clear of
+		 * both CMA pools (0x7a000000 global, 0x7c000000 linux,cma), moboot's
+		 * staging (0x70000000) and MEMBASE (0x50000000), and the kernel image
+		 * (loads near 0x40208000). It is live DRAM in System RAM bank 2
+		 * (0x48000000-0x7f5fffff).
+		 */
 		scanout_mem: scanout-fb {
 			compatible = "shared-dma-pool";
 			no-map;
-			size = <0x2000000>;			/* 32 MiB */
-			alloc-ranges = <0x40000000 0x3c000000>;	/* EBI, below the CMA at 0x7c000000 */
+			reg = <0x60000000 0x2000000>;	/* 32 MiB, fixed */
 		};
 
 		/*
