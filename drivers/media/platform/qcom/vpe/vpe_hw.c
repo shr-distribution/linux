@@ -82,6 +82,15 @@ int vpe_hw_reset(void __iomem *base)
 	/* Configure AXI read arbitration */
 	writel(VPE_AXI_RD_ARB_CONFIG_VALUE, base + VPE_AXI_RD_ARB_CONFIG);
 
+	/*
+	 * Select command (display-list) mode ONCE here, before any frame
+	 * registers are programmed -- this matches legacy msm_vpe1, which sets
+	 * CMD_MODE at init and never per-frame. Setting it per-kick after the
+	 * frame programming (as we did) left the engine consuming the kick but
+	 * producing no output and never raising DONE.
+	 */
+	writel(VPE_CMD_MODE_VALUE, base + VPE_CMD_MODE);
+
 	/* Set default operation mode */
 	writel(VPE_DEFAULT_OP_MODE_VALUE, base + VPE_OP_MODE);
 
@@ -118,8 +127,11 @@ u32 vpe_hw_get_version(void __iomem *base)
 
 void vpe_hw_start(void __iomem *base)
 {
-	/* Set command mode and start processing */
-	writel(VPE_CMD_MODE_VALUE, base + VPE_CMD_MODE);
+	/*
+	 * CMD_MODE is established once in vpe_hw_reset (matching legacy
+	 * msm_vpe1); here we only trigger the operation, as legacy vpe_start
+	 * does (INTR_ENABLE is set by vpe_hw_enable_irq just before this).
+	 */
 	writel(1, base + VPE_DL0_START);
 }
 
