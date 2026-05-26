@@ -550,6 +550,7 @@ static void rotator_device_run(void *priv)
 	dma_addr_t src_y, src_c, dst_y, dst_c;
 	u32 rotation = 0;
 	u32 src_w, src_h;
+	u32 dst_cstride;
 	u32 timeout_ms;
 	int ret;
 
@@ -595,6 +596,16 @@ static void rotator_device_run(void *priv)
 	if (ctx->vflip)
 		rotation ^= ROTATOR_FLIP_UD;
 
+	/*
+	 * Rotating a 4:2:2 (H2V1) source by 90/270 transposes its chroma into a
+	 * vertically-subsampled (H1V2) plane whose rows are twice as wide; every
+	 * other case keeps the chroma stride equal to the luma stride.
+	 */
+	dst_cstride = ctx->dst.bytesperline;
+	if (ctx->src.fmt->chroma == ROTATOR_CHROMA_H2V1 &&
+	    (ctx->rotation == 90 || ctx->rotation == 270))
+		dst_cstride *= 2;
+
 	/* Enable clocks via runtime PM */
 	ret = pm_runtime_resume_and_get(rot->dev);
 	if (ret < 0) {
@@ -613,7 +624,7 @@ static void rotator_device_run(void *priv)
 	rotator_hw_set_src_addr(rot->base, src_y, src_c);
 	rotator_hw_set_dst_addr(rot->base, dst_y, dst_c);
 	rotator_hw_set_strides(rot->base, ctx->src.bytesperline,
-			       ctx->dst.bytesperline);
+			       ctx->dst.bytesperline, dst_cstride);
 	rotator_hw_set_rotation(rot->base, rotation, ctx->src.fmt->chroma);
 
 	if (ctx->src.fmt->chroma == ROTATOR_CHROMA_RGB) {

@@ -129,7 +129,8 @@ void rotator_hw_set_src_addr(void __iomem *base, dma_addr_t y_addr,
 			     dma_addr_t c_addr);
 void rotator_hw_set_dst_addr(void __iomem *base, dma_addr_t y_addr,
 			     dma_addr_t c_addr);
-void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride);
+void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride,
+			    u32 dst_cstride);
 void rotator_hw_set_rotation(void __iomem *base, u32 rotation, u32 chroma);
 void rotator_hw_set_format_rgb(void __iomem *base, u32 bpp, bool has_alpha);
 void rotator_hw_set_format_yuv(void __iomem *base, u32 chroma_mode, bool cbcr,
