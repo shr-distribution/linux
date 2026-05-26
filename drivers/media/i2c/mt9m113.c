@@ -2895,22 +2895,25 @@ static int mt9m113_power_on(struct mt9m113 *sensor)
 error_clock:
 	clk_disable_unprepare(sensor->clk);
 error_regulator:
-	if (!sensor->powerdown)
-		regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
-				       sensor->supplies);
+	if (sensor->powerdown)
+		gpiod_set_value(sensor->powerdown, 1);
+	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
+			       sensor->supplies);
 	return ret;
 }
 
 static void mt9m113_power_off(struct mt9m113 *sensor)
 {
-	if (sensor->powerdown) {
+	/*
+	 * Symmetric with mt9m113_power_on(): assert powerdown (if present),
+	 * gate the clock and drop the supplies so the enable/disable refcount
+	 * stays balanced across runtime-PM cycles and the MCU is fully reset.
+	 */
+	if (sensor->powerdown)
 		gpiod_set_value(sensor->powerdown, 1);
-		clk_disable_unprepare(sensor->clk);
-	} else {
-		clk_disable_unprepare(sensor->clk);
-		regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
-				       sensor->supplies);
-	}
+	clk_disable_unprepare(sensor->clk);
+	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
+			       sensor->supplies);
 }
 
 static int __maybe_unused mt9m113_runtime_resume(struct device *dev)
@@ -2919,9 +2922,13 @@ static int __maybe_unused mt9m113_runtime_resume(struct device *dev)
 	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 	int ret;
 
-	if (sensor->powerdown)
-		return 0;
-
+	/*
+	 * Always power-cycle and re-initialise on resume, including when a
+	 * powerdown GPIO is present. The MT9M113 MCU must be hardware-reset
+	 * (powerdown + clock) and re-initialised on each session, otherwise a
+	 * wedged MCU (SEQ_CMD/0xA103 stuck) is never recovered and only a
+	 * physical power cycle helps - matching the webOS per-open behaviour.
+	 */
 	ret = mt9m113_power_on(sensor);
 	if (ret)
 		return ret;
@@ -2934,9 +2941,7 @@ static int __maybe_unused mt9m113_runtime_suspend(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 
-	if (sensor->powerdown)
-		return 0;
-
+	/* Power down (powerdown GPIO + clock off) so the MCU is reset next resume. */
 	mt9m113_power_off(sensor);
 	return 0;
 }
