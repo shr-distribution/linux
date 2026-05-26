@@ -1,0 +1,110 @@
+CASE nv12_id
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CAP w=640 h=480 bpl=640 sz=460800 cs=8 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=460800 wrote=460800
+
+CASE nv12_r90
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CAP w=480 h=640 bpl=480 sz=460800 cs=8 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=460800 wrote=460800
+
+CASE nv12_r180
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CAP w=640 h=480 bpl=640 sz=460800 cs=8 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=460800 wrote=460800
+
+CASE nv12_r270
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CAP w=480 h=640 bpl=480 sz=460800 cs=8 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=460800 wrote=460800
+
+CASE nv12_hflip
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CAP w=640 h=480 bpl=640 sz=460800 cs=8 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=460800 wrote=460800
+
+CASE nv12_vflip
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CAP w=640 h=480 bpl=640 sz=460800 cs=8 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=460800 wrote=460800
+
+CASE nv21_id
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CAP w=640 h=480 bpl=640 sz=460800 cs=8 fourcc=NV21
+READ src=460800
+RESULT status=OK bytesused=460800 wrote=460800
+
+CASE nv12_crop
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CROP set=160,128 320x240 -> got=160,128 320x240
+CAP w=320 h=240 bpl=320 sz=115200 cs=8 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=115200 wrote=115200
+
+CASE nv12_crop90
+SRC w=640 h=480 bpl=640 sz=460800 cs=8
+CROP set=160,128 256x192 -> got=160,128 256x192
+CAP w=192 h=256 bpl=192 sz=73728 cs=8 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=73728 wrote=73728
+
+CASE rgb565_id
+SRC w=320 h=240 bpl=640 sz=153600 cs=8
+CAP w=320 h=240 bpl=640 sz=153600 cs=8 fourcc=RGBP
+READ src=153600
+RESULT status=OK bytesused=153600 wrote=153600
+
+CASE rgb565_r90
+SRC w=320 h=240 bpl=640 sz=153600 cs=8
+CAP w=240 h=320 bpl=480 sz=153600 cs=8 fourcc=RGBP
+READ src=153600
+RESULT status=OK bytesused=153600 wrote=153600
+
+CASE argb_id
+SRC w=320 h=240 bpl=1280 sz=307200 cs=8
+CAP w=320 h=240 bpl=1280 sz=307200 cs=8 fourcc=BA24
+READ src=307200
+RESULT status=OK bytesused=307200 wrote=307200
+
+CASE argb_r180
+SRC w=320 h=240 bpl=1280 sz=307200 cs=8
+CAP w=320 h=240 bpl=1280 sz=307200 cs=8 fourcc=BA24
+READ src=307200
+RESULT status=OK bytesused=307200 wrote=307200
+
+CASE nv16_id
+SRC w=640 h=480 bpl=640 sz=614400 cs=8
+CAP w=640 h=480 bpl=640 sz=614400 cs=8 fourcc=NV16
+READ src=614400
+RESULT status=OK bytesused=614400 wrote=614400
+
+CASE nv16_r90
+SRC w=640 h=480 bpl=640 sz=614400 cs=8
+CAP w=480 h=640 bpl=480 sz=614400 cs=8 fourcc=NV16
+READ src=614400
+RESULT status=OK bytesused=614400 wrote=614400
+
+CASE nv16_r270
+SRC w=640 h=480 bpl=640 sz=614400 cs=8
+CAP w=480 h=640 bpl=480 sz=614400 cs=8 fourcc=NV16
+READ src=614400
+RESULT status=OK bytesused=614400 wrote=614400
+
+CASE cs_pass
+SRC w=640 h=480 bpl=640 sz=460800 cs=3
+CAP w=640 h=480 bpl=640 sz=460800 cs=3 fourcc=NV12
+READ src=460800
+RESULT status=OK bytesused=460800 wrote=460800
+
+CASE clamp
+SRC w=8176 h=480 bpl=8176 sz=5886720 cs=8
+CAP w=8176 h=480 bpl=8176 sz=5886720 cs=8 fourcc=NV12
+READ src=5886720
+RESULT status=BUFERROR bytesused=5886720
+
