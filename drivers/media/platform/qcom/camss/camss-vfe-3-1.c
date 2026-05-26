@@ -202,8 +202,8 @@ enum vfe31_rec_state {
 /*
  * VFE31 backend private state, allocated in vfe31_subdev_init() and reached
  * via vfe->priv. Keeps MSM8660/VFE31-specific runtime state out of the shared
- * struct vfe_device. (camif_pending and vfe31_reset_done remain in vfe_device
- * because the camss core and video layer reference them across files.)
+ * struct vfe_device. (Only camif_pending remains in vfe_device, because the
+ * camss core and video layer reference it across files.)
  */
 struct vfe31_device {
 	/* MSM8660: WM/line whose CAMIF config was deferred until CSIPHY ready */
@@ -2321,8 +2321,13 @@ static void vfe31_global_reset(struct vfe_device *vfe)
 
 	dev_dbg(vfe->camss->dev, "VFE reset: complete, all defaults applied\n");
 
-	/* Set flag to indicate reset done - vfe_reset() will check this */
-	vfe->vfe31_reset_done = true;
+	/*
+	 * VFE31 on MSM8660 does not raise a reset-done IRQ, so this delay-based
+	 * global_reset is synchronous: signal reset_complete directly here so
+	 * the shared vfe_reset() wait returns immediately. No VFE31-specific
+	 * flag in the common vfe_device is needed.
+	 */
+	complete(&vfe->reset_complete);
 }
 
 /*

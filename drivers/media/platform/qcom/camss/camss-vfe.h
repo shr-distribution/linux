@@ -179,11 +179,9 @@ struct vfe_device {
 	/*
 	 * MSM8660: CAMIF config is deferred until CSIPHY is configured. The
 	 * camss core (camss-vfe.c) and the video layer (camss-video.c) test
-	 * camif_pending across files, so it stays here; vfe31_reset_done is
-	 * set by the VFE31 polled-reset path and read by the core.
+	 * camif_pending across files, so it stays here.
 	 */
 	bool camif_pending;
-	bool vfe31_reset_done;
 	/* Backend-private state (e.g. struct vfe31_device), allocated by the backend */
 	void *priv;
 };
