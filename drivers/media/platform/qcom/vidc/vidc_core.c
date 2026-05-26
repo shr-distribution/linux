@@ -12,7 +12,6 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <linux/reset.h>
 #include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/interconnect.h>
@@ -149,41 +148,6 @@ static void vidc_clk_disable(struct vidc_core *core)
 	clk_disable_unprepare(core->axi_clk);
 	clk_disable_unprepare(core->core_clk);
 	clk_disable_unprepare(core->iface_clk);
-}
-
-/*
- * Cold-reset the VCODEC core + AXI, with clocks already running.
- *
- * The VED GDSC's enable path only asserts/deasserts VCODEC_AHB_RESET, so the
- * RISC/core and AXI ports keep their state across a genpd power-collapse and
- * the firmware boots into recovery mode (SW_RESET reads a warm 0x33 instead of
- * the cold 0x3fe) on every session after the first. The legacy footswitch
- * (footswitch-8x60.c) additionally pulsed the VCODEC core + AXI resets once
- * power was on; reproduce that here. Must run with the vcodec clocks enabled
- * (the reset propagates through the clocked blocks). No-op if the DT did not
- * supply the resets.
- */
-static void vidc_reset_core(struct vidc_core *core)
-{
-	if (!core->rst_core)
-		return;
-
-	reset_control_assert(core->rst_core);
-	reset_control_assert(core->rst_axi);
-	reset_control_assert(core->rst_axi_a);
-	reset_control_assert(core->rst_axi_b);
-	udelay(5);
-	reset_control_deassert(core->rst_axi_b);
-	reset_control_deassert(core->rst_axi_a);
-	reset_control_deassert(core->rst_axi);
-	reset_control_deassert(core->rst_core);
-	udelay(5);
-
-	/* Extra core-reset pulse "now that power is on" (footswitch step). */
-	reset_control_assert(core->rst_core);
-	udelay(5);
-	reset_control_deassert(core->rst_core);
-	udelay(5);
 }
 
 /*
@@ -1434,6 +1398,24 @@ int vidc_boot_firmware(struct vidc_core *core)
 	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
 	dev_info(core->dev, "boot_fw: done, FW_VERSION=0x%08x\n",
 		 core->fw_version);
+
+	/*
+	 * Strategy 1 "keep-resident": the first boot after a fresh reboot is
+	 * always clean (cmd=9). Re-booting on later sessions hits the broken
+	 * genpd-cold-reset (SW_RESET=0x33 -> cmd=51 recovery), so take ONE
+	 * permanent runtime-PM ref here. This keeps the device runtime-active
+	 * forever, so genpd never power-collapses VED and the firmware stays
+	 * resident; later sessions just open/close a channel on the live
+	 * firmware (vidc_load_firmware early-returns on fw_loaded, and no
+	 * suspend means vidc_runtime_resume never re-boots). Balanced exactly
+	 * once in vidc_core_deinit(). See fw_pinned in vidc_core.h.
+	 */
+	if (!core->fw_pinned) {
+		pm_runtime_get_noresume(core->dev);
+		core->fw_pinned = true;
+		dev_info(core->dev,
+			 "boot_fw: pinned VED resident (firmware kept alive across sessions)\n");
+	}
 
 	/*
 	 * Pixel-cache experiment: webOS supports PIX_CACHE_DISABLE build
@@ -3007,6 +2989,17 @@ void vidc_core_deinit(struct vidc_core *core)
 	}
 
 	pm_runtime_put_noidle(core->dev);
+
+	/*
+	 * Release the Strategy-1 keep-resident pin taken at first boot (see
+	 * vidc_boot_firmware / fw_pinned). put_noidle, not put, because
+	 * vidc_remove disables runtime PM immediately after this and we must
+	 * not kick off a suspend during teardown.
+	 */
+	if (core->fw_pinned) {
+		pm_runtime_put_noidle(core->dev);
+		core->fw_pinned = false;
+	}
 }
 
 static int vidc_probe(struct platform_device *pdev)
@@ -3099,29 +3092,6 @@ static int vidc_probe(struct platform_device *pdev)
 		dev_err(dev, "failed to get axi_b clock\n");
 		return PTR_ERR(core->axi_b_clk);
 	}
-
-	/*
-	 * VCODEC core + AXI resets (optional). The VED GDSC only cycles
-	 * VCODEC_AHB_RESET; without these the RISC stays warm across a
-	 * power-collapse. Optional so an older DT without the resets property
-	 * still probes (it just can't cold-reset across sessions).
-	 */
-	core->rst_core = devm_reset_control_get_optional_exclusive(dev, "core");
-	if (IS_ERR(core->rst_core))
-		return dev_err_probe(dev, PTR_ERR(core->rst_core),
-				     "failed to get core reset\n");
-	core->rst_axi = devm_reset_control_get_optional_exclusive(dev, "axi");
-	if (IS_ERR(core->rst_axi))
-		return dev_err_probe(dev, PTR_ERR(core->rst_axi),
-				     "failed to get axi reset\n");
-	core->rst_axi_a = devm_reset_control_get_optional_exclusive(dev, "axi_a");
-	if (IS_ERR(core->rst_axi_a))
-		return dev_err_probe(dev, PTR_ERR(core->rst_axi_a),
-				     "failed to get axi_a reset\n");
-	core->rst_axi_b = devm_reset_control_get_optional_exclusive(dev, "axi_b");
-	if (IS_ERR(core->rst_axi_b))
-		return dev_err_probe(dev, PTR_ERR(core->rst_axi_b),
-				     "failed to get axi_b reset\n");
 
 	/* Set initial clock rate */
 	ret = clk_set_rate(core->core_clk, vidc_clk_rates[5]); /* 228.57 MHz */
@@ -3443,13 +3413,6 @@ static int vidc_runtime_resume(struct device *dev)
 	ret = vidc_clk_enable(core);
 	if (ret)
 		goto err_icc;
-
-	/*
-	 * Cold-reset the VCODEC core now that the rail is up and the clocks are
-	 * running, so the RISC boots from a clean state (genpd only cycled the
-	 * AHB slave). This replaces the old keep-resident PM pin.
-	 */
-	vidc_reset_core(core);
 
 	/*
 	 * Re-boot the firmware if a GDSC drop in the previous suspend

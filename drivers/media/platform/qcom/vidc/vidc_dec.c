@@ -721,14 +721,16 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 
 			inst->streamon_out = false;
 			/*
-			 * Drop this session's PM ref synchronously so genpd
-			 * power-collapses VED at last-close, mirroring webOS's
-			 * per-session power-down. The next session's resume
-			 * cold-resets the VCODEC core (vidc_reset_core) and boots
-			 * a clean firmware (cmd=9); collapsing here used to boot
-			 * cmd=51 recovery only because the core reset was missing.
+			 * Drop this session's PM ref. After the first boot the
+			 * driver holds a permanent keep-resident pin (see
+			 * vidc_boot_firmware / fw_pinned), so this never brings the
+			 * usage count to zero and the device stays runtime-active:
+			 * VED is never power-collapsed and the firmware is never
+			 * re-booted. (Forcing a collapse here — tried via
+			 * put_sync — re-triggers the broken genpd cold-reset and
+			 * boots cmd=51 recovery from the 2nd session on.)
 			 */
-			pm_runtime_put_sync(core->dev);
+			pm_runtime_put(core->dev);
 		}
 	} else {
 		while ((vbuf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx)))

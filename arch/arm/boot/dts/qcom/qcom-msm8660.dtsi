@@ -1730,18 +1730,6 @@
 			clock-names = "core", "iface", "axi", "axi_a", "axi_b";
 			power-domains = <&mmcc VED_GDSC>;
 			/*
-			 * VED_GDSC only cycles VCODEC_AHB_RESET on power-on; the
-			 * VCODEC core/RISC and AXI reset lines must be toggled
-			 * explicitly (as the legacy footswitch did) so the core
-			 * comes up cold after a power-collapse instead of warm
-			 * (SW_RESET=0x33 -> firmware recovery mode).
-			 */
-			resets = <&mmcc VCODEC_RESET>,
-				 <&mmcc VCODEC_AXI_RESET>,
-				 <&mmcc VCODEC_AXI_A_RESET>,
-				 <&mmcc VCODEC_AXI_B_RESET>;
-			reset-names = "core", "axi", "axi_a", "axi_b";
-			/*
 			 * IOMMU intentionally omitted: the vidc_1080p.fw
 			 * firmware binary uses physical addresses internally
 			 * (it was built for the webOS kernel which ran the
