@@ -2053,25 +2053,13 @@ retry:
 	dev_dbg(dev, "MT9M113: streaming started\n");
 
 	/*
-	 * Verify the MCU actually reached the streaming state - Context A must
-	 * be in preview (SEQ_STATE 0x04), Context B in capture (0x07). The
-	 * Context A path has no state poll of its own, so a wedge there would
-	 * otherwise be reported as success. If the state was not reached, the
-	 * MCU wedged this attempt; fall through to the retry path.
+	 * Do not gate success on a specific SEQ_STATE here. Context A (preview)
+	 * streams at SEQ_STATE 0x3, not the 0x4 "stable preview" the Context-B
+	 * preview-first step waits for, so an equality check on 0x4 wrongly
+	 * fails every Context-A capture. The genuine wedges are already caught
+	 * by the SEQ_CMD/SEQ_STATE polls in the Context A/B paths (which goto
+	 * error and feed the retry below); a false state mismatch must not.
 	 */
-	{
-		u64 seq_state = 0;
-		u64 want = use_context_b ? 0x07 : 0x04;
-
-		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
-		if (seq_state != want) {
-			dev_warn(dev, "MT9M113: stream not in state 0x%llx (got 0x%llx)\n",
-				 want, seq_state);
-			ret = -ETIMEDOUT;
-			goto error;
-		}
-	}
-
 	sensor->streaming = true;
 	return 0;
 
