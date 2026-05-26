@@ -392,7 +392,7 @@ static int mt9m113_seq_cmd_ready(struct mt9m113 *sensor)
 	 * Wait up to 2 seconds for it to complete. This is longer than
 	 * normal command timeouts to handle recovery scenarios.
 	 */
-	dev_info(&sensor->client->dev,
+	dev_dbg(&sensor->client->dev,
 		 "MT9M113: SEQ_CMD=0x%llx, waiting for idle\n", seq_cmd);
 
 	return mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 2000);
@@ -1219,7 +1219,7 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 	int ret = 0;
 	unsigned int i;
 
-	dev_info(dev, "MT9M113: applying init table (%zu entries)\n",
+	dev_dbg(dev, "MT9M113: applying init table (%zu entries)\n",
 		 ARRAY_SIZE(mt9m113_init_table));
 
 	/*
@@ -1296,7 +1296,7 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 	 * Enabling MIPI here before CSIPHY is configured causes issues.
 	 */
 
-	dev_info(dev, "MT9M113: init complete\n");
+	dev_dbg(dev, "MT9M113: init complete\n");
 	return 0;
 }
 
@@ -1374,7 +1374,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	 * Write 0x0028 directly to STANDBY_CONTROL to ensure MCU is active.
 	 * Give MCU time to wake up (50ms matches webOS driver behavior).
 	 */
-	dev_info(dev, "MT9M113: start_streaming\n");
+	dev_dbg(dev, "MT9M113: start_streaming\n");
 	cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, 0x0028, NULL);
 	sensor->in_standby = false;
 	msleep(50);
@@ -1442,11 +1442,11 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
 	    format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
 		if (!use_context_b)
-			dev_info(dev, "MT9M113: Forcing Context B for RAW Bayer (binning incompatible)\n");
+			dev_dbg(dev, "MT9M113: Forcing Context B for RAW Bayer (binning incompatible)\n");
 		use_context_b = true;
 	}
 
-	dev_info(dev, "MT9M113: %ux%u -> Context %c\n",
+	dev_dbg(dev, "MT9M113: %ux%u -> Context %c\n",
 		 compose->width, compose->height, use_context_b ? 'B' : 'A');
 
 	/*
@@ -1556,7 +1556,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				dev_err(dev, "Failed to set CAM_OUTPUT_FORMAT: %d\n", ret);
 				goto error;
 			}
-			dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x (RAW mode via MCU)\n",
+			dev_dbg(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x (RAW mode via MCU)\n",
 				 info->output_format);
 		}
 
@@ -1565,7 +1565,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		if (ret)
 			dev_warn(dev, "Failed to resume double buffer: %d\n", ret);
 
-		dev_info(dev, "MT9M113: Context %c: %dx%d, format=0x%04x\n",
+		dev_dbg(dev, "MT9M113: Context %c: %dx%d, format=0x%04x\n",
 			 use_context_b ? 'B' : 'A', width_val, height_val, format_val);
 
 		/*
@@ -1602,7 +1602,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			mt9m113_read_mcu_var(sensor, height_reg, &actual_height);
 			mt9m113_read_mcu_var(sensor, read_mode_reg, &read_mode);
 			mt9m113_read_mcu_var(sensor, row_end_reg, &row_end);
-			dev_info(dev, "MT9M113: Readback: %llux%llu read_mode=0x%04llx row_end=%llu\n",
+			dev_dbg(dev, "MT9M113: Readback: %llux%llu read_mode=0x%04llx row_end=%llu\n",
 				 actual_width, actual_height, read_mode, row_end);
 		}
 	}
@@ -1648,7 +1648,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			 * REFRESH prevents the MCU from completing REFRESH
 			 * because it can't process the pipeline it manages.
 			 */
-			dev_info(dev, "MT9M113: MIPI RAW mode (code=0x%04x), OFIFO=0x0080 (Sensor→FIFO)\n",
+			dev_dbg(dev, "MT9M113: MIPI RAW mode (code=0x%04x), OFIFO=0x0080 (Sensor→FIFO)\n",
 				 format->code);
 		} else {
 			output_ctrl_val = MT9M113_OUTPUT_CONTROL_MIPI_ENABLE;
@@ -1665,7 +1665,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 					CCI_REG16(0x3210), 0x01B8, NULL);
 			if (ret)
 				goto error;
-			dev_info(dev, "MT9M113: MIPI YUV mode (code=0x%04x)\n",
+			dev_dbg(dev, "MT9M113: MIPI YUV mode (code=0x%04x)\n",
 				 format->code);
 		}
 	} else {
@@ -1680,7 +1680,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		 * - D[9:0] or D[7:0]: Pixel data (depending on format)
 		 */
 		output_ctrl_val = MT9M113_OUTPUT_CONTROL_PARALLEL;
-		dev_info(dev, "MT9M113: Parallel output mode (code=0x%04x) - UNTESTED\n",
+		dev_dbg(dev, "MT9M113: Parallel output mode (code=0x%04x) - UNTESTED\n",
 			 format->code);
 
 		/* Configure parallel output pad drive strength */
@@ -1752,7 +1752,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_STATE, &seq_state);
 		mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
 		cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &standby_ctrl, NULL);
-		dev_info(dev, "MT9M113: PRE-CMD state: SEQ_STATE=0x%llx SEQ_CMD=0x%llx STANDBY=0x%llx\n",
+		dev_dbg(dev, "MT9M113: PRE-CMD state: SEQ_STATE=0x%llx SEQ_CMD=0x%llx STANDBY=0x%llx\n",
 			 seq_state, seq_cmd, standby_ctrl);
 	}
 
@@ -1782,7 +1782,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				output_ctrl_val, NULL);
 		if (ret)
 			goto error;
-		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+		dev_dbg(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -1795,7 +1795,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			goto error;
 		msleep(40);
 
-		dev_info(dev, "MT9M113: Entering preview mode first (SEQ_CMD_RUN)\n");
+		dev_dbg(dev, "MT9M113: Entering preview mode first (SEQ_CMD_RUN)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_RUN);
 		if (ret)
@@ -1817,7 +1817,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			dev_warn(dev, "MT9M113: Preview state not reached (SEQ_STATE=0x%llx), continuing anyway\n",
 				 seq_state);
 		} else {
-			dev_info(dev, "MT9M113: Reached stable preview (SEQ_STATE=0x04)\n");
+			dev_dbg(dev, "MT9M113: Reached stable preview (SEQ_STATE=0x04)\n");
 		}
 
 		/* Step 3: Now switch to video mode (Context B) */
@@ -1832,7 +1832,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			goto error;
 		}
 
-		dev_info(dev, "MT9M113: Switching to Context B (SEQ_CMD_CAPTURE)\n");
+		dev_dbg(dev, "MT9M113: Switching to Context B (SEQ_CMD_CAPTURE)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_CAPTURE);
 		if (ret)
@@ -1863,7 +1863,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			goto error;
 		}
 
-		dev_info(dev, "MT9M113: Reached capture state (SEQ_STATE=0x07)\n");
+		dev_dbg(dev, "MT9M113: Reached capture state (SEQ_STATE=0x07)\n");
 
 		/*
 		 * Re-write OUTPUT_CONTROL and MODE_OUTPUT_FORMAT after SEQ_CMD completes.
@@ -1906,7 +1906,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 					if (ret)
 						dev_warn(dev, "MT9M113: CAM_OUTPUT_FORMAT re-write failed\n");
 					else
-						dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x re-written (Context B)\n",
+						dev_dbg(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x re-written (Context B)\n",
 							 info->output_format);
 				}
 			}
@@ -1938,7 +1938,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				output_ctrl_val, NULL);
 		if (ret)
 			goto error;
-		dev_info(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+		dev_dbg(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
 		sensor->was_streaming = false;
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
@@ -1951,7 +1951,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 			goto error;
 		msleep(40);
 
-		dev_info(dev, "MT9M113: Writing SEQ_CMD_RUN (0x01)\n");
+		dev_dbg(dev, "MT9M113: Writing SEQ_CMD_RUN (0x01)\n");
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_SEQ_CMD,
 					    MT9M113_SEQ_CMD_RUN);
 		if (ret)
@@ -1968,7 +1968,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				dev_err(dev, "MT9M113: SEQ_CMD poll failed! SEQ_CMD=0x%llx SEQ_STATE=0x%llx STANDBY=0x%llx\n",
 					seq_cmd_final, seq_state_final, standby_final);
 			else
-				dev_info(dev, "MT9M113: SEQ_CMD done, SEQ_STATE=0x%llx STANDBY=0x%llx\n",
+				dev_dbg(dev, "MT9M113: SEQ_CMD done, SEQ_STATE=0x%llx STANDBY=0x%llx\n",
 					 seq_state_final, standby_final);
 		}
 
@@ -2013,7 +2013,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 					if (ret)
 						dev_warn(dev, "MT9M113: CAM_OUTPUT_FORMAT re-write failed\n");
 					else
-						dev_info(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x re-written (Context A)\n",
+						dev_dbg(dev, "MT9M113: CAM_OUTPUT_FORMAT=0x%04x re-written (Context A)\n",
 							 info->output_format);
 
 				}
@@ -2036,10 +2036,10 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		if (ret)
 			dev_warn(dev, "MT9M113: Failed to disable color pipeline\n");
 		else
-			dev_info(dev, "MT9M113: Color pipeline disabled for RAW mode\n");
+			dev_dbg(dev, "MT9M113: Color pipeline disabled for RAW mode\n");
 	}
 
-	dev_info(dev, "MT9M113: streaming started\n");
+	dev_dbg(dev, "MT9M113: streaming started\n");
 
 	sensor->streaming = true;
 	return 0;
@@ -2069,7 +2069,7 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 	if (ret < 0)
 		dev_dbg(dev, "MT9M113: SEQ_CMD did not complete before stop\n");
 
-	dev_info(dev, "MT9M113: streaming stopped\n");
+	dev_dbg(dev, "MT9M113: streaming stopped\n");
 
 	pm_runtime_put_autosuspend(dev);
 	return 0;
@@ -2714,7 +2714,7 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			 * the MCU state and cause REFRESH timeouts.
 			 */
 			if (sensor->test_pattern_active) {
-				dev_info(&sensor->client->dev,
+				dev_dbg(&sensor->client->dev,
 					 "MT9M113: Disabling test pattern, restarting MCU\n");
 				cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE,
 					  0x0000, &ret);
@@ -2736,7 +2736,7 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			 * 3. Hold MCU in boot mode to prevent override
 			 */
 			sensor->test_pattern_active = true;
-			dev_info(&sensor->client->dev,
+			dev_dbg(&sensor->client->dev,
 				 "MT9M113: Enabling test pattern %d\n", ctrl->val);
 			ret = mt9m113_write_mcu_var(sensor,
 						    MT9M113_CAM_MODE_TEST_PATTERN_SELECT,
@@ -2750,7 +2750,7 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 				mt9m113_refresh(sensor);
 			/* Now disable MCU to let test pattern generator run */
 			if (!ret) {
-				dev_info(&sensor->client->dev,
+				dev_dbg(&sensor->client->dev,
 					 "MT9M113: Stopping MCU for test pattern\n");
 				cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE,
 					  0x0001, &ret);
@@ -2839,7 +2839,7 @@ static int mt9m113_power_on(struct mt9m113 *sensor)
 			 */
 			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
 			if (seq_cmd == 0) {
-				dev_info(dev, "MT9M113 already initialized, MCU OK\n");
+				dev_dbg(dev, "MT9M113 already initialized, MCU OK\n");
 				msleep(50);
 				return 0;
 			}
@@ -2979,7 +2979,7 @@ static int mt9m113_identify(struct mt9m113 *sensor)
 		return -ENXIO;
 	}
 
-	dev_info(&sensor->client->dev, "MT9M113 detected (ID 0x%04llx)\n",
+	dev_dbg(&sensor->client->dev, "MT9M113 detected (ID 0x%04llx)\n",
 		 value);
 	return 0;
 }
@@ -3101,7 +3101,7 @@ static int mt9m113_probe(struct i2c_client *client)
 	}
 	sensor->pixrate = sensor->pixrate * 2; /* PLL typically doubles the rate */
 
-	dev_info(dev, "MT9M113: pixel rate %u Hz\n", sensor->pixrate);
+	dev_dbg(dev, "MT9M113: pixel rate %u Hz\n", sensor->pixrate);
 
 	/* Initialize Pixel Array subdev */
 	v4l2_subdev_init(&sensor->pa.sd, &mt9m113_pa_ops);
@@ -3197,7 +3197,7 @@ static int mt9m113_probe(struct i2c_client *client)
 			sensor->link_freq = (s64)sensor->pixrate * 8;
 			frequencies = &sensor->link_freq;
 			nfreqs = 1;
-			dev_info(dev, "MT9M113: using default link freq %lld Hz\n",
+			dev_dbg(dev, "MT9M113: using default link freq %lld Hz\n",
 				 sensor->link_freq);
 		}
 
@@ -3238,7 +3238,7 @@ static int mt9m113_probe(struct i2c_client *client)
 
 	pm_runtime_put_autosuspend(dev);
 
-	dev_info(dev, "MT9M113 driver with IFP sub-device initialized\n");
+	dev_dbg(dev, "MT9M113 driver with IFP sub-device initialized\n");
 	return 0;
 
 error_pm:
