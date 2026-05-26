@@ -2,7 +2,7 @@
 /*
  * mt9m113.c Aptina MT9M113 sensor driver
  *
- * Copyright (c) 2024 Linux Enthusiasts
+ * Copyright (C) 2024 Herman van Hazendonk <github.com@herrie.org>
  *
  * MT9M113 is a 1.3MP SOC sensor with dual context support:
  *   Context A: 640x480 preview mode (binned)

@@ -3,10 +3,11 @@
  * camss-vfe-3-1.c
  *
  * Qualcomm MSM Camera Subsystem - VFE (Video Front End) Module v3.1
+ * (MSM8660/APQ8060 gen1 backend)
  *
- * Copyright (C) 2025 (based on Code Aurora Forum VFE31 driver)
  * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
+ * Copyright (C) 2025 Herman van Hazendonk <github.com@herrie.org>
  */
 
 #include <linux/delay.h>
