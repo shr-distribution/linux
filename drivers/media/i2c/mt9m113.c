@@ -1722,28 +1722,21 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/*
-	 * Single REFRESH to apply configuration changes.
+	 * Do NOT issue a standalone REFRESH/REFRESH_MODE on the mode switch.
+	 * The known-good webOS and the independent Allwinner sun4i mt9m113
+	 * drivers never REFRESH when switching mode: they set SEQ_CAP_MODE then
+	 * SEQ_CMD_RUN/CAPTURE, and that state transition makes the sequencer
+	 * re-read the context (Context A/B) config - including the output
+	 * dimensions/format programmed above. Issuing REFRESH here while the MCU
+	 * is still in the RUN state from a previous session wedges the sequencer
+	 * (SEQ_CMD stuck at REFRESH 0x5 / REFRESH_MODE 0x6, "0xa103 timeout"),
+	 * reproduced on a back-to-back 1280->640 (Context B->A) switch. The
+	 * per-control REFRESH in the s_ctrl handlers is unaffected.
 	 *
-	 * Legacy drivers issue REFRESH at init only, but they never change
-	 * format/dimensions at runtime. Since our driver reconfigures
-	 * output dimensions and format per streaming session, ONE REFRESH
-	 * is needed for the MCU to pick up the new config. Without it,
-	 * SEQ_CMD_RUN hangs (MCU never clears SEQ_CMD back to 0).
-	 *
-	 * Previous code issued up to 5 REFRESH cycles per start which
-	 * caused MCU lockup. One is sufficient and matches the Allwinner
-	 * driver pattern (REFRESH after config, then SEQ_CMD).
+	 * Also do not write OFIFO or the color pipeline (0x3210) before the
+	 * state transition; the MCU manages those and the correct values are
+	 * applied after SEQ_CMD in the RAW/YUV block below.
 	 */
-	/*
-	 * NOTE: Do NOT write OFIFO or color_pipeline (0x3210) before
-	 * REFRESH. These hardware registers are managed by the MCU and
-	 * writing them before REFRESH causes REFRESH_MODE timeout.
-	 * The correct OFIFO/pipeline values are set AFTER REFRESH in
-	 * the RAW vs YUV configuration block below.
-	 */
-	ret = mt9m113_refresh(sensor);
-	if (ret)
-		dev_warn(dev, "MT9M113: REFRESH failed, continuing\n");
 
 	/* Debug: dump MCU state before issuing SEQ_CMD */
 	{
