@@ -92,6 +92,22 @@ module_param(bt_rx_wake, bool, 0644);
 MODULE_PARM_DESC(bt_rx_wake, "Pulse RTS before link-est TX to wake the BT chip RX (default Y)");
 
 /*
+ * BCSP link-establishment "hammer". The CSR BlueCore's UART RX is gated
+ * between its 250 ms SYNC bursts and the FIRST frame after the RX wakes is
+ * lost/corrupted (CSR deep-sleep docs + the known-good CyanogenMod ubcsp stack,
+ * which retransmits every ~2.5 ms — ~40x faster than the chip's SYNC). Sending
+ * our link-est frames once per 250 ms loses that wake window. Instead burst
+ * this many frames (alternating SYNC / SYNC-RSP) per timer tick and re-arm at
+ * the fastest tick (10 ms @ HZ=100), keeping line activity ~continuous so a
+ * clean frame lands while the chip's RX is awake. Sized to stay under the
+ * 115200 TX budget (~115 B / 10 ms). 0 = legacy one-frame-per-250 ms.
+ * Reverts to idle once the link reaches ACTIVE.
+ */
+static int bt_linkest_burst = 6;
+module_param(bt_linkest_burst, int, 0644);
+MODULE_PARM_DESC(bt_linkest_burst, "BCSP link-est frames per fast (10ms) tick (0=legacy 250ms)");
+
+/*
  * Synchronous TX/RFR pin-mux wake glitch, provided by the msm_serial UART
  * driver (the only owner of the BT UART's pinctrl). On the TouchPad this is
  * what wakes the CSR BlueCore's power-gated UART RX. No-op stub elsewhere.
@@ -2252,8 +2268,9 @@ static void bcsp_send_link_pkt(struct bcsp_struct *bcsp, const u8 *data, size_t 
  */
 static void bcsp_timed_event(struct timer_list *t)
 {
-	static const u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
-	static const u8 conf_pkt[4] = { 0xad, 0xef, 0xac, 0xed };
+	static const u8 sync_pkt[4]     = { 0xda, 0xdc, 0xed, 0xed };
+	static const u8 sync_rsp_pkt[4] = { 0xac, 0xaf, 0xef, 0xee };
+	static const u8 conf_pkt[4]     = { 0xad, 0xef, 0xac, 0xed };
 	struct bcsp_struct *bcsp = timer_container_of(bcsp, t, tbcsp);
 	struct hci_uart *hu = bcsp->hu;
 	struct sk_buff *skb;
@@ -2271,21 +2288,34 @@ static void bcsp_timed_event(struct timer_list *t)
 	 * state; never inject sync/conf frames or the chip will reject them.
 	 */
 	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_UNINIT) {
-		BT_DBG("BCSP: timer sending sync (link_state=%d)", bcsp->link_state);
-		bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
+		int n = bt_linkest_burst > 0 ? bt_linkest_burst : 1;
+
+		BT_DBG("BCSP: timer hammering sync/sync-rsp x%d", n);
+		/* Alternate SYNC (so the chip answers us) and SYNC-RSP (so the
+		 * chip advances), back-to-back, to flood the chip's wake window. */
+		while (n-- > 0) {
+			bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
+			if (n-- > 0)
+				bcsp_send_link_pkt(bcsp, sync_rsp_pkt,
+						   sizeof(sync_rsp_pkt));
+		}
 	}
 
 	/* Send conf packets in INIT state */
 	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_INIT) {
-		BT_DBG("BCSP: timer sending conf (link_state=%d)", bcsp->link_state);
-		bcsp_send_link_pkt(bcsp, conf_pkt, sizeof(conf_pkt));
+		int n = bt_linkest_burst > 0 ? bt_linkest_burst : 1;
+
+		BT_DBG("BCSP: timer hammering conf x%d", n);
+		while (n-- > 0)
+			bcsp_send_link_pkt(bcsp, conf_pkt, sizeof(conf_pkt));
 	}
 
-	/* Re-arm timer if link not yet active */
+	/* Re-arm timer if link not yet active — fast tick while hammering. */
 	BT_DBG("BCSP: timer check link_state=%d (ACTIVE=%d)",
 	       bcsp->link_state, BCSP_LINK_ACTIVE);
 	if (bcsp->link_state != BCSP_LINK_ACTIVE) {
-		mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
+		mod_timer(&bcsp->tbcsp,
+			  jiffies + (bt_linkest_burst > 0 ? 1 : HZ / 4));
 		BT_DBG("BCSP: timer re-armed");
 	}
 
@@ -2678,8 +2708,9 @@ static int bcsp_open(struct hci_uart *hu)
 			BT_INFO("BCSP: Sent initial sync to wake chip");
 		}
 
-		/* Start timer for retransmissions and conf sending */
-		mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
+		/* Start timer for link-est hammer / retransmission (fast tick). */
+		mod_timer(&bcsp->tbcsp,
+			  jiffies + (bt_linkest_burst > 0 ? 1 : HZ / 4));
 	}
 
 	/*
