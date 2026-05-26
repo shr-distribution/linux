@@ -837,21 +837,23 @@ struct vidc_inst {
 	 *   dpb_inited         - true once RESP_INIT_BUFFERS has acked
 	 */
 	/*
-	 * Decoder DPB: allocated PER SLOT (not one contiguous block). The SMI
-	 * pool is a no-map coherent region whose allocator rounds each request
-	 * up to a power-of-2 page block, so a single slot_size*count allocation
-	 * wastes hugely at high resolution (1080p ~33 MB rounds to 64 MB, over
-	 * the 61 MB pool). Per-slot allocs round to ~4 MB each and pack. Each
-	 * slot's address is programmed into its own DPB_LUMA[i] register.
+	 * Decoder DPB = the CAPTURE buffers (zero-copy, like s5p-mfc v5). The
+	 * firmware decodes the Y/C frame directly into the vb2 CAPTURE buffer
+	 * whose dma address we program into DPB_LUMA[i]/DPB_CHROMA[i]; on display
+	 * we hand that exact buffer back (no memcpy). dpb_cap_dma[] holds each
+	 * slot's CAPTURE-buffer bus address (slot index == vb2 buffer index).
+	 * Per-slot motion-vector buffers cannot live in the CAPTURE buffer (Y+C
+	 * only), so they come from a small internal SMI pool (dpb_mv_*).
 	 * (dpb_y_vaddr/dma_addr/alloc_size are reused by the ENCODER recon pool,
 	 * which is a single block — see vidc_init_enc_buffers.)
 	 */
 	void *dpb_y_vaddr;
 	dma_addr_t dpb_y_dma_addr;
 	size_t dpb_y_alloc_size;
-	void *dpb_slot_vaddr[VIDC_DPB_REG_SLOTS];
-	dma_addr_t dpb_slot_dma[VIDC_DPB_REG_SLOTS];
-	u32 dpb_slot_size;
+	dma_addr_t dpb_cap_dma[VIDC_DPB_REG_SLOTS];	/* CAPTURE buf per slot */
+	void *dpb_mv_vaddr;				/* internal MV pool */
+	dma_addr_t dpb_mv_dma_addr;
+	size_t dpb_mv_alloc_size;
 	u32 dpb_y_size;
 	u32 dpb_c_size;
 	u32 dpb_mv_size;
@@ -969,8 +971,8 @@ void vidc_free_buffers(struct vidc_inst *inst);
 int vidc_apply_dec_codec_config(struct vidc_inst *inst);
 int vidc_apply_enc_codec_config(struct vidc_inst *inst);
 int vidc_flush_channel(struct vidc_inst *inst, u32 flush_type);
-int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
-			 size_t dst_size, size_t *out_payload);
+int vidc_lookup_dpb_slot(struct vidc_inst *inst, u32 *out_slot,
+			 size_t *out_payload);
 
 /* Hardware access */
 static inline u32 vidc_read(struct vidc_core *core, u32 reg)

@@ -1793,19 +1793,20 @@ static u32 vidc_dpb_calc_mv_size(u32 width, u32 height)
  * On any failure the entire allocation is unwound — partial state
  * would leave the firmware confused about how many DPB slots exist.
  */
-/* Free the per-slot decoder DPB allocations. */
-static void vidc_free_dpb_slots(struct vidc_inst *inst)
+/*
+ * Free the internal decoder MV pool. The DPB Y/C frames are the CAPTURE
+ * buffers (owned by vb2), so there is nothing else to free here.
+ */
+static void vidc_free_dpb_mv(struct vidc_inst *inst)
 {
 	struct vidc_core *core = inst->core;
-	u32 i;
 
-	for (i = 0; i < VIDC_DPB_REG_SLOTS; i++) {
-		if (!inst->dpb_slot_vaddr[i])
-			continue;
-		dma_free_coherent(core->dev, inst->dpb_slot_size,
-				  inst->dpb_slot_vaddr[i], inst->dpb_slot_dma[i]);
-		inst->dpb_slot_vaddr[i] = NULL;
-		inst->dpb_slot_dma[i] = 0;
+	if (inst->dpb_mv_vaddr) {
+		dma_free_coherent(core->dev, inst->dpb_mv_alloc_size,
+				  inst->dpb_mv_vaddr, inst->dpb_mv_dma_addr);
+		inst->dpb_mv_vaddr = NULL;
+		inst->dpb_mv_dma_addr = 0;
+		inst->dpb_mv_alloc_size = 0;
 	}
 }
 
@@ -1814,9 +1815,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	struct vidc_core *core = inst->core;
 	unsigned long flags;
 	u32 i;
-	u32 y_size, c_size, mv_size, slot_size, total_size;
-	dma_addr_t slot_base;
-	u32 fw_relative;
+	u32 y_size, c_size, mv_size, mv_slot, total_size;
 	int ret;
 
 	if (inst->dpb_inited)
@@ -1843,85 +1842,48 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	}
 
 	/*
-	 * Program min_dpb + headroom, matching legacy: the DDL always sizes
-	 * the decoded-picture buffer at the firmware-reported minimum plus
-	 * at least 4 extra slots (ddl actual_output_buf_req = min_dpb + 4).
-	 * The minimum alone leaves no slot to decode into while earlier
-	 * frames await display, so reorder/B-frame streams stall or recycle
-	 * a slot still pending display (reference corruption).
+	 * The DPB Y/C frames ARE the CAPTURE buffers (zero-copy). dpb_count and
+	 * inst->dpb_cap_dma[] were populated by the CAPTURE start_streaming from
+	 * the queued vb2 buffers. Here we only size the planes and allocate the
+	 * internal per-slot MV pool (the CAPTURE buffer is Y+C only).
 	 */
-	{
-		u32 min_count = inst->min_dpb_count ? inst->min_dpb_count : 4;
+	vidc_dpb_calc_sizes(inst->seq_width, inst->seq_height, &y_size, &c_size);
+	mv_size = (inst->codec == VIDC_CODEC_H264_DEC) ?
+		  vidc_dpb_calc_mv_size(inst->seq_width, inst->seq_height) : 0;
+	inst->dpb_y_size = y_size;
+	inst->dpb_c_size = c_size;
+	inst->dpb_mv_size = mv_size;
 
-		inst->dpb_count = min_count + 4;
-		if (inst->dpb_count > VIDC_DPB_REG_SLOTS)
-			inst->dpb_count = VIDC_DPB_REG_SLOTS;
-
-		vidc_dpb_calc_sizes(inst->seq_width, inst->seq_height,
-				    &y_size, &c_size);
-		mv_size = (inst->codec == VIDC_CODEC_H264_DEC) ?
-			  vidc_dpb_calc_mv_size(inst->seq_width,
-						inst->seq_height) : 0;
-
-		inst->dpb_y_size = y_size;
-		inst->dpb_c_size = c_size;
-		inst->dpb_mv_size = mv_size;
-
-		slot_size = ALIGN(y_size + c_size + mv_size, SZ_4K);
-		inst->dpb_slot_size = slot_size;
-
-		/*
-		 * Allocate each DPB slot individually rather than as one
-		 * slot_size*count block. The SMI pool is a no-map coherent region
-		 * whose allocator rounds every request up to a power-of-2 page
-		 * block, so one big allocation wastes enormously at high
-		 * resolution (1080p: ~33 MB rounds to 64 MB, over the 61 MB pool,
-		 * and the smaller fallbacks round to 32 MB and can't fit). Per-slot
-		 * allocs round to ~4 MB each and pack into the pool; the firmware
-		 * consumes a separate address per slot anyway (DPB_LUMA[i]). If we
-		 * cannot get the full count, keep what we have as long as it meets
-		 * the firmware-reported minimum (needed for correct reorder).
-		 */
-		for (i = 0; i < inst->dpb_count; i++) {
-			inst->dpb_slot_vaddr[i] = dma_alloc_coherent(core->dev,
-					slot_size, &inst->dpb_slot_dma[i],
-					GFP_KERNEL);
-			if (!inst->dpb_slot_vaddr[i])
-				break;
-			/* Each slot is addressed as a positive offset from the
-			 * firmware base; the register field is unsigned.
-			 */
-			if (inst->dpb_slot_dma[i] < core->fw_dma_addr) {
-				dev_err(core->dev,
-					"DPB slot %u below firmware base (%pad < %pad)\n",
-					i, &inst->dpb_slot_dma[i],
-					&core->fw_dma_addr);
-				dma_free_coherent(core->dev, slot_size,
-						  inst->dpb_slot_vaddr[i],
-						  inst->dpb_slot_dma[i]);
-				inst->dpb_slot_vaddr[i] = NULL;
-				break;
-			}
-		}
-		if (i < inst->dpb_count) {
-			if (i < min_count) {
-				dev_err(core->dev,
-					"DPB alloc failed at slot %u/%u (%u bytes each, need >= %u)\n",
-					i, inst->dpb_count, slot_size, min_count);
-				vidc_free_dpb_slots(inst);
-				return -ENOMEM;
-			}
-			dev_warn(core->dev,
-				 "DPB: got %u of %u slots (pool pressure), proceeding\n",
-				 i, inst->dpb_count);
-			inst->dpb_count = i;
-		}
-		total_size = slot_size * inst->dpb_count;
-		dev_info(core->dev, "DPB pool: %u per-slot allocs × %u bytes = %u\n",
-			 inst->dpb_count, slot_size, total_size);
+	if (!inst->dpb_count || inst->dpb_count > VIDC_DPB_REG_SLOTS) {
+		dev_err(core->dev, "vidc_init_buffers: bad dpb_count %u\n",
+			inst->dpb_count);
+		return -EINVAL;
 	}
 
-	/* (each slot's address was range-checked against fw_dma_addr above) */
+	/*
+	 * Internal MV pool: one coherent SMI allocation carved into dpb_count
+	 * per-slot motion-vector buffers (s5p-mfc "bank2" model). Small (1080p
+	 * ~9 x 0.5 MB), so a single block is fine.
+	 */
+	mv_slot = ALIGN(mv_size, SZ_4K);
+	if (mv_size) {
+		inst->dpb_mv_alloc_size = (size_t)mv_slot * inst->dpb_count;
+		inst->dpb_mv_vaddr = dma_alloc_coherent(core->dev,
+				inst->dpb_mv_alloc_size, &inst->dpb_mv_dma_addr,
+				GFP_KERNEL);
+		if (!inst->dpb_mv_vaddr) {
+			dev_err(core->dev, "DPB MV pool alloc failed (%zu bytes)\n",
+				inst->dpb_mv_alloc_size);
+			inst->dpb_mv_alloc_size = 0;
+			return -ENOMEM;
+		}
+		if (inst->dpb_mv_dma_addr < core->fw_dma_addr) {
+			dev_err(core->dev, "MV pool below firmware base\n");
+			vidc_free_dpb_mv(inst);
+			return -ERANGE;
+		}
+	}
+	total_size = (y_size + c_size) * inst->dpb_count;
 
 	/*
 	 * webOS register-write order in vidc_1080p_set_h264_decode_buffers:
@@ -1970,25 +1932,41 @@ int vidc_init_buffers(struct vidc_inst *inst)
 			 &inst->h264_nb_ip_dma_addr);
 	}
 
-	/* Program DPB register slots — after H264 work bufs, matching webOS */
+	/*
+	 * Program DPB register slots — after H264 work bufs, matching webOS.
+	 * LUMA/CHROMA point at the CAPTURE buffer (Y at offset 0, C at y_size);
+	 * MV points into the internal MV pool. All fw-relative (>>11).
+	 */
 	for (i = 0; i < inst->dpb_count; i++) {
-		slot_base = inst->dpb_slot_dma[i];
-		fw_relative = slot_base - core->fw_dma_addr;
+		dma_addr_t cap = inst->dpb_cap_dma[i];
+		u32 luma_off;
+
+		if (!cap || cap < core->fw_dma_addr) {
+			dev_err(core->dev,
+				"DPB slot %u: bad CAPTURE addr %pad (fw base %pad)\n",
+				i, &cap, &core->fw_dma_addr);
+			ret = -ERANGE;
+			goto err_free_dma;
+		}
+		luma_off = cap - core->fw_dma_addr;
 
 		vidc_write(core, VIDC_REG_DPB_LUMA_BASE + i * 4,
-			   fw_relative >> VIDC_ADDR_SHIFT);
+			   luma_off >> VIDC_ADDR_SHIFT);
 		vidc_write(core, VIDC_REG_DPB_CHROMA_BASE + i * 4,
-			   (fw_relative + y_size) >> VIDC_ADDR_SHIFT);
-		if (mv_size)
+			   (luma_off + y_size) >> VIDC_ADDR_SHIFT);
+		if (mv_size) {
+			u32 mv_off = (inst->dpb_mv_dma_addr + i * mv_slot)
+				     - core->fw_dma_addr;
+
 			vidc_write(core, VIDC_REG_DPB_MV_BASE + i * 4,
-				   (fw_relative + y_size + c_size)
-				    >> VIDC_ADDR_SHIFT);
+				   mv_off >> VIDC_ADDR_SHIFT);
+		}
 	}
 
 	dev_info(core->dev,
-		 "DPB pool: %u slots × (y=%u c=%u mv=%u), total %u bytes, slot0 %pad\n",
+		 "DPB: %u CAPTURE slots (y=%u c=%u mv=%u), %u Y+C bytes, slot0 %pad\n",
 		 inst->dpb_count, y_size, c_size, mv_size, total_size,
-		 &inst->dpb_slot_dma[0]);
+		 &inst->dpb_cap_dma[0]);
 
 	/*
 	 * Publish the per-slot buffer sizes via the shared-memory region.
@@ -2133,107 +2111,52 @@ err_free_vert_nb_mv:
 		inst->h264_vert_nb_mv_vaddr = NULL;
 		inst->h264_vert_nb_mv_dma_addr = 0;
 	}
-	vidc_free_dpb_slots(inst);
+	vidc_free_dpb_mv(inst);
 	return ret;
 }
 
 /*
- * Copy a displayed DPB slot to the userspace CAPTURE buffer.
+ * Map a firmware-displayed DPB frame back to its CAPTURE buffer (zero-copy).
  *
- * After a successful FRAME_DONE, the firmware has filled one of our
- * internal DPB slots with the decoded frame (tile-NV12 layout). The
- * IRQ handler captured the slot's fw-relative offset into
- * inst->display_y_raw (luma) and inst->display_c_raw (chroma), both
- * encoded as offset_from_fw_dma_addr >> VIDC_ADDR_SHIFT.
- *
- * Reverse that encoding to find which DPB slot vaddr to read from,
- * then memcpy Y then C into the dst buffer. The data we copy is in
- * tile-NV12 layout — userspace consumers expecting linear NV12 need
- * to detile (or we expose V4L2_PIX_FMT_NV12MT, a follow-up).
- *
- * out_payload receives the byte count actually written (y_size + c_size).
+ * The CAPTURE buffers ARE the DPB: the firmware decoded the displayed frame
+ * directly into one of them. On FRAME_DONE the IRQ handler captured the
+ * displayed luma address into inst->display_y_raw (absolute phys >> 11, per
+ * webOS vcd_ddl_interrupt_handler.c:906). Match it against dpb_cap_dma[] to
+ * find the slot index (== vb2 CAPTURE buffer index); the caller then
+ * vb2_buffer_done()s that exact buffer. *out_payload = y_size + c_size.
  */
-int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
-			 size_t dst_size, size_t *out_payload)
+int vidc_lookup_dpb_slot(struct vidc_inst *inst, u32 *out_slot,
+			 size_t *out_payload)
 {
 	struct vidc_core *core = inst->core;
-	u32 y_offset, c_offset, slot_size, slot_idx;
-	size_t y_size, c_size, frame_size;
-	void *slot_y, *slot_c;
-	dma_addr_t slot_phys;
+	dma_addr_t disp_phys;
+	u32 slot_idx;
 
-	if (!inst->dpb_inited || !inst->dpb_slot_vaddr[0]) {
-		dev_err(core->dev, "copy_dpb_to_dst: DPB not initialised\n");
+	if (!inst->dpb_inited) {
+		dev_err(core->dev, "lookup_dpb_slot: DPB not initialised\n");
 		return -EINVAL;
 	}
 
-	/*
-	 * The firmware writes the ABSOLUTE physical address (>> 11) into
-	 * VIDC_REG_DEC_DISPLAY_Y / DISPLAY_C, NOT a fw-relative offset.
-	 * webOS confirms this in vcd_ddl_interrupt_handler.c:906 where it
-	 * uses (display_y_addr << 11) directly as the buffer physical.
-	 * Programming the DPB took a fw-relative offset (slot - DRAM_BASE)
-	 * but the FRAME_DONE response is absolute — the firmware internally
-	 * re-adds DRAM_BASE before writing the address back.
-	 */
-	y_offset = inst->display_y_raw << VIDC_ADDR_SHIFT;
-	c_offset = inst->display_c_raw << VIDC_ADDR_SHIFT;
-	y_size = inst->dpb_y_size;
-	c_size = inst->dpb_c_size;
-	frame_size = y_size + c_size;
-
-	if (dst_size < frame_size) {
-		dev_err(core->dev,
-			"dst buffer too small: %zu < %zu\n",
-			dst_size, frame_size);
-		return -ENOSPC;
-	}
-
-	/*
-	 * Find which per-slot DPB allocation the firmware's display address
-	 * falls in (slots are no longer one contiguous block, so search the
-	 * per-slot bus addresses rather than computing an index).
-	 */
-	slot_size = inst->dpb_slot_size;
-	slot_phys = y_offset;
+	disp_phys = (dma_addr_t)inst->display_y_raw << VIDC_ADDR_SHIFT;
 
 	for (slot_idx = 0; slot_idx < inst->dpb_count; slot_idx++) {
-		if (slot_phys >= inst->dpb_slot_dma[slot_idx] &&
-		    slot_phys < inst->dpb_slot_dma[slot_idx] + slot_size)
+		if (inst->dpb_cap_dma[slot_idx] == disp_phys)
 			break;
 	}
 	if (slot_idx >= inst->dpb_count) {
 		dev_err(core->dev,
-			"display Y phys %pad not in any DPB slot\n",
-			&slot_phys);
+			"display Y phys %pad matches no CAPTURE/DPB slot\n",
+			&disp_phys);
 		return -EFAULT;
 	}
 
-	slot_y = inst->dpb_slot_vaddr[slot_idx] +
-		 (slot_phys - inst->dpb_slot_dma[slot_idx]);
-	slot_c = slot_y + y_size;
-
-	/*
-	 * Sanity-check the chroma offset matches the slot we picked.
-	 * Both luma and chroma are absolute physical addresses; chroma sits
-	 * immediately after luma within the same DPB slot.
-	 */
-	if (c_offset != y_offset + y_size) {
-		dev_warn(core->dev,
-			 "luma/chroma offset mismatch: y=0x%x c=0x%x (expected c=0x%x)\n",
-			 y_offset, c_offset, y_offset + (u32)y_size);
-	}
-
-	memcpy(dst_vaddr, slot_y, y_size);
-	memcpy(dst_vaddr + y_size, slot_c, c_size);
-
+	if (out_slot)
+		*out_slot = slot_idx;
 	if (out_payload)
-		*out_payload = frame_size;
+		*out_payload = (size_t)inst->dpb_y_size + inst->dpb_c_size;
 
-	dev_dbg(core->dev,
-		 "copy_dpb_to_dst: slot=%u y=%zu c=%zu total=%zu\n",
-		 slot_idx, y_size, c_size, frame_size);
-
+	dev_dbg(core->dev, "display slot=%u (CAPTURE buf %u)\n",
+		slot_idx, slot_idx);
 	return 0;
 }
 
@@ -2892,7 +2815,7 @@ void vidc_free_buffers(struct vidc_inst *inst)
 	struct vidc_core *core = inst->core;
 	u32 i;
 
-	if (!inst->dpb_y_vaddr && !inst->dpb_slot_vaddr[0])
+	if (!inst->dpb_y_vaddr && !inst->dpb_mv_vaddr && !inst->dpb_inited)
 		return;
 
 	/*
@@ -2934,8 +2857,12 @@ void vidc_free_buffers(struct vidc_inst *inst)
 		inst->h264_vert_nb_mv_dma_addr = 0;
 	}
 
-	/* Decoder: per-slot DPB allocations. Encoder: single recon block. */
-	vidc_free_dpb_slots(inst);
+	/*
+	 * Decoder: only the internal MV pool is ours (the DPB Y/C frames are
+	 * the CAPTURE buffers, freed by vb2). Encoder: single recon block.
+	 */
+	vidc_free_dpb_mv(inst);
+	memset(inst->dpb_cap_dma, 0, sizeof(inst->dpb_cap_dma));
 	if (inst->dpb_y_vaddr) {
 		dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
 				  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
@@ -2943,7 +2870,6 @@ void vidc_free_buffers(struct vidc_inst *inst)
 		inst->dpb_y_dma_addr = 0;
 		inst->dpb_y_alloc_size = 0;
 	}
-	inst->dpb_slot_size = 0;
 	inst->dpb_count = 0;
 	inst->dpb_y_size = 0;
 	inst->dpb_c_size = 0;

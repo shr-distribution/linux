@@ -139,15 +139,12 @@ static u32 vidc_dec_get_framesize(u32 pixfmt, u32 width, u32 height)
 		 * DDL_TILE_MULTIPLY_FACTOR (8192) — the same formula as
 		 * vidc_dpb_calc_sizes()/ddl_get_yuv_buf_size().
 		 *
-		 * The 8192 alignment is NOT optional: copy_dpb_to_dst() copies
-		 * y_size + c_size from the DPB slot (which ARE 8192-aligned)
-		 * into this CAPTURE buffer.  Omitting the alignment here made
-		 * the CAPTURE sizeimage too small whenever stride*height was
-		 * not already a multiple of 8192 (e.g. 640x480: 471040 vs the
-		 * 475136 actually copied), overflowing the vb2 buffer by 4 KB
-		 * so every frame came back flagged ERROR with payload 0.
-		 * 320x240 happened to be exact (147456) which is why only
-		 * higher resolutions broke.
+		 * The 8192 alignment is NOT optional: the CAPTURE buffer IS the
+		 * DPB slot the firmware decodes into, so it must be exactly the
+		 * 8192-aligned y_size + c_size (== vidc_dpb_calc_sizes()).
+		 * Omitting the alignment made the buffer too small whenever
+		 * stride*height was not already a multiple of 8192 (e.g. 640x480:
+		 * 471040 vs 475136), and the firmware would write past it.
 		 */
 		y_stride = ALIGN(width, 128);
 		uv_stride = y_stride;
@@ -552,10 +549,19 @@ static int vidc_dec_queue_setup(struct vb2_queue *q,
 	*num_planes = 1;
 	sizes[0] = size;
 
-	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
+	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		*num_buffers = max(*num_buffers, 4U);
-	else
-		*num_buffers = max(*num_buffers, 8U);
+	} else {
+		/*
+		 * CAPTURE buffers ARE the DPB, so we need at least the firmware
+		 * minimum plus reorder/display headroom, capped at the DPB
+		 * register slots.
+		 */
+		u32 floor = (inst->min_dpb_count ? inst->min_dpb_count : 4) + 4;
+
+		*num_buffers = clamp(*num_buffers, floor,
+				     (u32)VIDC_DPB_REG_SLOTS);
+	}
 
 	return 0;
 }
@@ -660,6 +666,38 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 		}
 	} else {
 		if (!inst->streamon_cap) {
+			u32 i, n = 0;
+
+			/*
+			 * CAPTURE buffers ARE the DPB. Their bus addresses are
+			 * only known now (REQBUF'd/QBUF'd in response to
+			 * SOURCE_CHANGE), so record them and program the firmware
+			 * DPB + INIT_BUFFERS here (deferred from SEQ_DONE).
+			 */
+			for (i = 0; i < VIDC_DPB_REG_SLOTS; i++) {
+				struct vb2_buffer *vb = vb2_get_buffer(q, i);
+
+				if (!vb)
+					break;
+				inst->dpb_cap_dma[i] =
+					vb2_dma_contig_plane_dma_addr(vb, 0);
+				n++;
+			}
+			if (n < (inst->min_dpb_count ? inst->min_dpb_count : 1)) {
+				dev_err(core->dev,
+					"CAPTURE count %u < firmware min_dpb %u\n",
+					n, inst->min_dpb_count);
+				return -EINVAL;
+			}
+			inst->dpb_count = n;
+
+			ret = vidc_init_buffers(inst);
+			if (ret) {
+				dev_err(core->dev,
+					"DPB init failed: %d\n", ret);
+				return ret;
+			}
+
 			inst->streamon_cap = true;
 			inst->sequence_cap = 0;
 		}
@@ -752,6 +790,17 @@ static void vidc_dec_buf_queue(struct vb2_buffer *vb)
 		inst->streamon_out);
 
 	v4l2_m2m_buf_queue(inst->m2m_ctx, vbuf);
+
+	/*
+	 * Re-queued CAPTURE buffer: userspace finished displaying this DPB
+	 * slot, so return it to the firmware DPB pool. The next FRAME_DATA's
+	 * CH0_DPB_RELEASE = dpb_hw_mask write hands it back to the firmware
+	 * (matches webOS ddl MARK_FREE). Only meaningful once streaming (the
+	 * initial QBUFs are folded into the all-free mask at INIT_BUFFERS).
+	 */
+	if (vb->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
+	    inst->dpb_inited && vb->index < VIDC_DPB_REG_SLOTS)
+		inst->dpb_hw_mask |= (1u << vb->index);
 
 	/*
 	 * Stateful decode: the M2M scheduler only calls device_run when
@@ -957,15 +1006,18 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		 * [i].vcd_frm.physical).
 		 */
 		{
-			u32 slot_size = inst->dpb_y_alloc_size / inst->dpb_count;
 			u32 fw, slot_count = min_t(u32, inst->dpb_count,
 						   VIDC_PIX_CACHE_MAX_DPB);
 			u32 frame_size, frame_range;
 			u32 i;
 
 			for (i = 0; i < slot_count; i++) {
-				u32 slot_phys = inst->dpb_y_dma_addr +
-						i * slot_size;
+				/* Pixel-cache luma base = the CAPTURE buffer
+				 * (the DPB slot) the firmware decodes into,
+				 * ABSOLUTE physical (matches webOS).
+				 */
+				u32 slot_phys = inst->dpb_cap_dma[i];
+
 				vidc_write(core,
 					   VIDC_REG_PIX_CACHE_LUMA_BASE + i * 4,
 					   slot_phys);
@@ -1238,40 +1290,16 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 	if (inst->ctrl_min_cap && inst->min_dpb_count)
 		v4l2_ctrl_s_ctrl(inst->ctrl_min_cap, inst->min_dpb_count);
 
-	dev_info(core->dev,
-		 "Sequence parsed: %ux%u, min_dpb=%u — initialising DPB\n",
-		 inst->seq_width, inst->seq_height, inst->min_dpb_count);
-
-	dpb_ret = vidc_init_buffers(inst);
-	if (dpb_ret)
-		dev_err(core->dev,
-			"DPB init failed: %d (channel unrecoverable)\n",
-			dpb_ret);
-
 	/*
-	 * Sentinel write: fill every DPB slot's Y/UV with 0xCC before any
-	 * FRAME_DATA is submitted.  If the firmware actually decodes into
-	 * the slots, the subsequent FRAME_DONE readback will show real
-	 * pixel data, NOT 0xCC.  If 0xCC is still there, the firmware
-	 * never wrote (it's processing FRAME_DATA but writing to a
-	 * different memory than our DPB slots).
+	 * DPB is NOT allocated here. The CAPTURE buffers ARE the DPB, so the
+	 * DPB registers + INIT_BUFFERS are programmed later, in CAPTURE
+	 * start_streaming, once userspace has REQBUF'd/QBUF'd them in response
+	 * to this SOURCE_CHANGE. Just publish the geometry and notify userspace.
 	 */
-	if (!dpb_ret && inst->dpb_y_vaddr) {
-		size_t total = inst->dpb_y_alloc_size;
-		memset(inst->dpb_y_vaddr, 0xcc, total);
-		if (inst->h264_vert_nb_mv_vaddr)
-			memset(inst->h264_vert_nb_mv_vaddr, 0xcc,
-			       VIDC_H264_VERT_NB_MV_SIZE);
-		if (inst->h264_nb_ip_vaddr)
-			memset(inst->h264_nb_ip_vaddr, 0xcc,
-			       VIDC_H264_NB_IP_SIZE);
-		wmb();
-		dev_dbg(core->dev,
-			 "SMIPOOL sentinel: filled %zu+%u+%u bytes (DPB+vert_nb_mv+nb_ip) with 0xCC\n",
-			 total,
-			 VIDC_H264_VERT_NB_MV_SIZE,
-			 VIDC_H264_NB_IP_SIZE);
-	}
+	dpb_ret = 0;
+	dev_info(core->dev,
+		 "Sequence parsed: %ux%u, min_dpb=%u — awaiting CAPTURE setup\n",
+		 inst->seq_width, inst->seq_height, inst->min_dpb_count);
 
 	v4l2_event_queue_fh(&inst->fh, &ev);
 
@@ -1317,36 +1345,42 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
  * the m2m job so the worker can pick up the next queued pair.
  */
 /*
- * Helper: copy from the firmware-indicated DPB slot to dst, mark
- * dst DONE with the resulting payload, and return error code.
- * Caller already removed dst from the m2m queue.
+ * Helper: hand back the CAPTURE buffer the firmware just displayed (zero-copy).
+ *
+ * The CAPTURE buffers ARE the DPB, so the firmware decoded the displayed frame
+ * directly into one of them. Map the firmware's display address to the DPB slot
+ * (== CAPTURE buffer index), remove THAT specific buffer from the m2m queue
+ * (display order != queue order under B-frame reorder), drop the slot from the
+ * firmware DPB mask, restore the input timestamp, and mark it DONE. No memcpy.
  */
-static int vidc_dec_emit_dpb(struct vidc_inst *inst,
-			     struct vb2_v4l2_buffer *dst_buf)
+static int vidc_dec_emit_dpb(struct vidc_inst *inst)
 {
 	struct vidc_core *core = inst->core;
-	u8 *dst_vaddr = vb2_plane_vaddr(&dst_buf->vb2_buf, 0);
-	size_t dst_size = vb2_plane_size(&dst_buf->vb2_buf, 0);
+	struct vb2_v4l2_buffer *dst_buf;
 	size_t payload = 0;
-	int copy_ret;
+	u32 slot;
+	int ret;
 
-	copy_ret = vidc_copy_dpb_to_dst(inst, dst_vaddr, dst_size, &payload);
-	if (copy_ret) {
-		dev_err(core->dev, "DPB->dst copy failed: %d\n", copy_ret);
-		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
-		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
-	} else {
-		/*
-		 * Restore the input timestamp for this displayed frame from
-		 * the tag the firmware echoed (output order != input order).
-		 */
-		dst_buf->vb2_buf.timestamp =
-			inst->frame_tag_ts[inst->display_frame_tag %
-					   VIDC_DPB_REG_SLOTS];
-		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
-		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+	ret = vidc_lookup_dpb_slot(inst, &slot, &payload);
+	if (ret)
+		return ret;
+
+	dst_buf = v4l2_m2m_dst_buf_remove_by_idx(inst->m2m_ctx, slot);
+	if (!dst_buf) {
+		dev_err(core->dev,
+			"display slot %u not in CAPTURE queue\n", slot);
+		return -EFAULT;
 	}
-	return copy_ret;
+
+	/* Now owned by userspace — remove from the firmware DPB pool. */
+	inst->dpb_hw_mask &= ~(1u << slot);
+
+	dst_buf->sequence = inst->sequence_cap++;
+	dst_buf->vb2_buf.timestamp =
+		inst->frame_tag_ts[inst->display_frame_tag % VIDC_DPB_REG_SLOTS];
+	vb2_set_plane_payload(&dst_buf->vb2_buf, 0, payload);
+	v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+	return 0;
 }
 
 static void vidc_dec_frame_done_work(struct work_struct *w)
@@ -1414,24 +1448,25 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 		break;
 
 	case VIDC_DISPLAY_STATUS_DISPLAY_ONLY:
-		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
-		if (dst_buf) {
-			dst_buf->sequence = inst->sequence_cap++;
-			vidc_dec_emit_dpb(inst, dst_buf);
-		}
+		vidc_dec_emit_dpb(inst);
 		break;
 
 	case VIDC_DISPLAY_STATUS_DPB_EMPTY:
 		/* Drain finished — no more held frames. */
 		inst->draining = false;
 		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
-		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
 		if (src_buf) {
 			src_buf->sequence = inst->sequence_out++;
 			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
 		}
+		/*
+		 * No decoded frame here — take any remaining queued CAPTURE
+		 * buffer (head) as the empty end-of-stream marker.
+		 */
+		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
 		if (dst_buf) {
 			dst_buf->sequence = inst->sequence_cap++;
+			inst->dpb_hw_mask &= ~(1u << dst_buf->vb2_buf.index);
 			dst_buf->flags |= V4L2_BUF_FLAG_LAST;
 			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
 			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
@@ -1458,28 +1493,19 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 		 * pair). Otherwise both buffers are required.
 		 */
 		if (inst->draining) {
-			dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
-			if (dst_buf) {
-				dst_buf->sequence = inst->sequence_cap++;
-				vidc_dec_emit_dpb(inst, dst_buf);
-			}
+			vidc_dec_emit_dpb(inst);
 			break;
 		}
 
 		src_buf = v4l2_m2m_src_buf_remove(inst->m2m_ctx);
-		dst_buf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx);
-
-		if (!src_buf || !dst_buf) {
+		if (!src_buf) {
 			dev_warn(core->dev,
-				 "frame_done_work: missing buffer (src=%p dst=%p)\n",
-				 src_buf, dst_buf);
+				 "frame_done_work: missing src buffer\n");
 			break;
 		}
-
 		src_buf->sequence = inst->sequence_out++;
-		dst_buf->sequence = inst->sequence_cap++;
 
-		if (vidc_dec_emit_dpb(inst, dst_buf))
+		if (vidc_dec_emit_dpb(inst))
 			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
 		else
 			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
@@ -1653,7 +1679,13 @@ static int vidc_dec_queue_init(void *priv, struct vb2_queue *src_vq,
 		return ret;
 
 	dst_vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-	dst_vq->io_modes = VB2_MMAP | VB2_DMABUF;
+	/*
+	 * MMAP only: the CAPTURE buffers ARE the DPB and must live in the SMI
+	 * bank the firmware can address (no IOMMU). An imported DMABUF from
+	 * arbitrary memory is unreachable by the RISC — same limitation as
+	 * s5p-mfc v5's memory bank.
+	 */
+	dst_vq->io_modes = VB2_MMAP;
 	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	dst_vq->ops = &vidc_dec_vb2_ops;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
