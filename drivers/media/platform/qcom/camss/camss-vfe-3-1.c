@@ -2955,8 +2955,17 @@ static int vfe31_halt(struct vfe_device *vfe)
 	/* Ensure IRQ clear is latched by hardware */
 	wmb();
 
-	/* Step 5: Enable only RESET_ACK in MASK_1 for halt completion */
-	writel_relaxed(VFE_0_IRQ_STATUS_1_RESET_ACK,
+	/*
+	 * Step 5: Unmask the BUS_BDG_HALT_ACK IRQ (bit 23) - this is what the
+	 * ISR uses to signal halt_complete (vfe31_isr_halt_ack). The old code
+	 * unmasked RESET_ACK (bit 22) instead, so the halt-ack IRQ never fired,
+	 * the wait below always timed out, and we gated the VFE clocks WITHOUT
+	 * confirming the AXI had actually halted. On a stop after a failed start
+	 * (stuck AXI write) that wedges the shared MMSS-AXI fabric and hangs the
+	 * SoC. Wait on the real halt-ack so the AXI is quiesced before clocks
+	 * gate / global reset.
+	 */
+	writel_relaxed(VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK,
 		       vfe->base + VFE_0_IRQ_MASK_1);
 
 	/* Step 6: Issue AXI halt */
