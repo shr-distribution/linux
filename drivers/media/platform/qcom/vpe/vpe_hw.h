@@ -74,18 +74,19 @@
 #define VPE_SCALE_COEFF_MSP_0		0x50404
 
 /*
- * The FIR scaler has four polyphase coefficient sub-tables (luma/chroma x
- * horizontal/vertical) laid out CONTIGUOUSLY in one coefficient space at
- * 0x50400: 128 entries of {LSB,MSB} (8 bytes each), the four 32-phase
- * sub-tables at entry offsets 0/32/64/96 -> byte offsets 0x50400, 0x50500,
- * 0x50600, 0x50700 (stride 32*8 = 0x100). The legacy msm_vpe1
- * vpe_update_scale_coef() writes VPE_SCALE_COEFF_LSBn(i)=0x50400+8*i with the
- * HAL passing those same 0/0x20/0x40/0x60 index offsets.
+ * The FIR scaler holds four polyphase coefficient sub-tables (one per scale-
+ * ratio band) laid out CONTIGUOUSLY in one coefficient space at 0x50400: 128
+ * entries of {LSB,MSB} (8 bytes each), the four 32-phase sub-tables at entry
+ * offsets 0/32/64/96 -> byte offsets 0x50400/0x50500/0x50600/0x50700 (stride
+ * 32*8 = 0x100). All four are resident and the hardware selects per axis by
+ * phase step (bank 0 heaviest downscale ... bank 3 upscale/1:1). The legacy
+ * msm_vpe1 vpe_update_scale_coef() writes VPE_SCALE_COEFF_LSBn(i)=0x50400+8*i
+ * and the HAL loads each band with those same 0/0x20/0x40/0x60 index offsets.
  */
-#define VPE_SCALE_COEFF_LUMA_X		0x50400
-#define VPE_SCALE_COEFF_LUMA_Y		0x50500
-#define VPE_SCALE_COEFF_CHROMA_X	0x50600
-#define VPE_SCALE_COEFF_CHROMA_Y	0x50700
+#define VPE_SCALE_COEFF_BANK0		0x50400
+#define VPE_SCALE_COEFF_BANK1		0x50500
+#define VPE_SCALE_COEFF_BANK2		0x50600
+#define VPE_SCALE_COEFF_BANK3		0x50700
 #define VPE_SCALE_COEFF_NUM		32
 
 /* Hardware version and reset values */

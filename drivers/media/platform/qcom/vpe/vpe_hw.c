@@ -81,8 +81,8 @@ static const u32 vpe_scale_coeff_0p6_0p8[] = {
 	0x03f80078, 0x0060012f, 0x03f80070, 0x0068012f,
 };
 
-/* Not selected by vpe_scale_coeff_for() today (the HAL's vpe_init_scale_table
- * uses only the three tables above), kept for reference / future tuning. */
+/* Not loaded into the banks today (the HAL's vpe_init_scale_table populates
+ * the four banks from only the three tables above), kept for reference. */
 static const u32 __maybe_unused vpe_scale_coeff_0p8_20p0[] = {
 	0x000001ff, 0x00000000, 0x03f901fb, 0x03fe000d,
 	0x03f301f5, 0x03fb001c, 0x03ed01ee, 0x03f9002b,
@@ -235,34 +235,11 @@ void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride)
 }
 
 /*
- * Select the polyphase table from phase_step (input/output ratio, 3.29 fixed
- * point; 1.0 = 0x20000000), using the SAME thresholds the legacy msm_vpe1
- * driver uses for its filter-set selection. Only the magnitude of downscale
- * matters; every upscale ratio (and 1:1) shares one "sharp" table. On this
- * platform (TouchPad libqcameralib) the upscale set is vpe_scale_0p4_to_0p6
- * (confirmed via the vpe_init_scale_table relocations) -- using a different
- * table per upscale band, as we did before, produced phase-doubling on
- * non-2x ratios (4x, 1.5x).
- */
-static const u32 *vpe_scale_coeff_for(u32 phase_step)
-{
-	if (phase_step > HAL_MDP_PHASE_STEP_2P50)	/* > 2.5x downscale */
-		return vpe_scale_coeff_0p2_0p4;
-	if (phase_step > HAL_MDP_PHASE_STEP_1P66)	/* 1.66x-2.5x downscale */
-		return vpe_scale_coeff_0p4_0p6;
-	if (phase_step > HAL_MDP_PHASE_STEP_1P25)	/* 1.25x-1.66x downscale */
-		return vpe_scale_coeff_0p6_0p8;
-	return vpe_scale_coeff_0p4_0p6;			/* <= 1.25x: upscale / 1:1 */
-}
-
-/*
- * Load one polyphase coefficient bank. The VPE FIR scaler has FOUR separate
- * coefficient SRAM banks and processes X then Y for both planes; with
- * SCALE_CONFIG enabling X-FIR, Y-FIR and Chroma-FIR, ALL four must be loaded
- * or the missing axis multiplies the source by uninitialised (zero) SRAM,
- * producing a near-black image (only edge ringing survives). The banks are
- * persistent AHB SRAM (not consumed on DL0_START); note the active scaler
- * locks the SRAM port so CPU read-back returns 0 mid-operation.
+ * Load one polyphase coefficient sub-table (32 phases) into the coefficient
+ * SRAM at the given byte offset. The scaler has four such sub-tables resident
+ * at once and selects between them in hardware by scale ratio. The SRAM is
+ * persistent (not consumed on DL0_START); note the active scaler locks the
+ * SRAM port so CPU read-back returns 0 mid-operation.
  */
 static void vpe_hw_load_coeff_bank(void __iomem *base, u32 bank_off,
 				   const u32 *coeff)
@@ -319,19 +296,17 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 	writel(op_mode, base + VPE_OP_MODE);
 
 	/*
-	 * Load all four coefficient banks: luma X/Y and chroma X/Y. X banks use
-	 * the horizontal phase step, Y banks the vertical; for NV12 4:2:0 the
-	 * chroma plane scales by the same ratio as luma, so it reuses the same
-	 * per-axis tables.
+	 * Load the four ratio sub-tables into the contiguous coefficient space.
+	 * The FIR hardware selects per axis from the phase step: bank 0 for the
+	 * heaviest downscale (narrowest passband) through bank 3 for upscale/1:1
+	 * (sharpest). All four are resident at once; this mirrors how the camera
+	 * HAL (and Samsung/HTC) populate the banks. The per-axis selection is in
+	 * hardware, so a non-square scale (different X/Y ratios) is handled too.
 	 */
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_LUMA_X,
-			       vpe_scale_coeff_for(step_x));
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_LUMA_Y,
-			       vpe_scale_coeff_for(step_y));
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_CHROMA_X,
-			       vpe_scale_coeff_for(step_x));
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_CHROMA_Y,
-			       vpe_scale_coeff_for(step_y));
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK0, vpe_scale_coeff_0p2_0p4);
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK1, vpe_scale_coeff_0p4_0p6);
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK2, vpe_scale_coeff_0p6_0p8);
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK3, vpe_scale_coeff_0p4_0p6);
 
 	/* Set phase init to 0 */
 	writel(0, base + VPE_SCALE_PHASEX_INIT);
