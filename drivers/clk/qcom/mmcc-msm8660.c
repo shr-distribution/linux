@@ -2541,8 +2541,13 @@ static struct gdsc rot_gdsc = {
 	 * Skip SW_RESET during power domain enable, similar to VFE_GDSC.
 	 * Asserting ROT_AHB_RESET during GDSC enable may cause a glitch
 	 * affecting other MMSS peripherals during early boot.
+	 *
+	 * RPM_ALWAYS_ON: the rotator is an m2m block that pm_runtime-cycles per
+	 * job; without this its footswitch re-enables on the shared MMSS fabric
+	 * on every rotation burst, glitching MDP scanout. Keep it powered across
+	 * runtime idle (clocks still gate); collapse only on system suspend.
 	 */
-	.flags = LEGACY_FOOTSWITCH,
+	.flags = LEGACY_FOOTSWITCH | RPM_ALWAYS_ON,
 };
 
 static struct gdsc ved_gdsc = {
@@ -2570,6 +2575,10 @@ static struct gdsc vfe_gdsc = {
 	 * MMSS peripherals (specifically MDP display). The VFE driver performs
 	 * its own software reset via vfe_reset() after enabling clocks, so
 	 * the GDSC-level reset is not strictly required.
+	 *
+	 * Note: VFE is session-scoped (powered at streamon, collapsed at
+	 * streamoff) so it only re-enables once per capture session -- not
+	 * worth RPM_ALWAYS_ON (cf. rot_gdsc, which cycles per m2m job).
 	 */
 	.flags = LEGACY_FOOTSWITCH,
 };
@@ -2586,6 +2595,10 @@ static struct gdsc vpe_gdsc = {
 	 * Skip SW_RESET during power domain enable, similar to VFE_GDSC.
 	 * Asserting VPE_AHB_RESET during GDSC enable may cause a glitch
 	 * affecting other MMSS peripherals during early boot.
+	 *
+	 * Note: VPE is session-scoped (powered at streamon, collapsed at
+	 * streamoff) so it only re-enables once per session -- not worth
+	 * RPM_ALWAYS_ON (cf. rot_gdsc, which cycles per m2m job).
 	 */
 	.flags = LEGACY_FOOTSWITCH,
 };
