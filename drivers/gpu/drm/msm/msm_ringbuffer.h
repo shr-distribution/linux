@@ -49,6 +49,13 @@ struct msm_rbmemptrs {
 struct msm_cp_state {
 	uint64_t ib1_base, ib2_base;
 	uint32_t ib1_rem, ib2_rem;
+	/*
+	 * Optional free-running count of retired GPU work (e.g. shaded quads),
+	 * for GPUs where the CP parks on a long draw so the IB pointers above go
+	 * static even while rendering is still progressing. Left 0 by gens that
+	 * don't sample it.
+	 */
+	uint32_t retired_work;
 };
 
 struct msm_ringbuffer {

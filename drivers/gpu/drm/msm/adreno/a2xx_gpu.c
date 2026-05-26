@@ -301,6 +301,19 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	 */
 	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER1_SELECT, RBBM1_NRT_BUSY);
 
+	/*
+	 * Select RB perfcounter 0 as a "retired rendering work" signal for the
+	 * hangcheck progress check (a2xx_progress). RBPERF_SX_RB_QUAD_SEND counts
+	 * quads that have finished the fragment shader and are sent to the render
+	 * backend, so it climbs throughout a heavy fragment-bound draw (where the
+	 * CP parks waiting on the pixel pipeline and the IB pointers go static)
+	 * yet stops if the pipeline genuinely wedges -- unlike the *_BUSY counters
+	 * which keep ticking on a stuck-busy back-end. Like the devfreq counter
+	 * above it only advances while the perfmon is enabled (CP_PERFMON_CNTL,
+	 * kept on per-batch by the Mesa change).
+	 */
+	gpu_write(gpu, REG_A2XX_RB_PERFCOUNTER0_SELECT, RBPERF_SX_RB_QUAD_SEND);
+
 	ret = adreno_hw_init(gpu);
 	if (ret)
 		return ret;
@@ -711,16 +724,24 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 }
 
 /*
- * Hangcheck progress check (mirrors a6xx_progress). The CP advances the IB1/IB2
- * base and decrements the remaining buffer size as it consumes the command
- * stream. If any of these changed since the previous hangcheck, the GPU is
- * making forward progress -- just slowly, e.g. a heavy fragment-bound frame
- * (glmark2 blur/buffer scenes run well under one frame per hangcheck period) --
- * and is not actually hung. Without this, such frames false-positive as a
- * lockup and trigger needless recover/microcode-reload cycles that drop the
- * in-flight submit (Mesa "submit failed: -16"). made_progress() still bounds
- * the number of progress retries, so a genuinely wedged-but-fetching GPU is
- * eventually recovered.
+ * Hangcheck progress check. Two complementary signals are sampled; if either
+ * changed since the previous hangcheck the GPU is making forward progress and
+ * is not hung:
+ *
+ *  - CP IB1/IB2 base + remaining buffer size: advances as the CP consumes the
+ *    command stream (covers CP/state-setup and geometry phases).
+ *
+ *  - RB retired-quad counter (RBPERF_SX_RB_QUAD_SEND, configured in hw_init):
+ *    advances as shaded quads reach the render backend. This is essential on
+ *    the a220 because a heavy fragment-bound draw (e.g. glmark2's multi-pass
+ *    blur at ~1fps) parks the CP at the draw packet -- the IB pointers go
+ *    static for seconds while the pixel pipeline grinds -- so the CP signal
+ *    alone false-positives as a lockup. The quad counter keeps climbing while
+ *    rendering, and (unlike the *_BUSY counters) stops if the pipeline truly
+ *    wedges, so a genuine back-end hang is still detected.
+ *
+ * made_progress() bounds the number of progress retries, so a wedged GPU that
+ * somehow keeps a counter creeping is still eventually recovered.
  */
 static bool a2xx_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 {
@@ -729,6 +750,7 @@ static bool a2xx_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 		.ib2_base = gpu_read(gpu, REG_AXXX_CP_IB2_BASE),
 		.ib1_rem  = gpu_read(gpu, REG_AXXX_CP_IB1_BUFSZ),
 		.ib2_rem  = gpu_read(gpu, REG_AXXX_CP_IB2_BUFSZ),
+		.retired_work = gpu_read(gpu, REG_A2XX_RB_PERFCOUNTER0_LOW),
 	};
 	bool progress;
 
