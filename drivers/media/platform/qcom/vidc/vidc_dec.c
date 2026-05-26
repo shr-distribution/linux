@@ -1012,15 +1012,18 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 			u32 i;
 
 			for (i = 0; i < slot_count; i++) {
-				/* Pixel-cache luma base = the CAPTURE buffer
-				 * (the DPB slot) the firmware decodes into,
-				 * ABSOLUTE physical (matches webOS).
+				/*
+				 * Pixel-cache per-slot luma base. The working
+				 * decode path leaves this 0 — the firmware uses
+				 * the DPB_LUMA[i] registers (programmed from the
+				 * CAPTURE buffers) for the actual decode target,
+				 * and a non-zero cache base here activates a cache
+				 * write path that conflicts with the firmware's
+				 * own DPB write and hangs FRAME_DATA. Keep it 0.
 				 */
-				u32 slot_phys = inst->dpb_cap_dma[i];
-
 				vidc_write(core,
 					   VIDC_REG_PIX_CACHE_LUMA_BASE + i * 4,
-					   slot_phys);
+					   0);
 				/*
 				 * webOS passes NULL for chroma_offset which
 				 * makes vidc_pix_cache_init_luma_chroma_base_addr
