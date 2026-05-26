@@ -19,7 +19,6 @@
 #define ROTATOR_INTR_CLEAR		0x0028
 #define ROTATOR_START			0x0030
 #define ROTATOR_MAX_BURST_SIZE		0x0050
-#define ROTATOR_HW_VERSION		0x0070
 
 /* Source configuration registers */
 #define ROTATOR_SRC_SIZE		0x1108
@@ -119,7 +118,6 @@ void rotator_hw_enable_irq(void __iomem *base);
 void rotator_hw_disable_irq(void __iomem *base);
 void rotator_hw_clear_irq(void __iomem *base);
 u32 rotator_hw_get_irq_status(void __iomem *base);
-u32 rotator_hw_get_version(void __iomem *base);
 void rotator_hw_start(void __iomem *base);
 
 /* Buffer configuration */
@@ -129,7 +127,8 @@ void rotator_hw_set_src_addr(void __iomem *base, dma_addr_t y_addr,
 			     dma_addr_t c_addr);
 void rotator_hw_set_dst_addr(void __iomem *base, dma_addr_t y_addr,
 			     dma_addr_t c_addr);
-void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride);
+void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride,
+			    u32 dst_cstride);
 void rotator_hw_set_rotation(void __iomem *base, u32 rotation, u32 chroma);
 void rotator_hw_set_format_rgb(void __iomem *base, u32 bpp, bool has_alpha);
 void rotator_hw_set_format_yuv(void __iomem *base, u32 chroma_mode, bool cbcr,

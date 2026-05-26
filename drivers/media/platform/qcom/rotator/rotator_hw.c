@@ -26,7 +26,10 @@ int rotator_hw_reset(void __iomem *base)
 
 void rotator_hw_enable_irq(void __iomem *base)
 {
-	writel(ROTATOR_IRQ_DONE, base + ROTATOR_INTR_ENABLE);
+	/* Enable both DONE and ERROR, as legacy msm_rotator does: an error
+	 * must raise an interrupt too, otherwise it degrades to a timeout.
+	 */
+	writel(ROTATOR_IRQ_ALL, base + ROTATOR_INTR_ENABLE);
 }
 
 void rotator_hw_disable_irq(void __iomem *base)
@@ -42,11 +45,6 @@ void rotator_hw_clear_irq(void __iomem *base)
 u32 rotator_hw_get_irq_status(void __iomem *base)
 {
 	return readl(base + ROTATOR_INTR_STATUS);
-}
-
-u32 rotator_hw_get_version(void __iomem *base)
-{
-	return readl(base + ROTATOR_HW_VERSION);
 }
 
 void rotator_hw_start(void __iomem *base)
@@ -98,11 +96,17 @@ void rotator_hw_set_dst_addr(void __iomem *base, dma_addr_t y_addr,
 	writel(c_addr, base + ROTATOR_OUTP1_ADDR);
 }
 
-void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride)
+void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride,
+			    u32 dst_cstride)
 {
-	/* Y and C strides packed together */
+	/*
+	 * YSTRIDE1 packs the luma stride [15:0] and the chroma stride [31:16].
+	 * For most formats the chroma stride equals the luma stride, but the
+	 * 4:2:2 (H2V1) output chroma stride doubles under 90/270 rotation —
+	 * the caller passes the already-computed dst chroma stride.
+	 */
 	writel(src_stride | (src_stride << 16), base + ROTATOR_SRC_YSTRIDE1);
-	writel(dst_stride | (dst_stride << 16), base + ROTATOR_OUT_YSTRIDE1);
+	writel(dst_stride | (dst_cstride << 16), base + ROTATOR_OUT_YSTRIDE1);
 }
 
 void rotator_hw_set_rotation(void __iomem *base, u32 rotation, u32 chroma)
@@ -130,21 +134,31 @@ void rotator_hw_set_format_rgb(void __iomem *base, u32 bpp, bool has_alpha)
 	u32 fmt;
 	u32 pack;
 
-	/* RGB pack pattern: ARGB order */
+	/*
+	 * RGB pack pattern: ARGB order. The top (4th) component slot is the
+	 * alpha channel for 32-bit formats and unused (0) otherwise — matching
+	 * legacy msm_rotator, which uses GET_PACK_PATTERN(0, R, G, B) with no
+	 * alpha rather than duplicating a colour component.
+	 */
 	if (has_alpha)
 		pack = ROTATOR_PACK_PATTERN(CLR_ALPHA, CLR_R, CLR_G, CLR_B, 8);
 	else
-		pack = ROTATOR_PACK_PATTERN(CLR_R, CLR_R, CLR_G, CLR_B, 8);
+		pack = ROTATOR_PACK_PATTERN(0, CLR_R, CLR_G, CLR_B, 8);
 
 	writel(pack, base + ROTATOR_SRC_UNPACK_PATTERN1);
 	writel(pack, base + ROTATOR_OUT_PACK_PATTERN1);
 
-	/* Source format configuration */
+	/*
+	 * Source format configuration. The unpack count is the number of
+	 * components minus one: 3 (4 comps) with alpha, 2 (3 comps) without —
+	 * it is fixed by the component layout, not derived from the byte depth
+	 * (legacy uses (abits ? 3 : 2), so e.g. RGB565 must still be 2, not 1).
+	 */
 	fmt = ROTATOR_SRC_FORMAT_FRAME_LINEAR |
 	      ROTATOR_SRC_FORMAT_TILE_SIZE |
 	      (ROTATOR_FETCH_PLANES_INTERLEAVED << ROTATOR_SRC_FORMAT_FETCH_SHIFT) |
 	      ROTATOR_SRC_FORMAT_UNPACK_TIGHT |
-	      ((bpp - 1) << ROTATOR_SRC_FORMAT_UNPACK_SHIFT) |
+	      ((has_alpha ? 3 : 2) << ROTATOR_SRC_FORMAT_UNPACK_SHIFT) |
 	      ((bpp - 1) << ROTATOR_SRC_FORMAT_BPP_SHIFT);
 
 	if (has_alpha) {

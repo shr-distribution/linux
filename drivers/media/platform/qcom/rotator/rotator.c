@@ -96,8 +96,15 @@ static const struct rotator_fmt rotator_formats[] = {
 		.cbcr		= false,
 	},
 	{
-		/* Tiled NV12 (64x32 supertile) — detiled to linear NV12 output.
-		 * Keep last: it is only offered on the OUTPUT (input) queue.
+		/*
+		 * Tiled NV12, detiled to linear NV12 on output. This reuses the
+		 * V4L2_PIX_FMT_NV12MT fourcc because the Qualcomm MMSS "supertile"
+		 * layout the VIDC decoder emits is the same 64x32-tile, 32x32
+		 * macro-tile arrangement as Samsung's tiled NV12 (the rotator
+		 * SRC_FORMAT FRAME_SUPERTILE mode consumes it directly). It is the
+		 * format the on-SoC H.264 decoder produces, so the rotator is the
+		 * detiler for the decode->display path. Offered on the OUTPUT
+		 * (input) queue only; keep it last in the table.
 		 */
 		.fourcc		= V4L2_PIX_FMT_NV12MT,
 		.depth		= 12,
@@ -114,6 +121,11 @@ struct rotator_frame {
 	u32 bytesperline;
 	u32 sizeimage;
 	const struct rotator_fmt *fmt;
+	/* Colour metadata, passed through unchanged (the rotator has no CSC) */
+	u32 colorspace;
+	u32 ycbcr_enc;
+	u32 quantization;
+	u32 xfer_func;
 };
 
 struct rotator_dev {
@@ -129,7 +141,7 @@ struct rotator_dev {
 	struct v4l2_device v4l2_dev;
 	struct video_device vfd;
 	struct v4l2_m2m_dev *m2m_dev;
-	struct mutex lock;
+	struct mutex lock;	/* serialises ioctls, vb2 queues and m2m runs */
 
 	/* Current operation */
 	struct completion done;
@@ -195,6 +207,34 @@ static const struct rotator_fmt *rotator_capture_fmt_for(const struct rotator_fm
 }
 
 /*
+ * Re-derive the CAPTURE (dst) format from the current source crop ROI. The
+ * rotator has no scaler, so the output size is exactly the crop size (width
+ * and height swapped for 90/270 rotation); it has no CSC, so the output
+ * format, colour space and chroma sub-sampling are inherited from the source.
+ * Call this whenever the source format, the crop ROI or the rotation changes
+ * so dst.{width,height,bytesperline,sizeimage} always match what the hardware
+ * will actually write.
+ */
+static void rotator_update_dst(struct rotator_ctx *ctx)
+{
+	bool swap = (ctx->rotation == 90 || ctx->rotation == 270);
+	u32 w = ctx->crop.width;
+	u32 h = ctx->crop.height;
+
+	ctx->dst.fmt = rotator_capture_fmt_for(ctx->src.fmt);
+	ctx->dst.width = swap ? h : w;
+	ctx->dst.height = swap ? w : h;
+	ctx->dst.bytesperline = ctx->dst.width *
+		(ctx->dst.fmt->num_planes == 1 ? ctx->dst.fmt->depth / 8 : 1);
+	ctx->dst.sizeimage = ctx->dst.width * ctx->dst.height *
+			     ctx->dst.fmt->depth / 8;
+	ctx->dst.colorspace = ctx->src.colorspace;
+	ctx->dst.ycbcr_enc = ctx->src.ycbcr_enc;
+	ctx->dst.quantization = ctx->src.quantization;
+	ctx->dst.xfer_func = ctx->src.xfer_func;
+}
+
+/*
  * V4L2 ioctl operations
  */
 
@@ -255,7 +295,10 @@ static int rotator_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	f->fmt.pix.pixelformat = frame->fmt->fourcc;
 	f->fmt.pix.bytesperline = frame->bytesperline;
 	f->fmt.pix.sizeimage = frame->sizeimage;
-	f->fmt.pix.colorspace = V4L2_COLORSPACE_DEFAULT;
+	f->fmt.pix.colorspace = frame->colorspace;
+	f->fmt.pix.ycbcr_enc = frame->ycbcr_enc;
+	f->fmt.pix.quantization = frame->quantization;
+	f->fmt.pix.xfer_func = frame->xfer_func;
 	f->fmt.pix.field = V4L2_FIELD_NONE;
 
 	return 0;
@@ -267,41 +310,51 @@ static int rotator_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	const struct rotator_fmt *fmt;
 	u32 bpp;
 
-	fmt = find_format(f->fmt.pix.pixelformat);
-	if (!fmt)
-		fmt = &rotator_formats[0];
-
-	/* Tiled layout is input-only; fall back to linear on the CAPTURE side */
-	if (fmt->tiled && f->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
-		fmt = &rotator_formats[0];
-
 	/*
-	 * The CAPTURE (output) side cannot change colour space or size: the
-	 * rotator has no CSC and no scaler. Force the only legal output format
-	 * for the current source, and force the output geometry to the source
-	 * geometry (width/height swapped for 90/270 rotation). This prevents
-	 * the grayscale (YUV->RGB) and the silently-ignored-scaling failures.
+	 * The CAPTURE side is fully determined by the source: the rotator has
+	 * no scaler and no CSC, so the output is exactly the source crop ROI
+	 * (width/height swapped for 90/270), in the only legal output format,
+	 * with the source colour metadata. Forcing it here prevents the
+	 * grayscale (YUV->RGB) and silently-ignored-scaling negotiation traps.
 	 */
 	if (!V4L2_TYPE_IS_OUTPUT(f->type)) {
 		bool swap = (ctx->rotation == 90 || ctx->rotation == 270);
 
 		fmt = rotator_capture_fmt_for(ctx->src.fmt);
-		f->fmt.pix.width = swap ? ctx->src.height : ctx->src.width;
-		f->fmt.pix.height = swap ? ctx->src.width : ctx->src.height;
+		f->fmt.pix.width = swap ? ctx->crop.height : ctx->crop.width;
+		f->fmt.pix.height = swap ? ctx->crop.width : ctx->crop.height;
+		f->fmt.pix.pixelformat = fmt->fourcc;
+		f->fmt.pix.bytesperline = f->fmt.pix.width *
+			(fmt->num_planes == 1 ? fmt->depth / 8 : 1);
+		f->fmt.pix.sizeimage = f->fmt.pix.width * f->fmt.pix.height *
+				       fmt->depth / 8;
+		f->fmt.pix.colorspace = ctx->src.colorspace;
+		f->fmt.pix.ycbcr_enc = ctx->src.ycbcr_enc;
+		f->fmt.pix.quantization = ctx->src.quantization;
+		f->fmt.pix.xfer_func = ctx->src.xfer_func;
+		f->fmt.pix.field = V4L2_FIELD_NONE;
+		return 0;
 	}
 
+	/* OUTPUT side: validate and align the user's requested source format */
+	fmt = find_format(f->fmt.pix.pixelformat);
+	if (!fmt)
+		fmt = &rotator_formats[0];
+
 	f->fmt.pix.pixelformat = fmt->fourcc;
-	f->fmt.pix.width = clamp(f->fmt.pix.width,
-				 (u32)ROTATOR_MIN_WIDTH,
-				 (u32)ROTATOR_MAX_WIDTH);
-	f->fmt.pix.height = clamp(f->fmt.pix.height,
-				  (u32)ROTATOR_MIN_HEIGHT,
-				  (u32)ROTATOR_MAX_HEIGHT);
 
 	if (fmt->tiled) {
-		/* Supertile rows are 128 px wide and 32 px high */
-		f->fmt.pix.width = ALIGN(f->fmt.pix.width, 128);
-		f->fmt.pix.height = ALIGN(f->fmt.pix.height, 32);
+		/*
+		 * Supertile rows are 128 px wide and 32 px high. Clamp to the
+		 * aligned-down maximum *before* rounding up so the result can
+		 * never exceed the 13-bit size register fields.
+		 */
+		f->fmt.pix.width = ALIGN(clamp(f->fmt.pix.width, 128u,
+					       ALIGN_DOWN((u32)ROTATOR_MAX_WIDTH, 128)),
+					 128);
+		f->fmt.pix.height = ALIGN(clamp(f->fmt.pix.height, 32u,
+						ALIGN_DOWN((u32)ROTATOR_MAX_HEIGHT, 32)),
+					  32);
 		f->fmt.pix.bytesperline = f->fmt.pix.width;
 		/* tiled Y plane (8 KB-aligned) + tiled chroma (half height) */
 		f->fmt.pix.sizeimage =
@@ -310,9 +363,15 @@ static int rotator_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 			rotator_tiled_chroma_offset(f->fmt.pix.width,
 						    f->fmt.pix.height / 2);
 	} else {
-		/* Align to 16 pixels for hardware requirements */
-		f->fmt.pix.width = ALIGN(f->fmt.pix.width, 16);
-		f->fmt.pix.height = ALIGN(f->fmt.pix.height, 16);
+		/* Align to 16 pixels; clamp the max down first (see above) */
+		f->fmt.pix.width = ALIGN(clamp(f->fmt.pix.width,
+					       (u32)ROTATOR_MIN_WIDTH,
+					       ALIGN_DOWN((u32)ROTATOR_MAX_WIDTH, 16)),
+					 16);
+		f->fmt.pix.height = ALIGN(clamp(f->fmt.pix.height,
+						(u32)ROTATOR_MIN_HEIGHT,
+						ALIGN_DOWN((u32)ROTATOR_MAX_HEIGHT, 16)),
+					  16);
 
 		bpp = fmt->depth / 8;
 		if (fmt->num_planes == 1) {
@@ -320,7 +379,7 @@ static int rotator_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 			f->fmt.pix.sizeimage = f->fmt.pix.bytesperline *
 					       f->fmt.pix.height;
 		} else {
-			/* YUV planar */
+			/* YUV pseudo-planar (Y plane + interleaved chroma) */
 			f->fmt.pix.bytesperline = f->fmt.pix.width;
 			f->fmt.pix.sizeimage = f->fmt.pix.width *
 					       f->fmt.pix.height *
@@ -328,7 +387,13 @@ static int rotator_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 		}
 	}
 
-	f->fmt.pix.colorspace = V4L2_COLORSPACE_DEFAULT;
+	/* Raw rotate/flip preserves colour; default only the unset fields */
+	if (f->fmt.pix.colorspace == V4L2_COLORSPACE_DEFAULT) {
+		f->fmt.pix.colorspace = V4L2_COLORSPACE_SRGB;
+		f->fmt.pix.ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+		f->fmt.pix.quantization = V4L2_QUANTIZATION_DEFAULT;
+		f->fmt.pix.xfer_func = V4L2_XFER_FUNC_DEFAULT;
+	}
 	f->fmt.pix.field = V4L2_FIELD_NONE;
 
 	return 0;
@@ -361,6 +426,10 @@ static int rotator_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	frame->bytesperline = f->fmt.pix.bytesperline;
 	frame->sizeimage = f->fmt.pix.sizeimage;
 	frame->fmt = fmt;
+	frame->colorspace = f->fmt.pix.colorspace;
+	frame->ycbcr_enc = f->fmt.pix.ycbcr_enc;
+	frame->quantization = f->fmt.pix.quantization;
+	frame->xfer_func = f->fmt.pix.xfer_func;
 
 	/*
 	 * Setting the source resets the derived state: the crop ROI goes back
@@ -370,19 +439,9 @@ static int rotator_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	 * an explicit CAPTURE S_FMT.
 	 */
 	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
-		bool swap = (ctx->rotation == 90 || ctx->rotation == 270);
-
 		ctx->crop = (struct v4l2_rect){ 0, 0, frame->width,
 						frame->height };
-
-		ctx->dst.fmt = rotator_capture_fmt_for(frame->fmt);
-		ctx->dst.width = swap ? frame->height : frame->width;
-		ctx->dst.height = swap ? frame->width : frame->height;
-		ctx->dst.bytesperline = ctx->dst.width *
-			(ctx->dst.fmt->num_planes == 1 ?
-				ctx->dst.fmt->depth / 8 : 1);
-		ctx->dst.sizeimage = ctx->dst.width * ctx->dst.height *
-				     ctx->dst.fmt->depth / 8;
+		rotator_update_dst(ctx);
 	}
 
 	return 0;
@@ -444,6 +503,9 @@ static int rotator_s_selection(struct file *file, void *priv,
 
 	ctx->crop = s->r;
 
+	/* Output size tracks the crop ROI (no scaler) — re-derive the dst */
+	rotator_update_dst(ctx);
+
 	return 0;
 }
 
@@ -456,6 +518,8 @@ static int rotator_s_ctrl(struct v4l2_ctrl *ctrl)
 	switch (ctrl->id) {
 	case V4L2_CID_ROTATE:
 		ctx->rotation = ctrl->val;
+		/* 90/270 swap the output dimensions — re-derive the dst */
+		rotator_update_dst(ctx);
 		break;
 	case V4L2_CID_HFLIP:
 		ctx->hflip = ctrl->val;
@@ -486,6 +550,7 @@ static void rotator_device_run(void *priv)
 	dma_addr_t src_y, src_c, dst_y, dst_c;
 	u32 rotation = 0;
 	u32 src_w, src_h;
+	u32 dst_cstride;
 	int ret;
 
 	src_buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
@@ -506,8 +571,9 @@ static void rotator_device_run(void *priv)
 		 * The output is always written back linear.
 		 */
 		if (ctx->src.fmt->tiled)
-			src_c = src_y + rotator_tiled_chroma_offset(
-					ctx->src.width, ctx->src.height);
+			src_c = src_y +
+				rotator_tiled_chroma_offset(ctx->src.width,
+							    ctx->src.height);
 		else
 			src_c = src_y + ctx->src.width * ctx->src.height;
 		dst_c = dst_y + ctx->dst.width * ctx->dst.height;
@@ -529,6 +595,15 @@ static void rotator_device_run(void *priv)
 	if (ctx->vflip)
 		rotation ^= ROTATOR_FLIP_UD;
 
+	/*
+	 * The output chroma stride equals the luma stride, except for 4:2:2
+	 * (H2V1) which doubles it under 90/270 rotation (legacy msm_rotator).
+	 */
+	dst_cstride = ctx->dst.bytesperline;
+	if (ctx->src.fmt->chroma == ROTATOR_CHROMA_H2V1 &&
+	    (ctx->rotation == 90 || ctx->rotation == 270))
+		dst_cstride *= 2;
+
 	/* Enable clocks via runtime PM */
 	ret = pm_runtime_resume_and_get(rot->dev);
 	if (ret < 0) {
@@ -536,17 +611,18 @@ static void rotator_device_run(void *priv)
 		goto done;
 	}
 
-	reinit_completion(&rot->done);
+	/* Reset clears any stale latched IRQ before we arm the completion */
+	rotator_hw_reset(rot->base);
 	rot->error = 0;
+	reinit_completion(&rot->done);
 
 	/* Configure hardware */
-	rotator_hw_reset(rot->base);
 	rotator_hw_set_src_size(rot->base, ctx->src.width, ctx->src.height,
 				ctx->crop.left, ctx->crop.top, src_w, src_h);
 	rotator_hw_set_src_addr(rot->base, src_y, src_c);
 	rotator_hw_set_dst_addr(rot->base, dst_y, dst_c);
 	rotator_hw_set_strides(rot->base, ctx->src.bytesperline,
-			       ctx->dst.bytesperline);
+			       ctx->dst.bytesperline, dst_cstride);
 	rotator_hw_set_rotation(rot->base, rotation, ctx->src.fmt->chroma);
 
 	if (ctx->src.fmt->chroma == ROTATOR_CHROMA_RGB) {
@@ -569,6 +645,13 @@ static void rotator_device_run(void *priv)
 					 msecs_to_jiffies(500))) {
 		dev_err(rot->dev, "rotation timeout\n");
 		rot->error = -ETIMEDOUT;
+		/*
+		 * Best-effort halt before the buffers are handed back. The
+		 * rotator has no true transaction-abort register, so this only
+		 * masks/clears the interrupt; a wedged engine is fully recovered
+		 * by the reset + reconfigure at the start of the next run.
+		 */
+		rotator_hw_reset(rot->base);
 	}
 
 	rotator_hw_disable_irq(rot->base);
@@ -808,12 +891,17 @@ static irqreturn_t rotator_irq(int irq, void *data)
 
 	status = rotator_hw_get_irq_status(rot->base);
 
+	/* Not our interrupt (shared line or spurious) — do not complete */
+	if (!(status & ROTATOR_IRQ_ALL))
+		return IRQ_NONE;
+
 	if (status & ROTATOR_IRQ_ERROR) {
 		dev_err(rot->dev, "rotation error\n");
 		rot->error = -EIO;
 	}
 
 	rotator_hw_clear_irq(rot->base);
+	rotator_hw_disable_irq(rot->base);
 	complete(&rot->done);
 
 	return IRQ_HANDLED;
@@ -886,7 +974,7 @@ err_icc:
 }
 
 static const struct dev_pm_ops rotator_pm_ops = {
-	SET_RUNTIME_PM_OPS(rotator_runtime_suspend, rotator_runtime_resume, NULL)
+	RUNTIME_PM_OPS(rotator_runtime_suspend, rotator_runtime_resume, NULL)
 };
 
 /*
@@ -1029,7 +1117,8 @@ static int rotator_probe(struct platform_device *pdev)
 	 * read was cosmetic — drop it. All HW access now happens under runtime
 	 * PM during streaming, matching the gemini driver.
 	 */
-	dev_info(dev, "Qualcomm MSM8660 Rotator probed\n");
+	dev_dbg(dev, "Qualcomm MSM8660 Rotator registered as /dev/video%d\n",
+		rot->vfd.num);
 
 	return 0;
 
@@ -1052,6 +1141,8 @@ static void rotator_remove(struct platform_device *pdev)
 
 static const struct of_device_id rotator_of_match[] = {
 	{ .compatible = "qcom,msm8660-rotator" },
+	{ .compatible = "qcom,apq8060-rotator" },
+	{ .compatible = "qcom,msm8260-rotator" },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, rotator_of_match);
@@ -1062,11 +1153,12 @@ static struct platform_driver rotator_driver = {
 	.driver	= {
 		.name		= ROTATOR_NAME,
 		.of_match_table	= rotator_of_match,
-		.pm		= &rotator_pm_ops,
+		.pm		= pm_ptr(&rotator_pm_ops),
 	},
 };
 
 module_platform_driver(rotator_driver);
 
 MODULE_DESCRIPTION("Qualcomm MSM8660 Rotator V4L2 driver");
-MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("Herrie <herrie.org>");
+MODULE_LICENSE("GPL");
