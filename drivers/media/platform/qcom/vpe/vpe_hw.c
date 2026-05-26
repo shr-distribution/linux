@@ -21,12 +21,12 @@
  * 10-bit signed coefficient, taps sum to 512 = unity gain).
  *
  * Recovered from the TouchPad's own (unstripped) webOS libqcameralib.so
- * (vpe_scale_0p*_C0..C3 + vpe_init_scale_table). The previous placeholder
- * tables summed to ~0 (a high-pass filter), so the scaler emitted only edges.
+ * (vpe_scale_0p*_C0..C3 + vpe_init_scale_table); byte-identical to the HTC
+ * liboemcamera tables. The names are dst/src bands: 0p2_0p4 is the flattest
+ * (heaviest downscale anti-alias) and 0p8_20p0 the sharpest (passthrough at
+ * phase 0, used for upscale/1:1).
  */
-/* webOS libqcameralib values; produce a garbled gradient in testing -- not
- * loaded today (see vpe_hw_set_scale). Kept for reference / future fix-up. */
-static const u32 __maybe_unused vpe_scale_coeff_0p2_0p4[] = {
+static const u32 vpe_scale_coeff_0p2_0p4[] = {
 	0x0083008d, 0x006b0084, 0x0083008c, 0x006c0084,
 	0x0082008c, 0x006d0084, 0x0081008c, 0x006d0085,
 	0x0080008c, 0x006e0085, 0x007f008b, 0x006f0086,
@@ -64,8 +64,7 @@ static const u32 vpe_scale_coeff_0p4_0p6[] = {
 	0x0020008e, 0x008400cd, 0x001d008c, 0x008800ce,
 };
 
-/* See note on vpe_scale_coeff_0p2_0p4: not loaded today, kept for reference. */
-static const u32 __maybe_unused vpe_scale_coeff_0p6_0p8[] = {
+static const u32 vpe_scale_coeff_0p6_0p8[] = {
 	0x0068012f, 0x03f80070, 0x0060012f, 0x03f80078,
 	0x0059012e, 0x03f80080, 0x0052012c, 0x03f80089,
 	0x004b012a, 0x03f90091, 0x00440128, 0x03f9009a,
@@ -86,7 +85,7 @@ static const u32 __maybe_unused vpe_scale_coeff_0p6_0p8[] = {
 
 /* Not loaded into the banks today (the HAL's vpe_init_scale_table populates
  * the four banks from only the three tables above), kept for reference. */
-static const u32 __maybe_unused vpe_scale_coeff_0p8_20p0[] = {
+static const u32 vpe_scale_coeff_0p8_20p0[] = {
 	0x000001ff, 0x00000000, 0x03f901fb, 0x03fe000d,
 	0x03f301f5, 0x03fb001c, 0x03ed01ee, 0x03f9002b,
 	0x03e801e5, 0x03f6003c, 0x03e401db, 0x03f3004d,
@@ -238,6 +237,25 @@ void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride)
 }
 
 /*
+ * Pick the coefficient table for a scale operation from its phase step
+ * (= src/dst in 3.29; >1.0 is downscale). The thresholds match the legacy
+ * msm_vpe1 filter-set selection; the table assigned to each band is the one
+ * whose dst/src "name" range covers that ratio (so upscale, src/dst <= 1.25,
+ * gets the sharp 0p8_20p0 passthrough set; heavier downscale gets flatter,
+ * stronger anti-alias sets).
+ */
+static const u32 *vpe_scale_coeff_for(u32 phase_step)
+{
+	if (phase_step > HAL_MDP_PHASE_STEP_2P50)	/* > 2.5x downscale */
+		return vpe_scale_coeff_0p2_0p4;
+	if (phase_step > HAL_MDP_PHASE_STEP_1P66)	/* 1.66x-2.5x downscale */
+		return vpe_scale_coeff_0p4_0p6;
+	if (phase_step > HAL_MDP_PHASE_STEP_1P25)	/* 1.25x-1.66x downscale */
+		return vpe_scale_coeff_0p6_0p8;
+	return vpe_scale_coeff_0p8_20p0;		/* <= 1.25x: upscale / 1:1 */
+}
+
+/*
  * Load one polyphase coefficient sub-table (32 phases) into the coefficient
  * SRAM at the given byte offset. The scaler has four such sub-tables resident
  * at once and selects between them in hardware by scale ratio. The SRAM is
@@ -299,21 +317,26 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 	writel(op_mode, base + VPE_OP_MODE);
 
 	/*
-	 * Load all four banks (the FIR selects one per axis by phase step). A
-	 * sweep across ratios showed only the 0p4_0p6 table from the webOS
-	 * libqcameralib produces correct output -- the 0p2_0p4 and 0p6_0p8
-	 * tables there give a garbled gradient on the ratios that select them
-	 * (4x-up, 1.5x-up), suggesting they were never validated on that camera
-	 * (it scaled little). 0p4_0p6 is a full 32-phase polyphase table and
-	 * resolves every upscale ratio correctly via phase selection, so use it
-	 * in every bank for now. TODO: recover proper per-band tables (the
-	 * Samsung/HTC liboemcamera have them, but those .so are stripped and
-	 * need a Ghidra pass to extract).
+	 * Pick the coefficient table by scale factor and load it into all banks
+	 * (the per-axis HW bank select then always lands on the right table; a
+	 * single load also handles square scales, the common case). The tables
+	 * are named by dst/src band and graduate from sharpest to flattest:
+	 *   0p8_20p0  upscale / 1:1   (phase0 = 0,512,0,0 passthrough -> sharpest)
+	 *   0p6_0p8   1.25-1.66x down
+	 *   0p4_0p6   1.66-2.5x  down
+	 *   0p2_0p4   >2.5x      down (flattest, strongest anti-alias)
+	 * Values verified byte-identical between the webOS and HTC HALs. Earlier
+	 * upscale used 0p4_0p6 (soft); 0p8_20p0 is the correct sharp upscale set.
 	 */
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK0, vpe_scale_coeff_0p4_0p6);
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK1, vpe_scale_coeff_0p4_0p6);
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK2, vpe_scale_coeff_0p4_0p6);
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK3, vpe_scale_coeff_0p4_0p6);
+	{
+		const u32 *coeff = vpe_scale_coeff_for(max(step_x, step_y));
+		int b;
+
+		for (b = 0; b < 4; b++)
+			vpe_hw_load_coeff_bank(base,
+					       VPE_SCALE_COEFF_BANK0 + b * 0x100,
+					       coeff);
+	}
 
 	/* Set phase init to 0 */
 	writel(0, base + VPE_SCALE_PHASEX_INIT);
