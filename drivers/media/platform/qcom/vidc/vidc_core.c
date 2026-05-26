@@ -1649,6 +1649,17 @@ int vidc_close_channel(struct vidc_inst *inst)
 		return 0;
 
 	/*
+	 * Mark the channel down up-front, under irqlock, BEFORE freeing the DPB
+	 * or sending CLOSE_CH. A device_run / vidc_dec_submit_frame racing this
+	 * teardown on the m2m worker thread checks ch_open under the same lock
+	 * and bails out, so it can neither submit a stale frame to the
+	 * about-to-close channel nor touch the DPB pool we are about to free.
+	 */
+	spin_lock_irqsave(&core->irqlock, flags);
+	inst->ch_open = false;
+	spin_unlock_irqrestore(&core->irqlock, flags);
+
+	/*
 	 * Tear down DPB before closing the firmware channel. The CLOSE_CH
 	 * command releases per-instance state on the RISC; if we did it
 	 * before freeing the DPB, the firmware might still hold dangling
@@ -1674,7 +1685,7 @@ int vidc_close_channel(struct vidc_inst *inst)
 		return -ETIMEDOUT;
 	}
 
-	inst->ch_open = false;
+	/* ch_open was already cleared under irqlock at the top of close. */
 
 	/*
 	 * Recycle the context pool slot. This makes sequential single-instance

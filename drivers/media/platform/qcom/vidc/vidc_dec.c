@@ -839,14 +839,32 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	unsigned long flags;
 	u32 op;
 
+	spin_lock_irqsave(&core->irqlock, flags);
+
+	/*
+	 * Teardown race: device_run picks this frame on the m2m worker thread,
+	 * but stop_streaming / vidc_close_channel may close the channel on the
+	 * STREAMOFF (or fd-release) thread before we get here. Submitting to a
+	 * closed channel faults the firmware — and worst of all, !seq_parsed
+	 * (also cleared by close) would now select the SEQ_HEADER opcode, so a
+	 * stale frame lands as a bogus sequence-header on a dead channel
+	 * (observed firmware error 0x5 + device crash). ch_open is cleared
+	 * under this same irqlock at the very start of close, so checking it
+	 * here closes the window: bail without touching the firmware.
+	 */
+	if (!inst->ch_open) {
+		spin_unlock_irqrestore(&core->irqlock, flags);
+		dev_dbg(core->dev,
+			"submit_frame: channel closed, dropping stale submit\n");
+		return;
+	}
+
 	if (!inst->seq_parsed)
 		op = VIDC_OP_SEQ_HEADER;
 	else if (inst->draining)
 		op = VIDC_OP_LAST_FRAME;	/* drain: flush held reorder frames */
 	else
 		op = VIDC_OP_FRAME_DATA;
-
-	spin_lock_irqsave(&core->irqlock, flags);
 
 	/* Set current instance for IRQ handler */
 	core->curr_inst = inst;
