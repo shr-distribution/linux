@@ -2801,6 +2801,24 @@ static int bcsp_serdev_set_power(struct bcsp_serdev *bdev, bool powered)
 		 * never completed. A proper 100 ms reset pulse + 1 s settle (and
 		 * staying silent until the chip is up) matches webOS.
 		 */
+		/*
+		 * Force a TRUE cold start first. The chip may have been left
+		 * powered (bootloader, or a previous link attempt) — a bare reset
+		 * pulse does not clear the CSR BlueCore's power-gated UART RX
+		 * state, only removing BT_POWER does. Continuous power across
+		 * attempts is the one variable never controlled while the chip
+		 * only-SYNCs and ignores our byte-perfect TX. Drive everything off
+		 * and hold long enough for the rails to drain, then power on.
+		 */
+		if (bdev->device_wakeup)
+			gpiod_set_value_cansleep(bdev->device_wakeup, 0);
+		if (bdev->reset_gpio)
+			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* assert reset */
+		if (bdev->shutdown_gpio) {
+			gpiod_set_value_cansleep(bdev->shutdown_gpio, 0); /* power OFF */
+			msleep(500);
+		}
+
 		if (bdev->shutdown_gpio)
 			gpiod_set_value_cansleep(bdev->shutdown_gpio, 1);
 
