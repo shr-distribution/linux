@@ -1334,7 +1334,7 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 			if (min_rate == 0 || vfe->res->hw_ops == &vfe_ops_3_1)
 				j = clock->nfreqs - 1;
 
-			dev_info(dev, "VFE clock %s: min_rate=%llu j=%d freq[j]=%u nfreqs=%d\n",
+			dev_dbg(dev, "VFE clock %s: min_rate=%llu j=%d freq[j]=%u nfreqs=%d\n",
 				 clock->name, min_rate, j, clock->freq[j], clock->nfreqs);
 
 			rate = clk_round_rate(clock->clk, clock->freq[j]);
@@ -1344,7 +1344,7 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 				return -EINVAL;
 			}
 
-			dev_info(dev, "VFE clock %s: requested=%u rounded=%ld\n",
+			dev_dbg(dev, "VFE clock %s: requested=%u rounded=%ld\n",
 				 clock->name, clock->freq[j], rate);
 
 			/*
@@ -1354,7 +1354,7 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 			 * CSIPHY may have already set the rate before enabling.
 			 */
 			if (clk_get_rate(clock->clk) == rate) {
-				dev_info(dev,
+				dev_dbg(dev,
 					 "VFE clock %s: already at %ld Hz, skipping set_rate\n",
 					 clock->name, rate);
 			} else {
@@ -1364,7 +1364,7 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 						ret);
 					return ret;
 				}
-				dev_info(dev, "VFE clock %s: set to %ld Hz\n",
+				dev_dbg(dev, "VFE clock %s: set to %ld Hz\n",
 					 clock->name, clk_get_rate(clock->clk));
 			}
 		}
@@ -1479,7 +1479,7 @@ int vfe_get(struct vfe_device *vfe)
 					dev_warn(vfe->camss->dev,
 						 "VFE: Failed to enable CSI1 clock: %d\n", ret);
 				} else {
-					dev_info(vfe->camss->dev,
+					dev_dbg(vfe->camss->dev,
 						 "VFE: CSI1 clock enabled\n");
 				}
 			}
@@ -1488,13 +1488,13 @@ int vfe_get(struct vfe_device *vfe)
 			if (mmcc_base) {
 				u32 vfe_cc = readl_relaxed(mmcc_base + 0x0104);
 				u32 misc_cc = readl_relaxed(mmcc_base + 0x0058);
-				dev_info(vfe->camss->dev,
+				dev_dbg(vfe->camss->dev,
 					 "VFE: MMCC VFE_CC_REG after clk enable: 0x%08x "
 					 "(CSI0_VFE=%s, CSI1_VFE=%s)\n",
 					 vfe_cc,
 					 (vfe_cc & BIT(12)) ? "ON" : "off",
 					 (vfe_cc & BIT(10)) ? "ON" : "off");
-				dev_info(vfe->camss->dev,
+				dev_dbg(vfe->camss->dev,
 					 "VFE: MMCC MISC_CC_REG: 0x%08x "
 					 "(csi_pix_sel=%s, csi_pix_en=%s, csi_rdi_sel=%s, csi_rdi_en=%s)\n",
 					 misc_cc,
@@ -1526,7 +1526,7 @@ int vfe_get(struct vfe_device *vfe)
 
 					/* Verify the write took effect */
 					vfe_cc = readl_relaxed(mmcc_base + 0x0104);
-					dev_info(vfe->camss->dev,
+					dev_dbg(vfe->camss->dev,
 						 "VFE: VFE_CC force-enable: 0x%08x -> 0x%08x "
 						 "(CSI0=%s, CSI1=%s)\n",
 						 orig_vfe_cc, vfe_cc,
@@ -1558,7 +1558,7 @@ int vfe_get(struct vfe_device *vfe)
 				 *   - Bit 25 (0x2000000): csi_pix_sel = CSI1
 				 *   - Bit 26 (0x4000000): csi_pix_clk enable
 				 */
-				dev_info(vfe->camss->dev,
+				dev_dbg(vfe->camss->dev,
 					 "VFE: MISC_CC before: 0x%08x\n", misc_cc);
 
 				/* Set CSI_CC_REG to enable CSI1 PHY */
@@ -1571,13 +1571,13 @@ int vfe_get(struct vfe_device *vfe)
 
 				/* Verify the writes */
 				misc_cc = readl_relaxed(mmcc_base + 0x0058);
-				dev_info(vfe->camss->dev,
+				dev_dbg(vfe->camss->dev,
 					 "VFE: MISC_CC after: 0x%08x (expect 0x06003400)\n",
 					 misc_cc);
 
 				{
 					u32 csi_cc = readl_relaxed(mmcc_base + 0x0040);
-					dev_info(vfe->camss->dev,
+					dev_dbg(vfe->camss->dev,
 						 "VFE: CSI_CC after: 0x%08x (expect 0x285)\n",
 						 csi_cc);
 				}
@@ -1605,18 +1605,18 @@ int vfe_get(struct vfe_device *vfe)
 		if (ret < 0)
 			goto error_reset;
 
-		dev_info(vfe->camss->dev, "VFE get: reset done, setting camif_pending=false\n");
+		dev_dbg(vfe->camss->dev, "VFE get: reset done, setting camif_pending=false\n");
 
 		/* Ensure clean CAMIF state for MSM8660 deferred enable */
 		vfe->camif_pending = false;
 
-		dev_info(vfe->camss->dev, "VFE get: calling vfe_reset_output_maps\n");
+		dev_dbg(vfe->camss->dev, "VFE get: calling vfe_reset_output_maps\n");
 		vfe_reset_output_maps(vfe);
 
-		dev_info(vfe->camss->dev, "VFE get: calling vfe_init_outputs\n");
+		dev_dbg(vfe->camss->dev, "VFE get: calling vfe_init_outputs\n");
 		vfe_init_outputs(vfe);
 
-		dev_info(vfe->camss->dev, "VFE get: calling hw_version\n");
+		dev_dbg(vfe->camss->dev, "VFE get: calling hw_version\n");
 		vfe->res->hw_ops->hw_version(vfe);
 
 		/* Set ICC bandwidth for VFE DMA operations */
@@ -1627,7 +1627,7 @@ int vfe_get(struct vfe_device *vfe)
 			/* Non-fatal - continue without bandwidth vote */
 		}
 
-		dev_info(vfe->camss->dev, "VFE get: all init complete\n");
+		dev_dbg(vfe->camss->dev, "VFE get: all init complete\n");
 	} else {
 		ret = vfe_check_clock_rates(vfe);
 		if (ret < 0)
@@ -1778,13 +1778,7 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct vfe_line *line = v4l2_get_subdevdata(sd);
 	struct vfe_device *vfe = to_vfe(line);
-	ktime_t start_time;
 	int ret;
-
-	start_time = ktime_get();
-	dev_info(vfe->camss->dev,
-		 "[TIMING] VFE set_stream: enable=%d line_id=%d START at %lld ns\n",
-		 enable, line->id, ktime_to_ns(start_time));
 
 	if (enable) {
 		line->output.state = VFE_OUTPUT_RESERVED;
@@ -1792,19 +1786,6 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 		if (ret < 0)
 			dev_err(vfe->camss->dev,
 				"Failed to enable vfe outputs\n");
-
-		/*
-		 * After VFE enable completes, dump critical status registers
-		 * to verify VFE is ready to receive data from CSIPHY.
-		 */
-		dev_info(vfe->camss->dev,
-			 "[TIMING] VFE READY CHECK after enable: IRQ_STATUS_0=0x%08x IRQ_STATUS_1=0x%08x\n",
-			 readl_relaxed(vfe->base + 0x02C),  /* VFE_IRQ_STATUS_0 */
-			 readl_relaxed(vfe->base + 0x030)); /* VFE_IRQ_STATUS_1 */
-		dev_info(vfe->camss->dev,
-			 "[TIMING] VFE READY CHECK: CAMIF_STATUS=0x%08x CAMIF_CFG=0x%08x\n",
-			 readl_relaxed(vfe->base + 0x204),  /* VFE_CAMIF_STATUS */
-			 readl_relaxed(vfe->base + 0x1E4)); /* VFE_CAMIF_CFG */
 	} else {
 		ret = vfe->res->hw_ops->vfe_disable(line);
 		if (ret < 0)
@@ -1812,9 +1793,6 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 				"Failed to disable vfe outputs\n");
 	}
 
-	dev_info(vfe->camss->dev,
-		 "[TIMING] VFE set_stream DONE ret=%d elapsed=%lld ns\n",
-		 ret, ktime_to_ns(ktime_get()) - ktime_to_ns(start_time));
 	return ret;
 }
 
@@ -2346,7 +2324,7 @@ static int vfe_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 		format.format.code = MEDIA_BUS_FMT_UYVY8_2X8;
 		format.format.width = 1280;
 		format.format.height = 1024;
-		dev_info(vfe->camss->dev,
+		dev_dbg(vfe->camss->dev,
 			 "VFE 3.1 init format: %ux%u code=0x%04x\n",
 			 format.format.width, format.format.height,
 			 format.format.code);
@@ -2676,7 +2654,7 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 			 * resource (now 1) for standard buffer allocation.
 			 */
 			video_out->stride_factor = vfe->res->pix_stride_factor;
-			dev_info(dev, "VFE line %d: stride_factor=%u\n",
+			dev_dbg(dev, "VFE line %d: stride_factor=%u\n",
 				 i, video_out->stride_factor);
 		}
 
@@ -2691,7 +2669,7 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->default_width = vfe->line[i].fmt[MSM_VFE_PAD_SRC].width;
 		video_out->default_height = vfe->line[i].fmt[MSM_VFE_PAD_SRC].height;
 
-		dev_info(dev, "VFE line %d: default video format %ux%u\n",
+		dev_dbg(dev, "VFE line %d: default video format %ux%u\n",
 			 i, video_out->default_width, video_out->default_height);
 
 		snprintf(name, ARRAY_SIZE(name), "%s%d_%s%d",
@@ -2713,7 +2691,7 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 				ret);
 			goto error_link;
 		}
-		dev_info(dev, "Created link: %s pad %d -> %s pad 0 (IMMUTABLE|ENABLED)\n",
+		dev_dbg(dev, "Created link: %s pad %d -> %s pad 0 (IMMUTABLE|ENABLED)\n",
 			 sd->entity.name, MSM_VFE_PAD_SRC, video_out->vdev.entity.name);
 	}
 
