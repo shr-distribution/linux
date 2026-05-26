@@ -188,6 +188,15 @@ static const struct rotator_fmt *find_format(u32 fourcc)
  *     and Cb/Cr order (e.g. NV12MT -> NV12, NV12 -> NV12, NV16 -> NV16).
  * Anything else (e.g. NV12 -> RGB) would only ever produce a luma-only
  * grayscale image, so it must not be advertised or accepted.
+ *
+ * Caveat for 4:2:2 (NV16/NV61) rotated by 90/270: the hardware transposes
+ * the horizontally-subsampled chroma into a *vertically*-subsampled (H1V2)
+ * layout (full-width interleaved CbCr at half the row count). The luma is
+ * unaffected and the buffer size is identical, so the CAPTURE fourcc is kept
+ * as NV16/NV61 — matching the MSM8660 vendor driver — but the chroma plane of
+ * a 90/270-rotated 4:2:2 frame is H1V2, which a consumer must interpret as
+ * such. 4:2:0 (NV12/NV21) is unaffected: it is symmetric and rotates to the
+ * identical format at every angle.
  */
 static const struct rotator_fmt *rotator_capture_fmt_for(const struct rotator_fmt *src)
 {
