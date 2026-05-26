@@ -332,6 +332,11 @@ int main(int argc, char **argv)
     size_t cap_count = 0;
     int idle_polls = 0;
     int stop_sent = 0;
+    /* Teardown-race test: VIDC_ABORT_AFTER=N -> STREAMOFF mid-stream after N
+     * frames (frames still in flight) instead of a clean drain. Exercises the
+     * device_run/submit_frame vs close race. 0 = normal drain. */
+    int abort_after = getenv("VIDC_ABORT_AFTER") ?
+                      atoi(getenv("VIDC_ABORT_AFTER")) : 0;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     while (idle_polls < 5 && !got_eos) {
@@ -384,6 +389,16 @@ int main(int argc, char **argv)
                     };
                     ioctl(fd, VIDIOC_QBUF, &rb);
                 }
+            }
+            if (abort_after && cap_count >= (size_t)abort_after) {
+                int t = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+                fprintf(stderr,
+                        "ABORT: STREAMOFF mid-stream after %zu frames "
+                        "(frames in flight)\n", cap_count);
+                ioctl(fd, VIDIOC_STREAMOFF, &t);
+                t = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+                ioctl(fd, VIDIOC_STREAMOFF, &t);
+                break;
             }
         }
         if (pfd.revents & POLLOUT) {
