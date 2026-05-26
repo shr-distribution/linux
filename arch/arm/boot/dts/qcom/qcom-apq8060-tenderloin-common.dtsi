@@ -57,7 +57,6 @@
 		serial0 = &gsbi12_serial; /* Console - /dev/ttyMSM0 */
 		serial1 = &gsbi6_serial;  /* Bluetooth - /dev/ttyMSM1 */
 		serial2 = &gsbi10_serial; /* Touchscreen UART - /dev/ttyMSM2 */
-		serial3 = &gsbi5_serial;  /* GPS - /dev/ttyMSM3 */
 		display0 = &lg_panel;
 	};
 
@@ -1828,14 +1827,6 @@
 		bias-disable;
 	};
 
-	/* GPS UART pins - gpio103-106 use gsbi11 function per pinctrl driver */
-	gsbi5_uart_pins: uart5-state {
-		pins = "gpio103", "gpio104", "gpio105", "gpio106";
-		function = "gsbi11";
-		drive-strength = <8>;
-		bias-disable;
-	};
-
 	/*
 	 * GSBI6 UART pins for Bluetooth (Broadcom BCM4329/4330)
 	 *
@@ -2876,33 +2867,14 @@
 	};
 };
 
-/* GPS - Broadcom BCM4751 on GSBI5 UART */
-&gsbi5 {
-	status = "okay";
-	qcom,mode = <GSBI_PROT_UART_W_FC>;
-};
-
-&gsbi5_serial {
-	status = "okay";
-
-	pinctrl-names = "default";
-	pinctrl-0 = <&gsbi5_uart_pins>;
-
-	uart-has-rtscts;
-
-	gnss {
-		compatible = "brcm,bcm4751";
-
-		vddio-supply = <&pm8058_s3>;  /* 1.8V I/O */
-		vdd-supply = <&pm8058_l10>;   /* 3.05V core */
-
-		enable-gpios = <&pm8058_gpio 3 GPIO_ACTIVE_HIGH>;  /* GPIO 4 - LNA enable */
-		reset-gpios = <&pm8058_gpio 4 GPIO_ACTIVE_LOW>;    /* GPIO 5 - Reset */
-
-		pinctrl-names = "default";
-		pinctrl-0 = <&gps_pins>;
-	};
-};
+/*
+ * GSBI5 carries no GPS on any board we ship: Topaz WiFi/3G and Opal WiFi
+ * route gpio103-106 to volume keys + camera (so gsbi5_serial stays the SoC
+ * default "disabled", overridden explicitly per-leaf); only the Opal-3G
+ * board uses gsbi11 here for a BCM4751 GPS UART (with the volume keys moved
+ * to the PMIC and WEBCAM_RST relocated to gpio8). If an Opal-3G dts is ever
+ * added, define that GPS node and its gsbi11 pinmux there, not in common.
+ */
 
 /*
  * GSBI6 - Bluetooth UART (Broadcom BCM4329/4330)
@@ -3839,26 +3811,6 @@
 		};
 	};
 
-	/* GPS control pins (Broadcom BCM4751) */
-	gps_pins: gps-state {
-		/* GPIO 4: GPS LNA enable (REGPU) */
-		gpio@3 {
-			pins = "gpio4";
-			function = "normal";
-			output-low;
-			power-source = <PM8058_GPIO_S3>;
-			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
-		};
-
-		/* GPIO 5: GPS reset */
-		gpio@4 {
-			pins = "gpio5";
-			function = "normal";
-			output-low;
-			power-source = <PM8058_GPIO_S3>;
-			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
-		};
-	};
 };
 
 /*
