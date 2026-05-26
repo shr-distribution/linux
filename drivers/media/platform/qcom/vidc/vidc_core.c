@@ -168,18 +168,14 @@ static void vidc_reset_core(struct vidc_core *core)
 	if (!core->rst_core)
 		return;
 
-	reset_control_assert(core->rst_core);
-	reset_control_assert(core->rst_axi);
-	reset_control_assert(core->rst_axi_a);
-	reset_control_assert(core->rst_axi_b);
-	udelay(5);
-	reset_control_deassert(core->rst_axi_b);
-	reset_control_deassert(core->rst_axi_a);
-	reset_control_deassert(core->rst_axi);
-	reset_control_deassert(core->rst_core);
-	udelay(5);
-
-	/* Extra core-reset pulse "now that power is on" (footswitch step). */
+	/*
+	 * Pulse only the VCODEC core/RISC reset. The 0x33 warm state is the
+	 * core never being reset; the AXI ports (esp. Port B, which the
+	 * decoder pixel-cache writes through) must NOT be reset here — doing
+	 * so leaves the first decode's DPB writes gated ("FRAME_DONE acks but
+	 * no data lands"). The VIDC-internal AXI halt/reset in vidc_hw_reset()
+	 * already handles the AXI path.
+	 */
 	reset_control_assert(core->rst_core);
 	udelay(5);
 	reset_control_deassert(core->rst_core);
@@ -3311,6 +3307,9 @@ static int vidc_runtime_suspend(struct device *dev)
 	struct vidc_core *core = dev_get_drvdata(dev);
 	u32 axi_status;
 	int timeout;
+
+	dev_info(dev, "runtime_suspend: collapsing VED (fw_running=%d)\n",
+		 core->fw_running);
 
 	/*
 	 * Drain the VIDC AXI master before cutting clocks. If we just call
