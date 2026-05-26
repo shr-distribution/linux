@@ -2088,9 +2088,16 @@ init_buf_done:
 	}
 
 	inst->dpb_inited = true;
-	/* All DPB slots initially free for firmware to decode into */
-	inst->dpb_hw_mask = (1u << inst->dpb_count) - 1;
-	dev_info(core->dev, "VIDC DPB initialised, %u slots active (hw_mask=0x%x)\n",
+	/*
+	 * Do NOT mark all DPB slots free here. The firmware may only decode
+	 * into slots whose backing CAPTURE buffer userspace has actually
+	 * QBUF'd (and which therefore sit in the m2m CAPTURE queue) — otherwise
+	 * a FRAME_DONE names a slot whose buffer cannot be dequeued
+	 * ("display slot N not in CAPTURE queue"). dpb_hw_mask is built up by
+	 * the CAPTURE buf_queue path (s5p-mfc dec_dst_flag model): one bit per
+	 * QBUF'd buffer, cleared on display, re-set on re-queue.
+	 */
+	dev_info(core->dev, "VIDC DPB initialised, %u slots (hw_mask=0x%x from queued bufs)\n",
 		 inst->dpb_count, inst->dpb_hw_mask);
 
 	return 0;

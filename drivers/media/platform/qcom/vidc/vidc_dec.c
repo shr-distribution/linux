@@ -792,14 +792,17 @@ static void vidc_dec_buf_queue(struct vb2_buffer *vb)
 	v4l2_m2m_buf_queue(inst->m2m_ctx, vbuf);
 
 	/*
-	 * Re-queued CAPTURE buffer: userspace finished displaying this DPB
-	 * slot, so return it to the firmware DPB pool. The next FRAME_DATA's
-	 * CH0_DPB_RELEASE = dpb_hw_mask write hands it back to the firmware
-	 * (matches webOS ddl MARK_FREE). Only meaningful once streaming (the
-	 * initial QBUFs are folded into the all-free mask at INIT_BUFFERS).
+	 * CAPTURE buffer QBUF'd: release this DPB slot to the firmware. The
+	 * next FRAME_DATA's CH0_DPB_RELEASE = dpb_hw_mask write hands it back
+	 * (webOS ddl MARK_FREE). This MUST cover both the initial population
+	 * AND re-queues — the firmware may only decode into slots whose buffer
+	 * is currently in the m2m CAPTURE queue, otherwise a FRAME_DONE names a
+	 * slot we cannot dequeue. So set the bit on every CAPTURE QBUF
+	 * regardless of dpb_inited (the slot count is fixed at REQBUFS); the
+	 * INIT_BUFFERS path no longer pre-fills the mask.
 	 */
 	if (vb->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
-	    inst->dpb_inited && vb->index < VIDC_DPB_REG_SLOTS)
+	    vb->index < VIDC_DPB_REG_SLOTS)
 		inst->dpb_hw_mask |= (1u << vb->index);
 
 	/*
@@ -947,10 +950,11 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	 * accumulates bits as the client returns displayed output buffers.
 	 * Writing 0 causes error 125 (VIDC_1080P_ERROR_NO_BUFFER_RELEASED_FROM_HOST).
 	 *
-	 * We manage DPB internally (firmware slots not mapped 1:1 to V4L2
-	 * CAPTURE buffers — we memcpy out after FRAME_DONE).  Use the
-	 * inst->dpb_hw_mask field which starts fully open (all slots free)
-	 * and is updated by the IRQ handler after each FRAME_DONE.
+	 * The DPB slots ARE the V4L2 CAPTURE buffers (zero-copy, s5p-mfc
+	 * style).  inst->dpb_hw_mask starts empty and gains a bit per CAPTURE
+	 * QBUF (buf_queue), loses it on display (FRAME_DONE), regains it on
+	 * re-queue — so it names exactly the buffers currently sitting in the
+	 * m2m CAPTURE queue, which is precisely the set the firmware may write.
 	 *
 	 * DPB_CONFIG = dpb_count: tell firmware how many DPB slots exist.
 	 */
