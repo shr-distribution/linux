@@ -6129,10 +6129,104 @@ static void vfe31_config_irq_masks(struct vfe_device *vfe, struct vfe_line *line
 	writel_relaxed(V31(vfe)->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 }
 
+/*
+ * Program the CAMIF input window + frame-sync registers right before CAMIF
+ * start. Distinct from vfe31_config_camif_window() used at configure time:
+ * this is the is_rdi-aware, last-write-wins version - WINDOW counts in 16-bit
+ * pixel units so RDI uses width*2 (not the raw byte stride), and it forces
+ * FRAME_CFG=0. width_bytes/height are the values computed in the caller.
+ */
+static void vfe31_config_camif_input(struct vfe_device *vfe,
+				     struct vfe_line *line,
+				     u32 width_bytes, u32 height)
+{
+	u32 val;
+
+	/*
+	 * Step 6: Configure CAMIF registers
+	 *
+	 * CAMIF_CFG at 0x1E4: Data routing configuration
+	 *   Bit 6 (0x40) = camif2vfeEnable: route to ISP pipeline (PIX/VIDEO)
+	 *   Bit 7 (0x80) = camif2busEnable: route to AXI bus (RDI/raw bypass)
+	 *   Confirmed across HTC, Samsung, Sony, and Opal HAL binaries.
+	 *
+	 * FRAME_CFG at 0x1E8: Frame dimensions for raw mode
+	 * WINDOW_WIDTH_CFG at 0x1EC: (height << 16) | width_bytes
+	 * WINDOW_HEIGHT_CFG at 0x1F0: width_bytes - 1
+	 * SUBSAMPLE_CFG_0 at 0x1F4: height - 1
+	 * SUBSAMPLE_CFG_1 at 0x1F8: 0xFFFFFFFF (no frame skip)
+	 */
+	{
+		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
+		u32 camif_cfg;
+
+		if (is_rdi) {
+			/*
+			 * RDI raw bypass: 0x1E4 is EFS_CFG on VFE31.
+			 * webOS uses 0x40 for ALL modes (PIX and raw).
+			 * Samsung HAL uses 0x10 for raw, but that's for
+			 * parallel sensors - MIPI needs 0x40 (APS mode).
+			 */
+			camif_cfg = 0x40;
+			dev_dbg(vfe->camss->dev,
+				 "VFE31: CAMIF_CFG=0x%02x (MIPI APS mode)\n",
+				 camif_cfg);
+		} else {
+			/* PIX/VIDEO: same EFS_CFG as webOS (0x40) */
+			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2VFE;
+			dev_dbg(vfe->camss->dev,
+				 "VFE31: CAMIF_CFG=0x%02x (MIPI APS for PIX)\n",
+				 camif_cfg);
+		}
+		writel_relaxed(camif_cfg, vfe->base + VFE_0_CAMIF_CFG);
+	}
+
+	/*
+	 * FRAME_CFG: Samsung/Opal leave at 0 for both PIX and raw modes.
+	 * webOS also never sets it. The CAMIF uses WINDOW registers
+	 * for frame dimensions instead.
+	 */
+	writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+
+	/*
+	 * WINDOW registers: CAMIF always counts in 16-bit pixel units.
+	 * For UYVY (PIX mode): width_bytes = width * 2 (already correct)
+	 * For RAW: must also use width * 2, not raw stride.
+	 *
+	 * Confirmed from Opal mt9m113_raw_snapshot_config():
+	 *   WINDOW_WIDTH low bits = firstPixel << 1 (= 0)
+	 *   lastPixel = (firstPixel + width * 2) - 1
+	 */
+	{
+		bool is_rdi_line = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+				    V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+				    V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
+		u32 camif_width;
+
+		if (is_rdi_line)
+			camif_width = line->fmt[MSM_VFE_PAD_SINK].width * 2;
+		else
+			camif_width = width_bytes;
+
+		val = (height << 16) | (camif_width & 0xFFFF);
+		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: WINDOW_WIDTH=0x%08x (height=%u, width=%u)\n",
+			 val, height, camif_width);
+
+		val = camif_width - 1;
+		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
+	}
+
+	writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
+	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+}
+
 static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 {
 	struct vfe_line *line;
-	u32 val;
 	u32 width_bytes, height;
 	u8 bpp;
 
@@ -6220,86 +6314,8 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(0x00ffffff, vfe->base + VFE_0_CLAMP_ENC_MAX_CFG);
 	writel_relaxed(0x0, vfe->base + VFE_0_CLAMP_ENC_MIN_CFG);
 
-	/*
-	 * Step 6: Configure CAMIF registers
-	 *
-	 * CAMIF_CFG at 0x1E4: Data routing configuration
-	 *   Bit 6 (0x40) = camif2vfeEnable: route to ISP pipeline (PIX/VIDEO)
-	 *   Bit 7 (0x80) = camif2busEnable: route to AXI bus (RDI/raw bypass)
-	 *   Confirmed across HTC, Samsung, Sony, and Opal HAL binaries.
-	 *
-	 * FRAME_CFG at 0x1E8: Frame dimensions for raw mode
-	 * WINDOW_WIDTH_CFG at 0x1EC: (height << 16) | width_bytes
-	 * WINDOW_HEIGHT_CFG at 0x1F0: width_bytes - 1
-	 * SUBSAMPLE_CFG_0 at 0x1F4: height - 1
-	 * SUBSAMPLE_CFG_1 at 0x1F8: 0xFFFFFFFF (no frame skip)
-	 */
-	{
-		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
-		u32 camif_cfg;
-
-		if (is_rdi) {
-			/*
-			 * RDI raw bypass: 0x1E4 is EFS_CFG on VFE31.
-			 * webOS uses 0x40 for ALL modes (PIX and raw).
-			 * Samsung HAL uses 0x10 for raw, but that's for
-			 * parallel sensors - MIPI needs 0x40 (APS mode).
-			 */
-			camif_cfg = 0x40;
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: CAMIF_CFG=0x%02x (MIPI APS mode)\n",
-				 camif_cfg);
-		} else {
-			/* PIX/VIDEO: same EFS_CFG as webOS (0x40) */
-			camif_cfg = VFE_0_CAMIF_CFG_CAMIF2VFE;
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: CAMIF_CFG=0x%02x (MIPI APS for PIX)\n",
-				 camif_cfg);
-		}
-		writel_relaxed(camif_cfg, vfe->base + VFE_0_CAMIF_CFG);
-	}
-
-	/*
-	 * FRAME_CFG: Samsung/Opal leave at 0 for both PIX and raw modes.
-	 * webOS also never sets it. The CAMIF uses WINDOW registers
-	 * for frame dimensions instead.
-	 */
-	writel_relaxed(0, vfe->base + VFE_0_CAMIF_FRAME_CFG);
-
-	/*
-	 * WINDOW registers: CAMIF always counts in 16-bit pixel units.
-	 * For UYVY (PIX mode): width_bytes = width * 2 (already correct)
-	 * For RAW: must also use width * 2, not raw stride.
-	 *
-	 * Confirmed from Opal mt9m113_raw_snapshot_config():
-	 *   WINDOW_WIDTH low bits = firstPixel << 1 (= 0)
-	 *   lastPixel = (firstPixel + width * 2) - 1
-	 */
-	{
-		bool is_rdi_line = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
-				    V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
-				    V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
-		u32 camif_width;
-
-		if (is_rdi_line)
-			camif_width = line->fmt[MSM_VFE_PAD_SINK].width * 2;
-		else
-			camif_width = width_bytes;
-
-		val = (height << 16) | (camif_width & 0xFFFF);
-		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: WINDOW_WIDTH=0x%08x (height=%u, width=%u)\n",
-			 val, height, camif_width);
-
-		val = camif_width - 1;
-		writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_HEIGHT_CFG);
-	}
-
-	writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
-	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
+	/* Step 6: CAMIF input window/frame-sync registers (is_rdi-aware). */
+	vfe31_config_camif_input(vfe, line, width_bytes, height);
 
 	/* Step 7: AXI output mode + XBAR routing. */
 	vfe31_config_axi_xbar(vfe, line);
