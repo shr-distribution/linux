@@ -24,7 +24,9 @@
  * (vpe_scale_0p*_C0..C3 + vpe_init_scale_table). The previous placeholder
  * tables summed to ~0 (a high-pass filter), so the scaler emitted only edges.
  */
-static const u32 vpe_scale_coeff_0p2_0p4[] = {
+/* webOS libqcameralib values; produce a garbled gradient in testing -- not
+ * loaded today (see vpe_hw_set_scale). Kept for reference / future fix-up. */
+static const u32 __maybe_unused vpe_scale_coeff_0p2_0p4[] = {
 	0x0083008d, 0x006b0084, 0x0083008c, 0x006c0084,
 	0x0082008c, 0x006d0084, 0x0081008c, 0x006d0085,
 	0x0080008c, 0x006e0085, 0x007f008b, 0x006f0086,
@@ -62,7 +64,8 @@ static const u32 vpe_scale_coeff_0p4_0p6[] = {
 	0x0020008e, 0x008400cd, 0x001d008c, 0x008800ce,
 };
 
-static const u32 vpe_scale_coeff_0p6_0p8[] = {
+/* See note on vpe_scale_coeff_0p2_0p4: not loaded today, kept for reference. */
+static const u32 __maybe_unused vpe_scale_coeff_0p6_0p8[] = {
 	0x0068012f, 0x03f80070, 0x0060012f, 0x03f80078,
 	0x0059012e, 0x03f80080, 0x0052012c, 0x03f80089,
 	0x004b012a, 0x03f90091, 0x00440128, 0x03f9009a,
@@ -296,16 +299,20 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 	writel(op_mode, base + VPE_OP_MODE);
 
 	/*
-	 * Load the four ratio sub-tables into the contiguous coefficient space.
-	 * The FIR hardware selects per axis from the phase step: bank 0 for the
-	 * heaviest downscale (narrowest passband) through bank 3 for upscale/1:1
-	 * (sharpest). All four are resident at once; this mirrors how the camera
-	 * HAL (and Samsung/HTC) populate the banks. The per-axis selection is in
-	 * hardware, so a non-square scale (different X/Y ratios) is handled too.
+	 * Load all four banks (the FIR selects one per axis by phase step). A
+	 * sweep across ratios showed only the 0p4_0p6 table from the webOS
+	 * libqcameralib produces correct output -- the 0p2_0p4 and 0p6_0p8
+	 * tables there give a garbled gradient on the ratios that select them
+	 * (4x-up, 1.5x-up), suggesting they were never validated on that camera
+	 * (it scaled little). 0p4_0p6 is a full 32-phase polyphase table and
+	 * resolves every upscale ratio correctly via phase selection, so use it
+	 * in every bank for now. TODO: recover proper per-band tables (the
+	 * Samsung/HTC liboemcamera have them, but those .so are stripped and
+	 * need a Ghidra pass to extract).
 	 */
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK0, vpe_scale_coeff_0p2_0p4);
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK0, vpe_scale_coeff_0p4_0p6);
 	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK1, vpe_scale_coeff_0p4_0p6);
-	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK2, vpe_scale_coeff_0p6_0p8);
+	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK2, vpe_scale_coeff_0p4_0p6);
 	vpe_hw_load_coeff_bank(base, VPE_SCALE_COEFF_BANK3, vpe_scale_coeff_0p4_0p6);
 
 	/* Set phase init to 0 */
