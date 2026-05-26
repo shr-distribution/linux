@@ -10,7 +10,6 @@
  */
 
 #include <linux/clk.h>
-#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -383,27 +382,9 @@ static void vpe_device_run(void *priv)
 		       ctx->compose.left, ctx->compose.top);
 	vpe_hw_set_rotation(vpe->base, ctx->rotation);
 
-	/* Enable interrupt and start processing */
+	/* Enable interrupt and start processing; completion arrives via IRQ. */
 	vpe_hw_enable_irq(vpe->base);
 	vpe_hw_start(vpe->base);
-
-	/* TEMP DEBUG: does the engine ever raise DONE in INTR_STATUS? */
-	{
-		u32 st = 0;
-		int i;
-		for (i = 0; i < 5000; i++) {		/* up to ~50 ms */
-			st = readl(vpe->base + 0x0024);	/* VPE_INTR_STATUS */
-			if (st & 0x1)
-				break;
-			udelay(10);
-		}
-		dev_info(vpe->dev,
-			 "device_run: %ux%u->%ux%u src_y=%pad dst_y=%pad OP_MODE=0x%08x | poll INTR_STATUS=0x%08x after %dus -> %s\n",
-			 ctx->crop.width, ctx->crop.height,
-			 ctx->compose.width, ctx->compose.height,
-			 &src_y, &dst_y, readl(vpe->base + 0x10138),
-			 st, i * 10, (st & 0x1) ? "DONE" : "NO-DONE");
-	}
 }
 
 static irqreturn_t vpe_irq_handler(int irq, void *dev_id)

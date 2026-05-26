@@ -120,15 +120,12 @@ static u32 ns_to_pre_div(struct pre_div *p, u32 ns)
 static u32 pre_div_to_ns(struct pre_div *p, u8 pre_div, u32 ns)
 {
 	u32 mask;
-	u32 orig_ns = ns;
 
 	mask = BIT(p->pre_div_width) - 1;
 	mask <<= p->pre_div_shift;
 	ns &= ~mask;
 
 	ns |= pre_div << p->pre_div_shift;
-	pr_info("pre_div_to_ns: width=%u shift=%u pre_div=%u mask=0x%x orig=0x%08x result=0x%08x\n",
-		p->pre_div_width, p->pre_div_shift, pre_div, mask, orig_ns, ns);
 	return ns;
 }
 
@@ -480,7 +477,6 @@ static int clk_rcg_bypass_determine_rate(struct clk_hw *hw,
 static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 {
 	u32 ns, md, ctl;
-	u32 ns_readback, md_readback;
 	struct mn *mn = &rcg->mn;
 	u32 mask = 0;
 	unsigned int reset_reg;
@@ -495,23 +491,14 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 		regmap_update_bits(rcg->clkr.regmap, reset_reg, mask, mask);
 
 		regmap_read(rcg->clkr.regmap, rcg->md_reg, &md);
-		pr_info("clk-rcg: %s md_reg=0x%x read=0x%08x\n",
-			 clk_hw_get_name(&rcg->clkr.hw), rcg->md_reg, md);
 		md = mn_to_md(mn, f->m, f->n, md);
-		pr_info("clk-rcg: %s writing md=0x%08x (m=%u n=%u)\n",
-			 clk_hw_get_name(&rcg->clkr.hw), md, f->m, f->n);
 		regmap_write(rcg->clkr.regmap, rcg->md_reg, md);
 
 		regmap_read(rcg->clkr.regmap, rcg->ns_reg, &ns);
-		pr_info("clk-rcg: %s ns_reg=0x%x read=0x%08x\n",
-			 clk_hw_get_name(&rcg->clkr.hw), rcg->ns_reg, ns);
 		/* MN counter mode is in hw.enable_reg sometimes */
 		if (rcg->clkr.enable_reg != rcg->ns_reg) {
 			regmap_read(rcg->clkr.regmap, rcg->clkr.enable_reg, &ctl);
 			ctl = mn_to_reg(mn, f->m, f->n, ctl);
-			pr_info("clk-rcg: %s writing enable_reg=0x%x ctl=0x%08x\n",
-				 clk_hw_get_name(&rcg->clkr.hw),
-				 rcg->clkr.enable_reg, ctl);
 			regmap_write(rcg->clkr.regmap, rcg->clkr.enable_reg, ctl);
 		} else {
 			ns = mn_to_reg(mn, f->m, f->n, ns);
@@ -522,15 +509,7 @@ static int __clk_rcg_set_rate(struct clk_rcg *rcg, const struct freq_tbl *f)
 	}
 
 	ns = pre_div_to_ns(&rcg->p, f->pre_div - 1, ns);
-	pr_info("clk-rcg: %s writing ns=0x%08x (pre_div=%u)\n",
-		 clk_hw_get_name(&rcg->clkr.hw), ns, f->pre_div);
 	regmap_write(rcg->clkr.regmap, rcg->ns_reg, ns);
-
-	/* Verify writes took effect */
-	regmap_read(rcg->clkr.regmap, rcg->ns_reg, &ns_readback);
-	regmap_read(rcg->clkr.regmap, rcg->md_reg, &md_readback);
-	pr_info("clk-rcg: %s readback ns=0x%08x md=0x%08x\n",
-		 clk_hw_get_name(&rcg->clkr.hw), ns_readback, md_readback);
 
 	regmap_update_bits(rcg->clkr.regmap, reset_reg, mask, 0);
 
