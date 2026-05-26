@@ -1716,7 +1716,14 @@
 		key-home {
 			label = "Home";
 			gpios = <&tlmm 40 GPIO_ACTIVE_LOW>;
-			linux,code = <KEY_CENTER>;
+			/*
+			 * 232 is the legacy webOS KEY_CENTER ("core navi" Home
+			 * button) that board-tenderloin.c emitted. Mainline has no
+			 * KEY_CENTER macro (it names code 232 KEY_REPLY), so use the
+			 * literal to send exactly the keycode the LuneOS tenderloin
+			 * keymap expects.
+			 */
+			linux,code = <232>;
 			debounce-interval = <20>;
 			wakeup-source;
 		};
