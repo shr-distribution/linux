@@ -21338,6 +21338,14 @@ T:	git git://linuxtv.org/media.git
 F:	Documentation/devicetree/bindings/media/*venus*
 F:	drivers/media/platform/qcom/venus/
 
+QUALCOMM VPE VIDEO PROCESSING ENGINE DRIVER
+M:	Herman van Hazendonk <herrie@herrie.org>
+L:	linux-media@vger.kernel.org
+L:	linux-arm-msm@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/media/qcom,msm8660-vpe.yaml
+F:	drivers/media/platform/qcom/vpe/
+
 QUALCOMM WCN36XX WIRELESS DRIVER
 M:	Loic Poulain <loic.poulain@oss.qualcomm.com>
 L:	wcn36xx@lists.infradead.org
