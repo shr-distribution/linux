@@ -120,7 +120,7 @@ int vpe_hw_reset(void __iomem *base)
 	while (timeout > 0) {
 		if (!(readl(base + VPE_SW_RESET) & VPE_SW_RESET_VALUE))
 			break;
-		udelay(10);
+		usleep_range(10, 20);
 		timeout--;
 	}
 
@@ -229,9 +229,11 @@ void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride)
 	/* Y stride [15:0] + chroma stride [31:16], same as the source plane. */
 	writel((stride & 0xffff) | (stride << 16), base + VPE_OUT_YSTRIDE1);
 
-	/* Output format + pack pattern for NV12, from the camera HAL's VPE
+	/*
+	 * Output format + pack pattern for NV12, from the camera HAL's VPE
 	 * output-plane config (mm_vpe_set_output_plane). Note the format word
-	 * differs from the source one (byte2 = 0x09 vs 0x12). */
+	 * differs from the source one (byte2 = 0x09 vs 0x12).
+	 */
 	writel(VPE_OUT_FORMAT_NV12, base + VPE_OUT_FORMAT);
 	writel(VPE_PACK_PATTERN_NV12, base + VPE_OUT_PACK_PATTERN1);
 }

@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: Qualcomm MSM8660 Video Processing Engine (VPE)
 
 maintainers:
-  - Herman van Hazendonk <herrie@herrie.org>
+  - Herman van Hazendonk <github.com@herrie.org>
 
 description:
   The VPE is the MDP "PPP" pixel pipeline found on the MSM8260/MSM8660/APQ8060

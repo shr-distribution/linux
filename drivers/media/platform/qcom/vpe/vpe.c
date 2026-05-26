@@ -408,14 +408,15 @@ static void vpe_device_run(void *priv)
 	dst_buf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
 
 	if (src_buf && dst_buf) {
+		enum vb2_buffer_state state = vpe->error ? VB2_BUF_STATE_ERROR :
+							   VB2_BUF_STATE_DONE;
+
 		dst_buf->vb2_buf.timestamp = src_buf->vb2_buf.timestamp;
 		dst_buf->timecode = src_buf->timecode;
 		dst_buf->flags = src_buf->flags & V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
 
-		v4l2_m2m_buf_done(src_buf, vpe->error ? VB2_BUF_STATE_ERROR :
-						        VB2_BUF_STATE_DONE);
-		v4l2_m2m_buf_done(dst_buf, vpe->error ? VB2_BUF_STATE_ERROR :
-						        VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(src_buf, state);
+		v4l2_m2m_buf_done(dst_buf, state);
 	}
 
 	v4l2_m2m_job_finish(vpe->m2m_dev, ctx->fh.m2m_ctx);

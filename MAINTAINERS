@@ -21339,7 +21339,7 @@ F:	Documentation/devicetree/bindings/media/*venus*
 F:	drivers/media/platform/qcom/venus/
 
 QUALCOMM VPE VIDEO PROCESSING ENGINE DRIVER
-M:	Herman van Hazendonk <herrie@herrie.org>
+M:	Herman van Hazendonk <github.com@herrie.org>
 L:	linux-media@vger.kernel.org
 L:	linux-arm-msm@vger.kernel.org
 S:	Maintained
