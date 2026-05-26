@@ -710,6 +710,34 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 	return ring->memptrs->rptr;
 }
 
+/*
+ * Hangcheck progress check (mirrors a6xx_progress). The CP advances the IB1/IB2
+ * base and decrements the remaining buffer size as it consumes the command
+ * stream. If any of these changed since the previous hangcheck, the GPU is
+ * making forward progress -- just slowly, e.g. a heavy fragment-bound frame
+ * (glmark2 blur/buffer scenes run well under one frame per hangcheck period) --
+ * and is not actually hung. Without this, such frames false-positive as a
+ * lockup and trigger needless recover/microcode-reload cycles that drop the
+ * in-flight submit (Mesa "submit failed: -16"). made_progress() still bounds
+ * the number of progress retries, so a genuinely wedged-but-fetching GPU is
+ * eventually recovered.
+ */
+static bool a2xx_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
+{
+	struct msm_cp_state cp_state = {
+		.ib1_base = gpu_read(gpu, REG_AXXX_CP_IB1_BASE),
+		.ib2_base = gpu_read(gpu, REG_AXXX_CP_IB2_BASE),
+		.ib1_rem  = gpu_read(gpu, REG_AXXX_CP_IB1_BUFSZ),
+		.ib2_rem  = gpu_read(gpu, REG_AXXX_CP_IB2_BUFSZ),
+	};
+	bool progress;
+
+	progress = !!memcmp(&cp_state, &ring->last_cp_state, sizeof(cp_state));
+	ring->last_cp_state = cp_state;
+
+	return progress;
+}
+
 static int a2xx_pm_suspend(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
@@ -886,6 +914,7 @@ static const struct adreno_gpu_funcs funcs = {
 		.create_vm = a2xx_create_vm,
 		.get_rptr = a2xx_get_rptr,
 		.gpu_set_freq = a2xx_gpu_set_freq,
+		.progress = a2xx_progress,
 	},
 };
 
