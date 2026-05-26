@@ -807,7 +807,38 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
 	}
 
-	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
+	/*
+	 * Step the GFX3D clock ONE OPP at a time toward the target, exactly like
+	 * legacy KGSL (kgsl_pwrctrl_pwrlevel_change): "Don't shift by more than
+	 * one level at a time to avoid glitches." A direct multi-OPP jump of the
+	 * GFX3D clock (devfreq routinely asks for e.g. 27 <-> 266 MHz, ~10 OPPs
+	 * at once) glitches the PLL/MN divider and wedges the marginal a220
+	 * back-end. dev_pm_opp_set_rate() applies the matching voltage for each
+	 * intermediate step. KGSL ran a2xx DVFS stably doing exactly this.
+	 */
+	{
+		struct device *dev = &gpu->pdev->dev;
+		unsigned long cur = clk_get_rate(gpu->core_clk);
+		int guard = 0;
+
+		while (cur != freq && ++guard <= 16) {
+			struct dev_pm_opp *step;
+			unsigned long sf;
+
+			if (freq > cur) {
+				sf = cur + 1;
+				step = dev_pm_opp_find_freq_ceil(dev, &sf);
+			} else {
+				sf = cur - 1;
+				step = dev_pm_opp_find_freq_floor(dev, &sf);
+			}
+			if (IS_ERR(step) || sf == cur)
+				break;
+			dev_pm_opp_put(step);
+			dev_pm_opp_set_rate(dev, sf);
+			cur = sf;
+		}
+	}
 }
 
 static const struct adreno_gpu_funcs funcs = {
