@@ -673,7 +673,7 @@ static void hangcheck_timer_reset(struct msm_gpu *gpu)
 
 static bool made_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 {
-	if (ring->hangcheck_progress_retries >= DRM_MSM_HANGCHECK_PROGRESS_RETRIES)
+	if (ring->hangcheck_progress_retries >= gpu->hangcheck_progress_retries)
 		return false;
 
 	if (!gpu->funcs->progress)
@@ -1064,6 +1064,8 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	 */
 	if (funcs->progress)
 		priv->hangcheck_period /= 2;
+
+	gpu->hangcheck_progress_retries = DRM_MSM_HANGCHECK_PROGRESS_RETRIES;
 
 	timer_setup(&gpu->hangcheck_timer, hangcheck_handler, 0);
 

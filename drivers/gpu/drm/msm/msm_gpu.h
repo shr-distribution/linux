@@ -251,6 +251,16 @@ struct msm_gpu {
 	bool gpu_cold;
 	bool suspend_to_system;
 
+	/*
+	 * Max hangcheck "progress" retries before a GPU that is still fetching
+	 * but not retiring is declared hung. Defaults to
+	 * DRM_MSM_HANGCHECK_PROGRESS_RETRIES; slow GPUs (a2xx) raise it so a
+	 * legitimately heavy frame (e.g. a multi-pass blur) is tolerated for
+	 * longer as long as the CP keeps advancing. A truly stuck GPU makes no
+	 * progress and is caught in one hangcheck period regardless of this.
+	 */
+	unsigned int hangcheck_progress_retries;
+
 	/**
 	 * global_faults: number of GPU hangs not attributed to a particular
 	 * address space

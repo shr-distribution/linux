@@ -979,6 +979,18 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 		goto fail;
 	}
 
+	/*
+	 * The a220 is slow: heavy fragment-bound frames (e.g. glmark2's
+	 * multi-pass desktop blur) legitimately run ~1fps. With a2xx_progress()
+	 * the hangcheck only fires when the CP stops advancing, so it is safe to
+	 * tolerate such a still-rendering frame for much longer than the default
+	 * before declaring a hang -- a genuinely stuck GPU makes no progress and
+	 * is still caught in a single hangcheck period. Allow ~4s (the 250ms
+	 * progress-halved hangcheck period x 16) so these frames complete instead
+	 * of being needlessly recovered (which would drop the in-flight submit).
+	 */
+	gpu->hangcheck_progress_retries = 16;
+
 	/* Get interconnect path for memory bandwidth voting */
 	a2xx_gpu->icc_path = devm_of_icc_get(&pdev->dev, "gfx-mem");
 	if (IS_ERR(a2xx_gpu->icc_path)) {
