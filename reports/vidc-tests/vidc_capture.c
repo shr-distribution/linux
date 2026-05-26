@@ -23,12 +23,17 @@
 #include <sys/ioctl.h>
 #include <sys/poll.h>
 #include <errno.h>
+#include <time.h>
 #include <linux/videodev2.h>
 
 #define WIDTH    320
 #define HEIGHT   240
 #define OUT_BUFS 4
-#define CAP_BUFS 8
+/* Must be >= the kernel's CAPTURE count. The VIDC stateful decoder sizes the
+ * CAPTURE pool as min_dpb + headroom (up to VIDC_DPB_REG_SLOTS = 32), so an
+ * 8-element array overflowed into adjacent globals (corrupting got_eos) once
+ * min_dpb pushed the count past 8. Size to the kernel maximum. */
+#define CAP_BUFS 32
 
 #define die(msg) do { perror(msg); exit(1); } while (0)
 
@@ -180,13 +185,17 @@ int main(int argc, char **argv)
     }
 
     /* NEW: MIN_BUFFERS_FOR_CAPTURE control (must reflect firmware min_dpb) */
+    int min_cap = 5;
     {
         struct v4l2_control mc = { .id = V4L2_CID_MIN_BUFFERS_FOR_CAPTURE };
-        if (ioctl(fd, VIDIOC_G_CTRL, &mc) == 0)
+        if (ioctl(fd, VIDIOC_G_CTRL, &mc) == 0) {
             fprintf(stderr, "MIN_BUFFERS_FOR_CAPTURE = %d\n", mc.value);
-        else
+            if (mc.value > 0)
+                min_cap = mc.value;
+        } else {
             fprintf(stderr, "MIN_BUFFERS_FOR_CAPTURE: G_CTRL FAILED: %s\n",
                     strerror(errno));
+        }
     }
     /* NEW: visible crop rectangle via G_SELECTION(COMPOSE) */
     {
@@ -201,14 +210,23 @@ int main(int argc, char **argv)
             fprintf(stderr, "G_SELECTION: FAILED: %s\n", strerror(errno));
     }
 
-    /* REQBUFS CAPTURE */
+    /* REQBUFS CAPTURE: ask for min_dpb + a little display headroom, not the
+     * whole array — over-requesting bloats both the CAPTURE pool and the
+     * per-slot MV pool and exhausts the SMI carveout at higher resolutions. */
+    int want_cap = min_cap + 4;
+    if (want_cap > CAP_BUFS) want_cap = CAP_BUFS;
     struct v4l2_requestbuffers rb_c = {
-        .count = CAP_BUFS,
+        .count = want_cap,
         .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
         .memory = V4L2_MEMORY_MMAP,
     };
     if (ioctl(fd, VIDIOC_REQBUFS, &rb_c)) die("REQBUFS CAP");
     fprintf(stderr, "CAP bufs: %u\n", rb_c.count);
+    if (rb_c.count > CAP_BUFS) {
+        fprintf(stderr, "CAP count %u exceeds CAP_BUFS %d — clamping\n",
+                rb_c.count, CAP_BUFS);
+        rb_c.count = CAP_BUFS;
+    }
 
     /* Map CAPTURE */
     for (unsigned i = 0; i < rb_c.count; i++) {
@@ -314,6 +332,8 @@ int main(int argc, char **argv)
     size_t cap_count = 0;
     int idle_polls = 0;
     int stop_sent = 0;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     while (idle_polls < 5 && !got_eos) {
         struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLOUT | POLLPRI };
         int pret = poll(&pfd, 1, 1000);
@@ -413,8 +433,14 @@ int main(int argc, char **argv)
     close(of);
     close(fd);
 
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double el = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+
     /* ---- verification summary ---- */
     fprintf(stderr, "\n==== DECODE VERIFY (%zu frames) ====\n", cap_count);
+    fprintf(stderr, "DECODE FPS  : %.1f  (%zu frames, %.2fs, %ux%u)\n",
+            el > 0 ? cap_count / el : 0.0, cap_count, el,
+            fc.fmt.pix_mp.width, fc.fmt.pix_mp.height);
     /* timestamps: every output ts must be a non-zero multiple of 1000 we fed,
      * and all distinct (proves the frame-tag table restored the right PTS,
      * even under B-frame reorder). */
