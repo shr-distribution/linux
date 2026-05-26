@@ -1686,9 +1686,53 @@
 		enable-gpios = <&tlmm 79 GPIO_ACTIVE_HIGH>;
 		vcc-supply = <&pm8058_l5>;
 	};
+
+	/*
+	 * Physical buttons, matching the legacy board-tenderloin.c
+	 * board_gpio_keys_buttons[]: Volume Up/Down and the center
+	 * "core navi"/Home button, all active-low TLMM GPIOs with internal
+	 * pull-up. Power is the separate pm8058 pwrkey; the pm8058 keypad
+	 * matrix is unused on this board (see &pm8058_keypad).
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gpio_keys_pins>;
+
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&tlmm 103 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <20>;
+		};
+
+		key-volume-down {
+			label = "Volume Down";
+			gpios = <&tlmm 104 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEDOWN>;
+			debounce-interval = <20>;
+		};
+
+		key-home {
+			label = "Home";
+			gpios = <&tlmm 40 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_CENTER>;
+			debounce-interval = <20>;
+			wakeup-source;
+		};
+	};
 };
 
 &tlmm {
+	/* Volume Up/Down (gpio103/104) + Home/core-navi (gpio40) buttons:
+	 * GPIO inputs with internal pull-up (active-low), matching the legacy
+	 * tenderloin gpiomux (GPIO_IN_*_PU). Consumed by the gpio-keys node. */
+	gpio_keys_pins: gpio-keys-state {
+		pins = "gpio40", "gpio103", "gpio104";
+		function = "gpio";
+		bias-pull-up;
+	};
+
 	/*
 	 * WM8958 audio codec internal LDO enable GPIOs.
 	 * These must be enabled early (before the WM8994 MFD driver probes)
@@ -3866,33 +3910,19 @@
  * node's pinctrl-0, so they were dead code that confused audits.
  */
 
+/*
+ * The pm8058 keypad matrix is not used on the TouchPad. The legacy
+ * board-tenderloin.c kernel wires no keypad matrix at all: Volume Up/Down,
+ * the center "core navi"/Home button and SIM-detect are GPIO keys (see the
+ * gpio-keys node above), and power is the pm8058 pwrkey. The keymap that was
+ * here was copied verbatim from qcom-apq8060-dragonboard.dts; enabling it
+ * scanned the absent matrix, whose floating lines latched a permanently-
+ * pressed phantom key (KEY_KBDILLUMTOGGLE at (4,3)) that the input core
+ * auto-repeated forever (~11/s, never released), flooding LunaSysMgr's
+ * nyx/DisplayManager input path and wedging the UI. Keep the matrix disabled.
+ */
 &pm8058_keypad {
-	linux,keymap = <
-	MATRIX_KEY(0, 0, KEY_MENU)
-	MATRIX_KEY(0, 2, KEY_1)
-	MATRIX_KEY(0, 3, KEY_4)
-	MATRIX_KEY(0, 4, KEY_7)
-	MATRIX_KEY(1, 0, KEY_UP)
-	MATRIX_KEY(1, 1, KEY_LEFT)
-	MATRIX_KEY(1, 2, KEY_DOWN)
-	MATRIX_KEY(1, 3, KEY_5)
-	MATRIX_KEY(1, 3, KEY_8)
-	MATRIX_KEY(2, 0, KEY_HOME)
-	MATRIX_KEY(2, 1, KEY_REPLY)
-	MATRIX_KEY(2, 2, KEY_2)
-	MATRIX_KEY(2, 3, KEY_6)
-	MATRIX_KEY(3, 0, KEY_VOLUMEUP)
-	MATRIX_KEY(3, 1, KEY_RIGHT)
-	MATRIX_KEY(3, 2, KEY_3)
-	MATRIX_KEY(3, 3, KEY_9)
-	MATRIX_KEY(3, 4, KEY_SWITCHVIDEOMODE)
-	MATRIX_KEY(4, 0, KEY_VOLUMEDOWN)
-	MATRIX_KEY(4, 1, KEY_BACK)
-	MATRIX_KEY(4, 2, KEY_CAMERA)
-	MATRIX_KEY(4, 3, KEY_KBDILLUMTOGGLE)
-	>;
-	keypad,num-rows = <6>;
-	keypad,num-columns = <5>;
+	status = "disabled";
 };
 
 &pm8058_xoadc {
