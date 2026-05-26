@@ -551,6 +551,7 @@ static void rotator_device_run(void *priv)
 	u32 rotation = 0;
 	u32 src_w, src_h;
 	u32 dst_cstride;
+	u32 timeout_ms;
 	int ret;
 
 	src_buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
@@ -640,10 +641,22 @@ static void rotator_device_run(void *priv)
 	rotator_hw_enable_irq(rot->base);
 	rotator_hw_start(rot->base);
 
+	/*
+	 * Scale the completion timeout with the surface area. The block runs at
+	 * roughly 4 MP/s; budget a conservative >=2 MP/s plus a 500 ms floor so
+	 * large frames are not aborted before the hardware finishes — a 16 MP
+	 * camera still needs several seconds, while 1080p stays well under the
+	 * floor. Capped so a pathological request cannot hold the device for too
+	 * long; a genuinely stuck job is still recovered by the soft-reset below.
+	 */
+	timeout_ms = 500 + ctx->dst.width * ctx->dst.height / 2000;
+	timeout_ms = min(timeout_ms, 12000u);
+
 	/* Wait for completion */
 	if (!wait_for_completion_timeout(&rot->done,
-					 msecs_to_jiffies(500))) {
-		dev_err(rot->dev, "rotation timeout\n");
+					 msecs_to_jiffies(timeout_ms))) {
+		dev_err(rot->dev, "rotation timeout (%u ms, %ux%u)\n",
+			timeout_ms, ctx->dst.width, ctx->dst.height);
 		rot->error = -ETIMEDOUT;
 	}
 
