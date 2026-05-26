@@ -81,7 +81,9 @@ static const u32 vpe_scale_coeff_0p6_0p8[] = {
 	0x03f80078, 0x0060012f, 0x03f80070, 0x0068012f,
 };
 
-static const u32 vpe_scale_coeff_0p8_20p0[] = {
+/* Not selected by vpe_scale_coeff_for() today (the HAL's vpe_init_scale_table
+ * uses only the three tables above), kept for reference / future tuning. */
+static const u32 __maybe_unused vpe_scale_coeff_0p8_20p0[] = {
 	0x000001ff, 0x00000000, 0x03f901fb, 0x03fe000d,
 	0x03f301f5, 0x03fb001c, 0x03ed01ee, 0x03f9002b,
 	0x03e801e5, 0x03f6003c, 0x03e401db, 0x03f3004d,
@@ -233,20 +235,24 @@ void vpe_hw_set_dst_size(void __iomem *base, u32 width, u32 height, u32 stride)
 }
 
 /*
- * Select the polyphase table by phase_step (input/output ratio) in the 3.29
- * fixed-point the scaler uses (1.0 = 0x20000000): the camera HAL splits the
- * range into <0.4 / 0.4-0.6 / 0.6-0.8 / >=0.8 (the last band covers 1:1 and
- * all downscale).
+ * Select the polyphase table from phase_step (input/output ratio, 3.29 fixed
+ * point; 1.0 = 0x20000000), using the SAME thresholds the legacy msm_vpe1
+ * driver uses for its filter-set selection. Only the magnitude of downscale
+ * matters; every upscale ratio (and 1:1) shares one "sharp" table. On this
+ * platform (TouchPad libqcameralib) the upscale set is vpe_scale_0p4_to_0p6
+ * (confirmed via the vpe_init_scale_table relocations) -- using a different
+ * table per upscale band, as we did before, produced phase-doubling on
+ * non-2x ratios (4x, 1.5x).
  */
 static const u32 *vpe_scale_coeff_for(u32 phase_step)
 {
-	if (phase_step < 0x0ccccccd)		/* < 0.4  : ~2.5x-5x upscale */
+	if (phase_step > HAL_MDP_PHASE_STEP_2P50)	/* > 2.5x downscale */
 		return vpe_scale_coeff_0p2_0p4;
-	if (phase_step < 0x13333333)		/* 0.4-0.6: ~1.7x-2.5x upscale */
+	if (phase_step > HAL_MDP_PHASE_STEP_1P66)	/* 1.66x-2.5x downscale */
 		return vpe_scale_coeff_0p4_0p6;
-	if (phase_step < 0x1999999a)		/* 0.6-0.8: ~1.25x-1.7x upscale */
+	if (phase_step > HAL_MDP_PHASE_STEP_1P25)	/* 1.25x-1.66x downscale */
 		return vpe_scale_coeff_0p6_0p8;
-	return vpe_scale_coeff_0p8_20p0;	/* >= 0.8 : 1:1 .. 20x downscale */
+	return vpe_scale_coeff_0p4_0p6;			/* <= 1.25x: upscale / 1:1 */
 }
 
 /*
@@ -275,13 +281,29 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 	u32 step_x, step_y;
 	u32 op_mode;
 
-	/* Calculate phase step values (fixed point 3.29 format) */
-	phase_step_x = ((u64)src_w << SCALER_PHASE_BITS) + (dst_w - 1);
-	do_div(phase_step_x, dst_w);
+	/*
+	 * Phase step = (src_roi - 1) / (dst_roi - 1) in 3.29 fixed point,
+	 * rounded up -- the legacy msm_vpe1 FIR formula. Anchoring to (n-1)
+	 * makes the last output sample map exactly onto the last source
+	 * sample; using src/dst instead lets the sampling position drift over
+	 * the line and produced phase doubling on non-2x ratios.
+	 */
+	if (dst_w > 1) {
+		phase_step_x = (u64)(src_w - 1) << SCALER_PHASE_BITS;
+		phase_step_x += dst_w - 2;	/* round up: + (den - 1) */
+		do_div(phase_step_x, dst_w - 1);
+	} else {
+		phase_step_x = 0;
+	}
 	step_x = (u32)phase_step_x;
 
-	phase_step_y = ((u64)src_h << SCALER_PHASE_BITS) + (dst_h - 1);
-	do_div(phase_step_y, dst_h);
+	if (dst_h > 1) {
+		phase_step_y = (u64)(src_h - 1) << SCALER_PHASE_BITS;
+		phase_step_y += dst_h - 2;
+		do_div(phase_step_y, dst_h - 1);
+	} else {
+		phase_step_y = 0;
+	}
 	step_y = (u32)phase_step_y;
 
 	/*
