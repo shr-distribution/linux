@@ -140,8 +140,20 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0xfffffffe);
 	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xffffffff);
 
-	/* note: kgsl uses 0x00000001 after first reset on a22x */
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
+	/*
+	 * KGSL (a2xx_start) resets ALL blocks (0xffffffff) only on the very
+	 * first init; on every subsequent a22x (re)init -- crucially including
+	 * resume from a GDSC power-collapse -- it resets ONLY the CP block
+	 * (0x1). Repeating the full block soft-reset on a22x resume leaves the
+	 * 3D pipe in a state where the first draw after resume wedges the
+	 * back-end (the recurring resume-from-autosuspend hang). a20x always
+	 * takes the full reset. Mirror KGSL.
+	 */
+	if (adreno_is_a20x(adreno_gpu) || !a2xx_gpu->soft_reset_done)
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
+	else
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000001);
+	a2xx_gpu->soft_reset_done = true;
 	msleep(30);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000000);
 
