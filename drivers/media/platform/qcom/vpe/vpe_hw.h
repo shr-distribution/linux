@@ -74,13 +74,18 @@
 #define VPE_SCALE_COEFF_MSP_0		0x50404
 
 /*
- * The FIR scaler has four polyphase coefficient SRAM banks (luma/chroma x
- * horizontal/vertical). Each bank is 32 phases of {LSB, MSB} 8 bytes apart.
+ * The FIR scaler has four polyphase coefficient sub-tables (luma/chroma x
+ * horizontal/vertical) laid out CONTIGUOUSLY in one coefficient space at
+ * 0x50400: 128 entries of {LSB,MSB} (8 bytes each), the four 32-phase
+ * sub-tables at entry offsets 0/32/64/96 -> byte offsets 0x50400, 0x50500,
+ * 0x50600, 0x50700 (stride 32*8 = 0x100). The legacy msm_vpe1
+ * vpe_update_scale_coef() writes VPE_SCALE_COEFF_LSBn(i)=0x50400+8*i with the
+ * HAL passing those same 0/0x20/0x40/0x60 index offsets.
  */
-#define VPE_SCALE_COEFF_LUMA_X		0x50000
-#define VPE_SCALE_COEFF_LUMA_Y		0x50400
-#define VPE_SCALE_COEFF_CHROMA_X	0x50800
-#define VPE_SCALE_COEFF_CHROMA_Y	0x50c00
+#define VPE_SCALE_COEFF_LUMA_X		0x50400
+#define VPE_SCALE_COEFF_LUMA_Y		0x50500
+#define VPE_SCALE_COEFF_CHROMA_X	0x50600
+#define VPE_SCALE_COEFF_CHROMA_Y	0x50700
 #define VPE_SCALE_COEFF_NUM		32
 
 /* Hardware version and reset values */
