@@ -69,7 +69,14 @@ def to_raw(fmt,rgb):
         h,w,_=a.shape
         return np.dstack([a[...,2],a[...,1],a[...,0],np.full((h,w),255,np.uint8)]).astype(np.uint8).tobytes()
 
-def from_raw(fmt,w,h,buf):
+def from_raw(fmt,w,h,buf,rot=0):
+    # NV16 rotated 90/270 -> output is H1V2 (vertical 4:2:2): chroma stride
+    # 2*w, h/2 rows, full-width interleaved CbCr; upsample vertically.
+    if fmt=="nv16" and rot in (90,270):
+        Y=np.frombuffer(buf[:w*h],np.uint8).reshape(h,w)
+        chrm=np.frombuffer(buf[w*h:w*h+(h//2)*2*w],np.uint8).reshape(h//2,2*w)
+        U=np.repeat(chrm[:,0::2],2,axis=0)[:h]; V=np.repeat(chrm[:,1::2],2,axis=0)[:h]
+        return yuv2rgb(Y,U,V)
     if fmt in ("nv12","nv16"):
         Y=np.frombuffer(buf[:w*h],np.uint8).reshape(h,w)
         chh=h//2 if fmt=="nv12" else h
@@ -119,7 +126,7 @@ def render(logfile):
             panels.append((f"{name} [{fmt}] FAIL",None)); continue
         ow,oh=int(cap.group(1)),int(cap.group(2))
         buf=open(f"{OUT}/{tag}.out","rb").read()
-        rgb=Image.fromarray(from_raw(fmt,ow,oh,buf))
+        rgb=Image.fromarray(from_raw(fmt,ow,oh,buf,rot))
         panels.append((f"{name}  [{fmt}]  {ow}x{oh}",thumb(rgb)))
     # compose grid: 4 columns, uniform square cells (no portrait overflow)
     cols=4; pad=12; lab=20
