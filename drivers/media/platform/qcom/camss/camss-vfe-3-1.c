@@ -5876,6 +5876,123 @@ static void vfe31_config_module_cfg(struct vfe_device *vfe)
 	wmb();
 }
 
+/*
+ * Program IRQ_COMPOSITE_MASK_0: map each active line's write master(s) to the
+ * composite-done IRQ group that signals buffer completion (PIX->group0,
+ * ZSL->group1, VIDEO->group2; RDI WM->group1). Considers the line currently
+ * being enabled as active since its output state may not be set yet.
+ */
+static void vfe31_config_composite_mask(struct vfe_device *vfe,
+					struct vfe_line *line)
+{
+	bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+		       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+		       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
+
+	if (is_rdi && V31(vfe)->raw_through_pix) {
+		/*
+		 * RAW-through-PIX: WM0 in group 0 (like PIX).
+		 * 0x01 = WM0 triggers COMPOSITE_DONE_0.
+		 */
+		writel_relaxed(0x01,
+			       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: RAW-through-PIX COMPOSITE_MASK=0x01\n");
+	} else if (is_rdi) {
+		/*
+		 * RDI (AXI=0x60): Map WM to composite group 1.
+		 * COMPOSITE_DONE_1 fires when WM completes.
+		 */
+		u32 comp_mask = (1 << (V31(vfe)->camif_pending_wm + 8));
+
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: RDI COMPOSITE_MASK=0x%08x (WM%d->group1)\n",
+			 comp_mask, V31(vfe)->camif_pending_wm);
+		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+	} else {
+		/* PIX/VIDEO/ZSL mode - check which lines are active */
+		struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+		struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
+		struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
+		/*
+		 * CRITICAL: Consider the line we're currently enabling as active!
+		 * The output state may not be updated yet when enable_camif runs.
+		 */
+		bool starting_pix = (line->id == VFE_LINE_PIX);
+		bool starting_video = (line->id == VFE_LINE_VIDEO);
+		bool starting_zsl = (line->id == VFE_LINE_ZSL);
+		bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
+				     video_out->state == VFE_OUTPUT_RESERVED ||
+				     video_out->state == VFE_OUTPUT_CONTINUOUS);
+		bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
+				   pix_out->state == VFE_OUTPUT_RESERVED ||
+				   pix_out->state == VFE_OUTPUT_CONTINUOUS);
+		bool zsl_state_active = (zsl_out->state == VFE_OUTPUT_ON ||
+				   zsl_out->state == VFE_OUTPUT_RESERVED ||
+				   zsl_out->state == VFE_OUTPUT_CONTINUOUS);
+		bool video_active = starting_video || video_state_active;
+		bool pix_active = starting_pix || pix_state_active;
+		bool zsl_active = starting_zsl || zsl_state_active;
+		u32 comp_mask;
+		const char *mode_str;
+
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: comp_mask select: line=%d starting_pix=%d starting_video=%d starting_zsl=%d\n",
+			 line->id, starting_pix, starting_video, starting_zsl);
+
+		{
+			/*
+			 * Build composite mask from active lines:
+			 *   PIX:   Group 0 (WM0+WM4)
+			 *   ZSL:   Group 1 (WM2+WM6)
+			 *   VIDEO: Group 2 (WM1+WM5)
+			 */
+			comp_mask = 0;
+			if (pix_active)
+				comp_mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
+			if (zsl_active) {
+				/*
+				 * ZSL composite mask depends on wm_num:
+				 * wm_num=2 (NV12/NV16): WM2+WM6 in group 1
+				 * wm_num=1 (UYVY): WM2 only in group 1
+				 * If WM6 is in the mask but not enabled,
+				 * COMPOSITE_DONE_1 never fires.
+				 */
+				if (zsl_out->wm_num == 2)
+					comp_mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
+				else
+					comp_mask |= (1 << (VFE31_ZSL_WM_Y + 8));
+			}
+			if (video_active)
+				comp_mask |= VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
+			if (!comp_mask)
+				comp_mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
+
+			if (pix_active && video_active && zsl_active)
+				mode_str = "PIX+VIDEO+ZSL";
+			else if (pix_active && zsl_active)
+				mode_str = "PIX+ZSL";
+			else if (pix_active && video_active)
+				mode_str = "PIX+VIDEO";
+			else if (video_active)
+				mode_str = "VIDEO only";
+			else if (zsl_active)
+				mode_str = "ZSL only";
+			else
+				mode_str = "PIX only";
+		}
+
+		V31(vfe)->irq_comp_mask_shadow = comp_mask;
+		dev_dbg(vfe->camss->dev,
+			 "VFE31 enable_camif: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
+			 comp_mask, mode_str);
+		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
+	}
+
+	/* Ensure IRQ composite mask is visible to hardware */
+	wmb();
+}
+
 static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 {
 	struct vfe_line *line;
@@ -6290,127 +6407,8 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 		writel_relaxed(V31(vfe)->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
 	}
 
-	/*
-	 * Step 11: Configure composite IRQ mask for buffer completion
-	 *
-	 * IRQ_COMPOSITE_MASK (0x034) maps WMs to composite interrupt groups:
-	 *   Bits 0-7:   WMs that trigger COMPOSITE_DONE_0 (IRQ bit 21)
-	 *   Bits 8-15:  WMs that trigger COMPOSITE_DONE_1 (IRQ bit 22)
-	 *   Bits 16-23: WMs that trigger COMPOSITE_DONE_2 (IRQ bit 23)
-	 *
-	 * Using offset-by-4 pairing (all in group 0):
-	 *   PIX:   0x11 = WM0+WM4
-	 *   VIDEO: 0x22 = WM1+WM5
-	 *   Both:  0x33 = WM0+WM1+WM4+WM5
-	 * RDI mode: RDI WM (WM2/WM3/WM6) in group 1
-	 */
-	{
-		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
-
-		if (is_rdi && V31(vfe)->raw_through_pix) {
-			/*
-			 * RAW-through-PIX: WM0 in group 0 (like PIX).
-			 * 0x01 = WM0 triggers COMPOSITE_DONE_0.
-			 */
-			writel_relaxed(0x01,
-				       vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: RAW-through-PIX COMPOSITE_MASK=0x01\n");
-		} else if (is_rdi) {
-			/*
-			 * RDI (AXI=0x60): Map WM to composite group 1.
-			 * COMPOSITE_DONE_1 fires when WM completes.
-			 */
-			u32 comp_mask = (1 << (V31(vfe)->camif_pending_wm + 8));
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: RDI COMPOSITE_MASK=0x%08x (WM%d->group1)\n",
-				 comp_mask, V31(vfe)->camif_pending_wm);
-			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
-		} else {
-			/* PIX/VIDEO/ZSL mode - check which lines are active */
-			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
-			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
-			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
-			/*
-			 * CRITICAL: Consider the line we're currently enabling as active!
-			 * The output state may not be updated yet when enable_camif runs.
-			 */
-			bool starting_pix = (line->id == VFE_LINE_PIX);
-			bool starting_video = (line->id == VFE_LINE_VIDEO);
-			bool starting_zsl = (line->id == VFE_LINE_ZSL);
-			bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
-					     video_out->state == VFE_OUTPUT_RESERVED ||
-					     video_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool pix_state_active = (pix_out->state == VFE_OUTPUT_ON ||
-					   pix_out->state == VFE_OUTPUT_RESERVED ||
-					   pix_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool zsl_state_active = (zsl_out->state == VFE_OUTPUT_ON ||
-					   zsl_out->state == VFE_OUTPUT_RESERVED ||
-					   zsl_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool video_active = starting_video || video_state_active;
-			bool pix_active = starting_pix || pix_state_active;
-			bool zsl_active = starting_zsl || zsl_state_active;
-			u32 comp_mask;
-			const char *mode_str;
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: comp_mask select: line=%d starting_pix=%d starting_video=%d starting_zsl=%d\n",
-				 line->id, starting_pix, starting_video, starting_zsl);
-
-			{
-				/*
-				 * Build composite mask from active lines:
-				 *   PIX:   Group 0 (WM0+WM4)
-				 *   ZSL:   Group 1 (WM2+WM6)
-				 *   VIDEO: Group 2 (WM1+WM5)
-				 */
-				comp_mask = 0;
-				if (pix_active)
-					comp_mask |= VFE31_IRQ_COMP_MASK_PIX_ONLY;
-				if (zsl_active) {
-					/*
-					 * ZSL composite mask depends on wm_num:
-					 * wm_num=2 (NV12/NV16): WM2+WM6 in group 1
-					 * wm_num=1 (UYVY): WM2 only in group 1
-					 * If WM6 is in the mask but not enabled,
-					 * COMPOSITE_DONE_1 never fires.
-					 */
-					if (zsl_out->wm_num == 2)
-						comp_mask |= VFE31_IRQ_COMP_MASK_ZSL_ONLY;
-					else
-						comp_mask |= (1 << (VFE31_ZSL_WM_Y + 8));
-				}
-				if (video_active)
-					comp_mask |= VFE31_IRQ_COMP_MASK_VIDEO_ONLY;
-				if (!comp_mask)
-					comp_mask = VFE31_IRQ_COMP_MASK_PIX_ONLY;
-
-				if (pix_active && video_active && zsl_active)
-					mode_str = "PIX+VIDEO+ZSL";
-				else if (pix_active && zsl_active)
-					mode_str = "PIX+ZSL";
-				else if (pix_active && video_active)
-					mode_str = "PIX+VIDEO";
-				else if (video_active)
-					mode_str = "VIDEO only";
-				else if (zsl_active)
-					mode_str = "ZSL only";
-				else
-					mode_str = "PIX only";
-			}
-
-			V31(vfe)->irq_comp_mask_shadow = comp_mask;
-			dev_dbg(vfe->camss->dev,
-				 "VFE31 enable_camif: IRQ_COMPOSITE_MASK=0x%08x (%s)\n",
-				 comp_mask, mode_str);
-			writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
-		}
-	}
-	/* Ensure IRQ composite mask is visible to hardware */
-	wmb();
+	/* Step 11: composite IRQ mask -> per-line WM completion groups. */
+	vfe31_config_composite_mask(vfe, line);
 
 	/*
 	 * Step 11b: Enable Write Masters
