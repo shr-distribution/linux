@@ -836,9 +836,22 @@ struct vidc_inst {
 	 *   dpb_count          - actual allocated slot count (>= min_dpb_count)
 	 *   dpb_inited         - true once RESP_INIT_BUFFERS has acked
 	 */
+	/*
+	 * Decoder DPB: allocated PER SLOT (not one contiguous block). The SMI
+	 * pool is a no-map coherent region whose allocator rounds each request
+	 * up to a power-of-2 page block, so a single slot_size*count allocation
+	 * wastes hugely at high resolution (1080p ~33 MB rounds to 64 MB, over
+	 * the 61 MB pool). Per-slot allocs round to ~4 MB each and pack. Each
+	 * slot's address is programmed into its own DPB_LUMA[i] register.
+	 * (dpb_y_vaddr/dma_addr/alloc_size are reused by the ENCODER recon pool,
+	 * which is a single block — see vidc_init_enc_buffers.)
+	 */
 	void *dpb_y_vaddr;
 	dma_addr_t dpb_y_dma_addr;
 	size_t dpb_y_alloc_size;
+	void *dpb_slot_vaddr[VIDC_DPB_REG_SLOTS];
+	dma_addr_t dpb_slot_dma[VIDC_DPB_REG_SLOTS];
+	u32 dpb_slot_size;
 	u32 dpb_y_size;
 	u32 dpb_c_size;
 	u32 dpb_mv_size;

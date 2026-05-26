@@ -1793,6 +1793,22 @@ static u32 vidc_dpb_calc_mv_size(u32 width, u32 height)
  * On any failure the entire allocation is unwound — partial state
  * would leave the firmware confused about how many DPB slots exist.
  */
+/* Free the per-slot decoder DPB allocations. */
+static void vidc_free_dpb_slots(struct vidc_inst *inst)
+{
+	struct vidc_core *core = inst->core;
+	u32 i;
+
+	for (i = 0; i < VIDC_DPB_REG_SLOTS; i++) {
+		if (!inst->dpb_slot_vaddr[i])
+			continue;
+		dma_free_coherent(core->dev, inst->dpb_slot_size,
+				  inst->dpb_slot_vaddr[i], inst->dpb_slot_dma[i]);
+		inst->dpb_slot_vaddr[i] = NULL;
+		inst->dpb_slot_dma[i] = 0;
+	}
+}
+
 int vidc_init_buffers(struct vidc_inst *inst)
 {
 	struct vidc_core *core = inst->core;
@@ -1852,51 +1868,60 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		inst->dpb_mv_size = mv_size;
 
 		slot_size = ALIGN(y_size + c_size + mv_size, SZ_4K);
+		inst->dpb_slot_size = slot_size;
 
 		/*
-		 * The whole DPB is one contiguous coherent allocation. The +4
-		 * display headroom can push that over what the SMI pool can
-		 * serve contiguously at high resolution (e.g. 1280x1024 ->
-		 * ~23 MB). Retry with progressively fewer slots, never going
-		 * below the firmware-reported minimum (which is required for
-		 * correct reorder).
+		 * Allocate each DPB slot individually rather than as one
+		 * slot_size*count block. The SMI pool is a no-map coherent region
+		 * whose allocator rounds every request up to a power-of-2 page
+		 * block, so one big allocation wastes enormously at high
+		 * resolution (1080p: ~33 MB rounds to 64 MB, over the 61 MB pool,
+		 * and the smaller fallbacks round to 32 MB and can't fit). Per-slot
+		 * allocs round to ~4 MB each and pack into the pool; the firmware
+		 * consumes a separate address per slot anyway (DPB_LUMA[i]). If we
+		 * cannot get the full count, keep what we have as long as it meets
+		 * the firmware-reported minimum (needed for correct reorder).
 		 */
-		for (;;) {
-			total_size = slot_size * inst->dpb_count;
-			inst->dpb_y_vaddr = dma_alloc_coherent(core->dev,
-					total_size, &inst->dpb_y_dma_addr,
+		for (i = 0; i < inst->dpb_count; i++) {
+			inst->dpb_slot_vaddr[i] = dma_alloc_coherent(core->dev,
+					slot_size, &inst->dpb_slot_dma[i],
 					GFP_KERNEL);
-			if (inst->dpb_y_vaddr)
+			if (!inst->dpb_slot_vaddr[i])
 				break;
-			if (inst->dpb_count <= min_count) {
+			/* Each slot is addressed as a positive offset from the
+			 * firmware base; the register field is unsigned.
+			 */
+			if (inst->dpb_slot_dma[i] < core->fw_dma_addr) {
 				dev_err(core->dev,
-					"DPB pool alloc failed (%u slots × %u bytes)\n",
-					inst->dpb_count, slot_size);
+					"DPB slot %u below firmware base (%pad < %pad)\n",
+					i, &inst->dpb_slot_dma[i],
+					&core->fw_dma_addr);
+				dma_free_coherent(core->dev, slot_size,
+						  inst->dpb_slot_vaddr[i],
+						  inst->dpb_slot_dma[i]);
+				inst->dpb_slot_vaddr[i] = NULL;
+				break;
+			}
+		}
+		if (i < inst->dpb_count) {
+			if (i < min_count) {
+				dev_err(core->dev,
+					"DPB alloc failed at slot %u/%u (%u bytes each, need >= %u)\n",
+					i, inst->dpb_count, slot_size, min_count);
+				vidc_free_dpb_slots(inst);
 				return -ENOMEM;
 			}
 			dev_warn(core->dev,
-				 "DPB alloc of %u slots (%u bytes) failed; retrying with fewer\n",
-				 inst->dpb_count, total_size);
-			inst->dpb_count -= (inst->dpb_count - min_count >= 2) ?
-					   2 : 1;
+				 "DPB: got %u of %u slots (pool pressure), proceeding\n",
+				 i, inst->dpb_count);
+			inst->dpb_count = i;
 		}
-		inst->dpb_y_alloc_size = total_size;
-		dev_info(core->dev, "DPB pool: %u slots × %u bytes = %u\n",
+		total_size = slot_size * inst->dpb_count;
+		dev_info(core->dev, "DPB pool: %u per-slot allocs × %u bytes = %u\n",
 			 inst->dpb_count, slot_size, total_size);
 	}
 
-	/*
-	 * DPB pool must be addressable as a positive offset from
-	 * fw_dma_addr — the register field is unsigned. CMA usually hands
-	 * out high addresses, but verify explicitly.
-	 */
-	if (inst->dpb_y_dma_addr < core->fw_dma_addr) {
-		dev_err(core->dev,
-			"DPB pool below firmware base (%pad < %pad)\n",
-			&inst->dpb_y_dma_addr, &core->fw_dma_addr);
-		ret = -ERANGE;
-		goto err_free_dma;
-	}
+	/* (each slot's address was range-checked against fw_dma_addr above) */
 
 	/*
 	 * webOS register-write order in vidc_1080p_set_h264_decode_buffers:
@@ -1947,7 +1972,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 
 	/* Program DPB register slots — after H264 work bufs, matching webOS */
 	for (i = 0; i < inst->dpb_count; i++) {
-		slot_base = inst->dpb_y_dma_addr + i * slot_size;
+		slot_base = inst->dpb_slot_dma[i];
 		fw_relative = slot_base - core->fw_dma_addr;
 
 		vidc_write(core, VIDC_REG_DPB_LUMA_BASE + i * 4,
@@ -1961,9 +1986,9 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	}
 
 	dev_info(core->dev,
-		 "DPB pool: %u slots × (y=%u c=%u mv=%u), total %u bytes at %pad\n",
+		 "DPB pool: %u slots × (y=%u c=%u mv=%u), total %u bytes, slot0 %pad\n",
 		 inst->dpb_count, y_size, c_size, mv_size, total_size,
-		 &inst->dpb_y_dma_addr);
+		 &inst->dpb_slot_dma[0]);
 
 	/*
 	 * Publish the per-slot buffer sizes via the shared-memory region.
@@ -2108,11 +2133,7 @@ err_free_vert_nb_mv:
 		inst->h264_vert_nb_mv_vaddr = NULL;
 		inst->h264_vert_nb_mv_dma_addr = 0;
 	}
-	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
-			  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
-	inst->dpb_y_vaddr = NULL;
-	inst->dpb_y_dma_addr = 0;
-	inst->dpb_y_alloc_size = 0;
+	vidc_free_dpb_slots(inst);
 	return ret;
 }
 
@@ -2141,7 +2162,7 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 	void *slot_y, *slot_c;
 	dma_addr_t slot_phys;
 
-	if (!inst->dpb_inited || !inst->dpb_y_vaddr) {
+	if (!inst->dpb_inited || !inst->dpb_slot_vaddr[0]) {
 		dev_err(core->dev, "copy_dpb_to_dst: DPB not initialised\n");
 		return -EINVAL;
 	}
@@ -2168,27 +2189,28 @@ int vidc_copy_dpb_to_dst(struct vidc_inst *inst, void *dst_vaddr,
 		return -ENOSPC;
 	}
 
-	/* Translate absolute physical luma address to a DPB slot index. */
-	slot_size = inst->dpb_y_alloc_size / inst->dpb_count;
+	/*
+	 * Find which per-slot DPB allocation the firmware's display address
+	 * falls in (slots are no longer one contiguous block, so search the
+	 * per-slot bus addresses rather than computing an index).
+	 */
+	slot_size = inst->dpb_slot_size;
 	slot_phys = y_offset;
 
-	if (slot_phys < inst->dpb_y_dma_addr ||
-	    slot_phys >= inst->dpb_y_dma_addr + inst->dpb_y_alloc_size) {
-		dev_err(core->dev,
-			"display Y phys %pad outside DPB pool [%pad..+%zu]\n",
-			&slot_phys, &inst->dpb_y_dma_addr,
-			inst->dpb_y_alloc_size);
-		return -EFAULT;
+	for (slot_idx = 0; slot_idx < inst->dpb_count; slot_idx++) {
+		if (slot_phys >= inst->dpb_slot_dma[slot_idx] &&
+		    slot_phys < inst->dpb_slot_dma[slot_idx] + slot_size)
+			break;
 	}
-
-	slot_idx = (slot_phys - inst->dpb_y_dma_addr) / slot_size;
 	if (slot_idx >= inst->dpb_count) {
-		dev_err(core->dev, "computed slot %u >= count %u\n",
-			slot_idx, inst->dpb_count);
+		dev_err(core->dev,
+			"display Y phys %pad not in any DPB slot\n",
+			&slot_phys);
 		return -EFAULT;
 	}
 
-	slot_y = inst->dpb_y_vaddr + slot_idx * slot_size;
+	slot_y = inst->dpb_slot_vaddr[slot_idx] +
+		 (slot_phys - inst->dpb_slot_dma[slot_idx]);
 	slot_c = slot_y + y_size;
 
 	/*
@@ -2870,7 +2892,7 @@ void vidc_free_buffers(struct vidc_inst *inst)
 	struct vidc_core *core = inst->core;
 	u32 i;
 
-	if (!inst->dpb_y_vaddr)
+	if (!inst->dpb_y_vaddr && !inst->dpb_slot_vaddr[0])
 		return;
 
 	/*
@@ -2912,11 +2934,16 @@ void vidc_free_buffers(struct vidc_inst *inst)
 		inst->h264_vert_nb_mv_dma_addr = 0;
 	}
 
-	dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
-			  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
-	inst->dpb_y_vaddr = NULL;
-	inst->dpb_y_dma_addr = 0;
-	inst->dpb_y_alloc_size = 0;
+	/* Decoder: per-slot DPB allocations. Encoder: single recon block. */
+	vidc_free_dpb_slots(inst);
+	if (inst->dpb_y_vaddr) {
+		dma_free_coherent(core->dev, inst->dpb_y_alloc_size,
+				  inst->dpb_y_vaddr, inst->dpb_y_dma_addr);
+		inst->dpb_y_vaddr = NULL;
+		inst->dpb_y_dma_addr = 0;
+		inst->dpb_y_alloc_size = 0;
+	}
+	inst->dpb_slot_size = 0;
 	inst->dpb_count = 0;
 	inst->dpb_y_size = 0;
 	inst->dpb_c_size = 0;
