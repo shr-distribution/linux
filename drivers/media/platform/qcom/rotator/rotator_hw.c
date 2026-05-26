@@ -113,17 +113,16 @@ void rotator_hw_set_dst_addr(void __iomem *base, dma_addr_t y_addr,
 	writel(c_addr, base + ROTATOR_OUTP1_ADDR);
 }
 
-void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride,
-			    u32 dst_cstride)
+void rotator_hw_set_strides(void __iomem *base, u32 src_stride, u32 dst_stride)
 {
 	/*
 	 * YSTRIDE1 packs the luma stride [15:0] and the chroma stride [31:16].
-	 * For most formats the chroma stride equals the luma stride, but the
-	 * 4:2:2 (H2V1) output chroma stride doubles under 90/270 rotation —
-	 * the caller passes the already-computed dst chroma stride.
+	 * For the supported pseudo-planar YUV formats the chroma plane row is
+	 * the same width as the luma plane, so the strides are equal — and a
+	 * V4L2 NV12/NV16 CAPTURE buffer must be tightly packed at that width.
 	 */
 	writel(src_stride | (src_stride << 16), base + ROTATOR_SRC_YSTRIDE1);
-	writel(dst_stride | (dst_cstride << 16), base + ROTATOR_OUT_YSTRIDE1);
+	writel(dst_stride | (dst_stride << 16), base + ROTATOR_OUT_YSTRIDE1);
 }
 
 void rotator_hw_set_rotation(void __iomem *base, u32 rotation, u32 chroma)
