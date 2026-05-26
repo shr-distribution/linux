@@ -258,7 +258,7 @@ struct mt9m113 {
 	unsigned int pixrate;
 	s64 link_freq;
 	bool streaming;
-	bool was_streaming;	/* set by stop, cleared by start - skips REFRESH on restart */
+	bool was_streaming;	/* MCU warm from a prior stream: set by stop, cleared on power-off */
 	bool in_standby;
 	bool test_pattern_active;
 
@@ -1370,6 +1370,27 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		return ret;
 
 	/*
+	 * If the previous stream left the MCU warm (no power-off since), a
+	 * context switch on that stale MCU stalls the sequencer: SEQ_CMD_RUN
+	 * never completes and SEQ_STATE sticks at 0x3 (reproduced on a
+	 * back-to-back 1280 Context B -> 640 Context A switch). Force a clean
+	 * power-cycle so the new session starts from a freshly reset and
+	 * re-initialised MCU, the way webOS resets the sensor on every open.
+	 *
+	 * was_streaming is set by stop_streaming and cleared by runtime_suspend
+	 * (power-off), so it is true only while the MCU is still warm from the
+	 * last stream - i.e. exactly when autosuspend has not yet cycled it.
+	 */
+	if (sensor->was_streaming) {
+		sensor->was_streaming = false;
+		/* Force immediate power-off (bypass autosuspend), then power-on. */
+		pm_runtime_put_sync_suspend(dev);	/* runtime_suspend: power_off */
+		ret = pm_runtime_resume_and_get(dev);	/* runtime_resume: power_on + init */
+		if (ret)
+			return ret;
+	}
+
+	/*
 	 * Ensure sensor is not in standby mode before streaming.
 	 * Write 0x0028 directly to STANDBY_CONTROL to ensure MCU is active.
 	 * Give MCU time to wake up (50ms matches webOS driver behavior).
@@ -1932,7 +1953,6 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		if (ret)
 			goto error;
 		dev_dbg(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
-		sensor->was_streaming = false;
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -2943,6 +2963,8 @@ static int __maybe_unused mt9m113_runtime_suspend(struct device *dev)
 
 	/* Power down (powerdown GPIO + clock off) so the MCU is reset next resume. */
 	mt9m113_power_off(sensor);
+	/* MCU is now cold; next resume re-inits it, so it is no longer "warm". */
+	sensor->was_streaming = false;
 	return 0;
 }
 
