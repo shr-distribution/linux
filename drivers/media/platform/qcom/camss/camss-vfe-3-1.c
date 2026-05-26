@@ -757,15 +757,6 @@ static u32 vfe31_calc_xbar(bool pix_active, bool video_active, bool zsl_active)
 }
 
 
-/*
- * MSM8660 Clock Controller addresses for VFE AXI clock forcing.
- * Used by vfe31_force_enable_axi_clock() for testgen mode.
- */
-#define MSM8660_MMCC_BASE		0x04000000
-#define MSM8660_MMCC_SIZE		0x1000
-#define MSM8660_VFE_CC_REG_OFFSET	0x0104
-#define MSM8660_VFE_CC_REG_VFE_AXI_EN	BIT(1)
-
 #include "camss-vfe.h"
 
 /*
@@ -5419,52 +5410,6 @@ static void vfe31_dump_camif_start_state(struct vfe_device *vfe)
 		 "  MODULE_CFG(0x010)=0x%08x  BUS_CFG(0x03C)=0x%08x\n",
 		 readl_relaxed(vfe->base + VFE_0_MODULE_CFG),
 		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
-
-	/*
-	 * Schedule a delayed diagnostic check to verify CSI-to-VFE clock
-	 * configuration after the sensor has had time to start streaming.
-	 * This helps diagnose issues where data isn't reaching VFE.
-	 */
-	{
-		void __iomem *mmcc_base;
-
-		mmcc_base = ioremap(0x04000000, 0x200);
-		if (mmcc_base) {
-			u32 vfe_cc, misc_cc;
-
-			vfe_cc = readl_relaxed(mmcc_base + 0x0104);
-			misc_cc = readl_relaxed(mmcc_base + 0x0058);
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: CSI-to-VFE clock state at CAMIF start:\n");
-			dev_dbg(vfe->camss->dev,
-				 "  VFE_CC_REG(0x0104)=0x%08x CSI0_VFE=%s CSI1_VFE=%s\n",
-				 vfe_cc,
-				 (vfe_cc & BIT(12)) ? "ON" : "off",
-				 (vfe_cc & BIT(10)) ? "ON" : "off");
-			dev_dbg(vfe->camss->dev,
-				 "  MISC_CC_REG(0x0058)=0x%08x csi_pix_sel=%s csi_pix_en=%s csi_rdi_sel=%s csi_rdi_en=%s\n",
-				 misc_cc,
-				 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
-				 (misc_cc & BIT(26)) ? "ON" : "off",
-				 (misc_cc & BIT(12)) ? "CSI1" : "CSI0",
-				 (misc_cc & BIT(13)) ? "ON" : "off");
-
-			/* CRITICAL: Verify CSI1 is selected and enabled for MT9M113 */
-			if (!(vfe_cc & BIT(10))) {
-				dev_err(vfe->camss->dev,
-					"VFE31 ERROR: CSI1_VFE_CLK not enabled in VFE_CC_REG!\n");
-			}
-			if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(26))) {
-				dev_err(vfe->camss->dev,
-					"VFE31 ERROR: csi_pix not configured for CSI1! sel=%s en=%s\n",
-					(misc_cc & BIT(25)) ? "CSI1" : "CSI0",
-					(misc_cc & BIT(26)) ? "ON" : "off");
-			}
-
-			iounmap(mmcc_base);
-		}
-	}
 }
 
 static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
