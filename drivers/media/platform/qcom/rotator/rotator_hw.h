@@ -19,6 +19,7 @@
 #define ROTATOR_INTR_CLEAR		0x0028
 #define ROTATOR_START			0x0030
 #define ROTATOR_MAX_BURST_SIZE		0x0050
+#define ROTATOR_SW_RESET		0x0074
 
 /* Source configuration registers */
 #define ROTATOR_SRC_SIZE		0x1108
@@ -114,6 +115,7 @@
 
 /* Hardware functions */
 int rotator_hw_reset(void __iomem *base);
+void rotator_hw_sw_reset(void __iomem *base);
 void rotator_hw_enable_irq(void __iomem *base);
 void rotator_hw_disable_irq(void __iomem *base);
 void rotator_hw_clear_irq(void __iomem *base);

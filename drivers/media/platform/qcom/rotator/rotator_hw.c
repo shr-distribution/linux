@@ -15,13 +15,30 @@
 
 int rotator_hw_reset(void __iomem *base)
 {
-	/* Clear any pending interrupts */
+	/*
+	 * Clear any pending interrupts at the start of a job. MAX_BURST_SIZE is
+	 * deliberately left at its hardware default: the legacy msm_rotator only
+	 * overrides it (to 0x42) on the IMEM tile-fetch path, and explicitly
+	 * documents that a burst beat size of 16 hangs the rotator. We do not
+	 * use IMEM, so the default burst is correct.
+	 */
 	writel(ROTATOR_IRQ_ALL, base + ROTATOR_INTR_CLEAR);
 
-	/* Set maximum burst size for optimal performance */
-	writel(16, base + ROTATOR_MAX_BURST_SIZE);
-
 	return 0;
+}
+
+void rotator_hw_sw_reset(void __iomem *base)
+{
+	/*
+	 * Soft-reset to clear a latched AXI bus error, which otherwise wedges
+	 * the block so that every subsequent job times out. Matches the legacy
+	 * msm_rotator AXI-error recovery: pulse SW_RESET, then mask and clear
+	 * the interrupt. No poll/delay is required; the next job reconfigures
+	 * the block from scratch.
+	 */
+	writel(1, base + ROTATOR_SW_RESET);
+	writel(0, base + ROTATOR_INTR_ENABLE);
+	writel(ROTATOR_IRQ_ALL, base + ROTATOR_INTR_CLEAR);
 }
 
 void rotator_hw_enable_irq(void __iomem *base)

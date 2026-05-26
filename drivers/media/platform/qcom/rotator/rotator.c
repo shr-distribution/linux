@@ -645,14 +645,15 @@ static void rotator_device_run(void *priv)
 					 msecs_to_jiffies(500))) {
 		dev_err(rot->dev, "rotation timeout\n");
 		rot->error = -ETIMEDOUT;
-		/*
-		 * Best-effort halt before the buffers are handed back. The
-		 * rotator has no true transaction-abort register, so this only
-		 * masks/clears the interrupt; a wedged engine is fully recovered
-		 * by the reset + reconfigure at the start of the next run.
-		 */
-		rotator_hw_reset(rot->base);
 	}
+
+	/*
+	 * On a timeout or a hardware (AXI) error the engine latches a bus error
+	 * that wedges every subsequent job; soft-reset clears it before the
+	 * buffers are returned and before the next job runs.
+	 */
+	if (rot->error)
+		rotator_hw_sw_reset(rot->base);
 
 	rotator_hw_disable_irq(rot->base);
 	pm_runtime_put_autosuspend(rot->dev);
