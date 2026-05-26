@@ -77,6 +77,20 @@ static uint tx_preamble;
  */
 static bool skip_pskeys = true;  /* Skip PSKEY/WARM_RESET (scrambled ids brick chip) */
 
+/*
+ * Wake the CSR BlueCore's power-gated UART RX before each link-establishment
+ * TX by pulsing RTS (the chip's CTS line, GPIO56). The legacy webOS hsuart
+ * driver performed a "btuart_deassert_rts" get/put dance immediately before
+ * every handshake TX (reports/bt-trace/webos-cold-handshake-2026-05-22.log).
+ * Mainline previously woke the chip only once, at port open, so every later
+ * byte-perfect SYNC_RSP landed on a sleeping receiver and the chip only ever
+ * emitted SYNC. Re-arming the wake per-TX is the H2 fix. Default on; set 0 to
+ * isolate this from the msm_serial pin-mux glitch (bt_wake_period_ms).
+ */
+static bool bt_rx_wake = true;
+module_param(bt_rx_wake, bool, 0644);
+MODULE_PARM_DESC(bt_rx_wake, "Pulse RTS before link-est TX to wake the BT chip RX (default Y)");
+
 #define BCSP_TXWINSIZE	4
 
 #define BCSP_ACK_PKT	0x05
@@ -822,6 +836,24 @@ static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value);
 static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
 				const u16 *data, u16 len_words);
 
+/*
+ * Pulse RTS (the chip's CTS, GPIO56) to wake the CSR BlueCore's power-gated
+ * UART RX immediately before a link-establishment transmit — the per-TX half
+ * of the legacy webOS btuart_deassert_rts dance. msm_set_mctrl() turns this
+ * into an RFR edge on the wire. Runs in serdev RX (process) context, so the
+ * short sleeps are safe; a no-op without serdev or when disabled.
+ */
+static void bcsp_wake_chip_rx(struct hci_uart *hu)
+{
+	if (!bt_rx_wake || !hu->serdev)
+		return;
+
+	serdev_device_set_tiocm(hu->serdev, 0, TIOCM_RTS);	/* deassert (put) */
+	usleep_range(150, 300);
+	serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);	/* re-assert (get) */
+	usleep_range(150, 300);
+}
+
 /* Handle BCSP link-establishment packets.
  * This implements the full BCSP link establishment state machine:
  * - sync: device is asking to establish link, we reply with sync_rsp
@@ -878,10 +910,15 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		bcsp->rxseq_txack = 0;
 		bcsp->msgq_txseq = 0;
 
-		/* Purge all queues for clean state */
+		/*
+		 * Purge the reliable-channel queues to match the chip's fresh
+		 * sequence numbers. Do NOT purge unrel here: this runs on every
+		 * received SYNC (RX context) while the TX workqueue drains unrel,
+		 * so purging it can drop the SYNC_RSP we are about to queue below
+		 * before it is transmitted.
+		 */
 		skb_queue_purge(&bcsp->unack);
 		skb_queue_purge(&bcsp->rel);
-		skb_queue_purge(&bcsp->unrel);
 
 		/*
 		 * If this SYNC is post-WARM_RESET, mark the link back to
@@ -905,6 +942,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
 		BT_DBG("BCSP: sending sync_rsp");
+		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
 		skb_queue_head(&bcsp->unrel, nskb);  /* Head for immediate response */
 		hci_uart_tx_wakeup(hu);
 	}
@@ -922,6 +960,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		skb_put_data(nskb, conf_pkt, 4);
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
+		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
 		skb_queue_tail(&bcsp->unrel, nskb);
 		hci_uart_tx_wakeup(hu);
 	}
@@ -940,6 +979,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		skb_put_data(nskb, conf_rsp_pkt, 4);
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
+		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
 		skb_queue_head(&bcsp->unrel, nskb);  /* Head for immediate response */
 		hci_uart_tx_wakeup(hu);
 
@@ -2614,6 +2654,7 @@ static int bcsp_open(struct hci_uart *hu)
 		if (skb) {
 			skb_put_data(skb, sync_pkt, 4);
 			hci_skb_pkt_type(skb) = BCSP_LE_PKT;
+			bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
 			skb_queue_tail(&bcsp->unrel, skb);
 			BT_INFO("BCSP: Sent initial sync to wake chip");
 		}

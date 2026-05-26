@@ -29,6 +29,7 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/workqueue.h>
 #include <linux/ktime.h>
 #include <linux/moduleparam.h>
 
@@ -210,6 +211,14 @@ struct msm_port {
 	struct pinctrl_state	*pinctrl_default;
 	struct pinctrl_state	*pinctrl_gpio;
 	bool			startup_mux_glitch;
+	/*
+	 * TouchPad BT (H2): re-arm the wake glitch during BCSP link
+	 * establishment. bt_linkest is true from port-open until we leave the
+	 * 115200 link-est baud (see msm_set_termios) or shut down.
+	 */
+	struct delayed_work	bt_wake_work;
+	bool			bt_is_bt_uart;
+	bool			bt_linkest;
 };
 
 static inline struct msm_port *to_msm_port(struct uart_port *up)
@@ -1285,6 +1294,53 @@ static void msm_init_clock(struct uart_port *port)
 	msm_serial_set_mnd_regs(port);
 }
 
+/*
+ * TouchPad Bluetooth bring-up (H2). The CSR BlueCore's UART RX is power-gated
+ * and the legacy webOS driver re-ran a pin-mux wake "glitch" right before every
+ * BCSP link-establishment TX. We approximate that by re-running the glitch
+ * periodically (only while the TX line is idle, so a frame in flight is never
+ * corrupted) while the BT UART sits at the 115200 link-est baud. 0 disables.
+ * Tune on-device against the chip's RX re-gate timeout.
+ */
+static int bt_wake_period_ms = 120;
+module_param(bt_wake_period_ms, int, 0644);
+MODULE_PARM_DESC(bt_wake_period_ms,
+	"TouchPad BT: re-arm UART pin-mux wake glitch every N ms during link-est (0=off)");
+
+#define MSM_BT_UART_MAPBASE	0x16540000
+
+/* Flip the UART pins to the GPIO state and back, to wake a power-gated peer
+ * UART RX (TouchPad CSR BlueCore). Sleeps; call from process context only. */
+static void msm_bt_wake_glitch(struct uart_port *port)
+{
+	struct msm_port *msm_port = to_msm_port(port);
+
+	if (!msm_port->startup_mux_glitch || !msm_port->pinctrl)
+		return;
+
+	pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_gpio);
+	usleep_range(500, 1000);
+	pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_default);
+	usleep_range(500, 1000);
+}
+
+static void msm_bt_wake_work(struct work_struct *w)
+{
+	struct msm_port *msm_port =
+		container_of(to_delayed_work(w), struct msm_port, bt_wake_work);
+	struct uart_port *port = &msm_port->uart;
+
+	if (!msm_port->bt_linkest || bt_wake_period_ms <= 0)
+		return;
+
+	/* Only glitch when TX is idle, so we never corrupt a frame in flight. */
+	if (msm_read(port, MSM_UART_SR) & MSM_UART_SR_TX_EMPTY)
+		msm_bt_wake_glitch(port);
+
+	schedule_delayed_work(&msm_port->bt_wake_work,
+			      msecs_to_jiffies(bt_wake_period_ms));
+}
+
 static int msm_startup(struct uart_port *port)
 {
 	struct msm_port *msm_port = to_msm_port(port);
@@ -1305,11 +1361,19 @@ static int msm_startup(struct uart_port *port)
 	 * "gpio" pinctrl state are present in DT.
 	 */
 	if (msm_port->startup_mux_glitch && msm_port->pinctrl) {
-		pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_gpio);
-		usleep_range(500, 1000);
-		pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_default);
-		usleep_range(500, 1000);
+		msm_bt_wake_glitch(port);
 		dev_info(port->dev, "startup pin-mux glitch applied (BT wake)\n");
+
+		/*
+		 * Keep re-arming the wake glitch through BCSP link establishment
+		 * (H2). Cleared when we switch to the operational baud (>115200)
+		 * in msm_set_termios, or at shutdown.
+		 */
+		if (msm_port->bt_is_bt_uart && bt_wake_period_ms > 0) {
+			msm_port->bt_linkest = true;
+			schedule_delayed_work(&msm_port->bt_wake_work,
+					      msecs_to_jiffies(bt_wake_period_ms));
+		}
 	}
 
 	if (likely(port->fifosize > 12))
@@ -1358,6 +1422,10 @@ static void msm_shutdown(struct uart_port *port)
 {
 	struct msm_port *msm_port = to_msm_port(port);
 
+	/* TouchPad BT (H2): stop the link-est wake glitch (process context). */
+	msm_port->bt_linkest = false;
+	cancel_delayed_work_sync(&msm_port->bt_wake_work);
+
 	msm_port->imr = 0;
 	msm_write(port, 0, MSM_UART_IMR); /* disable interrupts */
 
@@ -1388,6 +1456,16 @@ static void msm_set_termios(struct uart_port *port, struct ktermios *termios,
 	baud = msm_set_baud_rate(port, baud, &flags);
 	if (tty_termios_baud_rate(termios))
 		tty_termios_encode_baud_rate(termios, baud, baud);
+
+	/*
+	 * TouchPad BT (H2): once we leave the 115200 link-est baud the BCSP
+	 * link is up, so stop re-arming the wake glitch. cancel_delayed_work()
+	 * (async) is safe under the port lock held here.
+	 */
+	if (msm_port->bt_is_bt_uart && baud > 115200 && msm_port->bt_linkest) {
+		msm_port->bt_linkest = false;
+		cancel_delayed_work(&msm_port->bt_wake_work);
+	}
 
 	/* calculate parity */
 	mr = msm_read(port, MSM_UART_MR2);
@@ -1986,6 +2064,10 @@ static int msm_serial_probe(struct platform_device *pdev)
 			}
 		}
 	}
+
+	/* TouchPad BT (H2): periodic wake-glitch re-arm during link establishment. */
+	INIT_DELAYED_WORK(&msm_port->bt_wake_work, msm_bt_wake_work);
+	msm_port->bt_is_bt_uart = (port->mapbase == MSM_BT_UART_MAPBASE);
 
 	platform_set_drvdata(pdev, port);
 
