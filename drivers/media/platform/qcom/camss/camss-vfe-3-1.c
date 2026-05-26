@@ -2989,36 +2989,20 @@ static int vfe31_halt(struct vfe_device *vfe)
  * 4. Enable IRQs
  * 5. Start CAMIF
  */
-static int vfe31_enable(struct vfe_line *line)
+/*
+ * Select the AXI output mode and the number of write masters for a line.
+ * RDI lines use the CAMIF->AXI raw-bypass path (single WM) unless
+ * RAW-through-PIX is active; PIX/VIDEO lines use the DEMUX path. Packed YUV
+ * is forced to single-WM passthrough because DEMUX splits Y/CbCr into two
+ * WMs and would overflow a packed buffer. Sets output->wm_num and returns
+ * the AXI output mode to program into BUS_AXI_OUT_MODE_CFG.
+ */
+static u32 vfe31_select_axi_and_wm_num(struct vfe_device *vfe,
+				       struct vfe_line *line,
+				       struct v4l2_pix_format_mplane *pix,
+				       struct vfe_output *output,
+				       bool is_rdi_line)
 {
-	struct vfe_device *vfe = to_vfe(line);
-	struct vfe_output *output = &line->output;
-	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
-	u32 ping_addr = 0, pong_addr = 0;
-	u16 width, height, cbcr_height, bytesperline;
-	u32 reg;
-	unsigned long flags;
-	int wm_idx;
-	u8 y_wm;  /* Y plane write master (WM0) */
-
-	V31(vfe)->recording_state = VFE31_REC_IDLE;
-	V31(vfe)->pix_wm_pending = false;
-
-	dev_dbg(vfe->camss->dev, "VFE31 enable: line_id=%d (direct, not gen1)\n",
-		 line->id);
-
-	/* Setup output (inline from gen1's vfe_get_output) */
-	spin_lock_irqsave(&vfe->output_lock, flags);
-
-	if (output->state > VFE_OUTPUT_RESERVED) {
-		dev_err(vfe->camss->dev, "VFE31: Output already running\n");
-		spin_unlock_irqrestore(&vfe->output_lock, flags);
-		return -EBUSY;
-	}
-	output->state = VFE_OUTPUT_RESERVED;
-	output->gen1.active_buf = 0;
-	output->drop_update_idx = 0;
-
 	/*
 	 * Determine AXI output mode based on line type:
 	 * - RDI lines (RDI0, RDI1, RDI2): MUST use RAW mode (0x60) for raw bypass
@@ -3028,9 +3012,6 @@ static int vfe31_enable(struct vfe_line *line)
 	 * the AXI output mode for raw bypass (CAMIF_TO_AXI = 0x60).
 	 */
 	u32 axi_mode;
-	bool is_rdi_line = (line->id == VFE_LINE_RDI0 ||
-			    line->id == VFE_LINE_RDI1 ||
-			    line->id == VFE_LINE_RDI2);
 
 	if (is_rdi_line && V31(vfe)->raw_through_pix) {
 		/* RAW-through-PIX: use PIX path for RDI */
@@ -3120,6 +3101,22 @@ static int vfe31_enable(struct vfe_line *line)
 		break;
 	}
 
+	return axi_mode;
+}
+
+/*
+ * Reserve the write master(s) for a line according to its type. Must be
+ * called with vfe->output_lock held. On success fills output->wm_idx[] and
+ * returns 0. On failure releases any WM already reserved, marks the output
+ * OFF and returns a negative error - the caller still holds the lock and
+ * must release it.
+ */
+static int vfe31_reserve_line_wms(struct vfe_device *vfe,
+				  struct vfe_line *line,
+				  struct vfe_output *output)
+{
+	int wm_idx;
+
 	/*
 	 * VFE31 WM assignment (from webOS msm_vfe31.c lines 719-722):
 	 * - VFE_LINE_PIX:   WM0 (Y) + WM4 (CbCr)  [output0.ch0 + output0.ch1]
@@ -3138,7 +3135,6 @@ static int vfe31_enable(struct vfe_line *line)
 			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for VIDEO Y\n",
 				video_y_wm);
 			output->state = VFE_OUTPUT_OFF;
-			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
 		}
 		output->wm_idx[0] = wm_idx;
@@ -3158,7 +3154,6 @@ static int vfe31_enable(struct vfe_line *line)
 					video_cbcr_wm);
 				vfe_release_wm(vfe, output->wm_idx[0]);
 				output->state = VFE_OUTPUT_OFF;
-				spin_unlock_irqrestore(&vfe->output_lock, flags);
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
@@ -3182,7 +3177,6 @@ static int vfe31_enable(struct vfe_line *line)
 			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for ZSL Y\n",
 				zsl_y_wm);
 			output->state = VFE_OUTPUT_OFF;
-			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
 		}
 		output->wm_idx[0] = wm_idx;
@@ -3199,7 +3193,6 @@ static int vfe31_enable(struct vfe_line *line)
 					zsl_cbcr_wm);
 				vfe_release_wm(vfe, output->wm_idx[0]);
 				output->state = VFE_OUTPUT_OFF;
-				spin_unlock_irqrestore(&vfe->output_lock, flags);
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
@@ -3217,7 +3210,6 @@ static int vfe31_enable(struct vfe_line *line)
 			dev_err(vfe->camss->dev, "VFE31: Cannot reserve WM%d for PIX Y\n",
 				pix_y_wm);
 			output->state = VFE_OUTPUT_OFF;
-			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
 		}
 		output->wm_idx[0] = wm_idx;
@@ -3239,7 +3231,6 @@ static int vfe31_enable(struct vfe_line *line)
 					pix_cbcr_wm);
 				vfe_release_wm(vfe, output->wm_idx[0]);
 				output->state = VFE_OUTPUT_OFF;
-				spin_unlock_irqrestore(&vfe->output_lock, flags);
 				return wm_idx;
 			}
 			output->wm_idx[1] = wm_idx;
@@ -3278,7 +3269,6 @@ static int vfe31_enable(struct vfe_line *line)
 				"VFE31: Cannot reserve WM for RDI line %d\n",
 				line->id);
 			output->state = VFE_OUTPUT_OFF;
-			spin_unlock_irqrestore(&vfe->output_lock, flags);
 			return wm_idx;
 		}
 		output->wm_idx[0] = wm_idx;
@@ -3286,6 +3276,51 @@ static int vfe31_enable(struct vfe_line *line)
 		dev_dbg(vfe->camss->dev,
 			 "VFE31: RDI line %d using WM%d (CAMIF_TO_AXI bypass)\n",
 			 line->id, output->wm_idx[0]);
+	}
+
+	return 0;
+}
+
+static int vfe31_enable(struct vfe_line *line)
+{
+	struct vfe_device *vfe = to_vfe(line);
+	struct vfe_output *output = &line->output;
+	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+	u32 ping_addr = 0, pong_addr = 0;
+	u16 width, height, cbcr_height, bytesperline;
+	u32 reg;
+	unsigned long flags;
+	int wm_idx;
+	u8 y_wm;  /* Y plane write master (WM0) */
+
+	V31(vfe)->recording_state = VFE31_REC_IDLE;
+	V31(vfe)->pix_wm_pending = false;
+
+	dev_dbg(vfe->camss->dev, "VFE31 enable: line_id=%d (direct, not gen1)\n",
+		 line->id);
+
+	/* Setup output (inline from gen1's vfe_get_output) */
+	spin_lock_irqsave(&vfe->output_lock, flags);
+
+	if (output->state > VFE_OUTPUT_RESERVED) {
+		dev_err(vfe->camss->dev, "VFE31: Output already running\n");
+		spin_unlock_irqrestore(&vfe->output_lock, flags);
+		return -EBUSY;
+	}
+	output->state = VFE_OUTPUT_RESERVED;
+	output->gen1.active_buf = 0;
+	output->drop_update_idx = 0;
+
+	bool is_rdi_line = (line->id == VFE_LINE_RDI0 ||
+			    line->id == VFE_LINE_RDI1 ||
+			    line->id == VFE_LINE_RDI2);
+	u32 axi_mode = vfe31_select_axi_and_wm_num(vfe, line, pix, output,
+						   is_rdi_line);
+
+	wm_idx = vfe31_reserve_line_wms(vfe, line, output);
+	if (wm_idx < 0) {
+		spin_unlock_irqrestore(&vfe->output_lock, flags);
+		return wm_idx;
 	}
 
 	/* Get buffers from pending queue (inline from gen1's vfe_enable_output) */
