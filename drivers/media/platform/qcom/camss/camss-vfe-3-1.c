@@ -5131,13 +5131,334 @@ static void vfe31_config_irqs(struct vfe_device *vfe, struct vfe_line *line,
 	wmb();
 }
 
+/*
+ * Program the per-WM bus registers (PING/PONG, IMAGE_SIZE, ADDR_CFG/UB SRAM
+ * allocation, UB_CFG) for the Y write master, and for the CbCr write master
+ * on semi-planar (2-WM) outputs. Must run before CAMIF starts.
+ */
+static void vfe31_config_wm_registers(struct vfe_device *vfe,
+				      struct vfe_line *line, u8 wm,
+				      bool is_rdi_line)
+{
+	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+	u16 width = pix->width;
+	u16 height = pix->height;
+	u16 wpl;
+	u32 reg;
+	bool fmt_is_420;
+
+	dev_dbg(vfe->camss->dev, "VFE31: Step 2 - WM registers\n");
+
+	/* WR_PING_ADDR */
+	dev_dbg(vfe->camss->dev,
+		 "VFE31: WM%d PING_ADDR=0x%08x\n", wm, V31(vfe)->pending_ping_addr);
+	writel_relaxed(V31(vfe)->pending_ping_addr,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
+
+	/* WR_PONG_ADDR */
+	dev_dbg(vfe->camss->dev,
+		 "VFE31: WM%d PONG_ADDR=0x%08x\n", wm, V31(vfe)->pending_pong_addr);
+	writel_relaxed(V31(vfe)->pending_pong_addr,
+		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
+
+	/*
+	 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
+	 * webOS WM0: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
+	 *
+	 * Upper 16 bits: stride / 16 (128-bit words per line)
+	 * Lower 16 bits: ((height - 1) << 4) | 2
+	 *
+	 * CRITICAL: Use INPUT stride, not output bytesperline!
+	 * - UYVY (PIX/VIDEO): 2 bytes/pixel -> width * 2
+	 * - RAW8 (RDI): 1 byte/pixel -> width * 1
+	 * - RDI with force_16bpp: 2 bytes/pixel -> width * 2
+	 * Using output stride causes half-frame capture.
+	 */
+	{
+		u16 image_stride = is_rdi_line ? width : (width * 2);
+
+		reg = ((image_stride / 16) & 0xFFFF) << 16;
+		reg |= ((height - 1) << 4) | 2;
+
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: WM%d IMAGE_SIZE stride=%d height=%d reg=0x%x\n",
+			 wm, image_stride, height, reg);
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+	}
+
+	/*
+	 * WR_ADDR_CFG = (UB_start << 16) | UB_depth
+	 *
+	 * CORRECTED 2026-04-20: This register controls UB SRAM allocation,
+	 * NOT DMA burst configuration. Proven by Opal HAL decompilation.
+	 *
+	 * UB_depth = (plane_pixels * 912) / total_bw - 1
+	 * UB_start = 0 for first WM (Y), Y_depth + 1 for CbCr WM
+	 *
+	 * For RDI: single WM gets full UB budget (0x397 = 911).
+	 *
+	 * webOS: WM0 = 0x0000012F (start=0, depth=303)
+	 */
+	{
+		u32 ub_depth;
+
+		fmt_is_420 = vfe31_is_420_format(
+			line->video_out.active_fmt.fmt.pix_mp.pixelformat);
+
+		if (is_rdi_line) {
+			/* RDI: single WM, full UB budget */
+			ub_depth = 0x397;  /* 911, matches Samsung raw snapshot */
+		} else {
+			/*
+			 * PIX/VIDEO: proportional UB allocation.
+			 * NV12: total_bw = y_pixels * 3 (= 2 * w*h*1.5)
+			 * NV16: total_bw = y_pixels * 4 (= 2 * w*h*2.0)
+			 */
+			u32 y_pixels = width * height;
+			u32 total_bw = fmt_is_420 ?
+				(y_pixels * 3) : (y_pixels * 4);
+			ub_depth = div_u64((u64)y_pixels * 912, total_bw);
+			if (ub_depth > 0)
+				ub_depth--;
+			if (ub_depth < 1)
+				ub_depth = 1;
+		}
+		reg = ub_depth & 0x3ff;  /* UB_start=0 for Y WM */
+
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: WM%d ADDR_CFG=0x%08x (UB start=0, depth=%d)\n",
+			 wm, reg, ub_depth);
+		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
+	}
+
+	/*
+	 * WR_UB_CFG - VFE31 format (from webOS register dumps):
+	 * webOS WM0: 0x002701DF = ((39) << 16) | 479
+	 *
+	 * Upper 16 bits: (wpl / 8) - 1, where wpl is 32-bit words per line
+	 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
+	 * Lower 16 bits: height - 1
+	 *
+	 * Use INPUT stride based on mode:
+	 * - UYVY (PIX/VIDEO): width * 2
+	 * - RAW8 (RDI): width * 1
+	 * - RDI with force_16bpp: width * 2
+	 */
+	wpl = (is_rdi_line ? width : (width * 2)) / 4;
+	reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
+	reg |= (height - 1) & 0xFFFF;
+	dev_dbg(vfe->camss->dev,
+		 "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, input_wpl=%d)\n",
+		 wm, reg, (wpl / 8 - 1), wpl);
+	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
+	/* Ensure UB configuration is committed before continuing */
+	wmb();
+
+	/*
+	 * Step 2b: Configure WM1 for CbCr output (semi-planar formats)
+	 *
+	 * In PIX mode with DEMUX enabled, the VFE separates Y and CbCr.
+	 * Use format-aware offset calculation for portability.
+	 */
+	if (line->output.wm_num == 2) {
+		u8 cbcr_wm = line->output.wm_idx[1];  /* CbCr WM (WM4) */
+		u32 y_plane_size;
+		u32 cbcr_offset;
+		u32 cbcr_ping, cbcr_pong;
+		u16 cbcr_height;
+
+		/*
+		 * CbCr plane offset = Y plane size in memory.
+		 *
+		 * VFE31 writes Y compactly at width stride, not bytesperline.
+		 * Use width * height for correct CbCr offset.
+		 */
+		y_plane_size = width * height;
+		cbcr_offset = y_plane_size;
+		cbcr_ping = V31(vfe)->pending_ping_addr + cbcr_offset;
+		cbcr_pong = V31(vfe)->pending_pong_addr + cbcr_offset;
+
+		/* Store for runtime CbCr address calculation */
+		V31(vfe)->active_cbcr_offset = cbcr_offset;
+
+		/*
+		 * CbCr height depends on format:
+		 * - 4:2:0 (NV12/NV21): CbCr height = Y height / 2
+		 * - 4:2:2 (NV16/NV61): CbCr height = Y height (full)
+		 */
+		cbcr_height = vfe31_calc_cbcr_height(pix->pixelformat, height);
+
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: WM%d (CbCr) offset=0x%x PING=0x%08x cbcr_height=%d\n",
+			 cbcr_wm, cbcr_offset, cbcr_ping, cbcr_height);
+
+		/* CbCr WM PING/PONG addresses */
+		writel_relaxed(cbcr_ping,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(cbcr_wm));
+		writel_relaxed(cbcr_pong,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(cbcr_wm));
+
+		/*
+		 * CbCr WM IMAGE_SIZE - MUST use INPUT stride (same as Y WM)
+		 * webOS uses stride=1280 for both Y and CbCr IMAGE_SIZE.
+		 */
+		{
+			u16 input_stride = width * 2;  /* UYVY input stride */
+
+			reg = ((input_stride / 16) & 0xFFFF) << 16;
+			reg |= ((cbcr_height - 1) << 4) | 2;
+			dev_dbg(vfe->camss->dev,
+				 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d)\n",
+				 cbcr_wm, reg, input_stride, cbcr_height);
+			writel_relaxed(reg,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(cbcr_wm));
+		}
+
+		/*
+		 * CbCr WM ADDR_CFG = (UB_start << 16) | UB_depth
+		 *
+		 * UB start = Y_depth + 1 (sequential after Y WM).
+		 * CbCr depth depends on format (HTC/Sony verified):
+		 *   NV12: half-width pixels, separate computation
+		 *   NV16: same depth as Y (equal plane sizes)
+		 *
+		 * webOS NV12: WM4 = 0x01300097 (start=304, depth=151)
+		 */
+		{
+			u32 y_pixels = width * height;
+			u32 total_bw = fmt_is_420 ?
+				(y_pixels * 3) : (y_pixels * 4);
+			u32 y_depth = div_u64((u64)y_pixels * 912, total_bw);
+			u32 cb_depth;
+			u32 ub_start;
+
+			if (fmt_is_420) {
+				u32 cbcr_pixels = (width / 2) * height;
+
+				cb_depth = div_u64((u64)cbcr_pixels * 912, total_bw);
+			} else {
+				cb_depth = y_depth;
+			}
+
+			if (y_depth > 0)
+				y_depth--;
+			if (cb_depth > 0)
+				cb_depth--;
+			if (y_depth < 1)
+				y_depth = 1;
+			if (cb_depth < 1)
+				cb_depth = 1;
+
+			ub_start = (y_depth + 1) & 0x3ff;
+			reg = (ub_start << 16) | (cb_depth & 0x3ff);
+			dev_dbg(vfe->camss->dev,
+				 "VFE31: WM%d ADDR_CFG=0x%08x (UB start=%d, depth=%d)\n",
+				 cbcr_wm, reg, ub_start, cb_depth);
+			writel_relaxed(reg,
+				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(cbcr_wm));
+		}
+
+		/* CbCr WM UB_CFG - MUST use INPUT stride (same as Y WM) */
+		{
+			u16 input_stride = width * 2;  /* UYVY input stride */
+
+			wpl = input_stride / 4;  /* Same as Y WM */
+		}
+		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
+		reg |= (cbcr_height - 1) & 0xFFFF;  /* Use cbcr_height, not height */
+		writel_relaxed(reg,
+			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(cbcr_wm));
+		/* Ensure CbCr UB configuration is committed before continuing */
+		wmb();
+	}
+}
+
+/*
+ * Dump the VFE/CAMIF/IRQ register state and verify the CSI->VFE clock muxing
+ * right after CAMIF start. Debug-only (dev_dbg), plus a dev_err if CSI1 is not
+ * selected/enabled for the MT9M113.
+ */
+static void vfe31_dump_camif_start_state(struct vfe_device *vfe)
+{
+	/* Debug dump of all relevant registers after CAMIF start */
+	dev_dbg(vfe->camss->dev,
+		 "VFE31: CAMIF started - comprehensive register dump:\n");
+	dev_dbg(vfe->camss->dev,
+		 "  CORE_CFG(0x014)=0x%08x  AXI_OUT_MODE(0x040)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
+		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG));
+	dev_dbg(vfe->camss->dev,
+		 "  EFS_CFG(0x1E4)=0x%08x  FRAME_CFG(0x1E8)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
+	dev_dbg(vfe->camss->dev,
+		 "  CAMIF_STATUS(0x204)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
+	dev_dbg(vfe->camss->dev,
+		 "  IRQ_MASK_0(0x01C)=0x%08x  IRQ_MASK_1(0x020)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0),
+		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1));
+	dev_dbg(vfe->camss->dev,
+		 "  IRQ_STATUS_0(0x02C)=0x%08x  IRQ_STATUS_1(0x030)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_0),
+		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_1));
+	dev_dbg(vfe->camss->dev,
+		 "  MODULE_CFG(0x010)=0x%08x  BUS_CFG(0x03C)=0x%08x\n",
+		 readl_relaxed(vfe->base + VFE_0_MODULE_CFG),
+		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
+
+	/*
+	 * Schedule a delayed diagnostic check to verify CSI-to-VFE clock
+	 * configuration after the sensor has had time to start streaming.
+	 * This helps diagnose issues where data isn't reaching VFE.
+	 */
+	{
+		void __iomem *mmcc_base;
+
+		mmcc_base = ioremap(0x04000000, 0x200);
+		if (mmcc_base) {
+			u32 vfe_cc, misc_cc;
+
+			vfe_cc = readl_relaxed(mmcc_base + 0x0104);
+			misc_cc = readl_relaxed(mmcc_base + 0x0058);
+
+			dev_dbg(vfe->camss->dev,
+				 "VFE31: CSI-to-VFE clock state at CAMIF start:\n");
+			dev_dbg(vfe->camss->dev,
+				 "  VFE_CC_REG(0x0104)=0x%08x CSI0_VFE=%s CSI1_VFE=%s\n",
+				 vfe_cc,
+				 (vfe_cc & BIT(12)) ? "ON" : "off",
+				 (vfe_cc & BIT(10)) ? "ON" : "off");
+			dev_dbg(vfe->camss->dev,
+				 "  MISC_CC_REG(0x0058)=0x%08x csi_pix_sel=%s csi_pix_en=%s csi_rdi_sel=%s csi_rdi_en=%s\n",
+				 misc_cc,
+				 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
+				 (misc_cc & BIT(26)) ? "ON" : "off",
+				 (misc_cc & BIT(12)) ? "CSI1" : "CSI0",
+				 (misc_cc & BIT(13)) ? "ON" : "off");
+
+			/* CRITICAL: Verify CSI1 is selected and enabled for MT9M113 */
+			if (!(vfe_cc & BIT(10))) {
+				dev_err(vfe->camss->dev,
+					"VFE31 ERROR: CSI1_VFE_CLK not enabled in VFE_CC_REG!\n");
+			}
+			if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(26))) {
+				dev_err(vfe->camss->dev,
+					"VFE31 ERROR: csi_pix not configured for CSI1! sel=%s en=%s\n",
+					(misc_cc & BIT(25)) ? "CSI1" : "CSI0",
+					(misc_cc & BIT(26)) ? "ON" : "off");
+			}
+
+			iounmap(mmcc_base);
+		}
+	}
+}
+
 static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 {
 	enum vfe_line_id line_id = vfe->wm_output_map[wm];
 	struct vfe_line *line;
-	u32 val;
 	bool is_rdi_line;
-	bool fmt_is_420;
 	u32 axi_mode;
 
 	if (line_id == VFE_LINE_NONE || line_id >= vfe->res->line_num) {
@@ -5190,238 +5511,7 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 	vfe31_config_axi_bus(vfe, line, axi_mode, is_rdi_line);
 
 	/* Step 2: Configure WM registers (must be BEFORE CAMIF start) */
-	{
-		struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
-		u16 width = pix->width;
-		u16 height = pix->height;
-		u16 wpl;
-		u32 reg;
-
-		dev_dbg(vfe->camss->dev, "VFE31: Step 2 - WM registers\n");
-
-		/* WR_PING_ADDR */
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: WM%d PING_ADDR=0x%08x\n", wm, V31(vfe)->pending_ping_addr);
-		writel_relaxed(V31(vfe)->pending_ping_addr,
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(wm));
-
-		/* WR_PONG_ADDR */
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: WM%d PONG_ADDR=0x%08x\n", wm, V31(vfe)->pending_pong_addr);
-		writel_relaxed(V31(vfe)->pending_pong_addr,
-			       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(wm));
-
-		/*
-		 * WR_IMAGE_SIZE - VFE31 format (from webOS register dumps):
-		 * webOS WM0: 0x00501DF2 = ((80) << 16) | ((479 << 4) | 2)
-		 *
-		 * Upper 16 bits: stride / 16 (128-bit words per line)
-		 * Lower 16 bits: ((height - 1) << 4) | 2
-		 *
-		 * CRITICAL: Use INPUT stride, not output bytesperline!
-		 * - UYVY (PIX/VIDEO): 2 bytes/pixel -> width * 2
-		 * - RAW8 (RDI): 1 byte/pixel -> width * 1
-		 * - RDI with force_16bpp: 2 bytes/pixel -> width * 2
-		 * Using output stride causes half-frame capture.
-		 */
-		{
-			u16 image_stride = is_rdi_line ? width : (width * 2);
-
-			reg = ((image_stride / 16) & 0xFFFF) << 16;
-			reg |= ((height - 1) << 4) | 2;
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: WM%d IMAGE_SIZE stride=%d height=%d reg=0x%x\n",
-				 wm, image_stride, height, reg);
-			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
-		}
-
-		/*
-		 * WR_ADDR_CFG = (UB_start << 16) | UB_depth
-		 *
-		 * CORRECTED 2026-04-20: This register controls UB SRAM allocation,
-		 * NOT DMA burst configuration. Proven by Opal HAL decompilation.
-		 *
-		 * UB_depth = (plane_pixels * 912) / total_bw - 1
-		 * UB_start = 0 for first WM (Y), Y_depth + 1 for CbCr WM
-		 *
-		 * For RDI: single WM gets full UB budget (0x397 = 911).
-		 *
-		 * webOS: WM0 = 0x0000012F (start=0, depth=303)
-		 */
-		{
-			u32 ub_depth;
-
-			fmt_is_420 = vfe31_is_420_format(
-				line->video_out.active_fmt.fmt.pix_mp.pixelformat);
-
-			if (is_rdi_line) {
-				/* RDI: single WM, full UB budget */
-				ub_depth = 0x397;  /* 911, matches Samsung raw snapshot */
-			} else {
-				/*
-				 * PIX/VIDEO: proportional UB allocation.
-				 * NV12: total_bw = y_pixels * 3 (= 2 * w*h*1.5)
-				 * NV16: total_bw = y_pixels * 4 (= 2 * w*h*2.0)
-				 */
-				u32 y_pixels = width * height;
-				u32 total_bw = fmt_is_420 ?
-					(y_pixels * 3) : (y_pixels * 4);
-				ub_depth = div_u64((u64)y_pixels * 912, total_bw);
-				if (ub_depth > 0)
-					ub_depth--;
-				if (ub_depth < 1)
-					ub_depth = 1;
-			}
-			reg = ub_depth & 0x3ff;  /* UB_start=0 for Y WM */
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: WM%d ADDR_CFG=0x%08x (UB start=0, depth=%d)\n",
-				 wm, reg, ub_depth);
-			writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(wm));
-		}
-
-		/*
-		 * WR_UB_CFG - VFE31 format (from webOS register dumps):
-		 * webOS WM0: 0x002701DF = ((39) << 16) | 479
-		 *
-		 * Upper 16 bits: (wpl / 8) - 1, where wpl is 32-bit words per line
-		 *   For 1280 bytes/line: wpl = 320, (320/8)-1 = 39 = 0x27
-		 * Lower 16 bits: height - 1
-		 *
-		 * Use INPUT stride based on mode:
-		 * - UYVY (PIX/VIDEO): width * 2
-		 * - RAW8 (RDI): width * 1
-		 * - RDI with force_16bpp: width * 2
-		 */
-		wpl = (is_rdi_line ? width : (width * 2)) / 4;
-		reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
-		reg |= (height - 1) & 0xFFFF;
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: WM%d UB_CFG=0x%08x (ub_depth=%d, input_wpl=%d)\n",
-			 wm, reg, (wpl / 8 - 1), wpl);
-		writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
-		/* Ensure UB configuration is committed before continuing */
-		wmb();
-
-		/*
-		 * Step 2b: Configure WM1 for CbCr output (semi-planar formats)
-		 *
-		 * In PIX mode with DEMUX enabled, the VFE separates Y and CbCr.
-		 * Use format-aware offset calculation for portability.
-		 */
-		if (line->output.wm_num == 2) {
-			u8 cbcr_wm = line->output.wm_idx[1];  /* CbCr WM (WM4) */
-			u32 y_plane_size;
-			u32 cbcr_offset;
-			u32 cbcr_ping, cbcr_pong;
-			u16 cbcr_height;
-
-			/*
-			 * CbCr plane offset = Y plane size in memory.
-			 *
-			 * VFE31 writes Y compactly at width stride, not bytesperline.
-			 * Use width * height for correct CbCr offset.
-			 */
-			y_plane_size = width * height;
-			cbcr_offset = y_plane_size;
-			cbcr_ping = V31(vfe)->pending_ping_addr + cbcr_offset;
-			cbcr_pong = V31(vfe)->pending_pong_addr + cbcr_offset;
-
-			/* Store for runtime CbCr address calculation */
-			V31(vfe)->active_cbcr_offset = cbcr_offset;
-
-			/*
-			 * CbCr height depends on format:
-			 * - 4:2:0 (NV12/NV21): CbCr height = Y height / 2
-			 * - 4:2:2 (NV16/NV61): CbCr height = Y height (full)
-			 */
-			cbcr_height = vfe31_calc_cbcr_height(pix->pixelformat, height);
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: WM%d (CbCr) offset=0x%x PING=0x%08x cbcr_height=%d\n",
-				 cbcr_wm, cbcr_offset, cbcr_ping, cbcr_height);
-
-			/* CbCr WM PING/PONG addresses */
-			writel_relaxed(cbcr_ping,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PING_ADDR(cbcr_wm));
-			writel_relaxed(cbcr_pong,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_PONG_ADDR(cbcr_wm));
-
-			/*
-			 * CbCr WM IMAGE_SIZE - MUST use INPUT stride (same as Y WM)
-			 * webOS uses stride=1280 for both Y and CbCr IMAGE_SIZE.
-			 */
-			{
-				u16 input_stride = width * 2;  /* UYVY input stride */
-
-				reg = ((input_stride / 16) & 0xFFFF) << 16;
-				reg |= ((cbcr_height - 1) << 4) | 2;
-				dev_dbg(vfe->camss->dev,
-					 "VFE31: WM%d IMAGE_SIZE=0x%08x (stride=%d height=%d)\n",
-					 cbcr_wm, reg, input_stride, cbcr_height);
-				writel_relaxed(reg,
-					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(cbcr_wm));
-			}
-
-			/*
-			 * CbCr WM ADDR_CFG = (UB_start << 16) | UB_depth
-			 *
-			 * UB start = Y_depth + 1 (sequential after Y WM).
-			 * CbCr depth depends on format (HTC/Sony verified):
-			 *   NV12: half-width pixels, separate computation
-			 *   NV16: same depth as Y (equal plane sizes)
-			 *
-			 * webOS NV12: WM4 = 0x01300097 (start=304, depth=151)
-			 */
-			{
-				u32 y_pixels = width * height;
-				u32 total_bw = fmt_is_420 ?
-					(y_pixels * 3) : (y_pixels * 4);
-				u32 y_depth = div_u64((u64)y_pixels * 912, total_bw);
-				u32 cb_depth;
-				u32 ub_start;
-
-				if (fmt_is_420) {
-					u32 cbcr_pixels = (width / 2) * height;
-
-					cb_depth = div_u64((u64)cbcr_pixels * 912, total_bw);
-				} else {
-					cb_depth = y_depth;
-				}
-
-				if (y_depth > 0)
-					y_depth--;
-				if (cb_depth > 0)
-					cb_depth--;
-				if (y_depth < 1)
-					y_depth = 1;
-				if (cb_depth < 1)
-					cb_depth = 1;
-
-				ub_start = (y_depth + 1) & 0x3ff;
-				reg = (ub_start << 16) | (cb_depth & 0x3ff);
-				dev_dbg(vfe->camss->dev,
-					 "VFE31: WM%d ADDR_CFG=0x%08x (UB start=%d, depth=%d)\n",
-					 cbcr_wm, reg, ub_start, cb_depth);
-				writel_relaxed(reg,
-					       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_ADDR_CFG(cbcr_wm));
-			}
-
-			/* CbCr WM UB_CFG - MUST use INPUT stride (same as Y WM) */
-			{
-				u16 input_stride = width * 2;  /* UYVY input stride */
-
-				wpl = input_stride / 4;  /* Same as Y WM */
-			}
-			reg = ((wpl / 8 - 1) & 0xFFFF) << 16;
-			reg |= (cbcr_height - 1) & 0xFFFF;  /* Use cbcr_height, not height */
-			writel_relaxed(reg,
-				       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(cbcr_wm));
-			/* Ensure CbCr UB configuration is committed before continuing */
-			wmb();
-		}
-	}
+	vfe31_config_wm_registers(vfe, line, wm, is_rdi_line);
 
 	/* Step 3: CAMIF window + frame-sync configuration. */
 	vfe31_config_camif_window(vfe, line);
@@ -5514,80 +5604,9 @@ static void vfe31_configure_pending_camif(struct vfe_device *vfe, u8 wm)
 		}
 	}
 
-	/* Debug dump of all relevant registers after CAMIF start */
-	dev_dbg(vfe->camss->dev,
-		 "VFE31: CAMIF started - comprehensive register dump:\n");
-	dev_dbg(vfe->camss->dev,
-		 "  CORE_CFG(0x014)=0x%08x  AXI_OUT_MODE(0x040)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CORE_CFG),
-		 readl_relaxed(vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG));
-	dev_dbg(vfe->camss->dev,
-		 "  EFS_CFG(0x1E4)=0x%08x  FRAME_CFG(0x1E8)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_CFG),
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_FRAME_CFG));
-	dev_dbg(vfe->camss->dev,
-		 "  CAMIF_STATUS(0x204)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_CAMIF_STATUS));
-	dev_dbg(vfe->camss->dev,
-		 "  IRQ_MASK_0(0x01C)=0x%08x  IRQ_MASK_1(0x020)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_0),
-		 readl_relaxed(vfe->base + VFE_0_IRQ_MASK_1));
-	dev_dbg(vfe->camss->dev,
-		 "  IRQ_STATUS_0(0x02C)=0x%08x  IRQ_STATUS_1(0x030)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_0),
-		 readl_relaxed(vfe->base + VFE_0_IRQ_STATUS_1));
-	dev_dbg(vfe->camss->dev,
-		 "  MODULE_CFG(0x010)=0x%08x  BUS_CFG(0x03C)=0x%08x\n",
-		 readl_relaxed(vfe->base + VFE_0_MODULE_CFG),
-		 readl_relaxed(vfe->base + VFE_0_BUS_CFG));
-
 	vfe->camif_pending = false;
 
-	/*
-	 * Schedule a delayed diagnostic check to verify CSI-to-VFE clock
-	 * configuration after the sensor has had time to start streaming.
-	 * This helps diagnose issues where data isn't reaching VFE.
-	 */
-	{
-		void __iomem *mmcc_base;
-
-		mmcc_base = ioremap(0x04000000, 0x200);
-		if (mmcc_base) {
-			u32 vfe_cc, misc_cc;
-
-			vfe_cc = readl_relaxed(mmcc_base + 0x0104);
-			misc_cc = readl_relaxed(mmcc_base + 0x0058);
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: CSI-to-VFE clock state at CAMIF start:\n");
-			dev_dbg(vfe->camss->dev,
-				 "  VFE_CC_REG(0x0104)=0x%08x CSI0_VFE=%s CSI1_VFE=%s\n",
-				 vfe_cc,
-				 (vfe_cc & BIT(12)) ? "ON" : "off",
-				 (vfe_cc & BIT(10)) ? "ON" : "off");
-			dev_dbg(vfe->camss->dev,
-				 "  MISC_CC_REG(0x0058)=0x%08x csi_pix_sel=%s csi_pix_en=%s csi_rdi_sel=%s csi_rdi_en=%s\n",
-				 misc_cc,
-				 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
-				 (misc_cc & BIT(26)) ? "ON" : "off",
-				 (misc_cc & BIT(12)) ? "CSI1" : "CSI0",
-				 (misc_cc & BIT(13)) ? "ON" : "off");
-
-			/* CRITICAL: Verify CSI1 is selected and enabled for MT9M113 */
-			if (!(vfe_cc & BIT(10))) {
-				dev_err(vfe->camss->dev,
-					"VFE31 ERROR: CSI1_VFE_CLK not enabled in VFE_CC_REG!\n");
-			}
-			if (!(misc_cc & BIT(25)) || !(misc_cc & BIT(26))) {
-				dev_err(vfe->camss->dev,
-					"VFE31 ERROR: csi_pix not configured for CSI1! sel=%s en=%s\n",
-					(misc_cc & BIT(25)) ? "CSI1" : "CSI0",
-					(misc_cc & BIT(26)) ? "ON" : "off");
-			}
-
-			iounmap(mmcc_base);
-		}
-	}
+	vfe31_dump_camif_start_state(vfe);
 }
 
 static void vfe31_wm_enable(struct vfe_device *vfe, u8 wm, u8 enable)
