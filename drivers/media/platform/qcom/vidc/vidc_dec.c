@@ -728,7 +728,7 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 			 * a clean firmware (cmd=9); collapsing here used to boot
 			 * cmd=51 recovery only because the core reset was missing.
 			 */
-			pm_runtime_put_sync_suspend(core->dev);
+			pm_runtime_put_sync(core->dev);
 		}
 	} else {
 		while ((vbuf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx)))

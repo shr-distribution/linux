@@ -748,7 +748,7 @@ static void vidc_enc_stop_streaming(struct vb2_queue *q)
 			 * clean. See the longer rationale in
 			 * vidc_dec_stop_streaming().
 			 */
-			pm_runtime_put_sync_suspend(core->dev);
+			pm_runtime_put_sync(core->dev);
 		}
 	} else {
 		while ((vbuf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx)))
