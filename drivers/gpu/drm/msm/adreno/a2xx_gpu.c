@@ -32,6 +32,23 @@ static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	struct msm_ringbuffer *ring = submit->ring;
 	unsigned int i;
 
+	/*
+	 * a20x/a220 erratum (per legacy KGSL a2xx_drawctxt_draw_workaround):
+	 * "if the events for shader space reuse get dropped, the CP block would
+	 * wait indefinitely". This happens with repeated idles between submits
+	 * (the kernel ring's per-submit CP_WAIT_FOR_IDLE below) and is the
+	 * recurring back-end wedge -- the CP parks forever waiting for shader
+	 * instruction space that never frees (RBBM shows RB/PA/SC stuck, CP
+	 * busy), worst right after a GDSC power-collapse/resume. KGSL unblocks
+	 * the CP by re-issuing CP_SET_SHADER_BASES. Emit it at the start of
+	 * every submit so the reuse event cannot accumulate-drop across the
+	 * inter-submit idles. 0x80000180 = adreno_encode_istore_size() |
+	 * pix_shader_start for a220 -- the same value Mesa's fd2_emit_restore
+	 * programs per batch.
+	 */
+	OUT_PKT3(ring, CP_SET_SHADER_BASES, 1);
+	OUT_RING(ring, 0x80000180);
+
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
 		case MSM_SUBMIT_CMD_IB_TARGET_BUF:
