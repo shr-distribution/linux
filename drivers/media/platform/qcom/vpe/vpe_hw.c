@@ -83,8 +83,7 @@ static const u32 vpe_scale_coeff_0p6_0p8[] = {
 	0x03f80078, 0x0060012f, 0x03f80070, 0x0068012f,
 };
 
-/* Not loaded into the banks today (the HAL's vpe_init_scale_table populates
- * the four banks from only the three tables above), kept for reference. */
+/* Sharpest band (phase 0 = passthrough); selected for upscale and 1:1. */
 static const u32 vpe_scale_coeff_0p8_20p0[] = {
 	0x000001ff, 0x00000000, 0x03f901fb, 0x03fe000d,
 	0x03f301f5, 0x03fb001c, 0x03ed01ee, 0x03f9002b,
@@ -107,6 +106,12 @@ static const u32 vpe_scale_coeff_0p8_20p0[] = {
 int vpe_hw_reset(void __iomem *base)
 {
 	int timeout = 100;
+
+	/* Mask and clear any latched interrupt before resetting (legacy
+	 * parity) so a stale DONE can't fire spuriously on the next start.
+	 */
+	writel(0, base + VPE_INTR_ENABLE);
+	writel(VPE_INTR_CLEAR_ALL, base + VPE_INTR_CLEAR);
 
 	/* Issue software reset */
 	writel(VPE_SW_RESET_VALUE, base + VPE_SW_RESET);
@@ -164,11 +169,6 @@ void vpe_hw_clear_irq(void __iomem *base)
 u32 vpe_hw_get_irq_status(void __iomem *base)
 {
 	return readl(base + VPE_INTR_STATUS);
-}
-
-u32 vpe_hw_get_version(void __iomem *base)
-{
-	return readl(base + VPE_HW_VERSION);
 }
 
 void vpe_hw_start(void __iomem *base)
@@ -379,9 +379,4 @@ void vpe_hw_set_rotation(void __iomem *base, int rotation)
 	}
 
 	writel(op_mode, base + VPE_OP_MODE);
-}
-
-void vpe_hw_set_op_mode(void __iomem *base, u32 mode)
-{
-	writel(mode, base + VPE_OP_MODE);
 }

@@ -18,16 +18,11 @@
 #define VPE_INTR_STATUS			0x0024
 #define VPE_INTR_CLEAR			0x0028
 #define VPE_DL0_START			0x0030
-#define VPE_HW_VERSION			0x0070
 #define VPE_SW_RESET			0x0074
 #define VPE_AXI_RD_ARB_CONFIG		0x0078
-#define VPE_SEL_CLK_OR_HCLK_TEST_BUS	0x007C
 #define VPE_CGC_EN			0x0100
 
-/* Command and status registers */
-#define VPE_CMD_STATUS			0x10008
-#define VPE_PROFILE_EN			0x10010
-#define VPE_PROFILE_COUNT		0x10014
+/* Command register */
 #define VPE_CMD_MODE			0x10060
 
 /* Source configuration registers */
@@ -61,18 +56,6 @@
 /* Scale configuration */
 #define VPE_SCALE_CONFIG		0x10230
 
-/* Deinterlace registers */
-#define VPE_DEINT_STATUS		0x30000
-#define VPE_DEINT_DECISION		0x30004
-#define VPE_DEINT_COEFF0		0x30010
-
-/* Scale status and coefficient registers */
-#define VPE_SCALE_STATUS		0x50000
-#define VPE_SCALE_SVI_PARAM		0x50010
-#define VPE_SCALE_SHARPEN_CFG		0x50020
-#define VPE_SCALE_COEFF_LSP_0		0x50400
-#define VPE_SCALE_COEFF_MSP_0		0x50404
-
 /*
  * The FIR scaler holds four polyphase coefficient sub-tables (one per scale-
  * ratio band) laid out CONTIGUOUSLY in one coefficient space at 0x50400: 128
@@ -89,8 +72,7 @@
 #define VPE_SCALE_COEFF_BANK3		0x50700
 #define VPE_SCALE_COEFF_NUM		32
 
-/* Hardware version and reset values */
-#define VPE_HW_VERSION_VALUE		0x00080308
+/* Reset / default values */
 #define VPE_SW_RESET_VALUE		0x00000010	/* bit 4 for PPP */
 #define VPE_AXI_RD_ARB_CONFIG_VALUE	0x124924
 #define VPE_CMD_MODE_VALUE		0x1
@@ -114,6 +96,7 @@
 
 /* Interrupt status bits */
 #define VPE_INTR_STATUS_DONE		BIT(0)
+#define VPE_INTR_CLEAR_ALL		0x001fffff
 
 /* Operation mode bits */
 #define VPE_OP_MODE_ROTATION_MASK	GENMASK(10, 8)
@@ -141,7 +124,6 @@ void vpe_hw_enable_irq(void __iomem *base);
 void vpe_hw_disable_irq(void __iomem *base);
 void vpe_hw_clear_irq(void __iomem *base);
 u32 vpe_hw_get_irq_status(void __iomem *base);
-u32 vpe_hw_get_version(void __iomem *base);
 void vpe_hw_start(void __iomem *base);
 
 /* Configuration functions */
@@ -154,6 +136,5 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 void vpe_hw_set_roi(void __iomem *base, u32 src_x, u32 src_y,
 		    u32 dst_x, u32 dst_y);
 void vpe_hw_set_rotation(void __iomem *base, int rotation);
-void vpe_hw_set_op_mode(void __iomem *base, u32 mode);
 
 #endif /* _VPE_HW_H_ */

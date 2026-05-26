@@ -10,10 +10,12 @@
  */
 
 #include <linux/clk.h>
+#include <linux/completion.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/interconnect.h>
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -73,7 +75,8 @@ struct vpe_dev {
 	struct v4l2_m2m_dev	*m2m_dev;
 	struct mutex		lock;	/* device lock */
 
-	spinlock_t		irqlock;
+	struct completion	done;	/* signalled by the frame-done IRQ */
+	int			error;	/* result of the in-flight job */
 };
 
 struct vpe_frame {
@@ -382,28 +385,24 @@ static void vpe_device_run(void *priv)
 		       ctx->compose.left, ctx->compose.top);
 	vpe_hw_set_rotation(vpe->base, ctx->rotation);
 
-	/* Enable interrupt and start processing; completion arrives via IRQ. */
+	/*
+	 * Kick the engine and wait for the frame-done IRQ. The operation is a
+	 * single short pass, so a synchronous wait (like the sibling rotator)
+	 * keeps the completion path race-free and bounds a missing IRQ with a
+	 * timeout instead of wedging the device.
+	 */
+	vpe->error = 0;
+	vpe_hw_clear_irq(vpe->base);	/* drop any stale latched DONE */
+	reinit_completion(&vpe->done);
 	vpe_hw_enable_irq(vpe->base);
 	vpe_hw_start(vpe->base);
-}
 
-static irqreturn_t vpe_irq_handler(int irq, void *dev_id)
-{
-	struct vpe_dev *vpe = dev_id;
-	struct vpe_ctx *ctx;
-	struct vb2_v4l2_buffer *src_buf, *dst_buf;
-	u32 status;
-
-	status = vpe_hw_get_irq_status(vpe->base);
-	if (!(status & VPE_INTR_STATUS_DONE))
-		return IRQ_NONE;
-
-	vpe_hw_clear_irq(vpe->base);
-	vpe_hw_disable_irq(vpe->base);
-
-	ctx = v4l2_m2m_get_curr_priv(vpe->m2m_dev);
-	if (!ctx)
-		return IRQ_HANDLED;
+	if (!wait_for_completion_timeout(&vpe->done, msecs_to_jiffies(500))) {
+		dev_err(vpe->dev, "VPE operation timed out\n");
+		vpe->error = -ETIMEDOUT;
+		vpe_hw_disable_irq(vpe->base);
+		vpe_hw_reset(vpe->base);
+	}
 
 	src_buf = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
 	dst_buf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
@@ -413,11 +412,27 @@ static irqreturn_t vpe_irq_handler(int irq, void *dev_id)
 		dst_buf->timecode = src_buf->timecode;
 		dst_buf->flags = src_buf->flags & V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
 
-		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
-		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(src_buf, vpe->error ? VB2_BUF_STATE_ERROR :
+						        VB2_BUF_STATE_DONE);
+		v4l2_m2m_buf_done(dst_buf, vpe->error ? VB2_BUF_STATE_ERROR :
+						        VB2_BUF_STATE_DONE);
 	}
 
 	v4l2_m2m_job_finish(vpe->m2m_dev, ctx->fh.m2m_ctx);
+}
+
+static irqreturn_t vpe_irq_handler(int irq, void *dev_id)
+{
+	struct vpe_dev *vpe = dev_id;
+	u32 status;
+
+	status = vpe_hw_get_irq_status(vpe->base);
+	if (!(status & VPE_INTR_STATUS_DONE))
+		return IRQ_NONE;
+
+	vpe_hw_clear_irq(vpe->base);
+	vpe_hw_disable_irq(vpe->base);
+	complete(&vpe->done);
 
 	return IRQ_HANDLED;
 }
@@ -641,7 +656,8 @@ static int vpe_runtime_suspend(struct device *dev)
 {
 	struct vpe_dev *vpe = dev_get_drvdata(dev);
 
-	icc_set_bw(vpe->icc_path, 0, 0);
+	if (vpe->icc_path)
+		icc_set_bw(vpe->icc_path, 0, 0);
 
 	clk_disable_unprepare(vpe->ahb_clk);
 	clk_disable_unprepare(vpe->axi_clk);
@@ -677,7 +693,8 @@ static int vpe_runtime_resume(struct device *dev)
 	if (ret)
 		goto err_axi;
 
-	icc_set_bw(vpe->icc_path, VPE_ICC_AVG_BW, VPE_ICC_PEAK_BW);
+	if (vpe->icc_path)
+		icc_set_bw(vpe->icc_path, VPE_ICC_AVG_BW, VPE_ICC_PEAK_BW);
 
 	return 0;
 
@@ -702,7 +719,7 @@ static int vpe_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, vpe);
 
 	mutex_init(&vpe->lock);
-	spin_lock_init(&vpe->irqlock);
+	init_completion(&vpe->done);
 
 	/*
 	 * Set up DMA parameters. Without this:
@@ -814,7 +831,7 @@ static int vpe_probe(struct platform_device *pdev)
 		goto err_m2m;
 	}
 
-	dev_info(dev, "Qualcomm VPE registered as /dev/video%d\n", vpe->vfd.num);
+	dev_dbg(dev, "Qualcomm VPE registered as /dev/video%d\n", vpe->vfd.num);
 
 	return 0;
 
@@ -842,8 +859,12 @@ static const struct dev_pm_ops vpe_pm_ops = {
 };
 
 static const struct of_device_id vpe_of_match[] = {
+	/* Same VPE block across the msm8260/msm8660/apq8060 die; match the
+	 * family base and the per-SoC aliases (as camss/gemini/vidc do).
+	 */
 	{ .compatible = "qcom,msm8660-vpe" },
 	{ .compatible = "qcom,apq8060-vpe" },
+	{ .compatible = "qcom,msm8260-vpe" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, vpe_of_match);
