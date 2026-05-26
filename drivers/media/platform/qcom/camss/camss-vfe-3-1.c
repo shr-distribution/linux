@@ -6006,6 +6006,129 @@ static void vfe31_config_composite_mask(struct vfe_device *vfe,
 	wmb();
 }
 
+/*
+ * Program AXI output mode (RDI raw-bypass / RAW-through-PIX / ZSL dual /
+ * PIX-DEMUX) and, except for RDI 0x60, the XBAR routing for this line.
+ */
+static void vfe31_config_axi_xbar(struct vfe_device *vfe, struct vfe_line *line)
+{
+	bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+		       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+		       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
+	bool zsl_active = (V31(vfe)->zsl_state != VFE31_REC_IDLE);
+	u32 axi_mode;
+
+	if (is_rdi && V31(vfe)->raw_through_pix)
+		axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
+	else if (is_rdi)
+		axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
+	else if (zsl_active)
+		axi_mode = 0x101;  /* ZSL dual output */
+	else
+		axi_mode = VFE31_AXI_OUT_MODE_PIX;
+
+	dev_dbg(vfe->camss->dev,
+		 "VFE31: AXI_OUT_MODE=0x%x (%s)\n",
+		 axi_mode,
+		 (is_rdi && V31(vfe)->raw_through_pix) ? "RAW-through-PIX" :
+		 is_rdi ? "RDI raw bypass" :
+		 zsl_active ? "ZSL dual" : "PIX/DEMUX");
+	writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
+
+	/* Configure XBAR: needed for PIX and RAW-through-PIX, not RDI 0x60 */
+	if (is_rdi && !V31(vfe)->raw_through_pix) {
+		/* RDI 0x60 bypasses XBAR - no config needed */
+	} else {
+		bool vid = (line->id == VFE_LINE_VIDEO);
+		u32 xbar_val = vfe31_calc_xbar(true, vid, zsl_active);
+
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: XBAR=0x%06x\n", xbar_val);
+		writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
+	}
+}
+
+/*
+ * Program BUS_CFG (DMA write-path enables). Format-aware RAW value for true
+ * RDI bypass, otherwise the shared PIX value.
+ */
+static void vfe31_config_bus_cfg(struct vfe_device *vfe, struct vfe_line *line)
+{
+	bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+		       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+		       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
+	u32 bus_cfg;
+
+	if (is_rdi && !V31(vfe)->raw_through_pix) {
+		u8 raw_bpp = camss_format_get_bpp(line->formats,
+						  line->nformats,
+						  line->fmt[MSM_VFE_PAD_SINK].code);
+		bus_cfg = vfe31_get_bus_cfg_for_raw(raw_bpp);
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: BUS_CFG=0x%08x (RDI, bpp=%u)\n",
+			 bus_cfg, raw_bpp);
+	} else {
+		bus_cfg = vfe31_get_bus_cfg();
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: BUS_CFG=0x%08x (%s)\n", bus_cfg,
+			 (is_rdi && V31(vfe)->raw_through_pix) ?
+			 "RAW-through-PIX" : "PIX/VIDEO");
+	}
+	writel_relaxed(bus_cfg, vfe->base + VFE_0_BUS_CFG);
+}
+
+/*
+ * Program IRQ_MASK_0/1 (SOF, REG_UPDATE, composite-done groups). PIX adds
+ * COMPOSITE_DONE_2 when a VIDEO line with CbCr is active.
+ */
+static void vfe31_config_irq_masks(struct vfe_device *vfe, struct vfe_line *line)
+{
+	bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
+		       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
+		       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
+
+	if (is_rdi && V31(vfe)->raw_through_pix) {
+		/* RAW-through-PIX: use PIX IRQ config */
+		V31(vfe)->irq_mask0_shadow = 0x00EFE021;
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: RAW-through-PIX IRQ_MASK_0=0x%08x\n",
+			 V31(vfe)->irq_mask0_shadow);
+	} else if (is_rdi) {
+		/*
+		 * RDI mode (AXI=0x60): Samsung's exact IRQ_MASK_0
+		 * 0x00E00021 = SOF + REG_UPDATE + COMP_DONE_0/1/2
+		 */
+		V31(vfe)->irq_mask0_shadow = 0x00E00021;
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: RDI IRQ_MASK_0=0x%08x (Samsung raw)\n",
+			 V31(vfe)->irq_mask0_shadow);
+	} else {
+		/* PIX mode: Use webOS value with composite interrupts */
+		struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+		bool video_active = (video_out->state == VFE_OUTPUT_ON ||
+				     video_out->state == VFE_OUTPUT_RESERVED ||
+				     video_out->state == VFE_OUTPUT_CONTINUOUS);
+		bool video_needs_cbcr = video_active && (video_out->wm_num == 2);
+
+		V31(vfe)->irq_mask0_shadow = 0x00EFE021;
+
+		/*
+		 * VIDEO line with CbCr uses WM1 in group 2 (COMPOSITE_DONE_2).
+		 * Add bit 23 to receive WM1 completion interrupts.
+		 */
+		if (line->id == VFE_LINE_VIDEO || video_needs_cbcr)
+			V31(vfe)->irq_mask0_shadow |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
+
+		dev_dbg(vfe->camss->dev,
+			 "VFE31: PIX IRQ_MASK_0=0x%08x (composite%s)\n",
+			 V31(vfe)->irq_mask0_shadow,
+			 (V31(vfe)->irq_mask0_shadow & 0x800000) ? "+DONE2" : "");
+	}
+	V31(vfe)->irq_mask1_shadow = 0x00400000;
+	writel_relaxed(V31(vfe)->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
+	writel_relaxed(V31(vfe)->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
+}
+
 static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 {
 	struct vfe_line *line;
@@ -6178,81 +6301,11 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	writel_relaxed(height - 1, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_0);
 	writel_relaxed(0xFFFFFFFF, vfe->base + VFE_0_CAMIF_SUBSAMPLE_CFG_1);
 
-	/*
-	 * Step 7: Configure AXI output mode and XBAR routing
-	 *
-	 * RDI lines (RDI0, RDI1, RDI2) use raw bypass mode (0x60) which
-	 * routes data directly from CAMIF to write master, bypassing DEMUX.
-	 * PIX/VIDEO lines use the module parameter (typically 0x01 for DEMUX).
-	 */
-	{
-		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
-		bool zsl_active = (V31(vfe)->zsl_state != VFE31_REC_IDLE);
-		u32 axi_mode;
+	/* Step 7: AXI output mode + XBAR routing. */
+	vfe31_config_axi_xbar(vfe, line);
 
-		if (is_rdi && V31(vfe)->raw_through_pix)
-			axi_mode = VFE_0_BUS_XBAR_CFG0_PIX_MODE; /* 0x01 */
-		else if (is_rdi)
-			axi_mode = VFE_0_BUS_AXI_OUT_MODE_RAW_WM0; /* 0x60 */
-		else if (zsl_active)
-			axi_mode = 0x101;  /* ZSL dual output */
-		else
-			axi_mode = VFE31_AXI_OUT_MODE_PIX;
-
-		dev_dbg(vfe->camss->dev,
-			 "VFE31: AXI_OUT_MODE=0x%x (%s)\n",
-			 axi_mode,
-			 (is_rdi && V31(vfe)->raw_through_pix) ? "RAW-through-PIX" :
-			 is_rdi ? "RDI raw bypass" :
-			 zsl_active ? "ZSL dual" : "PIX/DEMUX");
-		writel_relaxed(axi_mode, vfe->base + VFE_0_BUS_AXI_OUT_MODE_CFG);
-
-		/* Configure XBAR: needed for PIX and RAW-through-PIX, not RDI 0x60 */
-		if (is_rdi && !V31(vfe)->raw_through_pix) {
-			/* RDI 0x60 bypasses XBAR - no config needed */
-		} else {
-			bool vid = (line->id == VFE_LINE_VIDEO);
-			u32 xbar_val = vfe31_calc_xbar(true, vid, zsl_active);
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: XBAR=0x%06x\n", xbar_val);
-			writel_relaxed(xbar_val, vfe->base + VFE_0_BUS_XBAR_CFG1);
-		}
-	}
-
-	/*
-	 * Step 8: Configure BUS_CFG for DMA write paths
-	 *
-	 * All modes use PIX BUS_CFG (0x02AAA771) since RDI now routes
-	 * through the PIX path (RAW-through-PIX workaround).
-	 * The PIX path handles data as 8-bit internally regardless of
-	 * the sensor's actual bit depth.
-	 */
-	{
-		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
-		u32 bus_cfg;
-
-		if (is_rdi && !V31(vfe)->raw_through_pix) {
-			u8 raw_bpp = camss_format_get_bpp(line->formats,
-							  line->nformats,
-							  line->fmt[MSM_VFE_PAD_SINK].code);
-			bus_cfg = vfe31_get_bus_cfg_for_raw(raw_bpp);
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: BUS_CFG=0x%08x (RDI, bpp=%u)\n",
-				 bus_cfg, raw_bpp);
-		} else {
-			bus_cfg = vfe31_get_bus_cfg();
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: BUS_CFG=0x%08x (%s)\n", bus_cfg,
-				 (is_rdi && V31(vfe)->raw_through_pix) ?
-				 "RAW-through-PIX" : "PIX/VIDEO");
-		}
-		writel_relaxed(bus_cfg, vfe->base + VFE_0_BUS_CFG);
-	}
+	/* Step 8: BUS_CFG DMA write paths. */
+	vfe31_config_bus_cfg(vfe, line);
 
 	/*
 	 * Step 9: Reload all write masters with pingpong via BUS_CMD
@@ -6262,68 +6315,8 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 	/* Ensure BUS_CMD reload is dispatched to hardware */
 	wmb();
 
-	/*
-	 * Step 10: Configure IRQ masks
-	 * PIX mode: webOS values (0x00EFE021) with composite interrupts
-	 * RDI mode: Use IMAGE_COMPOSITE_DONE_1 for frame completion
-	 *
-	 * VFE31 IRQ_STATUS_0 layout (from downstream):
-	 *   Bit 0: CAMIF_SOF
-	 *   Bit 5: REG_UPDATE
-	 *   Bits 13-18: Stats interrupts
-	 *   Bit 21: IMAGE_COMPOSITE_DONE_0 (composite group 0)
-	 *   Bit 22: IMAGE_COMPOSITE_DONE_1 (composite group 1)
-	 *   Bit 23: IMAGE_COMPOSITE_DONE_2 (composite group 2)
-	 *
-	 * IMPORTANT: Bits 8+ are NOT per-WM ping/pong interrupts in VFE31!
-	 * WM completion must use COMPOSITE_DONE interrupts.
-	 */
-	{
-		bool is_rdi = (V31(vfe)->camif_pending_line_id == VFE_LINE_RDI0 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI1 ||
-			       V31(vfe)->camif_pending_line_id == VFE_LINE_RDI2);
-
-		if (is_rdi && V31(vfe)->raw_through_pix) {
-			/* RAW-through-PIX: use PIX IRQ config */
-			V31(vfe)->irq_mask0_shadow = 0x00EFE021;
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: RAW-through-PIX IRQ_MASK_0=0x%08x\n",
-				 V31(vfe)->irq_mask0_shadow);
-		} else if (is_rdi) {
-			/*
-			 * RDI mode (AXI=0x60): Samsung's exact IRQ_MASK_0
-			 * 0x00E00021 = SOF + REG_UPDATE + COMP_DONE_0/1/2
-			 */
-			V31(vfe)->irq_mask0_shadow = 0x00E00021;
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: RDI IRQ_MASK_0=0x%08x (Samsung raw)\n",
-				 V31(vfe)->irq_mask0_shadow);
-		} else {
-			/* PIX mode: Use webOS value with composite interrupts */
-			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
-			bool video_active = (video_out->state == VFE_OUTPUT_ON ||
-					     video_out->state == VFE_OUTPUT_RESERVED ||
-					     video_out->state == VFE_OUTPUT_CONTINUOUS);
-			bool video_needs_cbcr = video_active && (video_out->wm_num == 2);
-
-			V31(vfe)->irq_mask0_shadow = 0x00EFE021;
-
-			/*
-			 * VIDEO line with CbCr uses WM1 in group 2 (COMPOSITE_DONE_2).
-			 * Add bit 23 to receive WM1 completion interrupts.
-			 */
-			if (line->id == VFE_LINE_VIDEO || video_needs_cbcr)
-				V31(vfe)->irq_mask0_shadow |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
-
-			dev_dbg(vfe->camss->dev,
-				 "VFE31: PIX IRQ_MASK_0=0x%08x (composite%s)\n",
-				 V31(vfe)->irq_mask0_shadow,
-				 (V31(vfe)->irq_mask0_shadow & 0x800000) ? "+DONE2" : "");
-		}
-		V31(vfe)->irq_mask1_shadow = 0x00400000;
-		writel_relaxed(V31(vfe)->irq_mask0_shadow, vfe->base + VFE_0_IRQ_MASK_0);
-		writel_relaxed(V31(vfe)->irq_mask1_shadow, vfe->base + VFE_0_IRQ_MASK_1);
-	}
+	/* Step 10: IRQ masks. */
+	vfe31_config_irq_masks(vfe, line);
 
 	/* Step 11: composite IRQ mask -> per-line WM completion groups. */
 	vfe31_config_composite_mask(vfe, line);
