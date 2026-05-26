@@ -742,12 +742,13 @@ static void vidc_enc_stop_streaming(struct vb2_queue *q)
 			vidc_close_channel(inst);
 			inst->streamon_out = false;
 			/*
-			 * Drop this session's PM ref; the keep-resident pin (see
-			 * vidc_boot_firmware / fw_pinned) holds the device active so
-			 * VED never collapses and the firmware is never re-booted.
-			 * See the longer rationale in vidc_dec_stop_streaming().
+			 * Drop this session's PM ref synchronously so genpd
+			 * power-collapses VED at last-close; the next session
+			 * resume cold-resets the core (vidc_reset_core) and boots
+			 * clean. See the longer rationale in
+			 * vidc_dec_stop_streaming().
 			 */
-			pm_runtime_put(core->dev);
+			pm_runtime_put_sync(core->dev);
 		}
 	} else {
 		while ((vbuf = v4l2_m2m_dst_buf_remove(inst->m2m_ctx)))
