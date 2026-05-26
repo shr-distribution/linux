@@ -1743,17 +1743,20 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/*
-	 * Single REFRESH to apply configuration changes.
+	 * Single REFRESH to apply the per-session output config.
 	 *
-	 * Legacy drivers issue REFRESH at init only, but they never change
-	 * format/dimensions at runtime. Since our driver reconfigures
-	 * output dimensions and format per streaming session, ONE REFRESH
-	 * is needed for the MCU to pick up the new config. Without it,
-	 * SEQ_CMD_RUN hangs (MCU never clears SEQ_CMD back to 0).
+	 * We reprogram MODE_OUTPUT_WIDTH/HEIGHT/FORMAT for the selected context
+	 * above; those are MCU "mode" variables that only take effect after a
+	 * REFRESH, and SEQ_CMD_RUN below hangs (SEQ_CMD stuck at 0x1,
+	 * SEQ_STATE stuck at 0x3) if they were not applied. So the REFRESH is
+	 * required here - removing it was tried and broke RUN even on a fresh
+	 * MCU. (webOS/Allwinner avoid a per-switch REFRESH only because they use
+	 * fixed pre-baked context tables and never reprogram dims at runtime.)
 	 *
-	 * Previous code issued up to 5 REFRESH cycles per start which
-	 * caused MCU lockup. One is sufficient and matches the Allwinner
-	 * driver pattern (REFRESH after config, then SEQ_CMD).
+	 * The earlier "REFRESH while the MCU is in RUN/capture state wedges it"
+	 * failure is avoided because start_streaming() force-power-cycles a warm
+	 * MCU on entry, so by here the MCU is freshly reset+initialised and idle
+	 * - the state in which REFRESH is safe.
 	 */
 	/*
 	 * NOTE: Do NOT write OFIFO or color_pipeline (0x3210) before
