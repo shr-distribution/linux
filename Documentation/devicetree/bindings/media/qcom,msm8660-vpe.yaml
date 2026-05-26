@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/qcom,msm8660-vpe.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm MSM8660 Video Processing Engine (VPE)
+
+maintainers:
+  - Herman van Hazendonk <herrie@herrie.org>
+
+description:
+  The VPE is the MDP "PPP" pixel pipeline found on the MSM8260/MSM8660/APQ8060
+  family. It is exposed as a V4L2 mem2mem device that performs NV12 scaling
+  and rotation. The same block is present on all three SoCs of this die.
+
+properties:
+  compatible:
+    enum:
+      - qcom,msm8260-vpe
+      - qcom,msm8660-vpe
+      - qcom,apq8060-vpe
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 3
+
+  clock-names:
+    items:
+      - const: core
+      - const: axi
+      - const: ahb
+
+  power-domains:
+    maxItems: 1
+
+  iommus:
+    maxItems: 1
+
+  interconnects:
+    maxItems: 1
+
+  interconnect-names:
+    items:
+      - const: vpe-mem
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - iommus
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,mmcc-msm8660.h>
+    #include <dt-bindings/interconnect/qcom,msm8660.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    video-processing@5300000 {
+        compatible = "qcom,msm8660-vpe";
+        reg = <0x05300000 0x100000>;
+        interrupts = <GIC_SPI 47 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&mmcc VPE_CLK>,
+                 <&mmcc VPE_AXI_CLK>,
+                 <&mmcc VPE_AHB_CLK>;
+        clock-names = "core", "axi", "ahb";
+        power-domains = <&mmcc VPE_GDSC>;
+        iommus = <&vpe_iommu 0>;
+        interconnects = <&mmss_fabric MMFAB_MAS_VPE
+                         &apps_fabric AFAB_SLV_EBI_CH0>;
+        interconnect-names = "vpe-mem";
+    };
