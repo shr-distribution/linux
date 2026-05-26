@@ -258,7 +258,7 @@ struct mt9m113 {
 	unsigned int pixrate;
 	s64 link_freq;
 	bool streaming;
-	bool was_streaming;	/* MCU warm from a prior stream: set by stop, cleared on power-off */
+	bool was_streaming;	/* set by stop, cleared by start - skips REFRESH on restart */
 	bool in_standby;
 	bool test_pattern_active;
 
@@ -1370,27 +1370,6 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		return ret;
 
 	/*
-	 * If the previous stream left the MCU warm (no power-off since), a
-	 * context switch on that stale MCU stalls the sequencer: SEQ_CMD_RUN
-	 * never completes and SEQ_STATE sticks at 0x3 (reproduced on a
-	 * back-to-back 1280 Context B -> 640 Context A switch). Force a clean
-	 * power-cycle so the new session starts from a freshly reset and
-	 * re-initialised MCU, the way webOS resets the sensor on every open.
-	 *
-	 * was_streaming is set by stop_streaming and cleared by runtime_suspend
-	 * (power-off), so it is true only while the MCU is still warm from the
-	 * last stream - i.e. exactly when autosuspend has not yet cycled it.
-	 */
-	if (sensor->was_streaming) {
-		sensor->was_streaming = false;
-		/* Force immediate power-off (bypass autosuspend), then power-on. */
-		pm_runtime_put_sync_suspend(dev);	/* runtime_suspend: power_off */
-		ret = pm_runtime_resume_and_get(dev);	/* runtime_resume: power_on + init */
-		if (ret)
-			return ret;
-	}
-
-	/*
 	 * Ensure sensor is not in standby mode before streaming.
 	 * Write 0x0028 directly to STANDBY_CONTROL to ensure MCU is active.
 	 * Give MCU time to wake up (50ms matches webOS driver behavior).
@@ -1743,20 +1722,17 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/*
-	 * Single REFRESH to apply the per-session output config.
+	 * Single REFRESH to apply configuration changes.
 	 *
-	 * We reprogram MODE_OUTPUT_WIDTH/HEIGHT/FORMAT for the selected context
-	 * above; those are MCU "mode" variables that only take effect after a
-	 * REFRESH, and SEQ_CMD_RUN below hangs (SEQ_CMD stuck at 0x1,
-	 * SEQ_STATE stuck at 0x3) if they were not applied. So the REFRESH is
-	 * required here - removing it was tried and broke RUN even on a fresh
-	 * MCU. (webOS/Allwinner avoid a per-switch REFRESH only because they use
-	 * fixed pre-baked context tables and never reprogram dims at runtime.)
+	 * Legacy drivers issue REFRESH at init only, but they never change
+	 * format/dimensions at runtime. Since our driver reconfigures
+	 * output dimensions and format per streaming session, ONE REFRESH
+	 * is needed for the MCU to pick up the new config. Without it,
+	 * SEQ_CMD_RUN hangs (MCU never clears SEQ_CMD back to 0).
 	 *
-	 * The earlier "REFRESH while the MCU is in RUN/capture state wedges it"
-	 * failure is avoided because start_streaming() force-power-cycles a warm
-	 * MCU on entry, so by here the MCU is freshly reset+initialised and idle
-	 * - the state in which REFRESH is safe.
+	 * Previous code issued up to 5 REFRESH cycles per start which
+	 * caused MCU lockup. One is sufficient and matches the Allwinner
+	 * driver pattern (REFRESH after config, then SEQ_CMD).
 	 */
 	/*
 	 * NOTE: Do NOT write OFIFO or color_pipeline (0x3210) before
@@ -1963,6 +1939,7 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		if (ret)
 			goto error;
 		dev_dbg(dev, "MT9M113: OUTPUT_CONTROL=0x%04x enabled\n", output_ctrl_val);
+		sensor->was_streaming = false;
 
 		ret = cci_write(sensor->regmap, MT9M113_RESET_REGISTER,
 				MT9M113_RESET_REG_STREAMING, NULL);
@@ -2831,15 +2808,8 @@ static int mt9m113_power_on(struct mt9m113 *sensor)
 	msleep(20);
 
 	if (sensor->reset) {
-		/*
-		 * Hold RESET_BAR asserted for >= 2 ms: the datasheet's
-		 * "RESET_BAR initialization time" (Table 34, t6) is 2 ms min at
-		 * power-up. A shorter pulse can leave the M3 core in a marginal
-		 * state. EXTCLK is already running (required during reset). After
-		 * de-assert, wait well past the 6000-EXTCLK (~250 us) ROM read.
-		 */
 		gpiod_set_value(sensor->reset, 1);
-		usleep_range(3000, 4000);
+		usleep_range(1000, 2000);
 		gpiod_set_value(sensor->reset, 0);
 		usleep_range(44500, 50000);
 	} else if (sensor->powerdown) {
@@ -2973,8 +2943,6 @@ static int __maybe_unused mt9m113_runtime_suspend(struct device *dev)
 
 	/* Power down (powerdown GPIO + clock off) so the MCU is reset next resume. */
 	mt9m113_power_off(sensor);
-	/* MCU is now cold; next resume re-inits it, so it is no longer "warm". */
-	sensor->was_streaming = false;
 	return 0;
 }
 
