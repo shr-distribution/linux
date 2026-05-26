@@ -7,6 +7,7 @@
 #include "adreno_gpu.h"
 
 struct icc_path;
+struct reset_control;
 
 /* arrg, somehow fb.h is getting pulled in: */
 #undef ROP_COPY
@@ -26,6 +27,13 @@ struct a2xx_gpu {
 	 */
 	bool soft_reset_done;
 	struct icc_path *icc_path;
+	/*
+	 * GFX3D core reset (mmcc GFX3D_RESET). Pulsed by a2xx_recover() to clear
+	 * a hung SQ / parameter-cache when two-tier runtime PM keeps the gfx3d
+	 * GDSC powered (so the old power-collapse no longer re-fires the reset).
+	 * NULL on platforms whose DT does not provide the "core" reset.
+	 */
+	struct reset_control *core_reset;
 };
 #define to_a2xx_gpu(x) container_of(x, struct a2xx_gpu, base)
 

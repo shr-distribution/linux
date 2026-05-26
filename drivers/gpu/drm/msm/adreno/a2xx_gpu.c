@@ -5,6 +5,7 @@
 #include <linux/interconnect.h>
 #include <linux/pm_opp.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
 
 #include "a2xx_gpu.h"
 #include "msm_gem.h"
@@ -372,6 +373,7 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 
 static void a2xx_recover(struct msm_gpu *gpu)
 {
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(to_adreno_gpu(gpu));
 	int i;
 
 	adreno_dump_info(gpu);
@@ -402,25 +404,40 @@ static void a2xx_recover(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
 
 	/*
-	 * Power-cycle the GPU through runtime PM so the gfx3d GDSC collapses and
-	 * re-fires the GFX3D *core* reset on re-enable (mmcc-msm8660 gfx3d_gdsc
-	 * .resets — the same reset that fixed the period-8 cycle). A register-
-	 * level RBBM_SOFT_RESET does NOT clear the core's hung SQ / parameter-
-	 * cache SRAM; only the GDSC GFX3D reset does. Without this, the post-
-	 * recover a2xx_hw_init() -> a2xx_me_init() -> a2xx_idle() times out and
-	 * hw_init returns -EINVAL ("gpu hw init failed: -22"), turning every GPU
-	 * lockup into an unrecoverable hangcheck -> recover death-spiral.
+	 * Clear the hung SQ / parameter-cache SRAM that RBBM_SOFT_RESET above
+	 * cannot: assert the GFX3D *core* reset (mmcc GFX3D_RESET, the same reset
+	 * the gfx3d GDSC fires on a cold power-on -- the period-8 fix). Without
+	 * it, the post-recover a2xx_hw_init() -> a2xx_me_init() -> a2xx_idle()
+	 * times out (hw_init -EINVAL), turning every lockup into an
+	 * unrecoverable hangcheck -> recover death-spiral.
 	 *
-	 * recover_worker() has already retired the hung submit and holds a single
-	 * runtime-PM reference here, so put_sync_suspend drops the usage count to
-	 * zero -> genpd suspend -> GDSC off; get_sync -> genpd resume ->
-	 * gdsc_enable asserts GFX3D_RESET. a2xx_pm_suspend() already handles the
-	 * not-idle (hung) case during the collapse. If some other ref is held the
-	 * collapse is skipped and we fall back to the old (soft-reset-only)
-	 * behaviour -- no worse than before.
+	 * We assert it directly rather than power-cycling the GDSC: two-tier
+	 * runtime PM (GENPD_FLAG_RPM_ALWAYS_ON) keeps the gfx3d footswitch
+	 * powered across runtime idle, so a pm_runtime put/get no longer
+	 * collapses the domain to re-fire the reset. Pulse width follows the
+	 * legacy footswitch sequence (assert, ~us, deassert).
 	 */
-	pm_runtime_put_sync_suspend(&gpu->pdev->dev);
-	pm_runtime_get_sync(&gpu->pdev->dev);
+	if (a2xx_gpu->core_reset) {
+		reset_control_assert(a2xx_gpu->core_reset);
+		udelay(2);
+		reset_control_deassert(a2xx_gpu->core_reset);
+	} else {
+		/*
+		 * No "core" reset in DT: fall back to a runtime-PM power cycle,
+		 * which only re-fires the GDSC reset where the domain is actually
+		 * allowed to collapse (i.e. not RPM_ALWAYS_ON).
+		 */
+		pm_runtime_put_sync_suspend(&gpu->pdev->dev);
+		pm_runtime_get_sync(&gpu->pdev->dev);
+	}
+
+	/*
+	 * The core was just reset, so its state (incl. loaded microcode) is gone
+	 * regardless of the runtime-PM path taken above. Force the re-init done
+	 * by adreno_recover() -> msm_gpu_hw_init(); a light pm_resume there would
+	 * otherwise leave needs_hw_init clear and skip it.
+	 */
+	gpu->needs_hw_init = true;
 
 	adreno_recover(gpu);
 }
@@ -720,6 +737,13 @@ static int a2xx_pm_suspend(struct msm_gpu *gpu)
 
 		/* Wait for reset to complete */
 		udelay(100);
+
+		/*
+		 * The soft reset dropped CP/ME state. With two-tier runtime PM a
+		 * light resume would otherwise skip hw_init and run an
+		 * uninitialised GPU, so force a full re-init on the next resume.
+		 */
+		gpu->needs_hw_init = true;
 	}
 
 	/*
@@ -899,6 +923,32 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs, 1);
 	if (ret)
 		goto fail;
+
+	/*
+	 * Two-tier runtime PM: keep the GFX3D rail and power domain up across
+	 * runtime idle (clocks still gate), so a routine resume skips the
+	 * a2xx_hw_init microcode reload whose MMIO burst can stall the shared
+	 * MMSS AXI when it lands during an MDP display client-switch underrun.
+	 * Matches legacy KGSL (SLEEP keeps the rail up during use; only SLUMBER
+	 * on system suspend power-collapses). REQUIRES the GFX3D GDSC to carry
+	 * GENPD_FLAG_RPM_ALWAYS_ON (set via the mmcc gdsc RPM_ALWAYS_ON flag) so
+	 * the domain genuinely retains power across runtime idle; on imageon
+	 * (no power domain) runtime idle only gates clocks, which retains state
+	 * just the same, so skipping hw_init stays correct.
+	 */
+	gpu->retain_power_runtime = true;
+
+	/*
+	 * Optional GFX3D core reset used by a2xx_recover() (see there). Optional
+	 * so platforms without it in DT (e.g. imageon) still probe; -EPROBE_DEFER
+	 * and real errors propagate.
+	 */
+	a2xx_gpu->core_reset =
+		devm_reset_control_get_optional_exclusive(&pdev->dev, "core");
+	if (IS_ERR(a2xx_gpu->core_reset)) {
+		ret = PTR_ERR(a2xx_gpu->core_reset);
+		goto fail;
+	}
 
 	/* Get interconnect path for memory bandwidth voting */
 	a2xx_gpu->icc_path = devm_of_icc_get(&pdev->dev, "gfx-mem");

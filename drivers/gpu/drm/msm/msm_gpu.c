@@ -103,9 +103,18 @@ int msm_gpu_pm_resume(struct msm_gpu *gpu)
 	DBG("%s", gpu->name);
 	trace_msm_gpu_resume(0);
 
-	ret = enable_pwrrail(gpu);
-	if (ret)
-		return ret;
+	/*
+	 * A light (clock-gated) resume retained the rail and GPU power domain,
+	 * so the rail is already on and GPU state -- including loaded microcode
+	 * -- survived: only clocks need re-enabling. A cold resume (first
+	 * power-on, or wake from a deep/system suspend that dropped power) must
+	 * charge the rail and force a full hw_init. See struct msm_gpu.gpu_cold.
+	 */
+	if (gpu->gpu_cold) {
+		ret = enable_pwrrail(gpu);
+		if (ret)
+			return ret;
+	}
 
 	ret = enable_clk(gpu);
 	if (ret)
@@ -117,13 +126,25 @@ int msm_gpu_pm_resume(struct msm_gpu *gpu)
 
 	msm_devfreq_resume(gpu);
 
-	gpu->needs_hw_init = true;
+	if (gpu->gpu_cold) {
+		gpu->needs_hw_init = true;
+		gpu->gpu_cold = false;
+	}
 
 	return 0;
 }
 
 int msm_gpu_pm_suspend(struct msm_gpu *gpu)
 {
+	/*
+	 * Deep suspend drops the rail and lets the GPU power domain collapse
+	 * (state lost -> next resume must hw_init). It is taken for system sleep
+	 * and, when two-tier runtime PM is not enabled for this GPU, for every
+	 * suspend -- making behaviour identical to upstream by default. A light
+	 * suspend (retain_power_runtime + plain runtime idle) only gates clocks;
+	 * the rail and the RPM_ALWAYS_ON domain keep GPU state alive.
+	 */
+	bool deep = gpu->suspend_to_system || !gpu->retain_power_runtime;
 	int ret;
 
 	DBG("%s", gpu->name);
@@ -139,9 +160,12 @@ int msm_gpu_pm_suspend(struct msm_gpu *gpu)
 	if (ret)
 		return ret;
 
-	ret = disable_pwrrail(gpu);
-	if (ret)
-		return ret;
+	if (deep) {
+		ret = disable_pwrrail(gpu);
+		if (ret)
+			return ret;
+		gpu->gpu_cold = true;
+	}
 
 	gpu->suspend_count++;
 
@@ -1012,6 +1036,9 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	gpu->dev = drm;
 	gpu->funcs = funcs;
 	gpu->name = name;
+
+	/* The GPU starts unpowered: the first resume must do a full hw_init. */
+	gpu->gpu_cold = true;
 
 	gpu->worker = kthread_run_worker(0, "gpu-worker");
 	if (IS_ERR(gpu->worker)) {

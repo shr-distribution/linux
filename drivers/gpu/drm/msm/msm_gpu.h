@@ -228,6 +228,29 @@ struct msm_gpu {
 	/* does gpu need hw_init? */
 	bool needs_hw_init;
 
+	/*
+	 * Two-tier runtime PM, matching legacy KGSL SLEEP vs SLUMBER, and OFF by
+	 * default. When retain_power_runtime is set (opt-in, see below) a plain
+	 * runtime-PM idle is a "light" suspend: clocks gate but the power rail
+	 * and the GPU power domain stay up, GPU state is retained, and resume is
+	 * a cheap clocks-on with no hw_init microcode reload. Only a "deep"
+	 * suspend (system sleep, or any suspend when the feature is off) drops
+	 * the rail, lets the domain power-collapse, and sets gpu_cold so the next
+	 * resume does a full rail enable + hw_init.
+	 *
+	 * retain_power_runtime MUST only be set on a GPU whose power domain is
+	 * marked GENPD_FLAG_RPM_ALWAYS_ON (so the domain genuinely stays powered
+	 * across runtime idle) -- otherwise the light path would skip hw_init
+	 * after the domain power-collapsed and run an uninitialised GPU. With it
+	 * clear, every suspend takes the deep path and behaviour is identical to
+	 * upstream. gpu_cold is set true at init and tracks "power was lost";
+	 * suspend_to_system selects the deep path and is set around the
+	 * system-sleep pm_runtime_force_suspend/resume.
+	 */
+	bool retain_power_runtime;
+	bool gpu_cold;
+	bool suspend_to_system;
+
 	/**
 	 * global_faults: number of GPU hangs not attributed to a particular
 	 * address space

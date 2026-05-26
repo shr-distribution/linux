@@ -381,7 +381,16 @@ static int adreno_system_suspend(struct device *dev)
 		goto out;
 	}
 
+	/*
+	 * Select the deep suspend path for the duration of the force-suspend:
+	 * system sleep must drop the GPU rail/power domain (unlike a runtime
+	 * idle, which on RPM_ALWAYS_ON GPUs only gates clocks). force_suspend
+	 * invokes the runtime-suspend callback synchronously, so clearing the
+	 * flag immediately after is safe and covers the failure path too.
+	 */
+	gpu->suspend_to_system = true;
 	ret = pm_runtime_force_suspend(dev);
+	gpu->suspend_to_system = false;
 out:
 	if (ret)
 		resume_scheduler(gpu);

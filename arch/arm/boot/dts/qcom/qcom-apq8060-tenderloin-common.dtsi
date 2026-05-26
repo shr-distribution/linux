@@ -10,6 +10,7 @@
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/pinctrl/qcom,pmic-mpp.h>
 #include <dt-bindings/reset/qcom,gcc-msm8660.h>
+#include <dt-bindings/reset/qcom,mmcc-msm8660.h>
 #include <dt-bindings/clock/qcom,mmcc-msm8660.h>
 #include <dt-bindings/interconnect/qcom,msm8660.h>
 #include <dt-bindings/clock/qcom,rpmcc.h>
@@ -1119,9 +1120,30 @@
 			power-domains = <&mmcc GFX3D_GDSC>;
 			power-domain-names = "gfx3d";
 
+			/*
+			 * GFX3D core reset, pulsed by a2xx_recover() to clear a hung
+			 * SQ / parameter-cache that RBBM_SOFT_RESET cannot. The gfx3d
+			 * GDSC also fires this on a cold power-on (the period-8 fix);
+			 * recover must assert it directly because two-tier runtime PM
+			 * keeps the GDSC powered, so the old collapse-to-re-fire trick
+			 * no longer applies.
+			 */
+			resets = <&mmcc GFX3D_RESET>;
+			reset-names = "core";
+
 			operating-points-v2 = <&gpu_opp_table>;
 
-			/* Match legacy webOS KGSL idle_timeout_3d = HZ/5 */
+			/*
+			 * Match legacy webOS KGSL idle_timeout_3d = HZ/5. With
+			 * two-tier runtime PM (GFX3D_GDSC carries RPM_ALWAYS_ON,
+			 * a2xx sets retain_power_runtime) this is just the clock-
+			 * gate delay: at idle the GPU clocks gate but the rail and
+			 * power domain stay up (legacy SLEEP), so resume is a cheap
+			 * clocks-on with no a2xx_hw_init microcode burst -- the
+			 * burst that could otherwise stall the shared MMSS AXI
+			 * during an MDP client-switch underrun. The footswitch
+			 * power-collapses only on system suspend (legacy SLUMBER).
+			 */
 			qcom,gpu-idle-timeout-ms = <200>;
 
 			/*

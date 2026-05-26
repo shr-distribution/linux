@@ -75,6 +75,14 @@ struct gdsc {
  * - No status bit, just wait after toggle
  */
 #define LEGACY_FOOTSWITCH	BIT(10)
+/*
+ * Keep the domain powered across runtime PM (clocks may still gate), and only
+ * let it power-collapse on system suspend. Maps to GENPD_FLAG_RPM_ALWAYS_ON.
+ * Used for GFX3D on MSM8660, where power-collapsing the GPU footswitch on every
+ * runtime idle forces a cold a2xx_hw_init microcode reload whose MMIO burst can
+ * stall the shared MMSS AXI when it coincides with an MDP display underrun.
+ */
+#define RPM_ALWAYS_ON	BIT(11)
 	struct reset_controller_dev	*rcdev;
 	unsigned int			*resets;
 	unsigned int			reset_count;

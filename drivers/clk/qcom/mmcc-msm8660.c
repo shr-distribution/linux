@@ -2494,7 +2494,17 @@ static struct gdsc gfx3d_gdsc = {
 		.name = "gfx3d",
 	},
 	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	/*
+	 * RPM_ALWAYS_ON: keep the GFX3D footswitch powered across runtime PM
+	 * idle (clocks still gate), collapsing it only on system suspend. The
+	 * Adreno 220 shares the MMSS AXI fabric with the MDP4 display; cold-
+	 * cycling this footswitch on every GPU idle forces an a2xx_hw_init
+	 * microcode reload whose MMIO burst can stall the shared bus when it
+	 * lands during an MDP client-switch underrun, hard-hanging the SoC.
+	 * Mirrors legacy KGSL, which parked the GPU in SLEEP (rail up, clocks
+	 * gated) during use and only power-collapsed (SLUMBER) on suspend.
+	 */
+	.flags = LEGACY_FOOTSWITCH | SW_RESET | RPM_ALWAYS_ON,
 };
 
 static struct gdsc ijpeg_gdsc = {
