@@ -91,6 +91,17 @@ static bool bt_rx_wake = true;
 module_param(bt_rx_wake, bool, 0644);
 MODULE_PARM_DESC(bt_rx_wake, "Pulse RTS before link-est TX to wake the BT chip RX (default Y)");
 
+/*
+ * Synchronous TX/RFR pin-mux wake glitch, provided by the msm_serial UART
+ * driver (the only owner of the BT UART's pinctrl). On the TouchPad this is
+ * what wakes the CSR BlueCore's power-gated UART RX. No-op stub elsewhere.
+ */
+#if IS_ENABLED(CONFIG_SERIAL_MSM)
+extern void msm_serial_bt_wake_glitch(void);
+#else
+static inline void msm_serial_bt_wake_glitch(void) { }
+#endif
+
 #define BCSP_TXWINSIZE	4
 
 #define BCSP_ACK_PKT	0x05
@@ -848,8 +859,16 @@ static void bcsp_wake_chip_rx(struct hci_uart *hu)
 	if (!bt_rx_wake || !hu->serdev)
 		return;
 
+	/*
+	 * Faithful webOS dance, synchronously before TX: deassert RTS, glitch
+	 * the chip-facing UART pins (TX/RFR) GPIO-high->UART via msm_serial,
+	 * then re-assert RTS. The pin-mux glitch is the element that actually
+	 * wakes the CSR BlueCore's power-gated UART RX; the RTS toggle alone is
+	 * not enough. No-op on non-msm_serial platforms.
+	 */
 	serdev_device_set_tiocm(hu->serdev, 0, TIOCM_RTS);	/* deassert (put) */
 	usleep_range(150, 300);
+	msm_serial_bt_wake_glitch();				/* TX/RFR mux off->on */
 	serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);	/* re-assert (get) */
 	usleep_range(150, 300);
 }

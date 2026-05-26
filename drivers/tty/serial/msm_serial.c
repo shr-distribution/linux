@@ -30,6 +30,7 @@
 #include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/workqueue.h>
+#include <linux/mutex.h>
 #include <linux/ktime.h>
 #include <linux/moduleparam.h>
 
@@ -210,6 +211,12 @@ struct msm_port {
 	struct pinctrl		*pinctrl;
 	struct pinctrl_state	*pinctrl_default;
 	struct pinctrl_state	*pinctrl_gpio;
+	/*
+	 * RX-safe wake glitch: flips ONLY TX(gpio53)+RFR/RTS(gpio56) — the lines
+	 * we drive toward the chip — leaving RX/CTS in UART mode so an inbound
+	 * frame is never clipped. Preferred over pinctrl_gpio for the BT wake.
+	 */
+	struct pinctrl_state	*pinctrl_gpio_txrts;
 	bool			startup_mux_glitch;
 	/*
 	 * TouchPad BT (H2): re-arm the wake glitch during BCSP link
@@ -280,6 +287,7 @@ static void msm_serial_set_mnd_regs(struct uart_port *port)
 }
 
 static void msm_handle_tx(struct uart_port *port);
+void msm_serial_bt_wake_glitch(void);	/* exported; called by hci_bcsp */
 static void msm_start_rx_dma(struct msm_port *msm_port);
 
 static void msm_stop_dma(struct uart_port *port, struct msm_dma *dma)
@@ -1302,27 +1310,65 @@ static void msm_init_clock(struct uart_port *port)
  * corrupted) while the BT UART sits at the 115200 link-est baud. 0 disables.
  * Tune on-device against the chip's RX re-gate timeout.
  */
-static int bt_wake_period_ms = 120;
+/*
+ * Default OFF: the periodic (asynchronous) glitch was found to clip inbound
+ * frames on the TouchPad. The faithful wake is now done synchronously right
+ * before each TX from the BCSP driver via msm_serial_bt_wake_glitch(). Set
+ * >0 only to also re-arm the (now RX-safe, TX/RTS-only) glitch periodically.
+ */
+static int bt_wake_period_ms;	/* 0 = off */
 module_param(bt_wake_period_ms, int, 0644);
 MODULE_PARM_DESC(bt_wake_period_ms,
-	"TouchPad BT: re-arm UART pin-mux wake glitch every N ms during link-est (0=off)");
+	"TouchPad BT: re-arm UART pin-mux wake glitch every N ms during link-est (0=off, default 0)");
 
 #define MSM_BT_UART_MAPBASE	0x16540000
 
-/* Flip the UART pins to the GPIO state and back, to wake a power-gated peer
- * UART RX (TouchPad CSR BlueCore). Sleeps; call from process context only. */
+/*
+ * The single BT UART port + a lock to serialize wake glitches (the synchronous
+ * pre-TX glitch from the BCSP driver, the periodic work, and startup can all
+ * race on the shared pinctrl). Set in probe for mapbase 0x16540000.
+ */
+static struct uart_port *msm_bt_wake_port;
+static DEFINE_MUTEX(msm_bt_wake_lock);
+
+/*
+ * Flip the chip-facing UART pins (TX gpio53 + RFR/RTS gpio56) to GPIO-high and
+ * back, to wake the power-gated CSR BlueCore UART RX — the webOS btuart_pin_mux
+ * off->on dance. Uses the RX-safe "gpio-txrts" state when present so an inbound
+ * frame is never clipped, falling back to the full "gpio" state. Sleeps; call
+ * from process context only.
+ */
 static void msm_bt_wake_glitch(struct uart_port *port)
 {
 	struct msm_port *msm_port = to_msm_port(port);
+	struct pinctrl_state *gpio;
 
 	if (!msm_port->startup_mux_glitch || !msm_port->pinctrl)
 		return;
 
-	pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_gpio);
+	gpio = msm_port->pinctrl_gpio_txrts ?: msm_port->pinctrl_gpio;
+
+	mutex_lock(&msm_bt_wake_lock);
+	pinctrl_select_state(msm_port->pinctrl, gpio);
 	usleep_range(500, 1000);
 	pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_default);
 	usleep_range(500, 1000);
+	mutex_unlock(&msm_bt_wake_lock);
 }
+
+/*
+ * Exported wake glitch for the BT UART, callable by the BCSP serdev driver
+ * (hci_bcsp) synchronously right before a link-establishment TX. No-op until
+ * the BT port has probed. Process context only (it sleeps).
+ */
+void msm_serial_bt_wake_glitch(void)
+{
+	struct uart_port *port = READ_ONCE(msm_bt_wake_port);
+
+	if (port)
+		msm_bt_wake_glitch(port);
+}
+EXPORT_SYMBOL_GPL(msm_serial_bt_wake_glitch);
 
 static void msm_bt_wake_work(struct work_struct *w)
 {
@@ -2062,12 +2108,19 @@ static int msm_serial_probe(struct platform_device *pdev)
 					 "startup-mux-glitch: missing default/gpio pinctrl state, disabled\n");
 				msm_port->startup_mux_glitch = false;
 			}
+			/* RX-safe TX/RTS-only glitch state (optional). */
+			msm_port->pinctrl_gpio_txrts =
+				pinctrl_lookup_state(msm_port->pinctrl, "gpio-txrts");
+			if (IS_ERR(msm_port->pinctrl_gpio_txrts))
+				msm_port->pinctrl_gpio_txrts = NULL;
 		}
 	}
 
 	/* TouchPad BT (H2): periodic wake-glitch re-arm during link establishment. */
 	INIT_DELAYED_WORK(&msm_port->bt_wake_work, msm_bt_wake_work);
 	msm_port->bt_is_bt_uart = (port->mapbase == MSM_BT_UART_MAPBASE);
+	if (msm_port->bt_is_bt_uart)
+		WRITE_ONCE(msm_bt_wake_port, port);
 
 	platform_set_drvdata(pdev, port);
 

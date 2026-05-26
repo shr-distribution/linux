@@ -1879,6 +1879,22 @@
 	};
 
 	/*
+	 * RX-safe variant of the wake glitch: flip ONLY the chip-facing pins
+	 * TX(gpio53) + RFR/RTS(gpio56) to GPIO-high, leaving RX(54)/CTS(55) in
+	 * UART function so an inbound frame is never clipped. Used by the
+	 * synchronous pre-TX wake (msm_serial_bt_wake_glitch) and the optional
+	 * periodic re-arm. RX/CTS are chip outputs, so muxing them has no effect
+	 * on the chip — only TX/RFR carry a wake edge toward it.
+	 */
+	gsbi6_uart_txrts_gpio_pins: uart6-txrts-gpio-state {
+		pins = "gpio53", "gpio56";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
+
+	/*
 	 * Bluetooth control GPIOs (Topaz WiFi variant)
 	 *
 	 * Verified from legacy webOS kernel gpiomux-tenderloin.h:
@@ -2917,9 +2933,10 @@
 	 * "gpio" state = UART pins muxed as GPIO (webOS suspended config); used
 	 * by the startup pin-mux glitch below to wake the CSR BT chip's RX.
 	 */
-	pinctrl-names = "default", "gpio";
+	pinctrl-names = "default", "gpio", "gpio-txrts";
 	pinctrl-0 = <&gsbi6_uart_pins>, <&bt_pin>;
 	pinctrl-1 = <&gsbi6_uart_gpio_pins>, <&bt_pin>;
+	pinctrl-2 = <&gsbi6_uart_txrts_gpio_pins>, <&bt_pin>;
 
 	/*
 	 * Replicate the webOS btuart_pin_mux off->on dance: at port-open,
