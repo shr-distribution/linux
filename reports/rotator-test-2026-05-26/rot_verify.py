@@ -195,32 +195,46 @@ def verify(logfile):
             rows.append((n,"FAIL","no output file")); continue
         dbuf=open(dpath,"rb").read()
         sp = crop_planes(planes(fmt,w,h,sbuf), fmt, crop)
+        k=(-(rot//90))%4   # CW rotation => np.rot90 k=-rot/90
+
+        # 4:2:2 (H2V1) rotated 90/270 transposes its chroma to vertically-
+        # subsampled H1V2: chroma stride = 2*ow, oh/2 rows, full-width CbCr.
+        # Read the output as H1V2 and compare to upsample->rotate->v-subsample.
+        if fmt in ("nv16", "nv61") and rot in (90, 270):
+            def xf(a):
+                a = np.rot90(a, k=k)
+                if hf: a = np.flip(a, 1)
+                if vf: a = np.flip(a, 0)
+                return a
+            dY = np.frombuffer(dbuf[:ow*oh], np.uint8).reshape(oh, ow)
+            chrm = np.frombuffer(dbuf[ow*oh:ow*oh + (oh//2)*2*ow],
+                                 np.uint8).reshape(oh//2, 2*ow)
+            cb_first = (fmt == "nv16")
+            dCb = chrm[:, (0 if cb_first else 1)::2]
+            dCr = chrm[:, (1 if cb_first else 0)::2]
+            def h1v2_ref(sub):
+                f = xf(np.repeat(sub, 2, axis=1))   # upsample H, rotate
+                return f[0::2, :], f[1::2, :]        # vertical subsample
+            rb = h1v2_ref(sp["Cb"]); rr = h1v2_ref(sp["Cr"])
+            pY = psnr(xf(sp["Y"]), dY)
+            pCb = max(psnr(rb[0], dCb), psnr(rb[1], dCb))
+            pCr = max(psnr(rr[0], dCr), psnr(rr[1], dCr))
+            allok = pY > 45 and pCb > 40 and pCr > 40
+            rows.append((n, "PASS" if allok else "FAIL",
+                         f"Y:{pY:.0f} Cb:{pCb:.0f} Cr:{pCr:.0f} dB (H1V2)"))
+            npass += allok; continue
+
         dp = planes(fmt,ow,oh,dbuf)
-        # expected orientation: CW rotation => np.rot90 k=-rot/90 ; then flips
-        k=(-(rot//90))%4
-        # 4:2:2 chroma is horizontally subsampled, so a 90/270 rotate swaps the
-        # subsampled axis and the HW must resample the chroma: model it as
-        # upsample -> rotate -> re-subsample (lower PSNR on the resampled axis).
-        resample = fmt in ("nv16","nv61") and rot in (90,270)
         details=[]; allok=True
         for key in dp:
             d=dp[key]
-            if key in ("Cb","Cr") and resample:
-                full=np.repeat(sp[key],2,axis=1)
-                full=np.rot90(full,k=k)
-                if hf: full=np.flip(full,axis=1)
-                if vf: full=np.flip(full,axis=0)
-                p=max(psnr(full[:,0::2],d),psnr(full[:,1::2],d))
-                thr=12
-                details.append(f"{key}:{p:.0f}dB(422-resampled)")
-            else:
-                ref=np.rot90(sp[key],k=k)
-                if hf: ref=np.flip(ref,axis=1)
-                if vf: ref=np.flip(ref,axis=0)
-                p=psnr(ref,d)
-                pb,lbl=best_of_8(sp[key],d)
-                thr=45 if key in ("Y","px") else 40
-                details.append(f"{key}:{p:.0f}dB(best{pb:.0f}/{lbl})")
+            ref=np.rot90(sp[key],k=k)
+            if hf: ref=np.flip(ref,axis=1)
+            if vf: ref=np.flip(ref,axis=0)
+            p=psnr(ref,d)
+            pb,lbl=best_of_8(sp[key],d)
+            thr=45 if key in ("Y","px") else 40
+            details.append(f"{key}:{p:.0f}dB(best{pb:.0f}/{lbl})")
             allok &= p>thr
         rows.append((n,"PASS" if allok else "FAIL"," ".join(details)))
         npass+=allok
