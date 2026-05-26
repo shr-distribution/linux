@@ -7,6 +7,8 @@
 #ifndef __MDP4_KMS_H__
 #define __MDP4_KMS_H__
 
+#include <linux/workqueue.h>
+
 #include <drm/drm_panel.h>
 
 #include "msm_drv.h"
@@ -47,6 +49,20 @@ struct mdp4_kms {
 	u32 icc_peak_bw_kbps;
 
 	struct mdp_irq error_handler;
+
+	/*
+	 * INTF-underrun IRQ storm mitigation. PRIMARY_INTF_UDERRUN is a level
+	 * condition: a *continuous* underrun (e.g. the DMA_P scanout left
+	 * underflowing after a KMS client-switch modeset) re-asserts the IRQ
+	 * every scanline, so mdp4_irq() runs nonstop and the CPU is pinned in
+	 * interrupt -> the device hard-wedges (netconsole dead-stops, no
+	 * khungtaskd). The IRQ is only used for logging, so when it storms we
+	 * temporarily mask it (clear it from error_handler.irqmask) and re-arm
+	 * after a delay, capping its rate so it can never lock up the CPU.
+	 */
+	unsigned long underrun_window_start;
+	unsigned int underrun_count;
+	struct delayed_work underrun_rearm_work;
 
 	bool rpm_enabled;
 
