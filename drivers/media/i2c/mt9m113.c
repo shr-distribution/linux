@@ -2808,8 +2808,15 @@ static int mt9m113_power_on(struct mt9m113 *sensor)
 	msleep(20);
 
 	if (sensor->reset) {
+		/*
+		 * Hold RESET_BAR asserted for >= 2 ms: the datasheet's
+		 * "RESET_BAR initialization time" (Table 34, t6) is 2 ms min at
+		 * power-up. A shorter pulse can leave the M3 core in a marginal
+		 * state. EXTCLK is already running (required during reset). After
+		 * de-assert, wait well past the 6000-EXTCLK (~250 us) ROM read.
+		 */
 		gpiod_set_value(sensor->reset, 1);
-		usleep_range(1000, 2000);
+		usleep_range(3000, 4000);
 		gpiod_set_value(sensor->reset, 0);
 		usleep_range(44500, 50000);
 	} else if (sensor->powerdown) {
