@@ -565,7 +565,7 @@ static irqreturn_t ci_irq_handler(int irq, void *data)
 			hw_write_otgsc(ci, OTGSC_BSVIS, OTGSC_BSVIS);
 		}
 
-		if (ci->id_event || ci->b_sess_valid_event) {
+		if (ci->wq && (ci->id_event || ci->b_sess_valid_event)) {
 			ci_otg_queue_work(ci);
 			return IRQ_HANDLED;
 		}
@@ -953,7 +953,7 @@ static inline void ci_role_destroy(struct ci_hdrc *ci)
 {
 	ci_hdrc_gadget_destroy(ci);
 	ci_hdrc_host_destroy(ci);
-	if (ci->is_otg && ci->roles[CI_ROLE_GADGET])
+	if (ci->wq)
 		ci_hdrc_otg_destroy(ci);
 }
 
@@ -1171,7 +1171,7 @@ static int ci_hdrc_probe(struct platform_device *pdev)
 		goto deinit_gadget;
 	}
 
-	if (ci->is_otg && ci->roles[CI_ROLE_GADGET]) {
+	if (ci->roles[CI_ROLE_GADGET]) {
 		ret = ci_hdrc_otg_init(ci);
 		if (ret) {
 			dev_err(dev, "init otg fails, ret = %d\n", ret);
@@ -1235,7 +1235,7 @@ stop:
 	if (ci->role_switch)
 		usb_role_switch_unregister(ci->role_switch);
 deinit_otg:
-	if (ci->is_otg && ci->roles[CI_ROLE_GADGET])
+	if (ci->wq)
 		ci_hdrc_otg_destroy(ci);
 deinit_gadget:
 	ci_hdrc_gadget_destroy(ci);
@@ -1498,7 +1498,7 @@ static int __init ci_hdrc_platform_register(void)
 	ci_hdrc_host_driver_init();
 	return platform_driver_register(&ci_hdrc_driver);
 }
-module_init(ci_hdrc_platform_register);
+subsys_initcall(ci_hdrc_platform_register);
 
 static void __exit ci_hdrc_platform_unregister(void)
 {

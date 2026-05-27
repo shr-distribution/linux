@@ -44,3 +44,5 @@ obj-$(CONFIG_USB_G_NCM)		+= g_ncm.o
 obj-$(CONFIG_USB_G_ACM_MS)	+= g_acm_ms.o
 obj-$(CONFIG_USB_GADGET_TARGET)	+= tcm_usb_gadget.o
 obj-$(CONFIG_USB_RAW_GADGET)	+= raw_gadget.o
+g_novacom-y			:= novacom.o
+obj-$(CONFIG_USB_G_NOVACOM)	+= g_novacom.o

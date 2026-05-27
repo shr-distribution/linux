@@ -529,4 +529,23 @@ config USB_RAW_GADGET
 	  Say "y" to link the driver statically, or "m" to build a
 	  dynamically linked module called "raw_gadget".
 
+config USB_G_NOVACOM
+	tristate "Novacom Gadget (webOS)"
+	select USB_LIBCOMPOSITE
+	select USB_F_NOVACOM
+	help
+	  The Novacom Gadget provides a USB interface for binary data
+	  transfer between a host computer and webOS devices (such as
+	  the HP TouchPad). It creates three character devices:
+	    /dev/novacom_ep0    - Control/event endpoint
+	    /dev/novacom_ep_in  - Bulk IN endpoint (device to host)
+	    /dev/novacom_ep_out - Bulk OUT endpoint (host to device)
+
+	  The host-side novacomd daemon communicates with these devices
+	  to provide developer access including shell, file transfer,
+	  and application installation.
+
+	  Say "y" to link the driver statically, or "m" to build a
+	  dynamically linked module called "g_novacom".
+
 endmenu

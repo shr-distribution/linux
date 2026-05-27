@@ -2352,10 +2352,11 @@ static int udc_id_switch_for_device(struct ci_hdrc *ci)
 		pinctrl_select_state(ci->platdata->pctl,
 				     ci->platdata->pins_device);
 
-	if (ci->is_otg)
-		/* Clear and enable BSV irq */
-		hw_write_otgsc(ci, OTGSC_BSVIS | OTGSC_BSVIE,
-					OTGSC_BSVIS | OTGSC_BSVIE);
+	/* Clear and enable BSV irq for VBUS connect/disconnect detection.
+	 * Works for both OTG and peripheral-only (non-OTG) controllers
+	 * that have SESS_VLD_CTRL wiring the PHY B-Session Valid to OTGSC. */
+	hw_write_otgsc(ci, OTGSC_BSVIS | OTGSC_BSVIE,
+				OTGSC_BSVIS | OTGSC_BSVIE);
 
 	return 0;
 }

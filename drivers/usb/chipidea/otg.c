@@ -134,8 +134,14 @@ void ci_handle_vbus_change(struct ci_hdrc *ci)
 		return;
 
 	if (!ci->is_otg) {
-		if (ci->platdata->flags & CI_HDRC_FORCE_VBUS_ACTIVE_ALWAYS)
+		if (ci->platdata->flags & CI_HDRC_FORCE_VBUS_ACTIVE_ALWAYS) {
 			usb_gadget_vbus_connect(&ci->gadget);
+		} else {
+			if (hw_read_otgsc(ci, OTGSC_BSV) && !ci->vbus_active)
+				usb_gadget_vbus_connect(&ci->gadget);
+			else if (!hw_read_otgsc(ci, OTGSC_BSV) && ci->vbus_active)
+				usb_gadget_vbus_disconnect(&ci->gadget);
+		}
 		return;
 	}
 
