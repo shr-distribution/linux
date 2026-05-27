@@ -62,6 +62,21 @@ static const unsigned long vidc_clk_rates[] = {
 	228570000,	/* HIGH — top of the mmcc vcodec freq table */
 };
 
+/*
+ * MSM8660 / APQ8060 SoC data. Both compatibles share the same VIDC 1080p IP,
+ * the big-endian firmware blob and the mmcc clock table, so they reference one
+ * instance. A future SoC (e.g. msm8960) would add its own row with a different
+ * fw_name / clk table and attach it via of_device_id .data.
+ */
+static const struct vidc_soc_data vidc_msm8660_soc = {
+	.fw_name	= VIDC_FW_NAME,
+	.fw_size_max	= VIDC_FW_SIZE_MAX,
+	.clk_rates	= vidc_clk_rates,
+	.num_clk_rates	= ARRAY_SIZE(vidc_clk_rates),
+	.bw_avg		= VIDC_BW_AVG,
+	.bw_peak	= VIDC_BW_PEAK,
+};
+
 static int vidc_clk_enable(struct vidc_core *core)
 {
 	int ret;
@@ -972,18 +987,19 @@ int vidc_load_firmware(struct vidc_core *core)
 		return 0;
 	}
 
-	dev_dbg(core->dev, "load_firmware: requesting firmware %s\n", VIDC_FW_NAME);
-	ret = request_firmware(&core->fw, VIDC_FW_NAME, core->dev);
+	dev_dbg(core->dev, "load_firmware: requesting firmware %s\n",
+		core->soc->fw_name);
+	ret = request_firmware(&core->fw, core->soc->fw_name, core->dev);
 	if (ret) {
 		dev_err(core->dev, "failed to load firmware %s: %d\n",
-			VIDC_FW_NAME, ret);
+			core->soc->fw_name, ret);
 		return ret;
 	}
 	dev_dbg(core->dev, "load_firmware: got firmware, size=%zu\n", core->fw->size);
 
-	if (core->fw->size > VIDC_FW_SIZE_MAX) {
-		dev_err(core->dev, "firmware too large: %zu > %d\n",
-			core->fw->size, VIDC_FW_SIZE_MAX);
+	if (core->fw->size > core->soc->fw_size_max) {
+		dev_err(core->dev, "firmware too large: %zu > %zu\n",
+			core->fw->size, core->soc->fw_size_max);
 		ret = -EINVAL;
 		goto err_release_fw;
 	}
@@ -2940,6 +2956,9 @@ static int vidc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	core->dev = dev;
+	core->soc = of_device_get_match_data(dev);
+	if (!core->soc)
+		return -ENODEV;
 	mutex_init(&core->lock);
 	spin_lock_init(&core->irqlock);
 	init_completion(&core->fw_status_done);
@@ -3022,7 +3041,7 @@ static int vidc_probe(struct platform_device *pdev)
 	/* Set initial clock rate */
 	/* Run the core at the top (HIGH) operating point, 228.57 MHz. */
 	ret = clk_set_rate(core->core_clk,
-			   vidc_clk_rates[ARRAY_SIZE(vidc_clk_rates) - 1]);
+			   core->soc->clk_rates[core->soc->num_clk_rates - 1]);
 	if (ret) {
 		dev_err(dev, "failed to set core clock rate: %d\n", ret);
 		return ret;
@@ -3141,8 +3160,8 @@ static int vidc_probe(struct platform_device *pdev)
 	 * Read bandwidth from device tree, with defaults for 1080p video.
 	 * Properties: qcom,icc-bw-avg-kbps, qcom,icc-bw-peak-kbps
 	 */
-	core->icc_bw_avg = VIDC_BW_AVG;
-	core->icc_bw_peak = VIDC_BW_PEAK;
+	core->icc_bw_avg = core->soc->bw_avg;
+	core->icc_bw_peak = core->soc->bw_peak;
 	if (dev->of_node) {
 		u32 val;
 
@@ -3381,8 +3400,8 @@ static const struct dev_pm_ops vidc_pm_ops = {
 };
 
 static const struct of_device_id vidc_of_match[] = {
-	{ .compatible = "qcom,msm8660-vidc" },
-	{ .compatible = "qcom,apq8060-vidc" },
+	{ .compatible = "qcom,msm8660-vidc", .data = &vidc_msm8660_soc },
+	{ .compatible = "qcom,apq8060-vidc", .data = &vidc_msm8660_soc },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, vidc_of_match);

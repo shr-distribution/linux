@@ -466,8 +466,25 @@ enum vidc_codec {
 
 struct vidc_inst;
 
+/*
+ * Per-SoC / per-firmware data, selected via of_device_id .data. Lets the one
+ * driver describe the board-variable firmware blob, core clock table and
+ * default interconnect bandwidth instead of hardcoding msm8660 values.
+ * Firmware-ABI constants that do not vary with the board (VIDC_ADDR_SHIFT, the
+ * context/descriptor/SHM sizes, max instances) stay as #defines in vidc_core.c.
+ */
+struct vidc_soc_data {
+	const char *fw_name;		/* firmware blob in /lib/firmware */
+	size_t fw_size_max;		/* sanity bound on the blob size */
+	const unsigned long *clk_rates;	/* core-clock operating points (Hz) */
+	unsigned int num_clk_rates;	/* entries in clk_rates; last = HIGH */
+	u32 bw_avg;			/* default ICC average BW (bytes/sec) */
+	u32 bw_peak;			/* default ICC peak BW (bytes/sec) */
+};
+
 struct vidc_core {
 	struct device *dev;
+	const struct vidc_soc_data *soc;
 	void __iomem *base;
 	int irq;
 
