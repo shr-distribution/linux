@@ -56,6 +56,7 @@ static int a2xx_gpummu_map(struct msm_mmu *mmu, uint64_t iova,
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_TC);
+
 	return 0;
 }
 
@@ -71,6 +72,7 @@ static int a2xx_gpummu_unmap(struct msm_mmu *mmu, uint64_t iova, size_t len)
 	gpu_write(gpummu->gpu, REG_A2XX_MH_MMU_INVALIDATE,
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_TC);
+
 	return 0;
 }
 

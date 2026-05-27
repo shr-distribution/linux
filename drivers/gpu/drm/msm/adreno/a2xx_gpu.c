@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2018 The Linux Foundation. All rights reserved. */
 
+#include <linux/delay.h>
+#include <linux/interconnect.h>
+#include <linux/pm_opp.h>
+#include <linux/pm_runtime.h>
+#include <linux/reset.h>
+
 #include "a2xx_gpu.h"
 #include "msm_gem.h"
 #include "msm_mmu.h"
@@ -10,10 +16,39 @@ extern bool hang_debug;
 static void a2xx_dump(struct msm_gpu *gpu);
 static bool a2xx_idle(struct msm_gpu *gpu);
 
+/*
+ * Memory bandwidth vote in icc units (kBps), proportional to GPU clock with
+ * 8 bytes/cycle on the 64-bit memory bus. Legacy webOS msm_bus voted
+ * ab=ib=2008 MB/s for grp3d_max — set both avg and peak so the AFAB
+ * aggregator (sum of avg, max of peak) sees the GPU's full demand and
+ * scales fabric clock appropriately.
+ */
+static u32 a2xx_icc_bw_for_freq(unsigned long freq_hz)
+{
+	return Bps_to_icc(freq_hz) * 8;
+}
+
 static void a2xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	struct msm_ringbuffer *ring = submit->ring;
 	unsigned int i;
+
+	/*
+	 * a20x/a220 erratum (per legacy KGSL a2xx_drawctxt_draw_workaround):
+	 * "if the events for shader space reuse get dropped, the CP block would
+	 * wait indefinitely". This happens with repeated idles between submits
+	 * (the kernel ring's per-submit CP_WAIT_FOR_IDLE below) and is the
+	 * recurring back-end wedge -- the CP parks forever waiting for shader
+	 * instruction space that never frees (RBBM shows RB/PA/SC stuck, CP
+	 * busy), worst right after a GDSC power-collapse/resume. KGSL unblocks
+	 * the CP by re-issuing CP_SET_SHADER_BASES. Emit it at the start of
+	 * every submit so the reuse event cannot accumulate-drop across the
+	 * inter-submit idles. 0x80000180 = adreno_encode_istore_size() |
+	 * pix_shader_start for a220 -- the same value Mesa's fd2_emit_restore
+	 * programs per batch.
+	 */
+	OUT_PKT3(ring, CP_SET_SHADER_BASES, 1);
+	OUT_RING(ring, 0x80000180);
 
 	for (i = 0; i < submit->nr_cmds; i++) {
 		switch (submit->cmd[i].type) {
@@ -126,8 +161,20 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0xfffffffe);
 	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xffffffff);
 
-	/* note: kgsl uses 0x00000001 after first reset on a22x */
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
+	/*
+	 * KGSL (a2xx_start) resets ALL blocks (0xffffffff) only on the very
+	 * first init; on every subsequent a22x (re)init -- crucially including
+	 * resume from a GDSC power-collapse -- it resets ONLY the CP block
+	 * (0x1). Repeating the full block soft-reset on a22x resume leaves the
+	 * 3D pipe in a state where the first draw after resume wedges the
+	 * back-end (the recurring resume-from-autosuspend hang). a20x always
+	 * takes the full reset. Mirror KGSL.
+	 */
+	if (adreno_is_a20x(adreno_gpu) || !a2xx_gpu->soft_reset_done)
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
+	else
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000001);
+	a2xx_gpu->soft_reset_done = true;
 	msleep(30);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000000);
 
@@ -165,6 +212,21 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_ALL |
 		A2XX_MH_MMU_INVALIDATE_INVALIDATE_TC);
 
+	/*
+	 * MH ARBITER config - matches legacy KGSL's KGSL_CFG_YAMATO_MHARB
+	 * for both Yamato (a20x) and Leia (a22x = REV470). Live readback
+	 * from webOS/KGSL on a Leia REV470 (HP TouchPad) confirms
+	 * MH_ARBITER_CONFIG = 0x07c86590 for both generations.
+	 *
+	 * IN_FLIGHT_LIMIT_ENABLE (bit 15) is intentionally NOT set:
+	 * mainline used to set it (with IN_FLIGHT_LIMIT=8), but the MH
+	 * arbiter's per-tag tracking with the limit enforced was producing
+	 * a deterministic period-8 rendering cycle on a22x where 1/8 of
+	 * fresh DRM contexts rendered correctly and 7/8 had channel-drop
+	 * + GMEM-tile artifacts. KGSL leaves the limit unenforced (the
+	 * IN_FLIGHT_LIMIT(8) field is still written but the enable bit
+	 * is off, so the field is dead). Mirror KGSL exactly.
+	 */
 	gpu_write(gpu, REG_A2XX_MH_ARBITER_CONFIG,
 		A2XX_MH_ARBITER_CONFIG_SAME_PAGE_LIMIT(16) |
 		A2XX_MH_ARBITER_CONFIG_L1_ARB_ENABLE |
@@ -172,7 +234,6 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		A2XX_MH_ARBITER_CONFIG_PAGE_SIZE(1) |
 		A2XX_MH_ARBITER_CONFIG_TC_REORDER_ENABLE |
 		A2XX_MH_ARBITER_CONFIG_TC_ARB_HOLD_ENABLE |
-		A2XX_MH_ARBITER_CONFIG_IN_FLIGHT_LIMIT_ENABLE |
 		A2XX_MH_ARBITER_CONFIG_IN_FLIGHT_LIMIT(8) |
 		A2XX_MH_ARBITER_CONFIG_CP_CLNT_ENABLE |
 		A2XX_MH_ARBITER_CONFIG_VGT_CLNT_ENABLE |
@@ -185,8 +246,26 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_SQ_VS_PROGRAM, 0x00000000);
 	gpu_write(gpu, REG_A2XX_SQ_PS_PROGRAM, 0x00000000);
 
-	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0); /* 0x200 for msm8960? */
-	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0); /* 0x80/0x1a0 for a22x? */
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0);
+	/*
+	 * A22x (Leia) requires 0x1a0 for proper clock gating per Palm kernel.
+	 * Bit 0x40 keeps the RBBM performance-monitor block clocked so the RBBM
+	 * busy perfcounter (the devfreq load source, enabled via CP_PERFMON_CNTL
+	 * below) actually counts -- KGSL sets (PM_OVERRIDE2 | 0x40) in
+	 * a2xx_busy_cycles() for exactly this. Without it the counter stays
+	 * frozen, devfreq sees ~0 load and parks the GPU at its minimum OPP.
+	 */
+	if (!adreno_is_a20x(adreno_gpu))
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x1a0 | 0x40);
+	else
+		gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0x40);
+
+	/*
+	 * Initialize SQ_GPR_MANAGEMENT to the legacy KGSL value
+	 * (0x00040400 = VTX=64, PIX=64, static). Without an explicit init,
+	 * random power-on values could starve one shader type of GPRs.
+	 */
+	gpu_write(gpu, REG_A2XX_SQ_GPR_MANAGEMENT, 0x00040400);
 
 	/* note: gsl doesn't set this */
 	gpu_write(gpu, REG_A2XX_RBBM_DEBUG, 0x00080000);
@@ -211,6 +290,32 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 		if ((SZ_16K << i) == adreno_gpu->info->gmem)
 			break;
 	gpu_write(gpu, REG_A2XX_RB_EDRAM_INFO, i);
+
+	/*
+	 * Select RBBM perfcounter 1 as the devfreq busy-cycle source.
+	 * RBBM1_NRT_BUSY (general non-real-time 3D-pipe busy) is what legacy
+	 * KGSL a2xx_busy_cycles() selects -- broader than RB_BUSY, so it also
+	 * tracks vertex/shader-bound work, giving devfreq a truer load signal.
+	 * NOTE: the counter only advances while the perfmon is ENABLED via
+	 * CP_PERFMON_CNTL, which Mesa owns per-batch (freedreno fd2_emit_restore
+	 * writes it every batch); stock Mesa writes CP_PERFMON_CNTL=0 (perfmon
+	 * frozen) so this never counted and devfreq parked the GPU at min. The
+	 * paired Mesa change makes fd2_emit_restore emit CP_PERFMON_CNTL=1.
+	 */
+	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER1_SELECT, RBBM1_NRT_BUSY);
+
+	/*
+	 * Select RB perfcounter 0 as a "retired rendering work" signal for the
+	 * hangcheck progress check (a2xx_progress). RBPERF_SX_RB_QUAD_SEND counts
+	 * quads that have finished the fragment shader and are sent to the render
+	 * backend, so it climbs throughout a heavy fragment-bound draw (where the
+	 * CP parks waiting on the pixel pipeline and the IB pointers go static)
+	 * yet stops if the pipeline genuinely wedges -- unlike the *_BUSY counters
+	 * which keep ticking on a stuck-busy back-end. Like the devfreq counter
+	 * above it only advances while the perfmon is enabled (CP_PERFMON_CNTL,
+	 * kept on per-batch by the Mesa change).
+	 */
+	gpu_write(gpu, REG_A2XX_RB_PERFCOUNTER0_SELECT, RBPERF_SX_RB_QUAD_SEND);
 
 	ret = adreno_hw_init(gpu);
 	if (ret)
@@ -260,6 +365,22 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 
 	gpu_write(gpu, REG_AXXX_CP_QUEUE_THRESHOLDS, 0x000C0804);
 
+	/*
+	 * Clear any pending CP interrupts before starting the micro engine.
+	 * This matches the KGSL driver sequence and ensures the CP starts
+	 * with a clean interrupt state, which is important for recovery.
+	 */
+	gpu_write(gpu, REG_AXXX_CP_INT_ACK, 0xFFFFFFFF);
+
+	/*
+	 * Reset ring pointers immediately before starting the ME.
+	 * This matches the KGSL sequence where rb->rptr = rb->wptr = 0
+	 * is set just before clearing ME_HALT. Critical for recovery.
+	 */
+	gpu->rb[0]->cur = gpu->rb[0]->next = gpu->rb[0]->start;
+	gpu->rb[0]->memptrs->rptr = 0;
+	gpu_write(gpu, REG_AXXX_CP_RB_WPTR, 0);
+
 	/* clear ME_HALT to start micro engine */
 	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, 0);
 
@@ -268,6 +389,7 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 
 static void a2xx_recover(struct msm_gpu *gpu)
 {
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(to_adreno_gpu(gpu));
 	int i;
 
 	adreno_dump_info(gpu);
@@ -281,9 +403,58 @@ static void a2xx_recover(struct msm_gpu *gpu)
 	if (hang_debug)
 		a2xx_dump(gpu);
 
-	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 1);
-	gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
+	/*
+	 * Perform a full GPU reset matching the sequence in a2xx_hw_init()
+	 * and the legacy KGSL driver. A partial reset (0x1 = CP only) is
+	 * insufficient when the GPU is truly hung: halt the ME, power all
+	 * blocks on via PM_OVERRIDE, assert reset on all blocks, wait 30ms
+	 * (per KGSL), then deassert.
+	 */
+	gpu_write(gpu, REG_AXXX_CP_ME_CNTL, AXXX_CP_ME_CNTL_HALT);
+
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE1, 0xfffffffe);
+	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xffffffff);
+
+	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
+	msleep(30);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
+
+	/*
+	 * Clear the hung SQ / parameter-cache SRAM that RBBM_SOFT_RESET above
+	 * cannot: assert the GFX3D *core* reset (mmcc GFX3D_RESET, the same reset
+	 * the gfx3d GDSC fires on a cold power-on -- the period-8 fix). Without
+	 * it, the post-recover a2xx_hw_init() -> a2xx_me_init() -> a2xx_idle()
+	 * times out (hw_init -EINVAL), turning every lockup into an
+	 * unrecoverable hangcheck -> recover death-spiral.
+	 *
+	 * We assert it directly rather than power-cycling the GDSC: two-tier
+	 * runtime PM (GENPD_FLAG_RPM_ALWAYS_ON) keeps the gfx3d footswitch
+	 * powered across runtime idle, so a pm_runtime put/get no longer
+	 * collapses the domain to re-fire the reset. Pulse width follows the
+	 * legacy footswitch sequence (assert, ~us, deassert).
+	 */
+	if (a2xx_gpu->core_reset) {
+		reset_control_assert(a2xx_gpu->core_reset);
+		udelay(2);
+		reset_control_deassert(a2xx_gpu->core_reset);
+	} else {
+		/*
+		 * No "core" reset in DT: fall back to a runtime-PM power cycle,
+		 * which only re-fires the GDSC reset where the domain is actually
+		 * allowed to collapse (i.e. not RPM_ALWAYS_ON).
+		 */
+		pm_runtime_put_sync_suspend(&gpu->pdev->dev);
+		pm_runtime_get_sync(&gpu->pdev->dev);
+	}
+
+	/*
+	 * The core was just reset, so its state (incl. loaded microcode) is gone
+	 * regardless of the runtime-PM path taken above. Force the re-init done
+	 * by adreno_recover() -> msm_gpu_hw_init(); a light pm_resume there would
+	 * otherwise leave needs_hw_init clear and skip it.
+	 */
+	gpu->needs_hw_init = true;
+
 	adreno_recover(gpu);
 }
 
@@ -299,8 +470,36 @@ static void a2xx_destroy(struct msm_gpu *gpu)
 	kfree(a2xx_gpu);
 }
 
+/*
+ * Mask of all RBBM_STATUS bits that indicate the GPU is busy.
+ * Derived from the webOS KGSL driver which checks RBBM_STATUS == 0x110
+ * for idle (only CMDFIFO_AVAIL and HIRQ_PENDING are allowed to be set).
+ * All these bits must be clear for the gfx3d_axi_clk to halt properly.
+ */
+#define A2XX_RBBM_BUSY_MASK ( \
+	A2XX_RBBM_STATUS_TC_BUSY | \
+	A2XX_RBBM_STATUS_CPRQ_PENDING | \
+	A2XX_RBBM_STATUS_CFRQ_PENDING | \
+	A2XX_RBBM_STATUS_PFRQ_PENDING | \
+	A2XX_RBBM_STATUS_VGT_BUSY_NO_DMA | \
+	A2XX_RBBM_STATUS_RBBM_WU_BUSY | \
+	A2XX_RBBM_STATUS_CP_NRT_BUSY | \
+	A2XX_RBBM_STATUS_MH_BUSY | \
+	A2XX_RBBM_STATUS_MH_COHERENCY_BUSY | \
+	A2XX_RBBM_STATUS_SX_BUSY | \
+	A2XX_RBBM_STATUS_TPC_BUSY | \
+	A2XX_RBBM_STATUS_SC_CNTX_BUSY | \
+	A2XX_RBBM_STATUS_PA_BUSY | \
+	A2XX_RBBM_STATUS_VGT_BUSY | \
+	A2XX_RBBM_STATUS_SQ_CNTX17_BUSY | \
+	A2XX_RBBM_STATUS_SQ_CNTX0_BUSY | \
+	A2XX_RBBM_STATUS_RB_CNTX_BUSY | \
+	A2XX_RBBM_STATUS_GUI_ACTIVE)
+
 static bool a2xx_idle(struct msm_gpu *gpu)
 {
+	uint32_t status;
+
 	/* wait for ringbuffer to drain: */
 	if (!adreno_idle(gpu, gpu->rb[0]))
 		return false;
@@ -311,6 +510,19 @@ static bool a2xx_idle(struct msm_gpu *gpu)
 		DRM_ERROR("%s: timeout waiting for GPU to idle!\n", gpu->name);
 
 		/* TODO maybe we need to reset GPU here to recover from hang? */
+		return false;
+	}
+
+	/*
+	 * Wait for ALL busy bits to clear, not just the obvious ones.
+	 * The webOS KGSL driver waits for RBBM_STATUS == 0x110 (only
+	 * CMDFIFO_AVAIL and HIRQ_PENDING set). If any busy bit remains
+	 * set, the gfx3d_axi_clk branch clock cannot halt properly.
+	 */
+	if (spin_until(!((status = gpu_read(gpu, REG_A2XX_RBBM_STATUS)) &
+			 A2XX_RBBM_BUSY_MASK))) {
+		DRM_ERROR("%s: timeout waiting for GPU idle, RBBM_STATUS=%08x\n",
+			  gpu->name, status);
 		return false;
 	}
 
@@ -326,9 +538,24 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_MH_INT_STAT) {
 		status = gpu_read(gpu, REG_A2XX_MH_INTERRUPT_STATUS);
 
-		dev_warn(gpu->dev->dev, "MH_INT: %08X\n", status);
-		dev_warn(gpu->dev->dev, "MMU_PAGE_FAULT: %08X\n",
-			gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT));
+		/*
+		 * MH_INT bit0=AXI_READ_ERR, bit1=AXI_WRITE_ERR, bit2=MMU_PAGE_FAULT.
+		 * The chronic fault is bit1 (AXI write error) — a GPU write the bus
+		 * rejected — NOT a page fault (PF reads 0). AXI_ERR (raw reg 0x0a45 =
+		 * MH_AXI_ERROR, between MH_INTERRUPT_CLEAR 0xa44 and PERFCOUNTER0 0xa46)
+		 * holds the offending AXI address.
+		 */
+		dev_warn_ratelimited(gpu->dev->dev,
+			"MH_INT: %08X AXI_ERR: %08X PF: %08X RBBM: %08X IB1: %08X/%u IB2: %08X COPY_DEST: %08X COLOR_INFO: %08X\n",
+			status,
+			gpu_read(gpu, 0x0a45 /* MH_AXI_ERROR */),
+			gpu_read(gpu, REG_A2XX_MH_MMU_PAGE_FAULT),
+			gpu_read(gpu, REG_A2XX_RBBM_STATUS),
+			gpu_read(gpu, REG_AXXX_CP_IB1_BASE),
+			gpu_read(gpu, REG_AXXX_CP_IB1_BUFSZ),
+			gpu_read(gpu, REG_AXXX_CP_IB2_BASE),
+			gpu_read(gpu, REG_A2XX_RB_COPY_DEST_BASE),
+			gpu_read(gpu, REG_A2XX_RB_COLOR_INFO));
 
 		gpu_write(gpu, REG_A2XX_MH_INTERRUPT_CLEAR, status);
 	}
@@ -346,7 +573,7 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_RBBM_INT_STAT) {
 		status = gpu_read(gpu, REG_A2XX_RBBM_INT_STATUS);
 
-		dev_warn(gpu->dev->dev, "RBBM_INT: %08X\n", status);
+		dev_dbg(gpu->dev->dev, "RBBM_INT: %08X\n", status);
 
 		gpu_write(gpu, REG_A2XX_RBBM_INT_ACK, status);
 	}
@@ -469,6 +696,16 @@ static struct msm_gpu_state *a2xx_gpu_state_get(struct msm_gpu *gpu)
 	return state;
 }
 
+static u64 a2xx_gpu_busy(struct msm_gpu *gpu, unsigned long *out_sample_rate)
+{
+	u64 busy_cycles;
+
+	busy_cycles = gpu_read64(gpu, REG_A2XX_RBBM_PERFCOUNTER1_LO);
+	*out_sample_rate = clk_get_rate(gpu->core_clk);
+
+	return busy_cycles;
+}
+
 static struct drm_gpuvm *
 a2xx_create_vm(struct msm_gpu *gpu, struct platform_device *pdev)
 {
@@ -487,6 +724,198 @@ static u32 a2xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 {
 	ring->memptrs->rptr = gpu_read(gpu, REG_AXXX_CP_RB_RPTR);
 	return ring->memptrs->rptr;
+}
+
+/*
+ * Hangcheck progress check. Two complementary signals are sampled; if either
+ * changed since the previous hangcheck the GPU is making forward progress and
+ * is not hung:
+ *
+ *  - CP IB1/IB2 base + remaining buffer size: advances as the CP consumes the
+ *    command stream (covers CP/state-setup and geometry phases).
+ *
+ *  - RB retired-quad counter (RBPERF_SX_RB_QUAD_SEND, configured in hw_init):
+ *    advances as shaded quads reach the render backend. This is essential on
+ *    the a220 because a heavy fragment-bound draw (e.g. glmark2's multi-pass
+ *    blur at ~1fps) parks the CP at the draw packet -- the IB pointers go
+ *    static for seconds while the pixel pipeline grinds -- so the CP signal
+ *    alone false-positives as a lockup. The quad counter keeps climbing while
+ *    rendering, and (unlike the *_BUSY counters) stops if the pipeline truly
+ *    wedges, so a genuine back-end hang is still detected.
+ *
+ * made_progress() bounds the number of progress retries, so a wedged GPU that
+ * somehow keeps a counter creeping is still eventually recovered.
+ */
+static bool a2xx_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
+{
+	struct msm_cp_state cp_state = {
+		.ib1_base = gpu_read(gpu, REG_AXXX_CP_IB1_BASE),
+		.ib2_base = gpu_read(gpu, REG_AXXX_CP_IB2_BASE),
+		.ib1_rem  = gpu_read(gpu, REG_AXXX_CP_IB1_BUFSZ),
+		.ib2_rem  = gpu_read(gpu, REG_AXXX_CP_IB2_BUFSZ),
+		.retired_work = gpu_read(gpu, REG_A2XX_RB_PERFCOUNTER0_LOW),
+	};
+	bool progress;
+
+	progress = !!memcmp(&cp_state, &ring->last_cp_state, sizeof(cp_state));
+	ring->last_cp_state = cp_state;
+
+	return progress;
+}
+
+static int a2xx_pm_suspend(struct msm_gpu *gpu)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+
+	/*
+	 * Idle the GPU and wait for all AXI transactions to complete.
+	 * Without this the gfx3d_axi_clk branch clock cannot halt
+	 * because the AXI bus is still servicing GPU requests.
+	 */
+	if (!a2xx_idle(gpu)) {
+		dev_warn(gpu->dev->dev, "GPU didn't idle before suspend\n");
+
+		/*
+		 * GPU failed to idle normally. Halt the command processor
+		 * and perform a soft reset to force the AXI interface into
+		 * a quiescent state. This ensures the gfx3d_axi_clk branch
+		 * clock can be disabled even if the GPU was stuck.
+		 */
+		gpu_write(gpu, REG_AXXX_CP_ME_CNTL, AXXX_CP_ME_CNTL_HALT);
+
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 1);
+		gpu_read(gpu, REG_A2XX_RBBM_SOFT_RESET);
+		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0);
+
+		/* Wait for reset to complete */
+		udelay(100);
+
+		/*
+		 * The soft reset dropped CP/ME state. With two-tier runtime PM a
+		 * light resume would otherwise skip hw_init and run an
+		 * uninitialised GPU, so force a full re-init on the next resume.
+		 */
+		gpu->needs_hw_init = true;
+	}
+
+	/*
+	 * Memory barrier to ensure all AXI transactions have completed
+	 * before we clear the interconnect vote. This is critical on
+	 * non-coherent platforms like MSM8660.
+	 */
+	wmb();
+
+	/*
+	 * Clear interconnect bandwidth vote before disabling clocks.
+	 * This tells the bus fabric we no longer need memory bandwidth,
+	 * allowing the AXI clock to halt properly. The legacy KGSL
+	 * driver did this via msm_bus_scale_client_update_request(BW_INIT).
+	 */
+	if (a2xx_gpu->icc_path)
+		icc_set_bw(a2xx_gpu->icc_path, 0, 0);
+
+	return msm_gpu_pm_suspend(gpu);
+}
+
+static int a2xx_pm_resume(struct msm_gpu *gpu)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	int ret;
+
+	ret = msm_gpu_pm_resume(gpu);
+	if (ret)
+		return ret;
+
+	if (a2xx_gpu->icc_path) {
+		u32 bw = a2xx_icc_bw_for_freq(gpu->fast_rate);
+
+		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
+	}
+
+	return 0;
+}
+
+/*
+ * Set GPU frequency and bandwidth via OPP framework.
+ * This is called by devfreq when scaling frequency.
+ */
+static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
+			      bool suspended)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
+	unsigned long freq = dev_pm_opp_get_freq(opp);
+
+	/*
+	 * Don't change bandwidth when suspended - pm_resume will restore it.
+	 * Only update our manual ICC path bandwidth to match the new frequency.
+	 */
+	if (suspended)
+		return;
+
+	/*
+	 * The a2xx GFX3D core clock is NOT glitch-free across a rate change:
+	 * switching it while the 3D pipe is rendering wedges the back-end
+	 * (RB/PA/SC stuck busy, CP parked). Legacy KGSL idles the GPU before the
+	 * switch (kgsl_pwrctrl_pwrlevel_change, idle_needed) -- "instability is
+	 * caused on changing clock freq when the core is busy". We have no GMU
+	 * and must not take gpu->lock here (gpu_set_freq runs under the devfreq
+	 * lock; the submit path takes active_lock -> devfreq lock, so the reverse
+	 * order would deadlock). So only switch when the 3D pipe is already idle:
+	 * if it is busy right now, skip this change -- devfreq retries next tick
+	 * and the clock holds until an idle window (the idle->active transition
+	 * and inter-frame gaps provide them). This never switches mid-render and
+	 * never blocks or spams the log (no ring-drain wait). The recover_worker()
+	 * recovery-storm guard backs any rare idle-race miss.
+	 */
+	if (gpu_read(gpu, REG_A2XX_RBBM_STATUS) & A2XX_RBBM_BUSY_MASK)
+		return;
+
+	/*
+	 * Set both avg and peak bandwidth proportional to frequency,
+	 * matching the legacy webOS msm_bus grp3d_max_vectors pattern
+	 * (ab = ib = clock × 8 bytes/cycle).
+	 */
+	if (a2xx_gpu->icc_path) {
+		u32 bw = a2xx_icc_bw_for_freq(freq);
+
+		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
+	}
+
+	/*
+	 * Step the GFX3D clock ONE OPP at a time toward the target, exactly like
+	 * legacy KGSL (kgsl_pwrctrl_pwrlevel_change): "Don't shift by more than
+	 * one level at a time to avoid glitches." A direct multi-OPP jump of the
+	 * GFX3D clock (devfreq routinely asks for e.g. 27 <-> 266 MHz, ~10 OPPs
+	 * at once) glitches the PLL/MN divider and wedges the marginal a220
+	 * back-end. dev_pm_opp_set_rate() applies the matching voltage for each
+	 * intermediate step. KGSL ran a2xx DVFS stably doing exactly this.
+	 */
+	{
+		struct device *dev = &gpu->pdev->dev;
+		unsigned long cur = clk_get_rate(gpu->core_clk);
+		int guard = 0;
+
+		while (cur != freq && ++guard <= 16) {
+			struct dev_pm_opp *step;
+			unsigned long sf;
+
+			if (freq > cur) {
+				sf = cur + 1;
+				step = dev_pm_opp_find_freq_ceil(dev, &sf);
+			} else {
+				sf = cur - 1;
+				step = dev_pm_opp_find_freq_floor(dev, &sf);
+			}
+			if (IS_ERR(step) || sf == cur)
+				break;
+			dev_pm_opp_put(step);
+			dev_pm_opp_set_rate(dev, sf);
+			cur = sf;
+		}
+	}
 }
 
 static const struct msm_gpu_perfcntr perfcntrs[] = {
@@ -525,6 +954,67 @@ static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	if (ret)
 		goto fail;
 
+	/*
+	 * Two-tier runtime PM: keep the GFX3D rail and power domain up across
+	 * runtime idle (clocks still gate), so a routine resume skips the
+	 * a2xx_hw_init microcode reload whose MMIO burst can stall the shared
+	 * MMSS AXI when it lands during an MDP display client-switch underrun.
+	 * Matches legacy KGSL (SLEEP keeps the rail up during use; only SLUMBER
+	 * on system suspend power-collapses). REQUIRES the GFX3D GDSC to carry
+	 * GENPD_FLAG_RPM_ALWAYS_ON (set via the mmcc gdsc RPM_ALWAYS_ON flag) so
+	 * the domain genuinely retains power across runtime idle; on imageon
+	 * (no power domain) runtime idle only gates clocks, which retains state
+	 * just the same, so skipping hw_init stays correct.
+	 */
+	gpu->retain_power_runtime = true;
+
+	/*
+	 * Optional GFX3D core reset used by a2xx_recover() (see there). Optional
+	 * so platforms without it in DT (e.g. imageon) still probe; -EPROBE_DEFER
+	 * and real errors propagate.
+	 */
+	a2xx_gpu->core_reset =
+		devm_reset_control_get_optional_exclusive(&pdev->dev, "core");
+	if (IS_ERR(a2xx_gpu->core_reset)) {
+		ret = PTR_ERR(a2xx_gpu->core_reset);
+		goto fail;
+	}
+
+	/*
+	 * The a220 is slow: heavy fragment-bound frames (e.g. glmark2's
+	 * multi-pass desktop blur) legitimately run ~1fps. With a2xx_progress()
+	 * the hangcheck only fires when the CP stops advancing, so it is safe to
+	 * tolerate such a still-rendering frame for much longer than the default
+	 * before declaring a hang -- a genuinely stuck GPU makes no progress and
+	 * is still caught in a single hangcheck period. Allow ~4s (the 250ms
+	 * progress-halved hangcheck period x 16) so these frames complete instead
+	 * of being needlessly recovered (which would drop the in-flight submit).
+	 */
+	gpu->hangcheck_progress_retries = 16;
+
+	/* Get interconnect path for memory bandwidth voting */
+	a2xx_gpu->icc_path = devm_of_icc_get(&pdev->dev, "gfx-mem");
+	if (IS_ERR(a2xx_gpu->icc_path)) {
+		ret = PTR_ERR(a2xx_gpu->icc_path);
+		/* Allow -ENODATA, interconnect is optional for older DTs */
+		if (ret != -ENODATA) {
+			DRM_DEV_ERROR(dev->dev, "failed to get interconnect path: %d\n", ret);
+			goto fail;
+		}
+		a2xx_gpu->icc_path = NULL;
+	}
+
+	/*
+	 * Set initial interconnect bandwidth to max (avg = peak), matching
+	 * legacy webOS grp3d_max_vectors. Adjusted during runtime PM and
+	 * devfreq scaling.
+	 */
+	if (a2xx_gpu->icc_path) {
+		u32 bw = a2xx_icc_bw_for_freq(gpu->fast_rate);
+
+		icc_set_bw(a2xx_gpu->icc_path, bw, bw);
+	}
+
 	if (adreno_is_a20x(adreno_gpu))
 		adreno_gpu->registers = a200_registers;
 	else if (adreno_is_a225(adreno_gpu))
@@ -546,8 +1036,8 @@ const struct adreno_gpu_funcs a2xx_gpu_funcs = {
 		.get_param = adreno_get_param,
 		.set_param = adreno_set_param,
 		.hw_init = a2xx_hw_init,
-		.pm_suspend = msm_gpu_pm_suspend,
-		.pm_resume = msm_gpu_pm_resume,
+		.pm_suspend = a2xx_pm_suspend,
+		.pm_resume = a2xx_pm_resume,
 		.recover = a2xx_recover,
 		.submit = a2xx_submit,
 		.active_ring = adreno_active_ring,
@@ -556,10 +1046,13 @@ const struct adreno_gpu_funcs a2xx_gpu_funcs = {
 #if defined(CONFIG_DEBUG_FS) || defined(CONFIG_DEV_COREDUMP)
 		.show = adreno_show,
 #endif
+		.gpu_busy = a2xx_gpu_busy,
 		.gpu_state_get = a2xx_gpu_state_get,
 		.gpu_state_put = adreno_gpu_state_put,
 		.create_vm = a2xx_create_vm,
 		.get_rptr = a2xx_get_rptr,
+		.gpu_set_freq = a2xx_gpu_set_freq,
+		.progress = a2xx_progress,
 	},
 	.init = a2xx_gpu_init,
 };
