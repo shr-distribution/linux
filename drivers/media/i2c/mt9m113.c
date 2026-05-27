@@ -38,6 +38,15 @@
 /* Delay before enabling MIPI output, allowing CSIPHY to stabilize. */
 #define MT9M113_PRE_MIPI_DELAY_MS	10
 
+/*
+ * The MT9M113 MCU intermittently wedges on stream start (SEQ_CMD stuck,
+ * 0xa103 timeout, SEQ_STATE never reaching preview 0x04 / capture 0x07).
+ * The failures cluster at the start of a run and then clear, so a bounded
+ * retry that power-cycles the sensor between attempts reliably gets the
+ * stream up. Total attempts (1 initial + retries).
+ */
+#define MT9M113_STREAM_START_RETRIES	5
+
 /* MT9M113 Context V4L2 Control */
 #define V4L2_CID_MT9M113_CONTEXT	(V4L2_CID_USER_BASE + 0x1001)
 #define MT9M113_CONTEXT_A		0	/* 640x480 preview */
@@ -1363,12 +1372,14 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	const struct v4l2_rect *compose;
 	bool use_context_b;
 	u16 output_ctrl_val;
+	unsigned int attempt = 0;
 	int ret;
 
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret)
 		return ret;
 
+retry:
 	/*
 	 * Ensure sensor is not in standby mode before streaming.
 	 * Write 0x0028 directly to STANDBY_CONTROL to ensure MCU is active.
@@ -2042,16 +2053,35 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	dev_dbg(dev, "MT9M113: streaming started\n");
 
 	/*
-	 * Do not gate success on a specific SEQ_STATE: Context A (preview)
+	 * Do not gate success on a specific SEQ_STATE here. Context A (preview)
 	 * streams at SEQ_STATE 0x3, not the 0x4 "stable preview" the Context-B
-	 * preview-first step waits for, so an equality check on 0x4 would
-	 * wrongly fail every Context-A capture. Genuine wedges are caught by
-	 * the SEQ_CMD/SEQ_STATE polls in the Context A/B paths above.
+	 * preview-first step waits for, so an equality check on 0x4 wrongly
+	 * fails every Context-A capture. The genuine wedges are already caught
+	 * by the SEQ_CMD/SEQ_STATE polls in the Context A/B paths (which goto
+	 * error and feed the retry below); a false state mismatch must not.
 	 */
 	sensor->streaming = true;
 	return 0;
 
 error:
+	/*
+	 * The MCU wedge is intermittent and clears after a fresh power-cycle,
+	 * so retry a bounded number of times, fully power-cycling the sensor
+	 * (pm_runtime suspend -> resume = power_off + power_on + sensor_init)
+	 * between attempts. Only the failure path retries, so a working start
+	 * is never perturbed.
+	 */
+	if (++attempt < MT9M113_STREAM_START_RETRIES) {
+		dev_warn(dev,
+			 "MT9M113: stream start failed (%d), power-cycle + retry %u/%u\n",
+			 ret, attempt, MT9M113_STREAM_START_RETRIES - 1);
+		pm_runtime_put_sync_suspend(dev);	/* power_off */
+		ret = pm_runtime_resume_and_get(dev);	/* power_on + sensor_init */
+		if (ret)
+			return ret;
+		goto retry;
+	}
+
 	pm_runtime_put_autosuspend(dev);
 	return ret;
 }
