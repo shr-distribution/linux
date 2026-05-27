@@ -81,6 +81,20 @@ MODULE_PARM_DESC(bt_tx_pio_underruns,
 static bool bt_force_8e1;
 module_param(bt_force_8e1, bool, 0644);
 MODULE_PARM_DESC(bt_force_8e1, "BT UART: force even parity 8E1 (diag; default 8N1)");
+
+/*
+ * bt_tx_bytegap_us: forced inter-byte gap experiment. When >0, the BT UART
+ * PIO TX sends one byte at a time, waits for the transmitter to fully drain
+ * (SR TX_EMPTY), then idles the line for this many microseconds before the
+ * next byte. This intentionally starves the UARTDM to put real idle gaps
+ * BETWEEN bytes on gpio53 -- the one thing a single gapless FIFO burst cannot
+ * produce. If the CSR chip suddenly answers, it relies on inter-byte timing.
+ * INVASIVE / slow (busy-waits with IRQs off); BT port only; default 0 = off.
+ */
+static unsigned int bt_tx_bytegap_us;
+module_param(bt_tx_bytegap_us, uint, 0644);
+MODULE_PARM_DESC(bt_tx_bytegap_us,
+	"BT UART: force N us idle gap between TX bytes on the wire (diag; 0=off)");
 #include <linux/wait.h>
 
 #define MSM_UART_MR1			0x0000
@@ -959,6 +973,35 @@ static void msm_handle_tx_pio(struct uart_port *port, unsigned int tx_count)
 	else
 		tf = port->membase + MSM_UART_TF;
 
+	/*
+	 * Forced inter-byte gap experiment (bt_tx_bytegap_us, BT port only): send
+	 * one byte per UARTDM transfer, wait for the transmitter to fully drain
+	 * (SR TX_EMPTY), then idle the line for the configured gap before the next
+	 * byte. Produces real gaps BETWEEN bytes on gpio53 that a single gapless
+	 * FIFO burst never can. Busy-waits with IRQs off -> diag only.
+	 */
+	if (bt_tx_bytegap_us && port->mapbase == 0x16540000 && msm_port->is_uartdm) {
+		while (tf_pointer < tx_count) {
+			unsigned char buf[4] = { 0 };
+			int g;
+
+			if (uart_fifo_out(port, buf, 1) != 1)
+				break;
+			msm_reset_dm_count(port, 1);
+			for (g = 0; g < 50000 && !(msm_read(port, MSM_UART_SR) &
+						   MSM_UART_SR_TX_READY); g++)
+				cpu_relax();
+			iowrite32_rep(tf, buf, 1);
+			tf_pointer++;
+			for (g = 0; g < 100000 && !(msm_read(port, MSM_UART_SR) &
+						    MSM_UART_SR_TX_EMPTY); g++)
+				cpu_relax();
+			udelay(bt_tx_bytegap_us);
+		}
+		bt_tx_pio_bursts++;
+		goto tx_done;
+	}
+
 	if (tx_count && msm_port->is_uartdm)
 		msm_reset_dm_count(port, tx_count);
 
@@ -1010,6 +1053,7 @@ static void msm_handle_tx_pio(struct uart_port *port, unsigned int tx_count)
 		prev_end = t1;
 	}
 
+tx_done:
 	/* disable tx interrupts if nothing more to send */
 	if (kfifo_is_empty(&tport->xmit_fifo))
 		msm_stop_tx(port);
@@ -1633,8 +1677,18 @@ static int msm_startup(struct uart_port *port)
 	}
 
 	/* BT diag: dump the BT UART pad config to diff against webOS (8 mA, no pull). */
-	if (msm_port->bt_is_bt_uart && bt_diag)
+	if (msm_port->bt_is_bt_uart && bt_diag) {
 		msm_bt_diag_dump_pads(port, "startup");
+		/*
+		 * Ensure the IrDA encoder is OFF. UARTDM IrDA would pulse the
+		 * line at 3/16 bit-width instead of standard NRZ levels; internal
+		 * loopback would still pass (RX decodes it) but the CSR chip on
+		 * the wire would see garbage. MSM_UART_IRDA (0x38) is write-only
+		 * (reads return RX_TOTAL_SNAP), so enforce 0 rather than read-check.
+		 */
+		msm_write(port, 0, MSM_UART_IRDA);
+		dev_info(port->dev, "BT-DIAG: IRDA encoder forced off (NRZ levels)\n");
+	}
 
 	if (likely(port->fifosize > 12))
 		rfr_level = port->fifosize - 12;
