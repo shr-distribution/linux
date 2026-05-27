@@ -365,8 +365,17 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 		u32 base_geom = Hm * (Wm - 1);
 
 		writel(3, base + GEMINI_OP_ENCODE_MODE);
-		writel((base_geom * 128)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
-		writel((base_geom * 256)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
+		/*
+		 * Live webOS delta-log (1024x1280, base_geom=80*63=5040):
+		 *   OP_GEOM[0]=0x13b000=*256  [1]=0x9d800=*128
+		 *   OP_GEOM[2]=0x13b010=*256+16  [3]=0x9d810=*128+16
+		 * i.e. {256,128,256,128}. The code previously had [0] and [1]
+		 * swapped (128 and 256 exchanged), which gave the encoder an
+		 * inconsistent output geometry so it read the frame but produced
+		 * no entropy output (ENCODE_OUTPUT_SIZE stuck at 0, no FRAMEDONE).
+		 */
+		writel((base_geom * 256)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
+		writel((base_geom * 128)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
 		writel((base_geom * 256 + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(2));
 		writel((base_geom * 128 + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(3));
 		writel(GEMINI_OP_MAGIC_H2V2, base + GEMINI_OP_FORMAT_MAGIC);
