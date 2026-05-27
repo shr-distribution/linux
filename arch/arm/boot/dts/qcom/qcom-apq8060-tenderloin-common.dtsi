@@ -2925,12 +2925,6 @@
 	status = "okay";
 
 	/*
-	 * APQ8060 VFE 3.1 (HW 0x00030217): AXI=0x60 raw bypass path is
-	 * non-functional. Route RDI captures through PIX path instead.
-	 */
-	qcom,vfe31-raw-through-pix;
-
-	/*
 	 * No iommus here: VFE31 uses vb2-dma-contig with the 32MB CMA
 	 * region at 0x7C000000, so the DMA buffers are already physically
 	 * contiguous. The earlier "iommus = <&vfe_iommu 0>" was a leftover
