@@ -100,5 +100,11 @@ void qce_cpu_to_be32p_array(__be32 *dst, const u8 *src, unsigned int len);
 int qce_check_status(struct qce_device *qce, u32 *status);
 void qce_get_version(struct qce_device *qce, u32 *major, u32 *minor, u32 *step);
 int qce_start(struct crypto_async_request *async_req, u32 type);
+#ifdef CONFIG_CRYPTO_DEV_QCE_SHA
+int qce_ce2_pio_run_hash(struct crypto_async_request *async_req);
+#endif
+#ifdef CONFIG_CRYPTO_DEV_QCE_SKCIPHER
+int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req);
+#endif
 
 #endif /* _COMMON_H_ */

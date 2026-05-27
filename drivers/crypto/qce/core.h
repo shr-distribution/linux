@@ -8,8 +8,19 @@
 
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include <crypto/algapi.h>
 
 #include "dma.h"
+
+/**
+ * enum qce_version - crypto engine hardware version
+ * @QCE_VERSION_CE2: Crypto Engine 2 (MSM8660/APQ8060)
+ * @QCE_VERSION_5: Crypto Engine v5.x (newer SoCs)
+ */
+enum qce_version {
+	QCE_VERSION_CE2 = 2,
+	QCE_VERSION_5 = 5,
+};
 
 /**
  * struct qce_device - crypto engine device structure
@@ -26,6 +37,7 @@
  * @dma: pointer to dma data
  * @burst_size: the crypto burst size
  * @pipe_pair_id: which pipe pair id the device using
+ * @version: hardware version (CE2 or v5)
  * @async_req_enqueue: invoked by every algorithm to enqueue a request
  * @async_req_done: invoked by every algorithm to finish its request
  */
@@ -36,12 +48,15 @@ struct qce_device {
 	struct crypto_async_request *req;
 	int result;
 	void __iomem *base;
+	phys_addr_t phys_base;
 	struct device *dev;
 	struct clk *core, *iface, *bus;
+	struct reset_control *reset;
 	struct icc_path *mem_path;
 	struct qce_dma_data dma;
 	int burst_size;
 	unsigned int pipe_pair_id;
+	enum qce_version version;
 	int (*async_req_enqueue)(struct qce_device *qce,
 				 struct crypto_async_request *req);
 	void (*async_req_done)(struct qce_device *qce, int ret);
@@ -60,5 +75,10 @@ struct qce_algo_ops {
 	void (*unregister_algs)(struct qce_device *qce);
 	int (*async_req_handle)(struct crypto_async_request *async_req);
 };
+
+static inline bool qce_is_ce2(const struct qce_device *qce)
+{
+	return qce->version == QCE_VERSION_CE2;
+}
 
 #endif /* _CORE_H_ */

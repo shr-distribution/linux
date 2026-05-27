@@ -97,6 +97,25 @@ static int qce_ahash_async_req_handle(struct crypto_async_request *async_req)
 		return rctx->src_nents;
 	}
 
+	if (qce_is_ce2(qce)) {
+		/* CE2 hash path: do all register programming + GOPROC + data
+		 * feed + result readback inside qce_ce2_pio_run_hash. The
+		 * generic qce_setup_regs_ahash sequence (STATUS=0, CONFIG
+		 * twice, AUTH_IV before SEG_CFG) yields garbage AUTH_IV output
+		 * on CE2; the PIO function uses the order proven by the
+		 * standalone diagnostic and the HTC sbl3 bootloader.
+		 */
+		ret = qce_ce2_pio_run_hash(async_req);
+
+		req->src = rctx->src_orig;
+		req->nbytes = rctx->nbytes_orig;
+		rctx->last_blk = false;
+		rctx->first_blk = false;
+
+		qce->async_req_done(qce, ret);
+		return 0;
+	}
+
 	ret = dma_map_sg(qce->dev, req->src, rctx->src_nents, DMA_TO_DEVICE);
 	if (!ret)
 		return -EIO;
@@ -483,7 +502,7 @@ static int qce_ahash_register_one(const struct qce_ahash_def *def,
 
 	base = &alg->halg.base;
 	base->cra_blocksize = def->blocksize;
-	base->cra_priority = 175;
+	base->cra_priority = 300;
 	base->cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY;
 	base->cra_ctxsize = sizeof(struct qce_sha_ctx);
 	base->cra_alignmask = 0;

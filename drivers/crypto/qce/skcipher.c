@@ -79,6 +79,22 @@ qce_skcipher_async_req_handle(struct crypto_async_request *async_req)
 	rctx->ivsize = crypto_skcipher_ivsize(skcipher);
 	rctx->cryptlen = req->cryptlen;
 
+	if (qce_is_ce2(qce)) {
+		/*
+		 * CE2 skcipher path: register programming + dual-channel
+		 * ADM DMA happen inside qce_ce2_pio_run_skcipher().  The
+		 * generic v5 path (qce_setup_regs_skcipher +
+		 * qce_dma_prep_sgs) doesn't work on CE2 because both DMA
+		 * channels are wired to the hash digest readback layout
+		 * (txchan src=AUTH_IV0 + CRCI 15) and the v5 register
+		 * write order corrupts CE2 cipher state.
+		 */
+		int ret2 = qce_ce2_pio_run_skcipher(async_req);
+
+		qce->async_req_done(qce, ret2);
+		return 0;
+	}
+
 	diff_dst = (req->src != req->dst) ? true : false;
 	dir_src = diff_dst ? DMA_TO_DEVICE : DMA_BIDIRECTIONAL;
 	dir_dst = diff_dst ? DMA_FROM_DEVICE : DMA_BIDIRECTIONAL;
@@ -461,7 +477,18 @@ static int qce_skcipher_register_one(const struct qce_skcipher_def *def,
 	alg->encrypt			= qce_skcipher_encrypt;
 	alg->decrypt			= qce_skcipher_decrypt;
 
-	alg->base.cra_priority		= 275;
+	/*
+	 * On CE2 (MSM8660/APQ8060) the engine only chains CBC correctly
+	 * within a single ADM macro burst (CE2_ADM_BURST_SIZE = 64 B = 4
+	 * AES blocks).  Multi-burst ops silently emit wrong ciphertext
+	 * for blocks 5+.  Until that's fixed, keep qce_skcipher priority
+	 * below aes-generic (100) so the kernel never auto-picks qce for
+	 * cbc(aes); the driver remains accessible by explicit driver
+	 * name for testing.  v5 BAM hardware doesn't have this limit, so
+	 * give it the original priority.
+	 */
+	alg->base.cra_priority		= (qce->version == QCE_VERSION_CE2) ?
+					  50 : 275;
 	alg->base.cra_flags		= CRYPTO_ALG_ASYNC |
 					  CRYPTO_ALG_ALLOCATES_MEMORY |
 					  CRYPTO_ALG_KERN_DRIVER_ONLY;
