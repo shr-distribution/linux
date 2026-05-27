@@ -404,7 +404,21 @@ static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
 	if (!status)
 		return IRQ_NONE;
 
-	pr_info("gemini IRQ: status=0x%08x\n", status);
+	/*
+	 * Per-IRQ trace for FE->WE handoff debugging: log the status plus the
+	 * running encoded-output size and FE_CMD each time. The sequence of
+	 * these lines shows how many FE_RD_DONE (0x2) fire before any WE
+	 * activity and whether ENCODE_OUTPUT_SIZE ever advances (i.e. whether
+	 * the encoder progresses from read to write or stalls after a single
+	 * chunk). FE_DIMS/PIPELINE_CFG are read back to confirm the armed
+	 * geometry survived to encode time.
+	 */
+	pr_info("gemini IRQ: status=0x%08x osize=0x%08x fecmd=0x%08x pipe=0x%08x fedims=0x%08x\n",
+		status,
+		readl(gemini->base + GEMINI_ENCODE_OUTPUT_SIZE),
+		readl(gemini->base + GEMINI_FE_CMD),
+		readl(gemini->base + GEMINI_PIPELINE_CFG),
+		readl(gemini->base + GEMINI_FE_DIMS));
 
 	gemini_hw_clear_irq(gemini->base, status);
 
