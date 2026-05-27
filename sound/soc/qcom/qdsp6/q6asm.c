@@ -56,6 +56,20 @@
 #define ASM_DATA_CMD_REMOVE_INITIAL_SILENCE	0x00010D67
 #define ASM_DATA_CMD_REMOVE_TRAILING_SILENCE	0x00010D68
 
+/* Legacy ASM commands for MSM8660/APQ8060 (from webOS apr_audio.h) */
+#define ASM_STREAM_CMD_OPEN_WRITE_LEGACY	0x00010BCA
+#define ASM_STREAM_CMD_OPEN_READ_LEGACY		0x00010BCB
+#define ASM_SESSION_CMD_MEMORY_MAP_REGIONS	0x00010C45
+#define ASM_SESSION_CMD_MEMORY_UNMAP_REGIONS	0x00010C46
+#define ASM_SESSION_CMD_RUN_LEGACY		0x00010BD2
+#define ASM_DATA_CMD_WRITE_LEGACY		0x00010BD9
+#define ASM_DATA_CMD_READ_LEGACY		0x00010BDA
+#define ASM_DATA_CMD_MEDIA_FORMAT_UPDATE_LEGACY	0x00010BDC
+#define ASM_DATA_EVENT_WRITE_DONE_LEGACY	0x00010BDF
+#define ASM_DATA_EVENT_READ_DONE_LEGACY		0x00010BE0
+#define ASM_LEGACY_LINEAR_PCM			0x00010BE5
+#define ASM_LEGACY_DEFAULT_POPP_TOPOLOGY	0x00010be4
+#define ASM_LEGACY_STREAM_PRIORITY_HIGH		2
 
 #define ASM_LEGACY_STREAM_SESSION	0
 /* Bit shift for the stream_perf_mode subfield. */
@@ -83,6 +97,57 @@ struct avs_shared_map_region_payload {
 
 struct avs_cmd_shared_mem_unmap_regions {
 	u32 mem_map_handle;
+} __packed;
+
+/* Legacy ASM packet structures for MSM8660/APQ8060 */
+struct asm_stream_cmd_open_write_legacy {
+	u32 uMode;         /* STREAM_PRIORITY_* */
+	u16 sink_endpoint; /* ASM_END_POINT_DEVICE_MATRIX */
+	u16 stream_handle; /* 0 */
+	u32 post_proc_top; /* DEFAULT_POPP_TOPOLOGY */
+	u32 format;        /* LINEAR_PCM = 0x00010BE5 */
+} __packed;
+
+struct asm_session_cmd_run_legacy {
+	u32 flags;
+	u32 msw_ts;
+	u32 lsw_ts;
+} __packed;
+
+/* Legacy memory map structures for MSM8660/APQ8060 */
+struct asm_stream_cmd_memory_map_regions_legacy {
+	u16 mempool_id;    /* 0 = EBI */
+	u16 nregions;      /* number of regions */
+} __packed;
+
+struct asm_memory_map_regions_legacy {
+	u32 phys;          /* 32-bit physical address */
+	u32 buf_size;
+} __packed;
+
+/* Legacy PCM config for MSM8660/APQ8060 */
+struct asm_pcm_cfg_legacy {
+	u16 ch_cfg;
+	u16 bits_per_sample;
+	u32 sample_rate;
+	u16 is_signed;
+	u16 interleaved;
+} __packed;
+
+struct asm_media_format_update_legacy {
+	u32 format;
+	u32 cfg_size;
+	struct asm_pcm_cfg_legacy pcm_cfg;
+} __packed;
+
+/* Legacy data write command for MSM8660/APQ8060 */
+struct asm_data_cmd_write_legacy {
+	u32 buf_add;      /* 32-bit physical address */
+	u32 avail_bytes;  /* buffer size */
+	u32 uid;          /* unique ID / sequence ID */
+	u32 msw_ts;       /* timestamp MSW */
+	u32 lsw_ts;       /* timestamp LSW */
+	u32 uflags;       /* flags */
 } __packed;
 
 struct asm_data_cmd_media_fmt_update_v2 {
@@ -259,6 +324,7 @@ struct q6asm {
 	wait_queue_head_t mem_wait;
 	spinlock_t slock;
 	struct audio_client *session[MAX_SESSIONS + 1];
+	bool use_legacy_commands;	/* MSM8660/APQ8060 legacy protocol */
 };
 
 struct audio_client {
@@ -286,6 +352,20 @@ static inline void q6asm_add_hdr(struct audio_client *ac, struct apr_hdr *hdr,
 	hdr->hdr_field = APR_SEQ_CMD_HDR_FIELD;
 	hdr->src_port = ((ac->session << 8) & 0xFF00) | (stream_id);
 	hdr->dest_port = ((ac->session << 8) & 0xFF00) | (stream_id);
+	hdr->pkt_size = pkt_size;
+	if (cmd_flg)
+		hdr->token = ac->session;
+}
+
+/* Legacy header for MSM8660/APQ8060 - matches webOS q6asm_add_hdr() */
+static inline void q6asm_add_hdr_legacy(struct audio_client *ac, struct apr_hdr *hdr,
+					uint32_t pkt_size, bool cmd_flg,
+					uint32_t stream_id)
+{
+	hdr->hdr_field = APR_SEQ_CMD_HDR_FIELD;
+	/* webOS: src_port = (session << 8) | 0x01, dest_port = (session << 8) | 0x01 */
+	hdr->src_port = ((ac->session << 8) & 0xFF00) | 0x01;
+	hdr->dest_port = ((ac->session << 8) & 0xFF00) | 0x01;
 	hdr->pkt_size = pkt_size;
 	if (cmd_flg)
 		hdr->token = ac->session;
@@ -335,6 +415,12 @@ static int __q6asm_memory_unmap(struct audio_client *ac,
 	struct q6asm *a = dev_get_drvdata(ac->dev->parent);
 	struct apr_pkt *pkt;
 	int rc, pkt_size;
+
+	/* Legacy mode doesn't use memory map handles - skip unmap */
+	if (ac->q6asm->use_legacy_commands) {
+		ac->port[dir].mem_map_handle = 0;
+		return 0;
+	}
 
 	if (ac->port[dir].mem_map_handle == 0) {
 		dev_err(ac->dev, "invalid mem handle\n");
@@ -417,6 +503,18 @@ err:
 }
 EXPORT_SYMBOL_GPL(q6asm_unmap_memory_regions);
 
+/* Legacy memory map for MSM8660/APQ8060
+ * Skip memory map for now - legacy write passes physical addresses directly
+ */
+static int __q6asm_memory_map_regions_legacy(struct audio_client *ac, int dir,
+					     size_t period_sz, unsigned int periods,
+					     bool is_contiguous)
+{
+	dev_info(ac->dev, "Legacy ASM: skipping memory map (not needed for legacy write)\n");
+	ac->port[dir].mem_map_handle = 0;
+	return 0;
+}
+
 static int __q6asm_memory_map_regions(struct audio_client *ac, int dir,
 				      size_t period_sz, unsigned int periods,
 				      bool is_contiguous)
@@ -430,6 +528,11 @@ static int __q6asm_memory_map_regions(struct audio_client *ac, int dir,
 	unsigned long flags;
 	uint32_t num_regions, buf_sz;
 	int i, pkt_size;
+
+	/* Use legacy protocol for MSM8660/APQ8060 */
+	if (a->use_legacy_commands)
+		return __q6asm_memory_map_regions_legacy(ac, dir, period_sz,
+							 periods, is_contiguous);
 
 	if (is_contiguous) {
 		num_regions = 1;
@@ -627,6 +730,7 @@ static int32_t q6asm_stream_callback(struct apr_device *adev,
 			client_event = ASM_CLIENT_EVENT_CMD_FLUSH_DONE;
 			break;
 		case ASM_SESSION_CMD_RUN_V2:
+		case ASM_SESSION_CMD_RUN_LEGACY:
 			client_event = ASM_CLIENT_EVENT_CMD_RUN_DONE;
 			break;
 		case ASM_STREAM_CMD_CLOSE:
@@ -636,12 +740,17 @@ static int32_t q6asm_stream_callback(struct apr_device *adev,
 			client_event = ASM_CLIENT_EVENT_CMD_OUT_FLUSH_DONE;
 			break;
 		case ASM_STREAM_CMD_OPEN_WRITE_V3:
+		case ASM_STREAM_CMD_OPEN_WRITE_LEGACY:
 		case ASM_STREAM_CMD_OPEN_READ_V3:
+		case ASM_STREAM_CMD_OPEN_READ_LEGACY:
 		case ASM_STREAM_CMD_OPEN_READWRITE_V2:
 		case ASM_STREAM_CMD_SET_ENCDEC_PARAM:
 		case ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2:
+		case ASM_DATA_CMD_MEDIA_FORMAT_UPDATE_LEGACY:
 		case ASM_DATA_CMD_REMOVE_INITIAL_SILENCE:
 		case ASM_DATA_CMD_REMOVE_TRAILING_SILENCE:
+		case ASM_SESSION_CMD_MEMORY_MAP_REGIONS:
+		case ASM_SESSION_CMD_MEMORY_UNMAP_REGIONS:
 			if (result->status != 0) {
 				dev_err(ac->dev,
 					"cmd = 0x%x returned error = 0x%x\n",
@@ -673,6 +782,11 @@ static int32_t q6asm_stream_callback(struct apr_device *adev,
 		ret = 0;
 		goto done;
 
+	case ASM_DATA_EVENT_WRITE_DONE_LEGACY:
+		/* Legacy write done - simpler handling without address verification */
+		dev_info(ac->dev, "Legacy write done: token=0x%x\n", hdr->token);
+		client_event = ASM_CLIENT_EVENT_DATA_WRITE_DONE;
+		break;
 	case ASM_DATA_EVENT_WRITE_DONE_V2:
 		client_event = ASM_CLIENT_EVENT_DATA_WRITE_DONE;
 		if (ac->io_mode & ASM_SYNC_IO_MODE) {
@@ -775,6 +889,8 @@ static int q6asm_srvc_callback(struct apr_device *adev,
 		switch (result->opcode) {
 		case ASM_CMD_SHARED_MEM_MAP_REGIONS:
 		case ASM_CMD_SHARED_MEM_UNMAP_REGIONS:
+		case ASM_SESSION_CMD_MEMORY_MAP_REGIONS:
+		case ASM_SESSION_CMD_MEMORY_UNMAP_REGIONS:
 			ac->result = *result;
 			wake_up(&a->mem_wait);
 			break;
@@ -910,6 +1026,60 @@ err:
 	return rc;
 }
 
+/* Legacy open_write for MSM8660/APQ8060 */
+static int q6asm_open_write_legacy(struct audio_client *ac, uint32_t stream_id,
+				   uint32_t format)
+{
+	struct asm_stream_cmd_open_write_legacy *open;
+	struct apr_pkt *pkt;
+	void *p;
+	int rc, pkt_size;
+
+	pkt_size = APR_HDR_SIZE + sizeof(*open);
+
+	p = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	pkt = p;
+	open = p + APR_HDR_SIZE;
+	q6asm_add_hdr_legacy(ac, &pkt->hdr, pkt_size, true, stream_id);
+
+	pkt->hdr.opcode = ASM_STREAM_CMD_OPEN_WRITE_LEGACY;
+	open->uMode = ASM_LEGACY_STREAM_PRIORITY_HIGH;
+	open->sink_endpoint = ASM_END_POINT_DEVICE_MATRIX;
+	open->stream_handle = 0;
+	open->post_proc_top = ASM_LEGACY_DEFAULT_POPP_TOPOLOGY;
+
+	switch (format) {
+	case FORMAT_LINEAR_PCM:
+		open->format = ASM_LEGACY_LINEAR_PCM;
+		break;
+	case SND_AUDIOCODEC_MP3:
+		open->format = ASM_MEDIA_FMT_MP3;  /* Same as modern */
+		break;
+	default:
+		dev_err(ac->dev, "Legacy ASM: Unsupported format 0x%x\n", format);
+		rc = -EINVAL;
+		goto err;
+	}
+
+	dev_info(ac->dev, "Legacy ASM open_write: session=%d stream_id=%d format=0x%x\n",
+		 ac->session, stream_id, open->format);
+	dev_info(ac->dev, "  hdr: src_port=0x%x dest_port=0x%x token=0x%x opcode=0x%x\n",
+		 pkt->hdr.src_port, pkt->hdr.dest_port, pkt->hdr.token, pkt->hdr.opcode);
+
+	rc = q6asm_ac_send_cmd_sync(ac, pkt);
+	if (rc < 0)
+		goto err;
+
+	ac->io_mode |= ASM_TUN_WRITE_IO_MODE;
+
+err:
+	kfree(pkt);
+	return rc;
+}
+
 /**
  * q6asm_open_write() - Open audio client for writing
  * @ac: audio client pointer
@@ -926,10 +1096,16 @@ int q6asm_open_write(struct audio_client *ac, uint32_t stream_id,
 		     uint16_t bits_per_sample, bool is_gapless)
 {
 	struct asm_stream_cmd_open_write_v3 *open;
+	struct q6asm *a = ac->q6asm;
 	struct apr_pkt *pkt;
 	int rc, pkt_size = APR_HDR_SIZE + sizeof(*open);
 
 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+
+	/* Use legacy protocol for MSM8660/APQ8060 */
+	if (a->use_legacy_commands)
+		return q6asm_open_write_legacy(ac, stream_id, format);
+
 	if (!p)
 		return -ENOMEM;
 
@@ -1016,10 +1192,20 @@ static int __q6asm_run(struct audio_client *ac, uint32_t stream_id,
 
 	q6asm_add_hdr(ac, &pkt->hdr, pkt_size, true, stream_id);
 
-	pkt->hdr.opcode = ASM_SESSION_CMD_RUN_V2;
-	run->flags = flags;
-	run->time_lsw = lsw_ts;
-	run->time_msw = msw_ts;
+	if (ac->q6asm->use_legacy_commands) {
+		pkt->hdr.opcode = ASM_SESSION_CMD_RUN_LEGACY;
+		/* Legacy has msw_ts before lsw_ts */
+		run->flags = flags;
+		run->time_lsw = msw_ts;  /* Legacy: msw first */
+		run->time_msw = lsw_ts;  /* Legacy: lsw second */
+		dev_info(ac->dev, "Legacy RUN: session=%d flags=0x%x\n",
+			 ac->session, flags);
+	} else {
+		pkt->hdr.opcode = ASM_SESSION_CMD_RUN_V2;
+		run->flags = flags;
+		run->time_lsw = lsw_ts;
+		run->time_msw = msw_ts;
+	}
 	if (wait) {
 		rc = q6asm_ac_send_cmd_sync(ac, pkt);
 	} else {
@@ -1085,39 +1271,76 @@ int q6asm_media_format_block_multi_ch_pcm(struct audio_client *ac,
 					  u8 channel_map[PCM_MAX_NUM_CHANNEL],
 					  uint16_t bits_per_sample)
 {
-	struct asm_multi_channel_pcm_fmt_blk_v2 *fmt;
 	struct apr_pkt *pkt;
-	u8 *channel_mapping;
-	int pkt_size = APR_HDR_SIZE + sizeof(*fmt);
+	void *p;
+	int rc, pkt_size;
 
-	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
-	if (!p)
-		return -ENOMEM;
+	if (ac->q6asm->use_legacy_commands) {
+		/* Legacy media format update for MSM8660/APQ8060 */
+		struct asm_media_format_update_legacy *fmt;
 
-	pkt = p;
-	fmt = p + APR_HDR_SIZE;
+		pkt_size = APR_HDR_SIZE + sizeof(*fmt);
+		p = kzalloc(pkt_size, GFP_KERNEL);
+		if (!p)
+			return -ENOMEM;
 
-	q6asm_add_hdr(ac, &pkt->hdr, pkt_size, true, stream_id);
+		pkt = p;
+		fmt = p + APR_HDR_SIZE;
 
-	pkt->hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
-	fmt->fmt_blk.fmt_blk_size = sizeof(*fmt) - sizeof(fmt->fmt_blk);
-	fmt->num_channels = channels;
-	fmt->bits_per_sample = bits_per_sample;
-	fmt->sample_rate = rate;
-	fmt->is_signed = 1;
+		q6asm_add_hdr(ac, &pkt->hdr, pkt_size, true, stream_id);
+		pkt->hdr.opcode = ASM_DATA_CMD_MEDIA_FORMAT_UPDATE_LEGACY;
 
-	channel_mapping = fmt->channel_mapping;
+		fmt->format = ASM_LEGACY_LINEAR_PCM;
+		fmt->cfg_size = sizeof(fmt->pcm_cfg);
+		fmt->pcm_cfg.ch_cfg = channels;
+		fmt->pcm_cfg.bits_per_sample = bits_per_sample;
+		fmt->pcm_cfg.sample_rate = rate;
+		fmt->pcm_cfg.is_signed = 1;
+		fmt->pcm_cfg.interleaved = 1;
 
-	if (channel_map) {
-		memcpy(channel_mapping, channel_map, PCM_MAX_NUM_CHANNEL);
+		dev_info(ac->dev, "Legacy PCM format: ch=%d bps=%d rate=%d\n",
+			 channels, bits_per_sample, rate);
+
+		rc = q6asm_ac_send_cmd_sync(ac, pkt);
+		kfree(pkt);
+		return rc;
 	} else {
-		if (q6dsp_map_channels(channel_mapping, channels)) {
-			dev_err(ac->dev, " map channels failed %d\n", channels);
-			return -EINVAL;
-		}
-	}
+		/* Modern V2 media format update */
+		struct asm_multi_channel_pcm_fmt_blk_v2 *fmt;
+		u8 *channel_mapping;
 
-	return q6asm_ac_send_cmd_sync(ac, pkt);
+		pkt_size = APR_HDR_SIZE + sizeof(*fmt);
+		p = kzalloc(pkt_size, GFP_KERNEL);
+		if (!p)
+			return -ENOMEM;
+
+		pkt = p;
+		fmt = p + APR_HDR_SIZE;
+
+		q6asm_add_hdr(ac, &pkt->hdr, pkt_size, true, stream_id);
+		pkt->hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
+		fmt->fmt_blk.fmt_blk_size = sizeof(*fmt) - sizeof(fmt->fmt_blk);
+		fmt->num_channels = channels;
+		fmt->bits_per_sample = bits_per_sample;
+		fmt->sample_rate = rate;
+		fmt->is_signed = 1;
+
+		channel_mapping = fmt->channel_mapping;
+
+		if (channel_map) {
+			memcpy(channel_mapping, channel_map, PCM_MAX_NUM_CHANNEL);
+		} else {
+			if (q6dsp_map_channels(channel_mapping, channels)) {
+				dev_err(ac->dev, " map channels failed %d\n", channels);
+				kfree(pkt);
+				return -EINVAL;
+			}
+		}
+
+		rc = q6asm_ac_send_cmd_sync(ac, pkt);
+		kfree(pkt);
+		return rc;
+	}
 }
 EXPORT_SYMBOL_GPL(q6asm_media_format_block_multi_ch_pcm);
 
@@ -1512,50 +1735,97 @@ EXPORT_SYMBOL_GPL(q6asm_open_read);
 int q6asm_write_async(struct audio_client *ac, uint32_t stream_id, uint32_t len,
 		      uint32_t msw_ts, uint32_t lsw_ts, uint32_t wflags)
 {
-	struct asm_data_cmd_write_v2 *write;
 	struct audio_port_data *port;
 	struct audio_buffer *ab;
 	unsigned long flags;
 	struct apr_pkt *pkt;
-	int pkt_size = APR_HDR_SIZE + sizeof(*write);
+	void *p;
+	int pkt_size;
 	int rc = 0;
 
-	void *p __free(kfree) = kzalloc(pkt_size, GFP_ATOMIC);
-	if (!p)
-		return -ENOMEM;
+	if (ac->q6asm->use_legacy_commands) {
+		/* Legacy write command for MSM8660/APQ8060 */
+		struct asm_data_cmd_write_legacy *write;
 
-	pkt = p;
-	write = p + APR_HDR_SIZE;
+		pkt_size = APR_HDR_SIZE + sizeof(*write);
+		p = kzalloc(pkt_size, GFP_ATOMIC);
+		if (!p)
+			return -ENOMEM;
 
-	spin_lock_irqsave(&ac->lock, flags);
-	port = &ac->port[SNDRV_PCM_STREAM_PLAYBACK];
-	q6asm_add_hdr(ac, &pkt->hdr, pkt_size, false, stream_id);
+		pkt = p;
+		write = p + APR_HDR_SIZE;
 
-	ab = &port->buf[port->dsp_buf];
-	pkt->hdr.token = port->dsp_buf | (len << ASM_WRITE_TOKEN_LEN_SHIFT);
-	pkt->hdr.opcode = ASM_DATA_CMD_WRITE_V2;
-	write->buf_addr_lsw = lower_32_bits(ab->phys);
-	write->buf_addr_msw = upper_32_bits(ab->phys);
-	write->buf_size = len;
-	write->seq_id = port->dsp_buf;
-	write->timestamp_lsw = lsw_ts;
-	write->timestamp_msw = msw_ts;
-	write->mem_map_handle =
-	    ac->port[SNDRV_PCM_STREAM_PLAYBACK].mem_map_handle;
+		spin_lock_irqsave(&ac->lock, flags);
+		port = &ac->port[SNDRV_PCM_STREAM_PLAYBACK];
+		q6asm_add_hdr(ac, &pkt->hdr, pkt_size, false, stream_id);
 
-	write->flags = wflags;
+		ab = &port->buf[port->dsp_buf];
+		pkt->hdr.token = port->dsp_buf | (len << ASM_WRITE_TOKEN_LEN_SHIFT);
+		pkt->hdr.opcode = ASM_DATA_CMD_WRITE_LEGACY;
 
-	port->dsp_buf++;
+		/* Legacy uses 32-bit physical address */
+		write->buf_add = lower_32_bits(ab->phys);
+		dev_info(ac->dev, "Legacy write: phys=0x%x len=%d buf=%d\n",
+			 write->buf_add, len, port->dsp_buf);
+		write->avail_bytes = len;
+		write->uid = port->dsp_buf;
+		write->msw_ts = msw_ts;
+		write->lsw_ts = lsw_ts;
+		write->uflags = wflags;
 
-	if (port->dsp_buf >= port->num_periods)
-		port->dsp_buf = 0;
+		port->dsp_buf++;
+		if (port->dsp_buf >= port->num_periods)
+			port->dsp_buf = 0;
 
-	spin_unlock_irqrestore(&ac->lock, flags);
-	rc = apr_send_pkt(ac->adev, pkt);
-	if (rc == pkt_size)
-		rc = 0;
+		spin_unlock_irqrestore(&ac->lock, flags);
+		rc = apr_send_pkt(ac->adev, pkt);
+		if (rc == pkt_size)
+			rc = 0;
 
-	return rc;
+		kfree(pkt);
+		return rc;
+	} else {
+		/* Modern V2 write command */
+		struct asm_data_cmd_write_v2 *write;
+
+		pkt_size = APR_HDR_SIZE + sizeof(*write);
+		p = kzalloc(pkt_size, GFP_ATOMIC);
+		if (!p)
+			return -ENOMEM;
+
+		pkt = p;
+		write = p + APR_HDR_SIZE;
+
+		spin_lock_irqsave(&ac->lock, flags);
+		port = &ac->port[SNDRV_PCM_STREAM_PLAYBACK];
+		q6asm_add_hdr(ac, &pkt->hdr, pkt_size, false, stream_id);
+
+		ab = &port->buf[port->dsp_buf];
+		pkt->hdr.token = port->dsp_buf | (len << ASM_WRITE_TOKEN_LEN_SHIFT);
+		pkt->hdr.opcode = ASM_DATA_CMD_WRITE_V2;
+		write->buf_addr_lsw = lower_32_bits(ab->phys);
+		write->buf_addr_msw = upper_32_bits(ab->phys);
+		write->buf_size = len;
+		write->seq_id = port->dsp_buf;
+		write->timestamp_lsw = lsw_ts;
+		write->timestamp_msw = msw_ts;
+		write->mem_map_handle =
+		    ac->port[SNDRV_PCM_STREAM_PLAYBACK].mem_map_handle;
+
+		write->flags = wflags;
+
+		port->dsp_buf++;
+		if (port->dsp_buf >= port->num_periods)
+			port->dsp_buf = 0;
+
+		spin_unlock_irqrestore(&ac->lock, flags);
+		rc = apr_send_pkt(ac->adev, pkt);
+		if (rc == pkt_size)
+			rc = 0;
+
+		kfree(pkt);
+		return rc;
+	}
 }
 EXPORT_SYMBOL_GPL(q6asm_write_async);
 
@@ -1660,6 +1930,13 @@ static int q6asm_probe(struct apr_device *adev)
 	q6asm->adev = adev;
 	init_waitqueue_head(&q6asm->mem_wait);
 	spin_lock_init(&q6asm->slock);
+
+	/* Check for legacy MSM8660/APQ8060 which uses different ASM protocol */
+	q6asm->use_legacy_commands = of_property_read_bool(dev->of_node,
+							   "qcom,legacy-asm-protocol");
+	if (q6asm->use_legacy_commands)
+		dev_info(dev, "Using legacy ASM protocol for MSM8660/APQ8060\n");
+
 	dev_set_drvdata(dev, q6asm);
 
 	return devm_of_platform_populate(dev);

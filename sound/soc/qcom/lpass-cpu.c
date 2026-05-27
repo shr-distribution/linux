@@ -80,6 +80,51 @@ static int lpass_cpu_daiops_set_sysclk(struct snd_soc_dai *dai, int clk_id,
 	return ret;
 }
 
+/*
+ * Configure I2S master/slave mode for LPASS CPU DAI.
+ *
+ * This determines the Word Select (LRCLK) source:
+ * - CPU master (BP_FP/CBS_CFS): LPASS generates LRCLK internally (WSSRC_INT)
+ * - CPU slave (BC_FC/CBM_CFM): Codec generates LRCLK, LPASS receives (WSSRC_EXT)
+ *
+ * This is particularly important for platforms like HP TouchPad where the
+ * GPIO pin normally used for LRCLK output has a hardware conflict (shared
+ * with codec LDO enable), requiring the codec to be I2S master.
+ */
+static int lpass_cpu_daiops_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
+{
+	struct lpass_data *drvdata = snd_soc_dai_get_drvdata(dai);
+	unsigned int id = dai->driver->id;
+
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_BP_FP:
+		/* CPU is bit clock and frame clock provider (master) */
+		drvdata->mi2s_wssrc_external[id] = false;
+		break;
+	case SND_SOC_DAIFMT_BC_FC:
+		/* CPU is bit clock and frame clock consumer (slave) */
+		drvdata->mi2s_wssrc_external[id] = true;
+		break;
+	case SND_SOC_DAIFMT_BP_FC:
+		/* CPU provides bit clock, codec provides frame clock */
+		drvdata->mi2s_wssrc_external[id] = true;
+		break;
+	case SND_SOC_DAIFMT_BC_FP:
+		/* CPU provides frame clock, codec provides bit clock */
+		drvdata->mi2s_wssrc_external[id] = false;
+		break;
+	default:
+		dev_err(dai->dev, "unsupported clock provider mode: 0x%x\n",
+			fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK);
+		return -EINVAL;
+	}
+
+	dev_dbg(dai->dev, "set_fmt: id=%u, wssrc_external=%d\n",
+		id, drvdata->mi2s_wssrc_external[id]);
+
+	return 0;
+}
+
 static int lpass_cpu_daiops_startup(struct snd_pcm_substream *substream,
 		struct snd_soc_dai *dai)
 {
@@ -157,12 +202,21 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
+	/*
+	 * Configure Word Select (LRCLK) source based on set_fmt configuration.
+	 * INTERNAL: LPASS generates LRCLK (CPU is master)
+	 * EXTERNAL: Codec generates LRCLK (CPU is slave)
+	 */
 	ret = regmap_fields_write(i2sctl->wssrc, id,
-				 LPAIF_I2SCTL_WSSRC_INTERNAL);
+				  drvdata->mi2s_wssrc_external[id] ?
+				  LPAIF_I2SCTL_WSSRC_EXTERNAL :
+				  LPAIF_I2SCTL_WSSRC_INTERNAL);
 	if (ret) {
 		dev_err(dai->dev, "error updating wssrc field: %d\n", ret);
 		return ret;
 	}
+	dev_dbg(dai->dev, "hw_params: id=%u, wssrc=%s\n", id,
+		drvdata->mi2s_wssrc_external[id] ? "external" : "internal");
 
 	switch (bitwidth) {
 	case 16:
@@ -285,6 +339,11 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
+	dev_info(dai->dev, "hw_params: setting bitclk to %u Hz (rate=%u, bitwidth=%u)\n",
+		 rate * bitwidth * 2, rate, bitwidth);
+	dev_info(dai->dev, "hw_params: bitclk before set_rate = %lu Hz\n",
+		 clk_get_rate(drvdata->mi2s_bit_clk[id]));
+
 	ret = clk_set_rate(drvdata->mi2s_bit_clk[id],
 			   rate * bitwidth * 2);
 	if (ret) {
@@ -292,6 +351,9 @@ static int lpass_cpu_daiops_hw_params(struct snd_pcm_substream *substream,
 			rate * bitwidth * 2, ret);
 		return ret;
 	}
+
+	dev_info(dai->dev, "hw_params: bitclk after set_rate = %lu Hz\n",
+		 clk_get_rate(drvdata->mi2s_bit_clk[id]));
 
 	return 0;
 }
@@ -303,6 +365,10 @@ static int lpass_cpu_daiops_trigger(struct snd_pcm_substream *substream,
 	struct lpaif_i2sctl *i2sctl = drvdata->i2sctl;
 	unsigned int id = dai->driver->id;
 	int ret = -EINVAL;
+
+	dev_info(dai->dev, "trigger: cmd=%d, id=%u, stream=%s\n",
+		 cmd, id, substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
+		 "playback" : "capture");
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -320,9 +386,35 @@ static int lpass_cpu_daiops_trigger(struct snd_pcm_substream *substream,
 		 *     turn off the shared BCLK while other devices are using
 		 *     it.
 		 */
+		/*
+		 * Enable bit clock BEFORE enabling I2S to ensure the
+		 * serializer sees clock edges when it starts.
+		 */
+		ret = clk_enable(drvdata->mi2s_bit_clk[id]);
+		if (ret) {
+			dev_err(dai->dev, "error in enabling mi2s bit clk: %d\n", ret);
+			clk_disable(drvdata->mi2s_osr_clk[id]);
+			return ret;
+		}
+		dev_info(dai->dev, "trigger: bit_clk enabled, rate=%lu Hz\n",
+			 clk_get_rate(drvdata->mi2s_bit_clk[id]));
+
+		/* Small delay to let clocks stabilize */
+		udelay(10);
+
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			unsigned int val;
+			dev_info(dai->dev, "trigger: enabling spken for port %u\n", id);
 			ret = regmap_fields_write(i2sctl->spken, id,
 						 LPAIF_I2SCTL_SPKEN_ENABLE);
+			dev_info(dai->dev, "trigger: spken write returned %d\n", ret);
+			/* Read back and verify */
+			regmap_fields_read(i2sctl->spken, id, &val);
+			dev_info(dai->dev, "trigger: spken readback = %u\n", val);
+			/* Also read raw register */
+			regmap_read(drvdata->lpaif_map,
+				    LPAIF_I2SCTL_REG(drvdata->variant, id), &val);
+			dev_info(dai->dev, "trigger: I2SCTL[%u] raw = 0x%08x\n", id, val);
 		} else  {
 			ret = regmap_fields_write(i2sctl->micen, id,
 						 LPAIF_I2SCTL_MICEN_ENABLE);
@@ -331,12 +423,6 @@ static int lpass_cpu_daiops_trigger(struct snd_pcm_substream *substream,
 			dev_err(dai->dev, "error writing to i2sctl reg: %d\n",
 				ret);
 
-		ret = clk_enable(drvdata->mi2s_bit_clk[id]);
-		if (ret) {
-			dev_err(dai->dev, "error in enabling mi2s bit clk: %d\n", ret);
-			clk_disable(drvdata->mi2s_osr_clk[id]);
-			return ret;
-		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
@@ -438,6 +524,7 @@ static int lpass_cpu_daiops_probe(struct snd_soc_dai *dai)
 const struct snd_soc_dai_ops asoc_qcom_lpass_cpu_dai_ops = {
 	.probe		= lpass_cpu_daiops_probe,
 	.set_sysclk	= lpass_cpu_daiops_set_sysclk,
+	.set_fmt	= lpass_cpu_daiops_set_fmt,
 	.startup	= lpass_cpu_daiops_startup,
 	.shutdown	= lpass_cpu_daiops_shutdown,
 	.hw_params	= lpass_cpu_daiops_hw_params,
@@ -450,6 +537,7 @@ const struct snd_soc_dai_ops asoc_qcom_lpass_cpu_dai_ops2 = {
 	.pcm_new	= lpass_cpu_daiops_pcm_new,
 	.probe		= lpass_cpu_daiops_probe,
 	.set_sysclk	= lpass_cpu_daiops_set_sysclk,
+	.set_fmt	= lpass_cpu_daiops_set_fmt,
 	.startup	= lpass_cpu_daiops_startup,
 	.shutdown	= lpass_cpu_daiops_shutdown,
 	.hw_params	= lpass_cpu_daiops_hw_params,
@@ -582,6 +670,8 @@ static bool lpass_cpu_regmap_volatile(struct device *dev, unsigned int reg)
 	int i;
 
 	for (i = 0; i < v->irq_ports; ++i) {
+		if (reg == LPAIF_IRQEN_REG(v, i))
+			return true;
 		if (reg == LPAIF_IRQCLEAR_REG(v, i))
 			return true;
 		if (reg == LPAIF_IRQSTAT_REG(v, i))

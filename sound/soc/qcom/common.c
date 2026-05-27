@@ -111,8 +111,13 @@ int qcom_snd_parse_of(struct snd_soc_card *card)
 			goto err;
 		}
 
+		dev_dbg(card->dev, "%s: looking for cpu dai at of_node=%pOF arg=%d\n",
+			link->name, args.np, args.args_count ? args.args[0] : -1);
+
 		ret = snd_soc_of_get_dlc(cpu, &args, link->cpus, 0);
 		if (ret) {
+			dev_info(card->dev, "%s: snd_soc_of_get_dlc failed for of_node=%pOF ret=%d\n",
+				 link->name, args.np, ret);
 			dev_err_probe(card->dev, ret,
 				      "%s: error getting cpu dai name\n", link->name);
 			goto err;
@@ -157,6 +162,9 @@ int qcom_snd_parse_of(struct snd_soc_card *card)
 			link->codecs	 = &snd_soc_dummy_dlc;
 			link->num_codecs = 1;
 			link->dynamic = 1;
+			link->dpcm_merged_format = 1;
+			link->dpcm_merged_chan = 1;
+			link->dpcm_merged_rate = 1;
 		}
 
 		if (platform || !codec) {

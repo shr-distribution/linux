@@ -678,6 +678,9 @@ static int lpass_platform_pcmops_trigger(struct snd_soc_component *component,
 	id = __lpass_get_id(substream, component);
 	map = __lpass_get_regmap_handle(substream, component);
 
+	dev_info(soc_runtime->dev, "platform trigger: cmd=%d, dai_id=%u, dma_ch=%d, id=%d\n",
+		 cmd, dai_id, ch, id);
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -770,6 +773,31 @@ static int lpass_platform_pcmops_trigger(struct snd_soc_component *component,
 		if (ret) {
 			dev_err(soc_runtime->dev, "error writing to irqen reg: %d\n", ret);
 			return ret;
+		}
+		{
+			unsigned int readback;
+			regmap_read(map, reg_irqen, &readback);
+			dev_info(soc_runtime->dev, "platform trigger: DMA enabled, IRQ reg=0x%x mask=0x%x val=0x%x readback=0x%x\n",
+				 reg_irqen, val_mask, val_irqen, readback);
+		}
+		/* Dump DMA and I2S registers for debug */
+		{
+			unsigned int dmactl_val, dmabase, dmabuff, dmaper, dmacurr;
+			unsigned int i2sctl_val, irqstat;
+			int dir = substream->stream;
+
+			regmap_read(map, LPAIF_DMACTL_REG(v, ch, dir, dai_id), &dmactl_val);
+			regmap_read(map, LPAIF_DMABASE_REG(v, ch, dir, dai_id), &dmabase);
+			regmap_read(map, LPAIF_DMABUFF_REG(v, ch, dir, dai_id), &dmabuff);
+			regmap_read(map, LPAIF_DMAPER_REG(v, ch, dir, dai_id), &dmaper);
+			regmap_read(map, LPAIF_DMACURR_REG(v, ch, dir, dai_id), &dmacurr);
+			regmap_read(map, LPAIF_I2SCTL_REG(v, dai_id), &i2sctl_val);
+			regmap_read(map, LPAIF_IRQSTAT_REG(v, LPAIF_IRQ_PORT_HOST), &irqstat);
+
+			dev_info(soc_runtime->dev, "TRIGGER DUMP: DMACTL=0x%08x BASE=0x%08x BUFF=0x%08x PER=0x%08x CURR=0x%08x\n",
+				 dmactl_val, dmabase, dmabuff, dmaper, dmacurr);
+			dev_info(soc_runtime->dev, "TRIGGER DUMP: I2SCTL[%u]=0x%08x IRQSTAT=0x%08x\n",
+				 dai_id, i2sctl_val, irqstat);
 		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
@@ -887,6 +915,19 @@ static snd_pcm_uframes_t lpass_platform_pcmops_pointer(
 		dev_err(soc_runtime->dev,
 			"error reading from rdmacurr reg: %d\n", ret);
 		return ret;
+	}
+
+	/* Debug: Print DMA position periodically */
+	{
+		static unsigned long last_jiffies;
+		if (time_after(jiffies, last_jiffies + HZ)) {
+			unsigned int offset = curr_addr - base_addr;
+			dev_info_ratelimited(soc_runtime->dev,
+				"pointer: base=0x%x curr=0x%x offset=%u bytes (%u frames)\n",
+				base_addr, curr_addr, offset,
+				(unsigned int)bytes_to_frames(substream->runtime, offset));
+			last_jiffies = jiffies;
+		}
 	}
 
 	return bytes_to_frames(substream->runtime, curr_addr - base_addr);
@@ -1031,9 +1072,15 @@ static irqreturn_t lpass_platform_lpaif_irq(int irq, void *data)
 		return IRQ_NONE;
 	}
 
+	pr_info("lpaif_irq: irqs=0x%08x\n", irqs);
+
 	/* Handle per channel interrupts */
 	for (chan = 0; chan < LPASS_MAX_DMA_CHANNELS; chan++) {
 		if (irqs & LPAIF_IRQ_ALL(chan) && drvdata->substream[chan]) {
+			if (irqs & LPAIF_IRQ_ERR(chan))
+				pr_err("lpaif_irq: chan %d ERR interrupt\n", chan);
+			if (irqs & LPAIF_IRQ_XRUN(chan))
+				pr_warn("lpaif_irq: chan %d XRUN interrupt\n", chan);
 			rv = lpass_dma_interrupt_handler(
 						drvdata->substream[chan],
 						drvdata, chan, irqs);

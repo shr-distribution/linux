@@ -28,6 +28,11 @@
 #define AFE_PORT_CMD_DEVICE_START	0x000100E5
 #define AFE_PORT_CMD_DEVICE_STOP	0x000100E6
 #define AFE_PORT_CMD_SET_PARAM_V2	0x000100EF
+
+/* Legacy AFE CMDs for MSM8660/APQ8060 */
+#define AFE_PORT_CMD_START_LEGACY	0x000100ca
+#define AFE_PORT_CMD_STOP_LEGACY	0x000100cb
+#define AFE_PORT_AUDIO_IF_CONFIG	0x000100d3
 #define AFE_SVC_CMD_SET_PARAM		0x000100f3
 #define AFE_PORT_CMDRSP_GET_PARAM_V2	0x00010106
 #define AFE_PARAM_ID_HDMI_CONFIG	0x00010210
@@ -382,6 +387,7 @@ struct q6afe {
 	wait_queue_head_t wait;
 	struct list_head port_list;
 	spinlock_t port_list_lock;
+	bool use_legacy_commands;	/* MSM8660/APQ8060 legacy protocol */
 };
 
 struct afe_port_cmd_device_start {
@@ -394,6 +400,108 @@ struct afe_port_cmd_device_stop {
 	u16 reserved;
 /* Reserved for 32-bit alignment. This field must be set to 0.*/
 } __packed;
+
+/*
+ * Legacy command structures for MSM8660/APQ8060.
+ * These older SoCs use a different AFE protocol with simpler structures.
+ */
+
+/* Legacy port IDs for MSM8660/APQ8060 */
+#define AFE_PORT_ID_LEGACY_PRIMARY_I2S_RX	0
+#define AFE_PORT_ID_LEGACY_PRIMARY_I2S_TX	1
+#define AFE_PORT_ID_LEGACY_PCM_RX		2
+#define AFE_PORT_ID_LEGACY_PCM_TX		3
+#define AFE_PORT_ID_LEGACY_SECONDARY_I2S_RX	4
+#define AFE_PORT_ID_LEGACY_SECONDARY_I2S_TX	5
+#define AFE_PORT_ID_LEGACY_MI2S_RX		6
+#define AFE_PORT_ID_LEGACY_MI2S_TX		7
+#define AFE_PORT_ID_LEGACY_HDMI_RX		8
+#define AFE_PORT_ID_LEGACY_DIGI_MIC_TX		11
+
+struct afe_port_cmd_start_legacy {
+	u16 port_id;
+	u16 gain;		/* Q13 format, typically 0x2000 */
+	u32 sample_rate;	/* 8000, 16000, 48000 Hz */
+} __packed;
+
+struct afe_port_cmd_stop_legacy {
+	u16 port_id;
+	u16 reserved;
+} __packed;
+
+/* Legacy port configuration structures */
+struct afe_port_pcm_cfg_legacy {
+	u16 mode;		/* 0=PCM, 1=AUXPCM */
+	u16 sync;		/* 0=external, 1=internal */
+	u16 frame;		/* frames per block */
+	u16 quant;		/* quantization */
+	u16 slot;		/* slot 0-31 */
+	u16 data;		/* data output enable */
+	u16 reserved;
+} __packed;
+
+struct afe_port_mi2s_cfg_legacy {
+	u16 bitwidth;		/* 16, 24, 32 */
+	u16 line;		/* SD line: 1=SD0, 2=SD1, 3=SD2, 4=SD3 */
+	u16 channel;		/* 0=mono, 3=stereo */
+	u16 ws;			/* 0=external, 1=internal word select */
+	u16 reserved;
+} __packed;
+
+struct afe_port_hdmi_cfg_legacy {
+	u16 bitwidth;
+	u16 channel_mode;
+	u16 data_type;
+} __packed;
+
+/* Legacy mono/stereo values (different from mainline!) */
+#define AFE_LEGACY_MI2S_MONO	0
+#define AFE_LEGACY_MI2S_STEREO	3
+
+/* Union must match legacy size (largest is pcm_cfg at 14 bytes) */
+union afe_port_config_legacy {
+	struct afe_port_pcm_cfg_legacy pcm;	/* 14 bytes */
+	struct afe_port_mi2s_cfg_legacy mi2s;	/* 10 bytes */
+	struct afe_port_hdmi_cfg_legacy hdmi;	/* 6 bytes */
+} __packed;
+
+struct afe_audioif_config_command_legacy {
+	u16 port_id;
+	union afe_port_config_legacy port;
+} __packed;
+
+/*
+ * Convert mainline port IDs to legacy port IDs for MSM8660/APQ8060.
+ * Returns -1 if the port is not supported on legacy platforms.
+ *
+ * Legacy MSM8660/APQ8060 port mapping:
+ *   PRIMARY_I2S (ports 0/1): Main codec interface on GPIO 108/109 (i2s function)
+ *   SECONDARY_I2S (ports 4/5): Secondary codec interface
+ *   MI2S (ports 6/7): Multi-channel I2S on GPIO 101-107 (mi2s function, FM radio)
+ *
+ * For HP TouchPad (Tenderloin), the WM8958 codec is connected via PRIMARY_I2S.
+ * We map SECONDARY_MI2S to LEGACY_PRIMARY_I2S for codec access, and keep
+ * PRIMARY_MI2S mapped to LEGACY_MI2S for potential FM radio use.
+ */
+static int q6afe_port_to_legacy(int port_id)
+{
+	switch (port_id) {
+	/* SECONDARY_MI2S -> LEGACY_PRIMARY_I2S (codec on GPIO 108/109) */
+	case AFE_PORT_ID_SECONDARY_MI2S_RX:
+		return AFE_PORT_ID_LEGACY_PRIMARY_I2S_RX;
+	case AFE_PORT_ID_SECONDARY_MI2S_TX:
+		return AFE_PORT_ID_LEGACY_PRIMARY_I2S_TX;
+	/* PRIMARY_MI2S -> LEGACY_MI2S (FM radio on GPIO 101-107) */
+	case AFE_PORT_ID_PRIMARY_MI2S_RX:
+		return AFE_PORT_ID_LEGACY_MI2S_RX;
+	case AFE_PORT_ID_PRIMARY_MI2S_TX:
+		return AFE_PORT_ID_LEGACY_MI2S_TX;
+	case AFE_PORT_ID_MULTICHAN_HDMI_RX:
+		return AFE_PORT_ID_LEGACY_HDMI_RX;
+	default:
+		return -1;
+	}
+}
 
 struct afe_port_param_data_v2 {
 	u32 module_id;
@@ -969,10 +1077,16 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 	const struct apr_hdr *hdr = &data->hdr;
 	struct q6afe_port *port;
 
-	if (!data->payload_size)
+	pr_emerg("AFE_CB: >>> callback opcode=0x%x payload_size=%d token=0x%x\n",
+		 hdr->opcode, data->payload_size, hdr->token);
+
+	if (!data->payload_size) {
+		pr_emerg("AFE_CB: WARNING - zero payload_size, returning early!\n");
 		return 0;
+	}
 
 	res = data->payload;
+	pr_emerg("AFE_CB: res->opcode=0x%x res->status=0x%x\n", res->opcode, res->status);
 	switch (hdr->opcode) {
 	case APR_BASIC_RSP_RESULT: {
 		if (res->status) {
@@ -984,6 +1098,10 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 		case AFE_PORT_CMD_DEVICE_STOP:
 		case AFE_PORT_CMD_DEVICE_START:
 		case AFE_SVC_CMD_SET_PARAM:
+		/* Legacy MSM8660/APQ8060 commands */
+		case AFE_PORT_CMD_START_LEGACY:
+		case AFE_PORT_CMD_STOP_LEGACY:
+		case AFE_PORT_AUDIO_IF_CONFIG:
 			port = q6afe_find_port(afe, hdr->token);
 			if (port) {
 				port->result = *res;
@@ -1035,6 +1153,9 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
 	struct aprv2_ibasic_rsp_result_t *result;
 	int ret;
 
+	pr_emerg("AFE_APR: >>> apr_send_pkt opcode=0x%x rsp_opcode=0x%x\n",
+		 pkt->hdr.opcode, rsp_opcode);
+
 	mutex_lock(&afe->lock);
 	if (port) {
 		wait = &port->wait;
@@ -1047,15 +1168,20 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
 	result->opcode = 0;
 	result->status = 0;
 
+	pr_emerg("AFE_APR: calling apr_send_pkt...\n");
 	ret = apr_send_pkt(afe->apr, pkt);
+	pr_emerg("AFE_APR: apr_send_pkt returned %d\n", ret);
 	if (ret < 0) {
 		dev_err(afe->dev, "packet not transmitted (%d)\n", ret);
 		ret = -EINVAL;
 		goto err;
 	}
 
+	pr_emerg("AFE_APR: waiting for response (timeout=%dms)...\n", TIMEOUT_MS);
 	ret = wait_event_timeout(*wait, (result->opcode == rsp_opcode),
 				 msecs_to_jiffies(TIMEOUT_MS));
+	pr_emerg("AFE_APR: wait returned %d, result->opcode=0x%x result->status=0x%x\n",
+		 ret, result->opcode, result->status);
 	if (!ret) {
 		ret = -ETIMEDOUT;
 	} else if (result->status > 0) {
@@ -1068,6 +1194,7 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
 
 err:
 	mutex_unlock(&afe->lock);
+	pr_emerg("AFE_APR: <<< apr_send_pkt exit ret=%d\n", ret);
 
 	return ret;
 }
@@ -1283,11 +1410,22 @@ int q6afe_port_stop(struct q6afe_port *port)
 	int port_id = port->id;
 	int ret = 0;
 	int index, pkt_size;
+	u32 opcode;
 
 	index = port->token;
 	if (index < 0 || index >= AFE_PORT_MAX) {
 		dev_err(afe->dev, "AFE port index[%d] invalid!\n", index);
 		return -EINVAL;
+	}
+
+	/* Use legacy opcode and port ID for MSM8660/APQ8060 */
+	if (afe->use_legacy_commands) {
+		int legacy_port_id = q6afe_port_to_legacy(port_id);
+		if (legacy_port_id >= 0)
+			port_id = legacy_port_id;
+		opcode = AFE_PORT_CMD_STOP_LEGACY;
+	} else {
+		opcode = AFE_PORT_CMD_DEVICE_STOP;
 	}
 
 	pkt_size = APR_HDR_SIZE + sizeof(*stop);
@@ -1305,11 +1443,11 @@ int q6afe_port_stop(struct q6afe_port *port)
 	pkt->hdr.src_port = 0;
 	pkt->hdr.dest_port = 0;
 	pkt->hdr.token = index;
-	pkt->hdr.opcode = AFE_PORT_CMD_DEVICE_STOP;
+	pkt->hdr.opcode = opcode;
 	stop->port_id = port_id;
 	stop->reserved = 0;
 
-	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_CMD_DEVICE_STOP);
+	ret = afe_apr_send_pkt(afe, pkt, port, opcode);
 	if (ret)
 		dev_err(afe->dev, "AFE close failed %d\n", ret);
 
@@ -1664,6 +1802,116 @@ EXPORT_SYMBOL_GPL(q6afe_cdc_dma_port_prepare);
  *
  * Return: Will be an negative on packet size on success.
  */
+static int q6afe_port_start_legacy(struct q6afe_port *port)
+{
+	struct q6afe *afe = port->afe;
+	int mainline_port_id = port->id;
+	int legacy_port_id;
+	struct apr_pkt *pkt;
+	struct afe_audioif_config_command_legacy *cfg;
+	struct afe_port_cmd_start_legacy *start;
+	int pkt_size;
+	void *p;
+	int ret;
+
+	pr_emerg("AFE_LEGACY: >>> ENTER port_start_legacy port=0x%x\n", port->id);
+
+	/* Convert mainline port ID to legacy port ID */
+	legacy_port_id = q6afe_port_to_legacy(mainline_port_id);
+	if (legacy_port_id < 0) {
+		dev_err(afe->dev, "Port 0x%x not supported on legacy AFE\n",
+			mainline_port_id);
+		return -EINVAL;
+	}
+
+	pr_emerg("AFE_LEGACY: port 0x%x -> legacy %d\n", mainline_port_id, legacy_port_id);
+	dev_info(afe->dev, "Legacy AFE port start: port 0x%x -> legacy %d\n",
+		mainline_port_id, legacy_port_id);
+
+	/*
+	 * Step 1: Send AFE_PORT_AUDIO_IF_CONFIG (legacy port configuration)
+	 */
+	pkt_size = APR_HDR_SIZE + sizeof(*cfg);
+	p = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	pkt = p;
+	cfg = p + APR_HDR_SIZE;
+
+	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					   APR_HDR_LEN(APR_HDR_SIZE),
+					   APR_PKT_VER);
+	pkt->hdr.pkt_size = pkt_size;
+	pkt->hdr.src_port = 0;
+	pkt->hdr.dest_port = 0;
+	pkt->hdr.token = port->token;
+	pkt->hdr.opcode = AFE_PORT_AUDIO_IF_CONFIG;
+
+	cfg->port_id = legacy_port_id;
+
+	/* Convert modern I2S config to legacy MI2S format */
+	cfg->port.mi2s.bitwidth = port->port_cfg.i2s_cfg.bit_width;
+	cfg->port.mi2s.line = port->port_cfg.i2s_cfg.channel_mode;
+	/* Convert mainline mono/stereo (0/1) to legacy format (0/3) */
+	cfg->port.mi2s.channel = (port->port_cfg.i2s_cfg.mono_stereo == AFE_PORT_I2S_STEREO)
+				 ? AFE_LEGACY_MI2S_STEREO : AFE_LEGACY_MI2S_MONO;
+	cfg->port.mi2s.ws = port->port_cfg.i2s_cfg.ws_src;
+	cfg->port.mi2s.reserved = 0;
+
+	dev_info(afe->dev, "Legacy AFE config: port=%d bitwidth=%d line=%d channel=%d ws=%d\n",
+		legacy_port_id, cfg->port.mi2s.bitwidth, cfg->port.mi2s.line,
+		cfg->port.mi2s.channel, cfg->port.mi2s.ws);
+
+	pr_emerg("AFE_LEGACY: >>> sending AFE_PORT_AUDIO_IF_CONFIG...\n");
+	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_AUDIO_IF_CONFIG);
+	pr_emerg("AFE_LEGACY: <<< AFE_PORT_AUDIO_IF_CONFIG returned %d\n", ret);
+	kfree(pkt);
+	if (ret) {
+		dev_err(afe->dev, "AFE legacy config for port %d failed %d\n",
+			legacy_port_id, ret);
+		return ret;
+	}
+
+	/*
+	 * Step 2: Send AFE_PORT_CMD_START (legacy start command)
+	 */
+	pkt_size = APR_HDR_SIZE + sizeof(*start);
+	p = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	pkt = p;
+	start = p + APR_HDR_SIZE;
+
+	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					   APR_HDR_LEN(APR_HDR_SIZE),
+					   APR_PKT_VER);
+	pkt->hdr.pkt_size = pkt_size;
+	pkt->hdr.src_port = 0;
+	pkt->hdr.dest_port = 0;
+	pkt->hdr.token = port->token;
+	pkt->hdr.opcode = AFE_PORT_CMD_START_LEGACY;
+
+	start->port_id = legacy_port_id;
+	start->gain = 0x2000;	/* Q13 unity gain */
+	start->sample_rate = port->port_cfg.i2s_cfg.sample_rate;
+
+	dev_info(afe->dev, "Legacy AFE start: port=%d gain=0x%x rate=%d\n",
+		legacy_port_id, start->gain, start->sample_rate);
+
+	pr_emerg("AFE_LEGACY: >>> sending AFE_PORT_CMD_START_LEGACY...\n");
+	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_CMD_START_LEGACY);
+	pr_emerg("AFE_LEGACY: <<< AFE_PORT_CMD_START_LEGACY returned %d\n", ret);
+	if (ret)
+		dev_err(afe->dev, "AFE legacy start for port %d failed %d\n",
+			legacy_port_id, ret);
+
+	kfree(pkt);
+	pr_emerg("AFE_LEGACY: <<< EXIT port_start_legacy ret=%d\n", ret);
+	return ret;
+}
+
 int q6afe_port_start(struct q6afe_port *port)
 {
 	struct afe_port_cmd_device_start *start;
@@ -1672,6 +1920,10 @@ int q6afe_port_start(struct q6afe_port *port)
 	int ret, param_id = port->cfg_type;
 	struct apr_pkt *pkt;
 	int pkt_size;
+
+	/* Use legacy protocol for MSM8660/APQ8060 */
+	if (afe->use_legacy_commands)
+		return q6afe_port_start_legacy(port);
 
 	ret  = q6afe_port_set_param_v2(port, &port->port_cfg, param_id,
 				       AFE_MODULE_AUDIO_DEV_INTERFACE,
@@ -1920,6 +2172,12 @@ static int q6afe_probe(struct apr_device *adev)
 	afe->dev = dev;
 	INIT_LIST_HEAD(&afe->port_list);
 	spin_lock_init(&afe->port_list_lock);
+
+	/* Check for legacy MSM8660/APQ8060 which uses different AFE protocol */
+	afe->use_legacy_commands = of_property_read_bool(dev->of_node,
+							 "qcom,legacy-afe-protocol");
+	if (afe->use_legacy_commands)
+		dev_info(dev, "Using legacy AFE protocol for MSM8660/APQ8060\n");
 
 	dev_set_drvdata(dev, afe);
 

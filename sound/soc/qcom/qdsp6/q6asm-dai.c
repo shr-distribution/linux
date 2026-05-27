@@ -24,12 +24,18 @@
 
 #define DRV_NAME	"q6asm-fe-dai"
 
+/*
+ * Buffer size constants.
+ * Legacy MSM8x60 kernels used much smaller buffers (~10KB total).
+ * Reduce from upstream defaults (512KB) to allow allocation without CMA.
+ * These values provide 32KB playback buffer (8KB x 4 periods).
+ */
 #define PLAYBACK_MIN_NUM_PERIODS    2
-#define PLAYBACK_MAX_NUM_PERIODS   8
-#define PLAYBACK_MAX_PERIOD_SIZE    65536
+#define PLAYBACK_MAX_NUM_PERIODS    4
+#define PLAYBACK_MAX_PERIOD_SIZE    8192
 #define PLAYBACK_MIN_PERIOD_SIZE    128
 #define CAPTURE_MIN_NUM_PERIODS     2
-#define CAPTURE_MAX_NUM_PERIODS     8
+#define CAPTURE_MAX_NUM_PERIODS     4
 #define CAPTURE_MAX_PERIOD_SIZE     4096
 #define CAPTURE_MIN_PERIOD_SIZE     320
 #define SID_MASK_DEFAULT	0xF
@@ -181,9 +187,21 @@ static void event_handler(uint32_t opcode, uint32_t token,
 {
 	struct q6asm_dai_rtd *prtd = priv;
 	struct snd_pcm_substream *substream = prtd->substream;
+	int i;
 
 	switch (opcode) {
 	case ASM_CLIENT_EVENT_CMD_RUN_DONE:
+		/*
+		 * Queue multiple buffers on startup to give the Q6 DSP
+		 * enough data to start the I2S clocks. Legacy firmware
+		 * may not start I2S until it has sufficient data queued.
+		 */
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			for (i = 0; i < prtd->periods && i < 2; i++)
+				q6asm_write_async(prtd->audio_client,
+						  prtd->stream_id,
+						  prtd->pcm_count, 0, 0, 0);
+		}
 		break;
 	case ASM_CLIENT_EVENT_CMD_EOS_DONE:
 		prtd->state = Q6ASM_STREAM_STOPPED;
@@ -1318,8 +1336,17 @@ static int q6asm_dai_probe(struct platform_device *pdev)
 	if (rc)
 		return rc;
 
-	return devm_snd_soc_register_component(dev, &q6asm_fe_dai_component,
+	dev_info(dev, "q6asm-dais: registering component with of_node=%pOF num_dais=%d\n",
+		 node, pdata->num_dais);
+
+	rc = devm_snd_soc_register_component(dev, &q6asm_fe_dai_component,
 					       pdata->dais, pdata->num_dais);
+	if (rc)
+		dev_err(dev, "q6asm-dais: failed to register component: %d\n", rc);
+	else
+		dev_info(dev, "q6asm-dais: component registered successfully\n");
+
+	return rc;
 }
 
 #ifdef CONFIG_OF
