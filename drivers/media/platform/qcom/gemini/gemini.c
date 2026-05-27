@@ -425,29 +425,26 @@ static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
 	}
 
 	/*
-	 * Transient IRQs (FE_RD_DONE, WE_*_PINGPONG, etc.) mean progress
-	 * but no user-visible completion yet. Re-arm IRQ_MASK (the IP
-	 * appears to auto-mask after firing) and ack. For FE_RD_DONE,
-	 * also re-issue FE_CMD = OFFLINE_CMD_START — legacy webOS does
-	 * this on every FE pingpong IRQ to advance the encoder. In our
-	 * single-buffer M2M case the same buffer gets re-read, but the
-	 * encoder needs the kick to progress past the read stage to
-	 * entropy + WE.
+	 * Transient IRQs (FE_RD_DONE, WE_*_PINGPONG) mean progress but no
+	 * user-visible completion yet. The legacy webOS driver
+	 * (msm_gemini_fe_pingpong_irq) only re-arms the FE on an FE pingpong
+	 * IRQ when ANOTHER input buffer is queued, i.e. for multi-chunk input
+	 * it feeds the next chunk's addresses; when the input queue is empty
+	 * it does nothing and lets the encoder drain what it already read
+	 * through entropy + WE to FRAMEDONE.
+	 *
+	 * Our M2M path hands the whole frame to the FE as a single buffer
+	 * (num_mcu_rows = full height), so there is never a next chunk. Do
+	 * NOT re-issue FE_CMD here: re-reading the frame mid-encode corrupts
+	 * every MCU past the first and can wedge the engine (the encoder then
+	 * never returns RESET_ACK on the next job). Just re-arm for the
+	 * terminal IRQs and wait for FRAMEDONE.
 	 */
 	if (!(status & (GEMINI_IRQ_FRAMEDONE | GEMINI_IRQ_BUS_ERROR |
 			GEMINI_IRQ_VIOLATION))) {
 		gemini_hw_enable_irq(gemini->base, GEMINI_IRQ_FRAMEDONE |
 						   GEMINI_IRQ_BUS_ERROR |
-						   GEMINI_IRQ_VIOLATION |
-						   GEMINI_IRQ_FE_RD_DONE |
-						   GEMINI_IRQ_WE_Y_PINGPONG |
-						   GEMINI_IRQ_WE_CBCR_PINGPONG);
-		if (status & GEMINI_IRQ_FE_RD_DONE) {
-			pr_info("gemini IRQ: FE_RD_DONE — re-issuing FE_CMD=START\n");
-			gemini_hw_fe_reload(gemini->base);
-			writel(GEMINI_OFFLINE_CMD_START,
-			       gemini->base + GEMINI_FE_CMD);
-		}
+						   GEMINI_IRQ_VIOLATION);
 		return IRQ_HANDLED;
 	}
 
