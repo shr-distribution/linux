@@ -87,6 +87,12 @@ struct vfe_output {
 
 struct vfe_line {
 	enum vfe_line_id id;
+	/*
+	 * True for an ISP/pixel-processed (line-based, DEMUX) output, false for
+	 * a raw/RDI bypass output. Lets the shared core treat a line by its
+	 * capability instead of hardcoding backend-specific line IDs.
+	 */
+	bool pix;
 	struct v4l2_subdev subdev;
 	struct media_pad pads[MSM_VFE_PADS_NUM];
 	struct v4l2_mbus_framefmt fmt[MSM_VFE_PADS_NUM];

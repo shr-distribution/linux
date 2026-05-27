@@ -1179,18 +1179,9 @@ void vfe_isr_comp_done(struct vfe_device *vfe, u8 comp)
 	for (i = 0; i < ARRAY_SIZE(vfe->wm_output_map); i++) {
 		enum vfe_line_id line = vfe->wm_output_map[i];
 
-		/*
-		 * Check if this WM belongs to a line type that uses
-		 * composite interrupts: PIX, VIDEO, or RDI lines.
-		 */
-		if (line == VFE_LINE_PIX ||
-		    line == VFE_LINE_VIDEO ||
-		    line == VFE_LINE_ZSL ||
-		    line == VFE_LINE_RDI0 ||
-		    line == VFE_LINE_RDI1 ||
-		    line == VFE_LINE_RDI2) {
+		/* Dispatch completion for any WM mapped to a valid line. */
+		if (line != VFE_LINE_NONE)
 			vfe->isr_ops.wm_done(vfe, i);
-		}
 	}
 }
 
@@ -1902,7 +1893,7 @@ static void vfe_try_format(struct vfe_line *line,
 
 		fmt->code = vfe_src_pad_code(line, fmt->code, 0, code);
 
-		if (line->id == VFE_LINE_PIX || line->id == VFE_LINE_VIDEO) {
+		if (line->pix) {
 			/* PIX and VIDEO lines use the scaler/crop path */
 			struct v4l2_rect *rect;
 
@@ -2126,7 +2117,7 @@ static int vfe_set_format(struct v4l2_subdev *sd,
 		struct v4l2_subdev_selection sel = { 0 };
 		int ret;
 
-		if (line->id == VFE_LINE_PIX || line->id == VFE_LINE_VIDEO) {
+		if (line->pix) {
 			/*
 			 * Reset compose/crop selection BEFORE propagating
 			 * format to source pad. vfe_try_format for source pad
@@ -2173,7 +2164,7 @@ static int vfe_get_selection(struct v4l2_subdev *sd,
 	struct v4l2_rect *rect;
 	int ret;
 
-	if (line->id != VFE_LINE_PIX && line->id != VFE_LINE_VIDEO)
+	if (!line->pix)
 		return -EINVAL;
 
 	if (sel->pad == MSM_VFE_PAD_SINK)
@@ -2242,7 +2233,7 @@ static int vfe_set_selection(struct v4l2_subdev *sd,
 	struct v4l2_rect *rect;
 	int ret;
 
-	if (line->id != VFE_LINE_PIX && line->id != VFE_LINE_VIDEO)
+	if (!line->pix)
 		return -EINVAL;
 
 	if (sel->target == V4L2_SEL_TGT_COMPOSE &&
@@ -2463,10 +2454,17 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 		l->video_out.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 		l->video_out.camss = camss;
 		l->id = i;
+		/*
+		 * VFE31 exposes two pixel-processed outputs (PIX and VIDEO); all
+		 * other backends have a single PIX line. Mark pixel-processed
+		 * lines once here so the rest of the core can test l->pix instead
+		 * of comparing against backend-specific line IDs.
+		 */
+		l->pix = (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO);
 		init_completion(&l->output.sof);
 		init_completion(&l->output.reg_update);
 
-		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO) {
+		if (l->pix) {
 			/* PIX and VIDEO lines use the pixel pipeline formats */
 			l->nformats = res->vfe.formats_pix->nformats;
 			l->formats = res->vfe.formats_pix->formats;
@@ -2643,7 +2641,7 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->line_based = 0;
 		video_out->stride_factor = 0;
 		video_out->vsub_override = 0;
-		if (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO) {
+		if (vfe->line[i].pix) {
 			/* PIX and VIDEO lines use line-based pixel pipeline */
 			video_out->bpl_alignment = 16;
 			video_out->line_based = 1;
