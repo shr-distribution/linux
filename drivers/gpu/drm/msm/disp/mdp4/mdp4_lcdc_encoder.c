@@ -390,7 +390,6 @@ static enum drm_mode_status
 mdp4_lcdc_encoder_mode_valid(struct drm_encoder *encoder,
 		const struct drm_display_mode *mode)
 {
-	struct drm_device *dev = encoder->dev;
 	struct mdp4_lcdc_encoder *mdp4_lcdc_encoder =
 			to_mdp4_lcdc_encoder(encoder);
 	long actual, requested;
