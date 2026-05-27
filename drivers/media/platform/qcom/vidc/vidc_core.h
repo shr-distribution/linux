@@ -668,6 +668,16 @@ struct vidc_inst {
 	struct completion done;
 	int error;
 
+	/*
+	 * Tracks a FRAME_DATA/LAST_FRAME the firmware is still decoding (set in
+	 * vidc_dec_submit_frame, cleared + completed in the FRAME_DONE IRQ, both
+	 * under core->irqlock). stop_streaming waits on frame_done_compl before
+	 * CLOSE_CH so the channel is closed gracefully — closing mid-decode
+	 * times out CLOSE_CH and wedges the resident firmware.
+	 */
+	struct completion frame_done_compl;
+	bool frame_in_flight;
+
 	/* Format info */
 	const struct vidc_format *fmt_out;
 	const struct vidc_format *fmt_cap;

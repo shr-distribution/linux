@@ -886,6 +886,13 @@ static irqreturn_t vidc_isr(int irq, void *data)
 			vidc_handle_frame_done(core, inst);
 			inst->error = 0;
 			/*
+			 * The firmware retired the in-flight frame. Wake any
+			 * stop_streaming() waiting to close the channel
+			 * gracefully (see frame_done_compl).
+			 */
+			inst->frame_in_flight = false;
+			complete(&inst->frame_done_compl);
+			/*
 			 * FRAME_DONE → DPB copy → buf_done lives in
 			 * frame_done_work because the memcpy and
 			 * vb2_buf_done calls take vb2 queue locks that

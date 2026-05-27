@@ -714,6 +714,27 @@ static void vidc_dec_stop_streaming(struct vb2_queue *q)
 	unsigned long flags;
 
 	/*
+	 * If the firmware is still decoding a frame, wait for it to retire
+	 * BEFORE tearing anything down. device_run() calls v4l2_m2m_job_finish()
+	 * immediately after submit_frame(), so the m2m job (and the
+	 * v4l2_m2m_cancel_job() in streamoff) completes while the firmware is
+	 * still mid-frame on a mid-stream STREAMOFF (seek/abort). Sending
+	 * CLOSE_CH then times out — the firmware cannot ack a close while
+	 * decoding — and wedges the resident codec: no subsequent OPEN_CH is
+	 * acked until reboot (the cmd=51 family; HW cold-reset is unviable).
+	 * Letting the in-flight frame finish turns the abnormal close into a
+	 * graceful one. curr_inst is still set here, so the FRAME_DONE IRQ can
+	 * fire and signal frame_done_compl. Best-effort: if the firmware is
+	 * already stuck the wait times out and we close anyway.
+	 */
+	if (inst->frame_in_flight &&
+	    !wait_for_completion_timeout(&inst->frame_done_compl,
+					 msecs_to_jiffies(500)))
+		dev_warn(core->dev,
+			 "stop_streaming: in-flight frame did not retire in 500ms; closing anyway\n");
+	inst->frame_in_flight = false;
+
+	/*
 	 * Quiesce async completion work BEFORE returning buffers or closing
 	 * the channel.  A FRAME_DONE that raced streamoff would otherwise run
 	 * frame_done_work against buffers we're about to return to userspace,
@@ -865,6 +886,18 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 		op = VIDC_OP_LAST_FRAME;	/* drain: flush held reorder frames */
 	else
 		op = VIDC_OP_FRAME_DATA;
+
+	/*
+	 * FRAME_DATA/LAST_FRAME produce a FRAME_DONE the firmware must finish
+	 * before the channel can be closed cleanly. Arm the in-flight tracker
+	 * (under irqlock, before the trigger write below, so the FRAME_DONE IRQ
+	 * — which also takes irqlock — cannot clear it before we set it).
+	 * SEQ_HEADER produces SEQ_DONE instead, so leave the tracker alone.
+	 */
+	if (op == VIDC_OP_FRAME_DATA || op == VIDC_OP_LAST_FRAME) {
+		reinit_completion(&inst->frame_done_compl);
+		inst->frame_in_flight = true;
+	}
 
 	/* Set current instance for IRQ handler */
 	core->curr_inst = inst;
@@ -1741,6 +1774,7 @@ static int vidc_dec_open(struct file *file)
 	mutex_init(&inst->lock);
 	INIT_LIST_HEAD(&inst->list);
 	init_completion(&inst->done);
+	init_completion(&inst->frame_done_compl);
 	INIT_WORK(&inst->seq_done_work, vidc_dec_seq_done_work);
 	INIT_WORK(&inst->frame_done_work, vidc_dec_frame_done_work);
 	INIT_WORK(&inst->seq_header_work, vidc_dec_seq_header_work_fn);
