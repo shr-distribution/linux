@@ -908,7 +908,7 @@ static void vidc_enc_complete_work(struct work_struct *w)
 	dst_buf->sequence = inst->sequence_cap++;
 
 	/* Carry the input timestamp to the encoded buffer (in-order). */
-	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf);
+	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf, false);
 
 	if (inst->error) {
 		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
