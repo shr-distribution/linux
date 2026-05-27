@@ -4055,7 +4055,7 @@ static int camss_link_entities(struct camss *camss)
 					 * same CAMIF/DEMUX path with different XBAR routing
 					 * to write masters.
 					 */
-					if (vfe->line[j].shares_pix_csid) {
+					if (camss->vfe[k].line[j].shares_pix_csid) {
 						csid_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
 					} else if (camss->res->version == CAMSS_8x60 &&
 						   (j == VFE_LINE_RDI0 ||
