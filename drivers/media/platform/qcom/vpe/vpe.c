@@ -526,8 +526,6 @@ static const struct vb2_ops vpe_qops = {
 	.buf_queue		= vpe_buf_queue,
 	.start_streaming	= vpe_start_streaming,
 	.stop_streaming		= vpe_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static int vpe_queue_init(void *priv, struct vb2_queue *src_vq,
