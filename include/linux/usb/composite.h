@@ -617,7 +617,7 @@ void usb_remove_function(struct usb_configuration *c, struct usb_function *f);
 	{								\
 		usb_function_unregister(&_name ## usb_func);		\
 	}								\
-	module_init(_name ## mod_init);					\
+	fs_initcall(_name ## mod_init);					\
 	module_exit(_name ## mod_exit)
 
 /* messaging utils */
