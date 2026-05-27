@@ -168,7 +168,7 @@ static void csiphy_8x60_reset(struct csiphy_device *csiphy)
 	 * We do the same: clocks are enabled in set_power, and the full
 	 * initialization sequence happens in lanes_enable().
 	 */
-	dev_info(csiphy->camss->dev,
+	dev_dbg(csiphy->camss->dev,
 		 "CSIPHY%d: reset (no-op, init done in lanes_enable)\n",
 		 csiphy->id);
 }
@@ -195,7 +195,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	u8 settle_cnt = MSM8660_DEFAULT_SETTLE_CNT;
 	u32 val;
 
-	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: lanes_enable ENTER\n", csiphy->id);
 
 	num_lanes = cfg->csi2->lane_cfg.num_data;
 
@@ -203,7 +203,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * Calculate settle count if link frequency is available.
 	 * The settle count formula is derived from CSI2 timing requirements.
 	 */
-	dev_info(csiphy->camss->dev,
+	dev_dbg(csiphy->camss->dev,
 		 "CSIPHY%d: settle calc inputs: link_freq=%lld timer_clk_rate=%u\n",
 		 csiphy->id, link_freq, csiphy->timer_clk_rate);
 
@@ -221,7 +221,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 			settle_cnt--;
 
 		t_hs_settle_ns = (settle_cnt + 1) * timer_period_ps / 1000;
-		dev_info(csiphy->camss->dev,
+		dev_dbg(csiphy->camss->dev,
 			 "CSIPHY%d: settle calc: UI=%u ps, timer_period=%u ps, "
 			 "t_hs_settle=%u ps, settle_cnt=0x%02x (%u ns actual)\n",
 			 csiphy->id, ui_ps, timer_period_ps, t_hs_settle_ps,
@@ -232,7 +232,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 			 csiphy->id, settle_cnt, link_freq, csiphy->timer_clk_rate);
 	}
 
-	dev_info(csiphy->camss->dev,
+	dev_dbg(csiphy->camss->dev,
 		 "CSIPHY%d: lanes_enable: lanes=%d settle_cnt=0x%02x link_freq=%lld base=%px\n",
 		 csiphy->id, num_lanes, settle_cnt, link_freq, csiphy->base);
 
@@ -253,7 +253,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * Single 10ms delay matching webOS exactly. Extra delays may cause
 	 * the hardware to enter an unexpected state.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 - msleep(10) then write D0-D3_CONTROL2\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Phase 1 - msleep(10) then write D0-D3_CONTROL2\n", csiphy->id);
 	msleep(10);
 
 	/*
@@ -271,7 +271,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		      (0x1 << MIPI_PHY_D0_CONTROL2_LP_REC_EN_SHFT) |
 		      (0x1 << MIPI_PHY_D0_CONTROL2_ERR_SOT_HS_EN_SHFT);
 	}
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 = 0x%08x\n", csiphy->id, val);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing D0-D3_CONTROL2 = 0x%08x\n", csiphy->id, val);
 	/* webOS uses plain writel() - sequential writes, no barriers between */
 	writel(val, csiphy->base + MIPI_PHY_D0_CONTROL2);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
@@ -285,24 +285,24 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * - LP_REC_EN = 0x1 at bit 2
 	 */
 	val = 0x0F000004;
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL = 0x%08x\n", csiphy->id, val);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL = 0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_CL_CONTROL);
 
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 1 complete\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Phase 1 complete\n", csiphy->id);
 
 	/*
 	 * Phase 2: msm_camio_csi_config() equivalent
 	 * webOS calls this later, during sensor streaming setup.
 	 * All writes use plain writel() with no barriers between.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Phase 2 - Config sequence\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Phase 2 - Config sequence\n", csiphy->id);
 
 	/* PHY_CONTROL - SOT_ECC_EN */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PHY_CONTROL=0x4\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing PHY_CONTROL=0x4\n", csiphy->id);
 	writel(0x4, csiphy->base + MIPI_PHY_CONTROL);
 
 	/* SW_RST to PROTOCOL_CONTROL */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL SW_RST\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing PROTOCOL_CONTROL SW_RST\n", csiphy->id);
 	writel(MIPI_PROTOCOL_CONTROL_SW_RST_BMSK, csiphy->base + MIPI_PROTOCOL_CONTROL);
 
 	/*
@@ -403,7 +403,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		writel(val, csiphy->base + MIPI_PHY_D1_CONTROL2);
 		writel(val, csiphy->base + MIPI_PHY_D2_CONTROL2);
 		writel(val, csiphy->base + MIPI_PHY_D3_CONTROL2);
-		dev_info(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 writes done\n", csiphy->id);
+		dev_dbg(csiphy->camss->dev, "CSIPHY%d: D0-D3_CONTROL2 writes done\n", csiphy->id);
 	}
 
 	/*
@@ -411,21 +411,21 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * - HS_TERM_IMP = 0x0F at bits [27:24]
 	 * - LP_REC_EN = 0x1 at bit 2
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL=0x0F000004 (webOS)\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing CL_CONTROL=0x0F000004 (webOS)\n", csiphy->id);
 	writel(0x0F000004, csiphy->base + MIPI_PHY_CL_CONTROL);
 
 	/* D0_CONTROL - HS receiver equalization */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D0_CONTROL=0\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing D0_CONTROL=0\n", csiphy->id);
 	writel(0, csiphy->base + MIPI_PHY_D0_CONTROL);
 
 	/* D1_CONTROL - enable PHY (release shutdown) */
 	val = (0x1 << MIPI_PHY_D1_CONTROL_MIPI_CLK_PHY_SHUTDOWNB_SHFT) |
 	      (0x1 << MIPI_PHY_D1_CONTROL_MIPI_DATA_PHY_SHUTDOWNB_SHFT);
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D1_CONTROL=0x%08x (PHY enable)\n", csiphy->id, val);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing D1_CONTROL=0x%08x (PHY enable)\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_PHY_D1_CONTROL);
 
 	/* D2_CONTROL and D3_CONTROL = 0 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing D2/D3_CONTROL=0\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing D2/D3_CONTROL=0\n", csiphy->id);
 	writel(0, csiphy->base + MIPI_PHY_D2_CONTROL);
 	writel(0, csiphy->base + MIPI_PHY_D3_CONTROL);
 
@@ -457,7 +457,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		val = 0xe4 << 8 | 0x4;
 		break;
 	}
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Writing CAMERA_CNTL=0x%08x\n", csiphy->id, val);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Writing CAMERA_CNTL=0x%08x\n", csiphy->id, val);
 	writel(val, csiphy->base + MIPI_CAMERA_CNTL);
 
 	/*
@@ -469,10 +469,10 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * Enable all bits to see full interrupt behavior.
 	 * IRQ_MASK: bit=1 means interrupt ENABLED.
 	 */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: Configuring interrupts\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: Configuring interrupts\n", csiphy->id);
 	writel(0xFFFFFFFF, csiphy->base + MIPI_INTERRUPT_STATUS);  /* Clear pending */
 	writel(0xFFFFFFFF, csiphy->base + MIPI_INTERRUPT_MASK);    /* Enable ALL */
-	dev_info(csiphy->camss->dev, "CSIPHY%d: IRQ_MASK=0xFFFFFFFF (all enabled)\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: IRQ_MASK=0xFFFFFFFF (all enabled)\n", csiphy->id);
 
 	/*
 	 * Note: MSM8660 does NOT have separate CSID CID registers.
@@ -486,7 +486,7 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 	 * - Writing CID config there corrupts PHY lane enable bits
 	 */
 
-	dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n", csiphy->id);
+	dev_dbg(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n", csiphy->id);
 
 	/*
 	 * Debug: Read back all configured registers to verify writes took effect.
@@ -507,19 +507,19 @@ static void csiphy_8x60_lanes_enable(struct csiphy_device *csiphy,
 		rb_cal_ctrl = readl(csiphy->base + MIPI_CALIBRATION_CONTROL);
 		rb_irq_mask = readl(csiphy->base + MIPI_INTERRUPT_MASK);
 
-		dev_info(csiphy->camss->dev,
+		dev_dbg(csiphy->camss->dev,
 			 "CSIPHY%d READBACK: base=%px id=%d\n",
 			 csiphy->id, csiphy->base, csiphy->id);
-		dev_info(csiphy->camss->dev,
+		dev_dbg(csiphy->camss->dev,
 			 "  PHY_CONTROL(0x00)=0x%08x PROTOCOL(0x04)=0x%08x\n",
 			 rb_phy_control, rb_protocol);
-		dev_info(csiphy->camss->dev,
+		dev_dbg(csiphy->camss->dev,
 			 "  CAMERA_CNTL(0x24)=0x%08x (expect 0xe404 for 1 lane, 0xe405 for 2 lanes)\n",
 			 rb_camera_cntl);
-		dev_info(csiphy->camss->dev,
+		dev_dbg(csiphy->camss->dev,
 			 "  D0_CTRL2(0x38)=0x%08x D1_CTRL(0x20)=0x%08x\n",
 			 rb_d0_ctrl2, rb_d1_ctrl);
-		dev_info(csiphy->camss->dev,
+		dev_dbg(csiphy->camss->dev,
 			 "  CL_CTRL(0x48)=0x%08x CAL_CTRL(0x18)=0x%08x IRQ_MASK(0x0C)=0x%08x\n",
 			 rb_cl_ctrl, rb_cal_ctrl, rb_irq_mask);
 

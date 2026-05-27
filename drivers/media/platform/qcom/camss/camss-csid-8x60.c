@@ -61,9 +61,9 @@ static void csid_8x60_configure_stream(struct csid_device *csid, u8 enable)
 {
 	struct csid_phy_config *phy = &csid->phy;
 
-	dev_info(csid->camss->dev,
-		 "CSID%d: configure_stream enable=%d phy=%d lanes=%d\n",
-		 csid->id, enable, phy->csiphy_id, phy->lane_cnt);
+	dev_dbg(csid->camss->dev,
+		"CSID%d: configure_stream enable=%d phy=%d lanes=%d\n",
+		csid->id, enable, phy->csiphy_id, phy->lane_cnt);
 
 	/*
 	 * MSM8660 CSID is a pass-through - no CID configuration needed.
