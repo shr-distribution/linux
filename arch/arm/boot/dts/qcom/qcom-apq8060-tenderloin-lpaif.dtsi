@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * HP TouchPad (Tenderloin) Audio via direct LPAIF hardware
+ *
+ * This is an ALTERNATIVE audio configuration that uses direct LPAIF
+ * hardware access instead of the Q6 DSP path. This approach is similar
+ * to how the original webOS kernel handled audio.
+ *
+ * To use this instead of the Q6/APR path:
+ * 1. Include this file AFTER qcom-apq8060-tenderloin-common.dtsi
+ * 2. Enable CONFIG_SND_SOC_APQ8060_LPAIF in kernel config
+ * 3. Disable CONFIG_SND_SOC_APQ8060 (optional, to save memory)
+ *
+ * Benefits:
+ * - No DSP firmware required
+ * - Simpler audio path
+ * - More similar to webOS audio handling
+ *
+ * Drawbacks:
+ * - No DSP-based audio processing
+ * - Must handle all I2S clocking in kernel
+ */
+
+/* Disable the Q6/APR-based sound card */
+/ {
+	sound {
+		status = "disabled";
+	};
+};
+
+/* Disable the Q6 LPASS remoteproc (not needed for direct LPAIF) */
+&lpass {
+	status = "disabled";
+};
+
+&apr {
+	status = "disabled";
+};
+
+/* Enable the direct LPAIF hardware interface */
+&lpaif {
+	status = "okay";
+};
+
+/* Sound card using direct LPAIF path */
+/ {
+	sound_lpaif: sound-lpaif {
+		compatible = "qcom,apq8060-lpaif-sndcard";
+		model = "HP-TouchPad-LPAIF";
+
+		/*
+		 * Primary I2S pinctrl - CPU MASTER MODE.
+		 * GPIO 108 (WS/LRCLK), GPIO 109 (SCK/BCLK), GPIO 110 (DATA)
+		 * are all configured as I2S outputs from LPASS.
+		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&primary_i2s_pins>, <&hp_det_pins>;
+
+		/*
+		 * Headphone insert detection.
+		 *
+		 * The HP TouchPad has two separate jack-detect signals:
+		 *   GPIO 57 (HEAD_MIC_DET) -- mic-present indicator from the
+		 *                             WM8958 codec's external bias
+		 *                             circuit. Used to discriminate
+		 *                             headset (mic+headphones) from
+		 *                             plain headphones.
+		 *   GPIO 67 ("hp-gpio")    -- jack-insert / sleeve-detect
+		 *                             switch. Active LOW = jack
+		 *                             inserted. This is what the
+		 *                             legacy webOS kernel uses as
+		 *                             snd_soc_jack_gpio for
+		 *                             SND_JACK_HEADPHONE (verified
+		 *                             via sound/soc/msm/msm8x60.c
+		 *                             hp_jack_gpios[]).
+		 *
+		 * The lpaif sound card's GPIO-based fallback path only knows
+		 * how to consume an insert/remove signal, so we wire it to
+		 * GPIO 67 (the actual insert switch), not GPIO 57 (which only
+		 * tells us whether the inserted plug has a mic).
+		 *
+		 * Mic discrimination and inline-remote buttons are NOT
+		 * available through this fallback path (those require either
+		 * codec-internal jackdet logic or a userspace daemon reading
+		 * both GPIO 57 and GPIO 67 together).
+		 */
+		headphone-detect-gpios = <&tlmm 67 GPIO_ACTIVE_LOW>;
+
+		/*
+		 * Speaker amplifier control via WM8958 GPIO1.
+		 * The codec handles this internally, no SoC GPIO needed.
+		 */
+
+		/*
+		 * DAPM audio routing - same as Q6 path.
+		 */
+		audio-routing =
+			"Headphone", "HPOUT1L",
+			"Headphone", "HPOUT1R",
+			"Speaker", "LINEOUT1P",
+			"Speaker", "LINEOUT1N",
+			"Speaker", "LINEOUT2P",
+			"Speaker", "LINEOUT2N",
+			"IN1LN", "Internal Mic",
+			"IN2LN", "Headset Mic";
+
+		/*
+		 * Single DAI link: LPAIF codec speaker port to WM8958.
+		 *
+		 * The LPAIF "codec-spkr" DAI (port 0) connects to the
+		 * WM8958 AIF1 interface for stereo playback.
+		 */
+		codec-dai-link {
+			link-name = "Codec Speaker";
+			cpu {
+				sound-dai = <&lpaif 0>;  /* codec-spkr port */
+			};
+			codec {
+				sound-dai = <&wm8958>;
+			};
+		};
+
+		/*
+		 * Capture DAI link: LPAIF codec mic port to WM8958.
+		 */
+		mic-dai-link {
+			link-name = "Codec Mic";
+			cpu {
+				sound-dai = <&lpaif 1>;  /* codec-mic port */
+			};
+			codec {
+				sound-dai = <&wm8958>;
+			};
+		};
+	};
+};
+
+&tlmm {
+	hp_det_pins: hp-det-state {
+		hp-pins {
+			pins = "gpio67";	/* hp-gpio (headphone insert) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+};

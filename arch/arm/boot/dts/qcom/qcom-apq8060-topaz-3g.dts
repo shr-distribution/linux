@@ -1,0 +1,760 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad - Topaz 3G variant
+ *
+ * Codename: TENDERLOIN_3G (TOPAZ_3G_DVT / TOPAZ_3G_PVT board revisions)
+ * Hardware: Qualcomm APQ8060 + MDM6600 3G modem behind ISP1763 USB host
+ *
+ * PVT pin map validated against a live HP TouchPad 4G (HSTNH-I30C,
+ * boardtype=topaz-3G-pvt, HWoRev=A) running the legacy webOS 2.6.35
+ * kernel. The legacy board file selects tenderloin_pins_3g_dvt[] for
+ * any board_type >= TOPAZ_3G_DVT, so DVT and PVT share the same pin
+ * assignments (in particular 3G_3V3_EN=gpio106, A6_0_TCK=156, A6_0_IRQ=37,
+ * A6_1_WAKEUP=78, A6_1_IRQ=94). EVT/EVT4/early boards use different
+ * GPIOs and are not supported here.
+ *
+ * ============================================================================
+ * Why the WiFi DTB does not boot on Topaz3G (and how this DT fixes it)
+ * ============================================================================
+ *
+ * Topaz3G adds an NXP ISP1763 USB host controller on the SoC's EBI2 bus to
+ * front the MDM6600 cellular modem. EBI2 takes over a large block of TLMM
+ * GPIOs that on the WiFi variant are wired to plain GPIO functions:
+ *
+ *   GPIO 123-130, 132, 135-150 : EBI2_A_D  (address/data, 8mA, pull-up)
+ *   GPIO 133                   : EBI2_CS3  (chip select for ISP1763)
+ *   GPIO 151                   : EBI2_OE
+ *   GPIO 153                   : EBI2_ADV
+ *   GPIO 157                   : EBI2_WE
+ *
+ * (Source: webos-linux-kernel-touchpad/.../gpiomux-tenderloin.c
+ *  msm8x60_ebi2_configs[], applied when CONFIG_USB_PEHCI_HCD is enabled.)
+ *
+ * The WiFi DT drives or pulls many of these as plain GPIOs:
+ *   123 touchscreen wake,    124 accel IRQ,        125 gyro IRQ,
+ *   128 LM8502 IRQ,          129 BT host wake,     130 BT power output,
+ *   132/141 A6_1 IRQ/wake,   135 WLAN_RST,         137 HOST_WAKE_WL,
+ *   138 BT reset output,     140 charger DC_OK,    157/158 A6_0 TCK/TDIO.
+ *
+ * On a 3G board those lines are live EBI2 signals that the bootloader
+ * leaves active so the modem stays attached. Pinctrl reconfiguring them
+ * to GPIO with pull-up (or worse, output high) at probe time fights the
+ * ISP1763 transceiver, corrupts EBI2 transactions and hangs the SoC.
+ * The visible symptom is the framebuffer Tux logo appearing followed
+ * by a silent halt before netconsole can come up.
+ *
+ * This DT retargets every affected pinctrl state, GPIO property and
+ * interrupt to the 3G-board signal map so none of those EBI2 pins are
+ * touched, then enables EBI2 + ISP1763 + MDM6600 as the real consumers.
+ *
+ * ============================================================================
+ * GPIO map (Topaz WiFi -> Topaz3G)
+ * ============================================================================
+ *
+ *   WiFi:           HOST_WAKE_WL  137 -> 80         (EBI2_A_D on 3G)
+ *                   WLAN_RST_N    135 -> 28         (EBI2_A_D on 3G)
+ *                   WL_HOST_WAKE  93  -> 93         (same)
+ *
+ *   Bluetooth:      BT_RST_N      138 -> 122        (EBI2_A_D on 3G)
+ *                   BT_POWER      130 -> 110        (EBI2_A_D on 3G)
+ *                   BT_WAKE       131 -> 131        (same)
+ *                   BT_HOST_WAKE  129 -> 50         (EBI2_A_D on 3G)
+ *
+ *   Touchscreen:    IRQ/WAKE      123 -> 45         (EBI2_A_D on 3G)
+ *                   XRES           70 -> 70         (same)
+ *
+ *   Gyro INT:                    125 -> 75          (EBI2_A_D on 3G)
+ *   LM8502 INT:                  128 -> 77          (EBI2_A_D on 3G)
+ *   LM8502 EN:                   121 -> 121         (same)
+ *   Charger DC_OK:               140 -> 86          (EBI2_A_D on 3G)
+ *   Charger USB_CHG_MODE:        133 -> 134         (EBI2_CS3 / EBI2_A_D)
+ *
+ *   A6_0 (DVT 3G hw):
+ *     TCK    157 -> 156    (EBI2_WE on 3G)
+ *     TDIO   158 -> 170    (gpio158 is EBI2_A_D on 3G; gpio170 is HDMI on WiFi)
+ *     WAKEUP 155 -> 155    (same)
+ *     IRQ    037 -> 037    (same; DVT/PVT uses gpio37 on both variants)
+ *
+ *   A6_1 (DVT 3G hw):
+ *     TCK    115 -> 115    (same)
+ *     TDIO   116 -> 116    (same)
+ *     WAKEUP 141 -> 078    (EBI2_A_D on 3G)
+ *     IRQ    094 -> 094    (same; DVT/PVT)
+ *
+ *   Volume keys:   TLMM 103/104 -> PM8058_GPIO 5/6
+ *
+ * ============================================================================
+ * 3G-only signals
+ * ============================================================================
+ *
+ *   ISP1763:  INT=172, RST=152, DACK=169, DREQ=29
+ *   MDM6600:  3V3_EN=106 (DVT) / 82 (EVT), DISABLE_N=171,
+ *             WAKE_N=38, UIM_CD_N=61
+ *
+ * ============================================================================
+ * Disabled subsystems
+ * ============================================================================
+ *
+ *   HDMI       : DDC/CEC/HPD on GPIO 169/170/171/172 -- collides with
+ *                ISP1763 DACK and 3G_DISABLE_N. No HDMI on 3G hardware.
+ *   LSM303DLH  : Topaz WiFi variant already disables these; gpio124
+ *                (default accel IRQ) is EBI2_A_D on 3G hardware so the
+ *                pinctrl is unsafe anyway. Disable until verified present.
+ *   GSBI5/GPS  : BCM4751 GPS dedicated chip is Opal-only; Topaz3G relies
+ *                on the MDM6600 internal A-GPS over USB.
+ *
+ * MT9M113 webcam IS present on Topaz3G PVT (verified via /dev/video0 +
+ * msm_camera_mt9m113.0 on legacy webOS; live GPIO probe shows the
+ * sensor PWDN line on gpio107 toggling on camera open/close). The
+ * earlier perception that gpio106 collides with the modem 3V3 rail
+ * was a misread of the legacy code -- on this PVT board, gpio106 is
+ * never driven by the SoC, and the modem rail comes up by hardware
+ * default. The camera node is therefore enabled with its common-DT
+ * pin assignments unchanged.
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "HP TouchPad (Topaz 3G)";
+	compatible = "hp,topaz-3g", "qcom,apq8060", "qcom,msm8660";
+};
+
+/* ===========================================================================
+ * WiFi (Atheros AR6003) power sequence -- override reset GPIO
+ * Replace the WiFi-variant pwrseq entirely so it does not toggle gpio135
+ * (which is EBI2_A_D on 3G hardware).
+ * ===========================================================================
+ */
+/ {
+	/delete-node/ ath6kl-pwrseq;
+
+	ath6kl_pwrseq: ath6kl-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&tlmm 28 GPIO_ACTIVE_LOW>;	/* WLAN_RST_N_3G */
+		clocks = <&sleep_clk>;
+		clock-names = "ext_clock";
+		post-power-on-delay-ms = <500>;
+	};
+};
+
+/* ===========================================================================
+ * WiFi (Atheros AR6003) board data -- override board-id for 3G variant
+ *
+ * Topaz3G has different antenna routing (shares space with the 3G modem
+ * antennas), so it ships its own RF calibration data. The webOS firmware
+ * package contains 3g_bdata.SD32.bin alongside bdata.SD32.bin for exactly
+ * this reason -- using the WiFi-variant board data on 3G hardware would
+ * apply wrong PA gain steps and TX power tables, which breaks the chip's
+ * BMI init sequence (chip stalls in OTP/firmware upload).
+ *
+ * Setting atheros,board-id = "SD32_3G" makes ath6kl request
+ * bdata.SD32_3G.bin instead of bdata.SD32.bin so the right calibration
+ * is loaded for this board. Both files must be present in /lib/firmware/
+ * ath6k/AR6003/hw2.1.1/ (supplied by the initramfs).
+ * ===========================================================================
+ */
+&sdcc4 {
+	wifi@1 {
+		atheros,board-id = "SD32_3G";
+	};
+};
+
+/* ===========================================================================
+ * Pinctrl overrides
+ *
+ * Every override below is a full /delete-node/ + redefinition rather than a
+ * subnode merge. Subnode merging is unsafe here because the WiFi-variant
+ * states use different subnode names from what we want to keep (e.g.
+ * `host-wake-pins` vs `irq-pins`). Merging leaves the original WiFi GPIOs
+ * pinmuxed alongside the 3G ones, which reintroduces the EBI2 contention
+ * we are trying to avoid.
+ * ===========================================================================
+ */
+&tlmm {
+	/* --- WiFi --- */
+	/delete-node/ wlan-reset-state;
+	/delete-node/ wlan-state;
+
+	wlan_gpios_reset: wlan-reset-state {
+		reset-pins {
+			pins = "gpio28";			/* WLAN_RST_N_3G */
+			function = "gpio";
+			bias-disable;
+		};
+	};
+
+	wlan_gpios: wlan-state {
+		host-wake-pins {
+			pins = "gpio93";			/* WL_HOST_WAKE */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-down;
+			input-enable;
+		};
+
+		device-wake-pins {
+			pins = "gpio80";			/* HOST_WAKE_WL_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-high;
+		};
+	};
+
+	/* --- Bluetooth (BCM4329 / BCM4330) --- */
+	/delete-node/ bt-state;
+
+	bt_pin: bt-state {
+		hostwake-pins {
+			pins = "gpio50";			/* BT_HOST_WAKE_3G */
+			function = "gpio";
+			bias-pull-down;
+		};
+
+		power-pins {
+			pins = "gpio110";			/* BT_POWER_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		devwake-pins {
+			pins = "gpio131";			/* BT_WAKE (same) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		reset-pins {
+			pins = "gpio122";			/* BT_RST_N_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* --- Touchscreen (CY8CTMA395) --- */
+	/delete-node/ touch-pins-state;
+	/delete-node/ cy8ctma395-default-state;
+
+	touch_pins: touch-pins-state {
+		irq-pins {
+			pins = "gpio45";			/* GPIO_CTP_WAKE_3G doubles as IRQ */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	cy8ctma395_default_state: cy8ctma395-default-state {
+		xres-pins {
+			pins = "gpio70";			/* TP_PWR_RST / XRES (same) */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		wake-pins {
+			pins = "gpio45";			/* GPIO_CTP_WAKE_3G */
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+	};
+
+	/* --- MPU3050 gyroscope --- */
+	/delete-node/ mpu-state;
+
+	mpu3050_gpios: mpu-state {
+		irq-pins {
+			pins = "gpio75";			/* GYRO_INT_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	/* --- LM8502 LED controller --- */
+	/delete-node/ lm8502-state;
+
+	lm8502_pins: lm8502-state {
+		enable-pins {
+			pins = "gpio121";			/* LM8502_EN (same) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		irq-pins {
+			pins = "gpio77";			/* LM8502_INT_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* --- MAX8903B charger --- */
+	/delete-node/ max8903b-state;
+
+	charger_gpios: max8903b-state {
+		in-pins {
+			pins = "gpio35", "gpio36", "gpio86";	/* FLT, CHG, DC_OK_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			input-enable;
+			bias-pull-up;
+		};
+
+		out-pins {
+			/* gpio134 = USB_CHG_MODE_3G */
+			pins = "gpio30", "gpio33", "gpio34",
+				"gpio41", "gpio42", "gpio134";
+			function = "gpio";
+			drive-strength = <2>;
+		};
+
+		dcm-pins {
+			pins = "gpio42";
+			function = "gpio";
+			output-high;
+		};
+
+		iusb-pins {
+			pins = "gpio134";			/* USB_CHG_MODE_3G */
+			function = "gpio";
+			output-high;
+		};
+
+		usus-pins {
+			pins = "gpio33";
+			function = "gpio";
+			output-low;
+		};
+
+		cen-pins {
+			pins = "gpio41";
+			function = "gpio";
+			output-low;
+		};
+
+		d-iset-pins {
+			pins = "gpio34", "gpio30";
+			function = "gpio";
+			output-low;
+		};
+	};
+
+	/* --- A6 battery controllers (DVT/PVT 3G pin set) --- */
+	/delete-node/ a6-0-default-state;
+	/delete-node/ a6-1-default-state;
+
+	a6_0_default: a6-0-default-state {
+		sbw-pins {
+			pins = "gpio156", "gpio170";	/* TCK_3G_DVT, TDIO_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		wakeup-pins {
+			pins = "gpio155";		/* WAKEUP (same) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		irq-pins {
+			pins = "gpio37";		/* A6_0_IRQ_3G_DVT (= WiFi DVT IRQ) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	a6_1_default: a6-1-default-state {
+		sbw-pins {
+			pins = "gpio115", "gpio116";	/* TCK, TDIO (same) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		wakeup-pins {
+			pins = "gpio78";		/* A6_1_WAKEUP_3G */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		irq-pins {
+			pins = "gpio94";		/* A6_1_IRQ_3G_DVT (= WiFi DVT IRQ) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/* --- ISP1763 USB host controller --- */
+	isp1763_pins: isp1763-state {
+		int-pins {
+			pins = "gpio172";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+		rst-pins {
+			pins = "gpio152";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-disable;
+		};
+		dack-pins {
+			pins = "gpio169";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		dreq-pins {
+			pins = "gpio29";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-down;
+		};
+		/*
+		 * NB: the modem 3.3V rail is NOT a software-controlled SoC
+		 * GPIO on Topaz3G PVT. The schematic puts VDD_3V3_3G_EN on
+		 * gpio158 (a stuffing option also shows gpio132), while the
+		 * legacy webOS code labels gpio106 "VDD_3V3_EN" but never
+		 * actually drives it -- a live probe confirms gpio106 stays
+		 * `in hi` through camera and airplane-mode toggles. The
+		 * modem rail comes up by board default and Linux must NOT
+		 * mux gpio106/gpio158 as a plain GPIO output here, or it
+		 * will collide with the webcam (gpio106 = WEBCAM_RST per
+		 * the schematic). So: no power-pins entry, no power-gpios
+		 * on the isp1763 node.
+		 */
+		modem-disable-pins {
+			pins = "gpio171";		/* 3G_DISABLE_N (active-low) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-high;			/* deassert disable -> modem enabled */
+		};
+	};
+
+	/* --- MDM6600 modem control --- */
+	mdm6600_pins: mdm6600-state {
+		/*
+		 * 3G_WAKE_N (gpio38) is an INPUT to the host with an external
+		 * pull-up; the modem pulls it low to signal "I have data".
+		 * The legacy webOS gpiomux configures it as GPIO_IN_8M_PU
+		 * (active) / GPIO_IN_2M_PU (suspend) and the live PVT device
+		 * boots with this pin in "in hi" state. Do not drive it as an
+		 * output from Linux -- doing so fights the modem.
+		 */
+		wake-pins {
+			pins = "gpio38";		/* 3G_WAKE_N (host-side input) */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+		sim-detect-pins {
+			pins = "gpio61";		/* 3G_UIM_CD_N */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+};
+
+/* ===========================================================================
+ * Touchscreen node -- override wake-gpios property (was gpio123, EBI2 line)
+ * ===========================================================================
+ */
+&touchscreen {
+	wake-gpios = <&tlmm 45 GPIO_ACTIVE_HIGH>;
+};
+
+/* ===========================================================================
+ * Bluetooth node inside &gsbi6_serial -- retarget all four control lines
+ * and the host-wakeup interrupt
+ * ===========================================================================
+ */
+&gsbi6_serial {
+	bluetooth {
+		reset-gpios = <&tlmm 122 GPIO_ACTIVE_LOW>;	/* BT_RST_N_3G */
+		shutdown-gpios = <&tlmm 110 GPIO_ACTIVE_HIGH>;	/* BT_POWER_3G */
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>; /* BT_WAKE */
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <50 IRQ_TYPE_EDGE_RISING>;		/* BT_HOST_WAKE_3G */
+		interrupt-names = "host-wakeup";
+	};
+};
+
+/* ===========================================================================
+ * Sensors
+ * ===========================================================================
+ */
+&mpu3050 {
+	interrupts-extended = <&tlmm 75 IRQ_TYPE_EDGE_FALLING>;	/* GYRO_INT_3G */
+};
+
+/*
+ * LSM303DLH accel/magn:
+ * Topaz WiFi DTS disables these because gpiomux-tenderloin.c never wires
+ * gpio124 (the assumed accel IRQ) into either tenderloin_pins_wifi[] or
+ * tenderloin_pins_3g[]. On 3G hardware gpio124 is additionally an
+ * EBI2_A_D line, so muxing it as plain GPIO input pull-up would corrupt
+ * the modem bus. Disable on 3G until a board with a populated
+ * accelerometer is confirmed and a non-EBI2 IRQ line is identified.
+ */
+&lsm303dlh_accel { status = "disabled"; };
+&lsm303dlh_magn  { status = "disabled"; };
+
+/* ===========================================================================
+ * LED controller
+ * ===========================================================================
+ */
+&lm8502 {
+	interrupts = <77 IRQ_TYPE_EDGE_FALLING>;	/* LM8502_INT_3G */
+};
+
+/* ===========================================================================
+ * Charger
+ * ===========================================================================
+ */
+&charger {
+	dok-gpios = <&tlmm 86 GPIO_ACTIVE_LOW>;			/* DC_OK_3G */
+	usb-current-limit-gpios = <&tlmm 134 GPIO_ACTIVE_HIGH>;	/* USB_CHG_MODE_3G */
+};
+
+/* ===========================================================================
+ * A6 battery controllers (DVT/PVT 3G hardware)
+ * ===========================================================================
+ */
+&a6_0 {
+	interrupt-parent = <&tlmm>;
+	interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
+	tck-gpios = <&tlmm 156 GPIO_ACTIVE_HIGH>;	/* TCK_3G_DVT */
+	tdio-gpios = <&tlmm 170 GPIO_ACTIVE_HIGH>;	/* TDIO_3G */
+};
+
+&a6_1 {
+	interrupt-parent = <&tlmm>;
+	interrupts = <94 IRQ_TYPE_EDGE_FALLING>;
+	wakeup-gpios = <&tlmm 78 GPIO_ACTIVE_HIGH>;	/* A6_1_WAKEUP_3G */
+};
+
+/* ===========================================================================
+ * Disable peripherals that do not exist or whose default GPIOs collide
+ * with EBI2 / 3G modem control on Topaz3G
+ * ===========================================================================
+ */
+&hdmi { status = "disabled"; };
+
+&gsbi5        { status = "disabled"; };
+&gsbi5_serial { status = "disabled"; };
+
+/*
+ * Front-facing 1.3MP webcam (Aptina MT9M113) -- present on Topaz3G PVT
+ * (verified: /dev/video0 + msm_camera_mt9m113.0 in legacy webOS, plus
+ * "1.3M CAMERA CONNECTOR" annotation in the schematic).
+ *
+ * The earlier 3G DT disabled this node because the WiFi-variant DT
+ * routes the sensor's reset-gpios to gpio106, and the legacy 3G code
+ * also lays claim to gpio106 as a misnamed "VDD_3V3_EN" -- a real
+ * software collision on paper. A live-device GPIO probe (Camera app
+ * open/close, airplane-mode toggle) shows gpio106 never moves: the
+ * line is held high by the board, not by the SoC. The schematic
+ * confirms gpio106 is the WEBCAM_RST net (ball AL8, line 3086) and
+ * places the modem 3V3 enable on gpio158 (line 4916, TP172) instead.
+ *
+ * So the collision is a phantom: keep the WiFi-variant binding for
+ * reset-gpios/powerdown-gpios and just re-enable the node. We do NOT
+ * drive gpio106 from the isp1763 power-gpios on this variant (see
+ * comment on the isp1763 node above) so there is no longer any
+ * pinctrl/gpio-consumer fight between camera and modem.
+ */
+&gsbi4_i2c {
+	camera@3c {
+		status = "okay";
+	};
+};
+
+/* ===========================================================================
+ * Volume keys: Topaz3G routes them through PM8058 GPIO5/GPIO6.
+ * The WiFi variant uses TLMM GPIO 103/104; the common DTS does not
+ * define a gpio-keys node, so we add it here.
+ * ===========================================================================
+ */
+/ {
+	gpio-keys {
+		compatible = "gpio-keys";
+		autorepeat;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&core_navi_pins>;
+
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&pm8058_gpio 5 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+		};
+
+		key-volume-down {
+			label = "Volume Down";
+			gpios = <&pm8058_gpio 6 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEDOWN>;
+			debounce-interval = <15>;
+		};
+
+		/*
+		 * Capacitive "Home" button under the screen. The legacy webOS
+		 * kernel labels it "core navi" and registers it as an edge-both
+		 * IRQ on gpio40 (IRQ 296 on the PVT device). KEY_HOMEPAGE
+		 * matches what most touchpad-class Linux userspace expects.
+		 */
+		key-home {
+			label = "Home";
+			gpios = <&tlmm 40 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_HOMEPAGE>;
+			debounce-interval = <15>;
+			wakeup-source;
+		};
+	};
+};
+
+&tlmm {
+	core_navi_pins: core-navi-state {
+		home-pins {
+			pins = "gpio40";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+};
+
+/* ===========================================================================
+ * EBI2 + ISP1763 USB host controller
+ *
+ * Power-on sequence (from legacy board-tenderloin.c):
+ *   1. Drive gpio171 (DISABLE_N) low and gpio106 (3V3_EN) low
+ *   2. Wait 300ms
+ *   3. Drive gpio106 (3V3_EN) high
+ *   4. Drive gpio171 (DISABLE_N) high
+ * Driver is expected to honour the power/reset GPIOs declared on the
+ * isp1763 node; EVT boards use gpio82 instead of gpio106 for 3V3_EN.
+ * ===========================================================================
+ */
+&ebi2 {
+	status = "okay";
+
+	isp1763: usb@3,0 {
+		compatible = "nxp,usb-isp1763";
+		reg = <3 0x0 0x6000>;		/* CS3, offset 0, 24KB window */
+
+		/*
+		 * TEMPORARILY DISABLED for boot-hang diagnostic. On TP4G the
+		 * kernel reliably hangs at "io scheduler mq-deadline registered"
+		 * (~t=1.4s) while the same kernel boots fine on a WiFi-only
+		 * Topaz that has no isp1763. Suspicion: qcom-ebi2 probe writes
+		 * CS3 SLOW_CFG / FAST_CFG to the EBI2 XMEM regs while the system
+		 * fabric is still halted (commit ca1687f77e89 moved the
+		 * SYS/APPS fabric unhalt from gcc probe to mmcc probe, so the
+		 * unhalt now happens AFTER ebi2 probe). With `status =
+		 * "disabled"` the EBI2 for_each_available_child loop skips this
+		 * node entirely, so no CS3 writes happen. If TP4G then boots,
+		 * the fabric-vs-EBI2 ordering is confirmed and the right fix is
+		 * to either unhalt the fabric earlier or defer EBI2 probe.
+		 *
+		 * USB host on this node was not yet functional on mainline, so
+		 * there is no regression in disabling this for the diagnostic.
+		 */
+		status = "disabled";
+
+		interrupts-extended = <&tlmm 172 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "host";
+
+		bus-width = <16>;
+		dr_mode = "host";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&isp1763_pins>;
+
+		/*
+		 * No power-gpios: VDD_3V3_3G_EN is not a software-controlled
+		 * line on Topaz3G PVT. The legacy webOS code claims gpio106
+		 * for this rail but a live probe shows the pin never moves,
+		 * and the schematic puts the actual VDD_3V3_3G_EN net on
+		 * gpio158 (TP172) -- still hardware-default-on. Driving
+		 * gpio106 from here would collide with the WEBCAM_RST line.
+		 */
+		reset-gpios = <&tlmm 152 GPIO_ACTIVE_LOW>;
+
+		/*
+		 * EBI2 CS3 timing (mirrors legacy webOS board-tenderloin.c which
+		 * writes 0x51010112 / 0x01000020 directly to EBI2_XMEM_CS3_*_CFG
+		 * for boardtype_is_3g()). Without these the qcom-ebi2 driver
+		 * keeps the CS at controller-reset defaults that are too fast
+		 * for the ISP1763, the scratch-register test reads back as 0
+		 * and the chip never enumerates.
+		 *
+		 *   SLOW_CFG = 0x51010112
+		 *     RECOVERY=5  WR_HOLD=1  WR_DELTA=1  RD_DELTA=1
+		 *     WR_WAIT=1   RD_WAIT=2
+		 *   FAST_CFG = 0x01000020
+		 *     RD_HOLD=1   ADV_OE_RECOVERY=0   ADDR_HOLD_ENA=1
+		 */
+		qcom,xmem-recovery-cycles = <5>;
+		qcom,xmem-write-hold-cycles = <1>;
+		qcom,xmem-write-delta-cycles = <1>;
+		qcom,xmem-read-delta-cycles = <1>;
+		qcom,xmem-write-wait-cycles = <1>;
+		qcom,xmem-read-wait-cycles = <2>;
+		qcom,xmem-read-hold-cycles = <1>;
+		qcom,xmem-adv-to-oe-recovery-cycles = <0>;
+		qcom,xmem-address-hold-enable;
+	};
+};
+
+/* ===========================================================================
+ * MDM6600 3G Modem
+ *
+ * The modem enumerates as a USB device downstream of ISP1763. Power and
+ * disable rails are controlled by the isp1763 power-gpios and the
+ * gpio171 line in isp1763_pins above. The node here exists primarily for
+ * future modem-driver work (sim detect, modem wake); it is disabled
+ * because there is no mainline driver yet -- the USB enumeration alone
+ * is enough to get the modem on the bus.
+ * ===========================================================================
+ */
+/ {
+	mdm6600-modem {
+		compatible = "motorola,mdm6600-simple";
+		status = "disabled";
+
+		/*
+		 * 3G_WAKE_N is wired as an input to the host (the modem
+		 * actively pulls it low). Expose it as an interrupt so a
+		 * future modem driver can wake the system on a falling edge;
+		 * `wake-gpios` would imply we drive the line, which we must
+		 * not do.
+		 */
+		interrupt-parent = <&tlmm>;
+		interrupts = <38 IRQ_TYPE_EDGE_FALLING>;	/* 3G_WAKE_N */
+		interrupt-names = "wake";
+		wakeup-source;
+
+		sim-detect-gpios = <&tlmm 61 GPIO_ACTIVE_LOW>;	/* 3G_UIM_CD_N */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&mdm6600_pins>;
+	};
+};

@@ -1,0 +1,486 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad Go - Opal WiFi-only variant
+ *
+ * Codename: SHORTLOIN
+ * SoC:      Qualcomm APQ8060 (MSM8660), WiFi-only (no 3G modem)
+ * Display:  7" 1024x768 Hitachi TX18D42VM LVDS panel
+ *
+ * Opal is electrically a 7" Topaz: same APQ8060, PMICs (PM8058/PM8901),
+ * SAW/SPM/clock/regulator topology, Atheros AR6003 WiFi, BT, MAX8903B
+ * charger and Cypress CY8CTMA395 (+A6) touch stack. Almost all of
+ * tenderloin-common.dtsi applies unchanged. The deltas captured here:
+ *
+ *   1. DISPLAY  — Hitachi TX18D42VM (not the LG XGA LVDS panel). Same
+ *      MDP4 -> LCDC -> LVDS path and same pm8058_l10 rail, but different
+ *      timings (69.3 MHz, 24bpp) and a mandatory SPI power-on sequence on
+ *      GSBI5 (see panel-hitachi-tx18d42vm). GSBI5 is therefore SPI here,
+ *      not the GPS UART it is on Topaz.
+ *   2. GPIO map — Opal uses the *3G-style* assignments (same as
+ *      qcom-apq8060-topaz-3g) for WiFi/BT/touch/gyro/LED/charger/A6,
+ *      NOT the topaz-wifi map.
+ *   3. Extra HW — front MT9M113 + rear VX6953 cameras, PN544 NFC,
+ *      CY8C20236A proximity, cover-detect. HDMI is available (gpio169-172
+ *      are free on the WiFi model).
+ *
+ * Hardware revisions: values below target DVT/PVT (the common production
+ * build, and the unit this was validated against). EVT1 differences are
+ * noted inline (A6 IRQ/TCK, webcam flash). See gpiomux-shortloin.{c,h} in
+ * the legacy webOS Opal kernel.
+ *
+ * For the 3G variant use qcom-apq8060-opal-3g.dts.
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "HP TouchPad Go (Opal WiFi)";
+	compatible = "hp,opal", "qcom,apq8060", "qcom,msm8660";
+};
+
+/*
+ * ===========================================================================
+ * GPIO remap: Opal uses the 3G-style pin assignments (same as topaz-3g)
+ * ===========================================================================
+ */
+
+/* WiFi reset/wake: WL_HOST_WAKE=93, HOST_WAKE_WL=80, WLAN_RST_N=28 */
+&ath6kl_pwrseq {
+	reset-gpios = <&tlmm 93 GPIO_ACTIVE_HIGH>,
+		      <&tlmm 80 GPIO_ACTIVE_HIGH>,
+		      <&tlmm 28 GPIO_ACTIVE_LOW>;
+};
+
+/*
+ * Override the pinctrl states that already exist in tenderloin-common by
+ * referencing their labels (a merge), NOT by re-declaring them inside
+ * &tlmm — re-declaring a label is a dtc "Duplicate label" error. Only the
+ * pins that actually move on Opal are changed; everything else is inherited.
+ */
+
+/* WiFi: HOST_WAKE_WL 137 -> 80 (WL_HOST_WAKE stays gpio93). */
+&wlan_gpios {
+	device-wake-pins {
+		pins = "gpio80";
+	};
+};
+
+/* Bluetooth: BT_HOST_WAKE 129 -> 50, BT_POWER 130 -> 110 (BT_WAKE stays 131). */
+&bt_pin {
+	hostwake-pins {
+		pins = "gpio50";
+	};
+	power-pins {
+		pins = "gpio110";
+	};
+};
+
+/* Gyro (MPU3050): GYRO_INT 125 -> 75. */
+&mpu3050_gpios {
+	irq-pins {
+		pins = "gpio75";
+	};
+};
+
+/* LED controller (LM8502): LM8502_INT 128 -> 77 (EN stays gpio121). */
+&lm8502_pins {
+	irq-pins {
+		pins = "gpio77";
+	};
+};
+
+/* Touchscreen: CTP_WAKE 123 -> 45 (XRES stays gpio70). */
+&cy8ctma395_default_state {
+	wake-pins {
+		pins = "gpio45";
+	};
+};
+
+/* Charger (MAX8903B): DC_OK 140 -> 86, USB_CHG_MODE 133 -> 134. */
+&charger_gpios {
+	in-pins {
+		pins = "gpio35", "gpio36", "gpio86";
+	};
+	out-pins {
+		pins = "gpio30", "gpio33", "gpio34", "gpio41", "gpio42", "gpio134";
+	};
+	iusb-pins {
+		pins = "gpio134";
+	};
+};
+
+&tlmm {
+	/*
+	 * GSBI5 QUP SPI pins for the Hitachi panel control channel.
+	 * gpio49=MOSI, gpio50=MISO (unused), gpio51=CS, gpio52=CLK.
+	 */
+	opal_gsbi5_spi_pins: gsbi5-spi-state {
+		pins = "gpio49", "gpio50", "gpio51", "gpio52";
+		function = "gsbi5";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	/* Camera control (front MT9M113 + rear VX6953 share MCLK/flash) */
+	camera_pins_opal: camera-opal-state {
+		mclk-pins {
+			pins = "gpio32";		/* CAMIF_MCLK */
+			function = "cam_mclk";
+			drive-strength = <8>;
+			bias-disable;
+		};
+		pwdn-pins {
+			pins = "gpio107";		/* WEBCAM_PWDN */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+		flash-pins {
+			/* DVT/PVT: gpio158; EVT1 used gpio69 */
+			pins = "gpio158";		/* WEBCAM_FLASH */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+	};
+
+	/* Camera I2C bit-bang (rear sensor config bus on some builds) */
+	camera_i2c_pins: camera-i2c-state {
+		pins = "gpio47", "gpio48";		/* CAM_I2C_DATA/CLK */
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	/* Proximity sensor (CY8C20236A) on bit-banged I2C + INT */
+	proximity_pins: proximity-state {
+		i2c-pins {
+			pins = "gpio68", "gpio69";	/* PROX_I2C_DATA/CLK */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		irq-pins {
+			pins = "gpio39";		/* PROX_INT */
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	/* Cover/case detect (Hall) */
+	cover_detect_pins: cover-detect-state {
+		pins = "gpio31";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+		input-enable;
+	};
+};
+
+/* Touchscreen: CTP_WAKE moves to gpio45 (reset stays gpio70). */
+&touchscreen {
+	wake-gpios = <&tlmm 45 GPIO_ACTIVE_HIGH>;
+};
+
+/* Bluetooth control lines on GSBI6 UART */
+&gsbi6_serial {
+	bluetooth {
+		reset-gpios = <&tlmm 122 GPIO_ACTIVE_HIGH>;		/* BT_RST_N */
+		host-wakeup-gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;	/* BT_HOST_WAKE */
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>;	/* BT_WAKE */
+		shutdown-gpios = <&tlmm 110 GPIO_ACTIVE_HIGH>;		/* BT_POWER */
+	};
+};
+
+/* Gyro interrupt: GYRO_INT=75 */
+&mpu3050 {
+	interrupts-extended = <&tlmm 75 IRQ_TYPE_EDGE_FALLING>;
+};
+
+/* LED controller interrupt: LM8502_INT=77 */
+&lm8502 {
+	interrupts = <77 IRQ_TYPE_EDGE_FALLING>;
+};
+
+/*
+ * Charger (MAX8903B): DC_OK=86 (vs 140 on Topaz), USB_CHG_MODE=134 (vs 133).
+ * Other control lines are unchanged from Topaz.
+ */
+&charger {
+	dok-gpios = <&tlmm 86 GPIO_ACTIVE_LOW>;
+	usb-current-limit-gpios = <&tlmm 134 GPIO_ACTIVE_HIGH>;
+};
+
+/*
+ * A6 battery controllers. DVT/PVT values:
+ *   A6_0: TCK=156, TDIO=170, WAKEUP=155, IRQ=37
+ *   A6_1: TCK=115, TDIO=116, WAKEUP=78,  IRQ=94
+ * EVT1 differed (A6_0 TCK=68, A6_0 IRQ=156, A6_1 IRQ=132).
+ */
+&a6_0 {
+	tck-gpios = <&tlmm 156 GPIO_ACTIVE_HIGH>;
+	tdio-gpios = <&tlmm 170 GPIO_ACTIVE_HIGH>;
+	wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>;
+	interrupt-parent = <&tlmm>;
+	interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
+};
+
+&a6_1 {
+	tck-gpios = <&tlmm 115 GPIO_ACTIVE_HIGH>;
+	tdio-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;
+	wakeup-gpios = <&tlmm 78 GPIO_ACTIVE_HIGH>;
+	interrupt-parent = <&tlmm>;
+	interrupts = <94 IRQ_TYPE_EDGE_FALLING>;
+};
+
+/* WiFi-model Opal has HDMI output (gpio169-172 free, no modem). */
+&hdmi {
+	status = "okay";
+};
+
+/*
+ * ===========================================================================
+ * Display: Hitachi TX18D42VM (replaces the LG XGA LVDS panel)
+ * ===========================================================================
+ */
+
+/* Turn off the Topaz LG panel; Opal drives the Hitachi panel instead. */
+&lg_panel {
+	status = "disabled";
+};
+
+/* Point the MDP4 LVDS output at the Hitachi panel. */
+&mdp_lvds_out {
+	remote-endpoint = <&opal_panel_in>;
+};
+
+/*
+ * GSBI5 is the panel SPI control channel on Opal (it is the GPS UART on
+ * Topaz). Switch it to SPI mode, disable the UART child, and attach the
+ * panel. The 16-bit power-on sequence + DISPLAY ON is handled by the
+ * panel-hitachi-tx18d42vm driver.
+ */
+&gsbi5_serial {
+	status = "disabled";
+};
+
+&gsbi5 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_SPI>;
+
+	gsbi5_spi: spi@16480000 {
+		compatible = "qcom,spi-qup-v1.1.1";
+		reg = <0x16480000 0x1000>;
+		interrupts = <GIC_SPI 155 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&gcc GSBI5_QUP_CLK>, <&gcc GSBI5_H_CLK>;
+		clock-names = "core", "iface";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&opal_gsbi5_spi_pins>;
+
+		status = "okay";
+
+		panel@0 {
+			compatible = "hitachi,tx18d42vm";
+			reg = <0>;
+			spi-max-frequency = <5400000>;
+			spi-cpha;			/* SPI mode 1 (CPOL=0, CPHA=1) */
+
+			/* VDD_LVDS_3.3V; pm8058_l10 is regulator-always-on */
+			power-supply = <&pm8058_l10>;
+
+			backlight = <&backlight>;
+
+			port {
+				opal_panel_in: endpoint {
+					remote-endpoint = <&mdp_lvds_out>;
+				};
+			};
+		};
+	};
+};
+
+/*
+ * ===========================================================================
+ * Cameras
+ * ===========================================================================
+ *
+ * Front MT9M113 is shared with Topaz (camera@3c on gsbi4_i2c). Only the
+ * reset line differs: Opal uses PM8058 GPIO 8, not TLMM gpio106 (which is
+ * the 3G 3V3 enable on Opal). Override just the reset GPIO.
+ */
+&gsbi4_i2c {
+	camera@3c {
+		/* WEBCAM_RESET = PM8058 GPIO 8 (0-indexed 7), active low */
+		reset-gpios = <&pm8058_gpio 7 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&camera_pins_opal>;
+	};
+
+	/*
+	 * Rear camera - STMicroelectronics VX6953 5MP EDOF on CSI0.
+	 * Not populated/validated on the WiFi DVT used for bring-up, so it
+	 * is left disabled. Enable once confirmed wired on the target unit.
+	 * No reset line (powerdown only): PM8058 GPIO 9. Shares MCLK gpio32.
+	 */
+	vx6953: camera@20 {
+		compatible = "st,vx6953";
+		reg = <0x20>;
+		status = "disabled";
+
+		powerdown-gpios = <&pm8058_gpio 8 GPIO_ACTIVE_HIGH>;	/* PM8058 GPIO 9 */
+
+		vana-supply = <&pm8058_l11>;	/* 2.85V analog */
+		vdig-supply = <&pm8058_s3>;	/* 1.8V digital */
+		vio-supply = <&pm8058_s3>;	/* 1.8V I/O */
+
+		clocks = <&mmcc CAMCLK0_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&mmcc CAMCLK0_SRC>;
+		assigned-clock-rates = <24000000>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_pins_opal>;
+
+		port {
+			vx6953_ep: endpoint {
+				bus-type = <4>;	/* CSI2_DPHY */
+				clock-lanes = <0>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&camss_csi0_ep>;
+			};
+		};
+	};
+};
+
+/*
+ * Add the CSI0 input for the rear camera. The front MT9M113 CSI1 port is
+ * already defined in tenderloin-common; this only adds port@0.
+ */
+&camss {
+	ports {
+		port@0 {
+			reg = <0>;
+			camss_csi0_ep: endpoint {
+				bus-type = <4>;	/* CSI2_DPHY */
+				clock-lanes = <0>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&vx6953_ep>;
+			};
+		};
+	};
+};
+
+/*
+ * ===========================================================================
+ * NFC - NXP PN544 on GSBI7 I2C
+ * ===========================================================================
+ */
+&gsbi7 {
+	status = "okay";
+	qcom,mode = <GSBI_PROT_I2C>;
+};
+
+&gsbi7_i2c {
+	status = "okay";
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&gsbi7_i2c_pins>;
+
+	pn544: nfc@28 {
+		compatible = "nxp,pn544-i2c";
+		reg = <0x28>;
+
+		interrupt-parent = <&pm8058_gpio>;
+		interrupts = <14 IRQ_TYPE_EDGE_RISING>;		/* PM8058 GPIO 15 */
+
+		enable-gpios = <&pm8058_gpio 15 GPIO_ACTIVE_HIGH>;	/* GPIO 16 */
+		firmware-gpios = <&pm8058_gpio 16 GPIO_ACTIVE_HIGH>;	/* GPIO 17 */
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&nfc_pins>;
+	};
+};
+
+&pm8058_gpio {
+	nfc_pins: nfc-state {
+		gpio@e {				/* PM8058 GPIO 15: NFC IRQ */
+			pins = "gpio15";
+			function = "normal";
+			input-enable;
+			bias-pull-down;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+		gpio@f {				/* PM8058 GPIO 16: NFC enable */
+			pins = "gpio16";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+		gpio@10 {				/* PM8058 GPIO 17: NFC FW mode */
+			pins = "gpio17";
+			function = "normal";
+			output-low;
+			power-source = <PM8058_GPIO_S3>;
+			qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+		};
+	};
+};
+
+/*
+ * ===========================================================================
+ * Misc Opal-only inputs
+ * ===========================================================================
+ */
+
+/* Cover/case detect reported as a lid switch. */
+/ {
+	gpio-keys-opal {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&cover_detect_pins>;
+
+		cover-detect {
+			label = "Cover Detect";
+			gpios = <&tlmm 31 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			wakeup-source;
+			debounce-interval = <15>;
+		};
+	};
+
+	/*
+	 * Proximity sensor: Cypress CY8C20236A PSoC on a bit-banged I2C bus
+	 * (gpio68/69), INT on gpio39. There is no in-tree driver for this PSoC
+	 * (it needs custom/userspace firmware), so the bus is defined but the
+	 * sensor will not bind until a driver exists. Harmless to leave here.
+	 */
+	proximity_i2c: i2c-gpio-prox {
+		compatible = "i2c-gpio";
+		sda-gpios = <&tlmm 68 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&tlmm 69 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&proximity_pins>;
+		status = "disabled";	/* enable once a CY8C20236A driver exists */
+
+		proximity@8 {
+			compatible = "cypress,cy8c20236a";
+			reg = <0x08>;
+			interrupt-parent = <&tlmm>;
+			interrupts = <39 IRQ_TYPE_EDGE_FALLING>;
+		};
+	};
+};

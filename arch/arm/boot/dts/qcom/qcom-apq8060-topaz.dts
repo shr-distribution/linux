@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+/*
+ * HP TouchPad - Topaz WiFi-only variant
+ *
+ * Codename: TENDERLOIN
+ * Hardware: Qualcomm APQ8060 (MSM8660), WiFi-only
+ *
+ * This is the most common HP TouchPad variant sold.
+ * For the 3G variant, use qcom-apq8060-topaz-3g.dts
+ * For the Opal variant (different hardware), a separate device tree is needed.
+ */
+
+/dts-v1/;
+
+#include "qcom-apq8060-tenderloin-common.dtsi"
+
+/ {
+	model = "APQ8060 HP TouchPad (Topaz WiFi)";
+	compatible = "hp,topaz", "qcom,apq8060", "qcom,msm8660";
+};
+
+/* Topaz WiFi has no GPS hardware - disable GSBI5 UART */
+&gsbi5 {
+	status = "disabled";
+};
+
+&gsbi5_serial {
+	status = "disabled";
+};
+
+/*
+ * Topaz WiFi does NOT have accelerometer or magnetometer hardware.
+ * The TENDERLOIN_GSENS_INT GPIO (124) is defined in legacy kernel but
+ * NOT used in the WiFi pin tables (tenderloin_pins_wifi[]).
+ * These sensors may only be present on 3G/Opal variants.
+ */
+&lsm303dlh_accel {
+	status = "disabled";
+};
+
+&lsm303dlh_magn {
+	status = "disabled";
+};
