@@ -1134,19 +1134,6 @@
 			operating-points-v2 = <&gpu_opp_table>;
 
 			/*
-			 * Match legacy webOS KGSL idle_timeout_3d = HZ/5. With
-			 * two-tier runtime PM (GFX3D_GDSC carries RPM_ALWAYS_ON,
-			 * a2xx sets retain_power_runtime) this is just the clock-
-			 * gate delay: at idle the GPU clocks gate but the rail and
-			 * power domain stay up (legacy SLEEP), so resume is a cheap
-			 * clocks-on with no a2xx_hw_init microcode burst -- the
-			 * burst that could otherwise stall the shared MMSS AXI
-			 * during an MDP client-switch underrun. The footswitch
-			 * power-collapses only on system suspend (legacy SLUMBER).
-			 */
-			qcom,gpu-idle-timeout-ms = <200>;
-
-			/*
 			 * GPU voltage supply (vdd_dig) for DVFS.
 			 * PM8058 S1 provides 500mV-1350mV range.
 			 */
