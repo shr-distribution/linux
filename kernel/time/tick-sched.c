@@ -1365,7 +1365,17 @@ bool tick_nohz_idle_got_tick(void)
  */
 ktime_t tick_nohz_get_next_hrtimer(void)
 {
-	return __this_cpu_read(tick_cpu_device.evtdev)->next_event;
+	struct clock_event_device *dev = __this_cpu_read(tick_cpu_device.evtdev);
+
+	/*
+	 * During CPU hotplug teardown, the tick device may be NULL when
+	 * CPUHP_AP_TICK_DYING removes it but cpuidle is still active.
+	 * Return 0 in this race window.
+	 */
+	if (unlikely(!dev))
+		return 0;
+
+	return dev->next_event;
 }
 
 /**
@@ -1393,6 +1403,16 @@ ktime_t tick_nohz_get_sleep_length(ktime_t *delta_next)
 	ktime_t next_event;
 
 	WARN_ON_ONCE(!tick_sched_flag_test(ts, TS_FLAG_INIDLE));
+
+	/*
+	 * During CPU hotplug teardown, the tick device may be NULL when
+	 * CPUHP_AP_TICK_DYING removes it but cpuidle is still active.
+	 * Return 0 to force the shortest sleep in this race window.
+	 */
+	if (unlikely(!dev)) {
+		*delta_next = 0;
+		return 0;
+	}
 
 	*delta_next = ktime_sub(dev->next_event, now);
 
