@@ -103,6 +103,25 @@ static inline void outer_resume(void)
 		outer_cache.resume();
 }
 
+/**
+ * outer_sync - drain the outer cache write buffer
+ *
+ * Ensure that all data has been written from the outercache to main memory.
+ * This is used before GPU/accelerator submission to guarantee the GPU sees
+ * current data.
+ */
+#ifdef CONFIG_OUTER_CACHE_SYNC
+static inline void outer_sync(void)
+{
+	if (outer_cache.sync)
+		outer_cache.sync();
+}
+#else
+static inline void outer_sync(void)
+{ }
+#endif
+
+
 #else
 
 static inline void outer_inv_range(phys_addr_t start, phys_addr_t end)
