@@ -83,9 +83,6 @@ static bool msm_gem_needs_contiguous(struct drm_device *dev, uint32_t flags,
 	    size >= ((size_t)msm_force_contiguous_pages * PAGE_SIZE) &&
 	    (msm_force_contiguous_max_pages == 0 ||
 	     size < ((size_t)msm_force_contiguous_max_pages * PAGE_SIZE))) {
-		pr_info_ratelimited(
-			"msm_gem: FIX#2 forcing CONTIGUOUS for size=%zu pages flags=0x%x\n",
-			size / PAGE_SIZE, flags);
 		return true;
 	}
 
@@ -261,46 +258,28 @@ void msm_gem_sync_for_gpu(struct drm_gem_object *obj)
 		return;
 	}
 
-	{
-		unsigned int nents = 0;
-		size_t total_len = 0;
+	for_each_sgtable_sg(sgt, sg, i) {
+		void *vaddr = sg_virt(sg);
+		phys_addr_t phys = sg_phys(sg);
+		size_t len = sg->length;
 
-		for_each_sgtable_sg(sgt, sg, i) {
-			void *vaddr = sg_virt(sg);
-			phys_addr_t phys = sg_phys(sg);
-			size_t len = sg->length;
+		if (vaddr)
+			dmac_flush_range(vaddr, vaddr + len);
 
-			if (vaddr)
-				dmac_flush_range(vaddr, vaddr + len);
-
-			/*
-			 * FIX #1: Order L1→L2→memory transitively. After
-			 * dmac_flush_range finishes its sequence of DCCMVAC
-			 * ops, dirty L1 lines are written into L2 — but those
-			 * L2 writes may still be pending in the L1↔L2 store
-			 * buffer when we issue outer_clean_range. Without an
-			 * intervening DSB, outer_clean_range can drain L2 to
-			 * memory before the freshly-evicted L1 data has
-			 * actually arrived in L2, leaving the page stale in
-			 * memory. Symptoms only appear when a BO's sgt is
-			 * heavily fragmented (many small per-page sg entries
-			 * in tight succession) — exactly the post-luna-
-			 * surface-manager state we observed (3 MB BO with
-			 * nents=406, 32 KB BO with nents=8).
-			 */
-			dsb(sy);
-			outer_clean_range(phys, phys + len);
-
-			total_len += len;
-			nents++;
-		}
+		/*
+		 * Order L1->L2->memory transitively. After dmac_flush_range
+		 * issues its DCCMVAC ops, dirty L1 lines are written into L2,
+		 * but those writes may still be pending in the L1<->L2 store
+		 * buffer when outer_clean_range runs. Without an intervening
+		 * DSB, outer_clean_range can drain L2 to memory before the
+		 * freshly-evicted L1 data has arrived in L2, leaving the page
+		 * stale -- seen on heavily fragmented BOs (many small per-page
+		 * sg entries in tight succession).
+		 */
 		dsb(sy);
-
-		if (nents > 1)
-			pr_debug(
-				"msm_gem sync_for_gpu: nents=%u total=%zu (FIX#1 dsb-between-L1-L2 active)\n",
-				nents, total_len);
+		outer_clean_range(phys, phys + len);
 	}
+	dsb(sy);
 #endif
 }
 
@@ -440,7 +419,7 @@ static struct page **get_pages(struct drm_gem_object *obj)
 
 		/*
 		 * For contiguous allocations (scanout without IOMMU, or
-		 * FIX#2-forced via msm_gem_needs_contiguous), use DMA API
+		 * forced via msm_gem_needs_contiguous()), use the DMA API
 		 * to get physically contiguous memory.
 		 *
 		 * Two sub-cases:
@@ -498,7 +477,6 @@ static struct page **get_pages(struct drm_gem_object *obj)
 			if (msm_obj->nomap_backed) {
 				struct sg_table *sgt;
 
-build_nomap_sgt:
 				/*
 				 * No struct page available — build a
 				 * single-segment sgt with sg_dma_address set
