@@ -2647,14 +2647,6 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 			/* PIX and VIDEO lines use line-based pixel pipeline */
 			video_out->bpl_alignment = 16;
 			video_out->line_based = 1;
-			/*
-			 * VFE31 DMA writes at output stride (bytesperline),
-			 * not input stride. stride_factor from pix_stride_factor
-			 * resource (now 1) for standard buffer allocation.
-			 */
-			video_out->stride_factor = vfe->res->pix_stride_factor;
-			dev_dbg(dev, "VFE line %d: stride_factor=%u\n",
-				 i, video_out->stride_factor);
 		}
 
 		video_out->nformats = vfe->line[i].nformats;

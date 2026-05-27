@@ -193,23 +193,6 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 			.hw_ops = &vfe_ops_3_1,
 			.formats_rdi = &vfe_formats_rdi_vfe31,
 			.formats_pix = &vfe_formats_pix_vfe31,
-			/*
-			 * VFE31 PIX/VIDEO stride factor.
-			 *
-			 * Raw capture analysis (2026-04-18) shows VFE writes Y at
-			 * OUTPUT stride (width), not INPUT stride (width*2):
-			 *   - CbCr found at offset 1,310,720 (1280*1024 = width*height)
-			 *   - CbCr NOT at 2,621,440 (2560*1024 = input_stride*height)
-			 *
-			 * webOS register dump shows:
-			 *   - burst = 303 = (1280/4)-17 = (input_stride/4)-17
-			 *   - XBAR_CFG1 = 0x1A1B (enables CbCr→WM4)
-			 *
-			 * Note: burst uses input_stride formula but VFE writes at
-			 * output stride. The burst controls DMA transfer size while
-			 * IMAGE_SIZE controls actual write stride.
-			 */
-			.pix_stride_factor = 1
 		}
 	}
 };
