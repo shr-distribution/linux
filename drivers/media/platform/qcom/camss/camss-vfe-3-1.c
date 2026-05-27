@@ -154,7 +154,7 @@ static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable);
 
 /*
  * ============================================================================
- * RAW-through-PIX mode (Y-Plane Hack)
+ * RAW-through-PIX mode (raw bytes via the Y channel)
  * ============================================================================
  *
  * When enabled, uses PIX mode path (AXI=0x01) but disables DEMUX processing
@@ -339,7 +339,7 @@ static inline u16 vfe31_calc_cbcr_height(u32 pixelformat, u16 height)
  * VFE31 Write Masters. This replaces the scattered inline calculations and
  * numerous module parameters with a single source of truth.
  *
- * Key insights from reference implementations (webOS, Mako, LG G2):
+ * Derived from reference implementations (webOS, Mako, LG G2):
  *
  * 1. UB_CFG and IMAGE_SIZE stride sit BEFORE DEMUX → use INPUT stride (width×2)
  * 2. ADDR_CFG burst sits AFTER DEMUX → use OUTPUT stride for Y, (width/4) for CbCr
@@ -3499,8 +3499,8 @@ static int vfe31_enable(struct vfe_line *line)
 	 * Step 2: Configure Write Masters using centralized config
 	 *
 	 * Use vfe31_calc_pix_config() or vfe31_calc_rdi_config() to calculate
-	 * all register values deterministically, then apply with vfe31_apply_wm_config().
-	 * Module param overrides are checked after calculation for debugging.
+	 * all register values deterministically, then apply with
+	 * vfe31_apply_wm_config().
 	 */
 	{
 		struct vfe31_line_config cfg = {0};

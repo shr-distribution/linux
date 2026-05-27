@@ -2367,8 +2367,7 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 
 	if (!vfe->genpd && res->vfe.has_pd) {
 		/*
-		 * Legacy magic index.
-		 * Requires
+		 * Power-domain index ordering for this SoC. Requires
 		 * power-domain = <VFE_X>,
 		 *                <VFE_Y>,
 		 *                <TITAN_TOP>
