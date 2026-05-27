@@ -4050,11 +4050,12 @@ static int camss_link_entities(struct camss *camss)
 					 * On newer SoCs (VFE32+), RDI lines have dedicated
 					 * hardware paths with separate RDI_CFG registers.
 					 *
-					 * VFE_LINE_VIDEO always shares CSID pad with PIX
-					 * since it uses the same CAMIF/DEMUX path with
-					 * different XBAR routing to write masters.
+					 * A line flagged shares_pix_csid (VFE31 VIDEO)
+					 * reads the PIX CSID source pad, since it uses the
+					 * same CAMIF/DEMUX path with different XBAR routing
+					 * to write masters.
 					 */
-					if (j == VFE_LINE_VIDEO) {
+					if (vfe->line[j].shares_pix_csid) {
 						csid_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
 					} else if (camss->res->version == CAMSS_8x60 &&
 						   (j == VFE_LINE_RDI0 ||

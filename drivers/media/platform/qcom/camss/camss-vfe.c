@@ -2461,6 +2461,8 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 		 * of comparing against backend-specific line IDs.
 		 */
 		l->pix = (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO);
+		l->secondary = (i == VFE_LINE_VIDEO || i == VFE_LINE_ZSL);
+		l->shares_pix_csid = (i == VFE_LINE_VIDEO);
 		init_completion(&l->output.sof);
 		init_completion(&l->output.reg_update);
 

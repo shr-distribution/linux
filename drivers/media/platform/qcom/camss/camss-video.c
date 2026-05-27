@@ -375,7 +375,7 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
 		struct vfe_device *vfe = to_vfe(line);
 
-		if ((line->id == VFE_LINE_VIDEO || line->id == VFE_LINE_ZSL) &&
+		if (line->secondary &&
 		    vfe->stream_count > 0) {
 			dev_info(video->camss->dev,
 				 "%s: joining active stream (stream_count=%d), bypass pipeline\n",
@@ -508,7 +508,7 @@ static void video_stop_streaming(struct vb2_queue *q)
 		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
 		struct vfe_device *vfe = to_vfe(line);
 
-		if ((line->id == VFE_LINE_VIDEO || line->id == VFE_LINE_ZSL) &&
+		if (line->secondary &&
 		    !media_entity_pipeline(&vdev->entity)) {
 			dev_info(video->camss->dev,
 				 "%s: stopping (bypassed pipeline)\n",

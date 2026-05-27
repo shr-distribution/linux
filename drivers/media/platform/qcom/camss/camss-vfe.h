@@ -88,11 +88,18 @@ struct vfe_output {
 struct vfe_line {
 	enum vfe_line_id id;
 	/*
-	 * True for an ISP/pixel-processed (line-based, DEMUX) output, false for
-	 * a raw/RDI bypass output. Lets the shared core treat a line by its
-	 * capability instead of hardcoding backend-specific line IDs.
+	 * Per-line capability flags, set by the core/backend at init so the
+	 * shared code can act on a line's role instead of hardcoding
+	 * backend-specific line IDs:
+	 *  - pix: ISP/pixel-processed (line-based, DEMUX) output vs raw/RDI.
+	 *  - secondary: a secondary output that joins an already-running
+	 *    capture pipeline rather than starting its own (VFE31 VIDEO/ZSL).
+	 *  - shares_pix_csid: reads the PIX CSID source pad rather than its own
+	 *    (VFE31 shares one CAMIF/DEMUX path across outputs).
 	 */
 	bool pix;
+	bool secondary;
+	bool shares_pix_csid;
 	struct v4l2_subdev subdev;
 	struct media_pad pads[MSM_VFE_PADS_NUM];
 	struct v4l2_mbus_framefmt fmt[MSM_VFE_PADS_NUM];
