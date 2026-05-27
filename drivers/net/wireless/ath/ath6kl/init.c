@@ -530,6 +530,18 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 		}
 	}
 
+	/*
+	 * Set maximum performance power mode to prevent firmware from
+	 * entering power save after initialization.  Without this, the
+	 * AR6003 firmware on msm8x60 stops responding to WMI commands
+	 * (scan, etc.) and raises WAKEUP error interrupts.
+	 */
+	ret = ath6kl_wmi_powermode_cmd(ar->wmi, idx, MAX_PERF_POWER);
+	if (ret) {
+		ath6kl_err("unable to set max perf power mode: %d\n", ret);
+		return ret;
+	}
+
 	return ret;
 }
 
@@ -694,6 +706,56 @@ static int ath6kl_get_fw(struct ath6kl *ar, const char *filename,
 
 #ifdef CONFIG_OF
 /*
+ * Check the device tree for an "atheros,skip-otp-upload" boolean property
+ * on any atheros,ath6kl node. Some boards (notably HP TouchPad: factory
+ * ar6000 module accepts skipOtp=1) ship an AR6003 chip whose OTP is
+ * already loaded from EEPROM/silicon, and BMI_LZ_DATA fast-download to
+ * app_load_addr 0x1234 hangs the chip's BMI state machine. Skipping
+ * the OTP upload step lets the chip self-boot and the firmware upload
+ * that follows behaves normally.
+ */
+static bool ath6kl_dt_skip_otp(void)
+{
+	struct device_node *node;
+	bool skip = false;
+
+	for_each_compatible_node(node, NULL, "atheros,ath6kl") {
+		if (of_property_read_bool(node, "atheros,skip-otp-upload")) {
+			skip = true;
+			of_node_put(node);
+			break;
+		}
+	}
+	return skip;
+}
+
+/*
+ * Read "atheros,app-start-override-addr" (u32) from any atheros,ath6kl
+ * DT node. Returns 0 if no node has the property. Used together with
+ * atheros,skip-otp-upload: on boards with chip-internal OTP we cannot
+ * discover the chip's preloaded OTP entry via bmi_read_hi32, so the DT
+ * supplies the address for BMI_Execute. The value is chip-revision
+ * specific -- see the per-rev dispatch table in the legacy Palm webOS
+ * factory ar6000.ko (e.g. 0x00945d00 for target_ver 0x30000582 on HP
+ * TouchPad).
+ */
+static u32 ath6kl_dt_app_start_override(void)
+{
+	struct device_node *node;
+	u32 addr = 0;
+
+	for_each_compatible_node(node, NULL, "atheros,ath6kl") {
+		if (!of_property_read_u32(node,
+					  "atheros,app-start-override-addr",
+					  &addr)) {
+			of_node_put(node);
+			break;
+		}
+	}
+	return addr;
+}
+
+/*
  * Check the device tree for a board-id and use it to construct
  * the pathname to the firmware file.  Used (for now) to find a
  * fallback to the "bdata.bin" file--typically a symlink to the
@@ -733,6 +795,14 @@ static bool check_device_tree(struct ath6kl *ar)
 static bool check_device_tree(struct ath6kl *ar)
 {
 	return false;
+}
+static bool ath6kl_dt_skip_otp(void)
+{
+	return false;
+}
+static u32 ath6kl_dt_app_start_override(void)
+{
+	return 0;
 }
 #endif /* CONFIG_OF */
 
@@ -1309,6 +1379,20 @@ static int ath6kl_upload_otp(struct ath6kl *ar)
 	bool from_hw = false;
 	int ret;
 
+	/*
+	 * Boards with chip-internal OTP (HP TouchPad) carry the
+	 * "atheros,skip-otp-upload" DT property. The chip already has OTP
+	 * code in silicon and rejects bmi_fast_download. Skip the upload
+	 * entirely; the factory Palm ar6000 driver's kernel init path
+	 * also does not call BMI_Execute -- userspace only invokes that
+	 * via the ar6000_sysfs_bmi_get_config sysfs handler when
+	 * skipOtp=0 (i.e. when a fresh OTP image really has been
+	 * uploaded). For skipOtp=1 / chip-internal mode the chip's
+	 * preloaded OTP runs as part of its own bmi_done sequence.
+	 */
+	if (ath6kl_dt_skip_otp())
+		return 0;
+
 	if (ar->fw_otp == NULL)
 		return 0;
 
@@ -1501,10 +1585,18 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	if (status)
 		return status;
 
-	/* WAR to avoid SDIO CRC err */
+	/*
+	 * SDIO pin slew/drive setup required by the AR6003 BMI LZ decompressor.
+	 * Without these GPIO writes the chip's LZ engine stalls (BMI command-credit
+	 * counter stops refreshing) and the next CMD53 times out with -110.
+	 *
+	 * This block was force-disabled by commit 12c298016598 based on the wrong
+	 * reference (the webOS staging ath6kl tree doesn't do this) -- but the
+	 * factory ar6000.ko binary that webOS actually runs DOES make these writes
+	 * via ar6000_sysfs_bmi_get_config, and HP TouchPad WiFi was confirmed
+	 * working in Jan 2026 with this WAR enabled (commit 37d55b9678c0).
+	 */
 	if (ar->hw.flags & ATH6KL_HW_SDIO_CRC_ERROR_WAR) {
-		ath6kl_err("temporary war to avoid sdio crc error\n");
-
 		param = 0x28;
 		address = GPIO_BASE_ADDRESS + GPIO_PIN9_ADDRESS;
 		status = ath6kl_bmi_reg_write(ar, address, param);
@@ -1539,19 +1631,44 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	if (status)
 		return status;
 
-	/* transfer One time Programmable data */
+	/*
+	 * Some boards (HP TouchPad) ship an AR6003 chip whose OTP, firmware
+	 * and patch images are already loaded from EEPROM/internal silicon.
+	 * On those boards bmi_fast_download (LZ stream) hangs the chip's
+	 * BMI state machine (LZ_STREAM_START ACKed, credit-counter stops
+	 * refreshing, next CMD53 times out with -110).
+	 *
+	 * The "atheros,skip-otp-upload" DT property handles this:
+	 *   - ath6kl_upload_otp() skips its fast_download and bmi_read_hi32,
+	 *     and instead BMI_Executes at the hardcoded app_start_override
+	 *     address from the hw_list table. This runs the chip-internal
+	 *     OTP code as the runtime-init step the firmware needs.
+	 *   - Firmware and patch uploads are skipped entirely; their
+	 *     payloads are already in chip memory and ath6kl_bmi_set_app_
+	 *     start would overwrite the chip's internal entry pointer.
+	 *
+	 * Equivalent to the legacy Palm webOS ar6000 driver's skipOtp=1
+	 * behaviour on the same hardware.
+	 */
+
+	/* transfer One time Programmable data (or just execute it if skipped) */
 	status = ath6kl_upload_otp(ar);
 	if (status)
 		return status;
 
-	/* Download Target firmware */
-	status = ath6kl_upload_firmware(ar);
-	if (status)
-		return status;
+	if (ath6kl_dt_skip_otp()) {
+		ath6kl_dbg(ATH6KL_DBG_BOOT,
+			   "skip-otp-upload: bypassing firmware and patch uploads\n");
+	} else {
+		/* Download Target firmware */
+		status = ath6kl_upload_firmware(ar);
+		if (status)
+			return status;
 
-	status = ath6kl_upload_patch(ar);
-	if (status)
-		return status;
+		status = ath6kl_upload_patch(ar);
+		if (status)
+			return status;
+	}
 
 	/* Download the test script */
 	status = ath6kl_upload_testscript(ar);
@@ -1767,15 +1884,17 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 		goto err_cleanup_scatter;
 	}
 
-	/* Wait for Wmi event to be ready */
-	timeleft = wait_event_interruptible_timeout(ar->event_wq,
-						    test_bit(WMI_READY,
-							     &ar->flag),
-						    WMI_TIMEOUT);
-	if (timeleft <= 0) {
+	/*
+	 * Wait for Wmi event to be ready.
+	 * Use non-interruptible wait to avoid signal interruption during
+	 * module init (e.g., from system watchdogs or init scripts).
+	 */
+	timeleft = wait_event_timeout(ar->event_wq,
+				      test_bit(WMI_READY, &ar->flag),
+				      WMI_TIMEOUT);
+	if (timeleft == 0) {
 		clear_bit(WMI_READY, &ar->flag);
-		ath6kl_err("wmi is not ready or wait was interrupted: %ld\n",
-			   timeleft);
+		ath6kl_err("wmi is not ready (timeout waiting for firmware)\n");
 		ret = -EIO;
 		goto err_htc_stop;
 	}

@@ -2006,7 +2006,14 @@ int ath6kl_wmi_beginscan_cmd(struct wmi *wmi, u8 if_idx,
 	u32 ratemask;
 
 	if (!test_bit(ATH6KL_FW_CAPABILITY_STA_P2PDEV_DUPLEX,
-		      ar->fw_capabilities)) {
+		      ar->fw_capabilities) ||
+	    ar->hif_type == ATH6KL_HIF_TYPE_SDIO) {
+		/*
+		 * Force legacy START_SCAN for SDIO devices.  The AR6003
+		 * firmware on msm8x60 reports sta-p2pdev-duplex capability
+		 * but does not respond to WMI_BEGIN_SCAN_CMDID.  Using
+		 * the legacy WMI_START_SCAN_CMDID works correctly.
+		 */
 		return ath6kl_wmi_startscan_cmd(wmi, if_idx,
 						scan_type, force_fgscan,
 						is_legacy, home_dwell_time,

@@ -1492,11 +1492,24 @@ static int ath6kl_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 	if (!ath6kl_cfg80211_ready(vif))
 		return -EIO;
 
-	if (pmgmt) {
+	if (pmgmt && ar->hif_type != ATH6KL_HIF_TYPE_SDIO) {
 		ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "%s: rec power\n", __func__);
 		mode.pwr_mode = REC_POWER;
 	} else {
-		ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "%s: max perf\n", __func__);
+		/*
+		 * Force MAX_PERF_POWER for SDIO devices.  On Qualcomm SDCC
+		 * (msm8x60), the AR6003 firmware enters deep sleep after
+		 * REC_POWER is set and stops responding to WMI scan commands.
+		 * The firmware performs its own internal power management,
+		 * so forcing max performance at the host level is safe.
+		 */
+		if (pmgmt)
+			ath6kl_dbg(ATH6KL_DBG_WLAN_CFG,
+				   "%s: overriding rec power with max perf (SDIO)\n",
+				   __func__);
+		else
+			ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "%s: max perf\n",
+				   __func__);
 		mode.pwr_mode = MAX_PERF_POWER;
 	}
 

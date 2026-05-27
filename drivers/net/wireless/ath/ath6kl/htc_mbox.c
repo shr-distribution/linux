@@ -1317,10 +1317,18 @@ static int ath6kl_htc_rx_packet(struct htc_target *target,
 		   packet, packet->info.rx.exp_hdr,
 		   padded_len, dev->ar->mbox_info.htc_addr);
 
+	/*
+	 * Use BYTE mode (not BLOCK mode) for FIXED-address mailbox reads.
+	 * Legacy webOS ar6000 driver uses byte-mode CMD53 (arg bit 27=0) for
+	 * all mailbox 0x800 reads, including 128B HTC body transfers. MSM8660
+	 * ADM DMA with AR6003 SDIO hangs on BLOCK-mode FIXED reads but works
+	 * with BYTE-mode FIXED. Verified via webOS kernel instrumentation
+	 * showing block=0 (byte mode) for working 128B transfers.
+	 */
 	status = hif_read_write_sync(dev->ar,
 				     dev->ar->mbox_info.htc_addr,
 				     packet->buf, padded_len,
-				     HIF_RD_SYNC_BLOCK_FIX);
+				     HIF_RD_SYNC_BYTE_FIX);
 
 	packet->status = status;
 
@@ -2260,9 +2268,11 @@ static struct htc_packet *htc_wait_for_ctrl_msg(struct htc_target *target)
 {
 	struct htc_packet *packet = NULL;
 	struct htc_frame_look_ahead look_ahead;
+	int poll_ret;
 
-	if (ath6kl_hif_poll_mboxmsg_rx(target->dev, &look_ahead.word,
-				       HTC_TARGET_RESPONSE_TIMEOUT))
+	poll_ret = ath6kl_hif_poll_mboxmsg_rx(target->dev, &look_ahead.word,
+					      HTC_TARGET_RESPONSE_TIMEOUT);
+	if (poll_ret)
 		return NULL;
 
 	ath6kl_dbg(ATH6KL_DBG_HTC,

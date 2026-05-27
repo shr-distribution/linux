@@ -15,6 +15,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <linux/delay.h>
+
 #include "core.h"
 #include "hif-ops.h"
 #include "target.h"
@@ -36,6 +38,52 @@ int ath6kl_bmi_done(struct ath6kl *ar)
 	if (ret) {
 		ath6kl_err("Unable to send bmi done: %d\n", ret);
 		return ret;
+	}
+
+	/*
+	 * Post-BMI tight-poll wakeup for AR6003 over Qualcomm SDCC.
+	 *
+	 * After BMI_DONE the AR6003 ARM core jumps from boot-ROM into the
+	 * uploaded SRAM firmware. The firmware re-arms an aggressive PM
+	 * state machine: if SDIO SCLK gates for more than ~tens of µs
+	 * (MCI_CLK_PWRSAVE auto-gates between transfers on qcom SDCC) the
+	 * chip slips into deep sleep with its SDIO command path off, and
+	 * the next CMD53 from ath6kl_htc_wait_target sees CMDTIMEOUT.
+	 *
+	 * Mitigation: continuous tight loop of CMD52 byte reads with only
+	 * udelay(10) between iterations — no msleep, no usleep_range, no
+	 * scheduler entry. Each CMD52 burst takes ~20 µs of SCLK toggling,
+	 * leaving an inter-transfer gap small enough to stay under the
+	 * chip's sleep-entry threshold. The CMD52 reads will error while
+	 * firmware is still inside its boot sequence; we ignore the error
+	 * and keep polling. The first successful read confirms the chip
+	 * has finished firmware entry and is ready for HTC.
+	 *
+	 * Budget: up to 5000 iterations ≈ 100–150 ms wall, well under
+	 * htc_wait_target's own multi-second retry; the typical observed
+	 * value is <30 iterations.
+	 */
+	if (ar->hif_type == ATH6KL_HIF_TYPE_SDIO) {
+		u8 tmp;
+		int i;
+
+		for (i = 0; i < 5000; i++) {
+			ret = hif_read_write_sync(ar, HOST_INT_STATUS_ADDRESS,
+						  &tmp, 1,
+						  HIF_RD_SYNC_BYTE_INC);
+			if (ret == 0)
+				break;
+			udelay(10);
+		}
+
+		if (i == 5000) {
+			ath6kl_warn("post-BMI tight-poll didn't see chip respond in ~5000 iters; letting htc_wait_target try anyway\n");
+		} else {
+			ath6kl_dbg(ATH6KL_DBG_BMI,
+				   "post-BMI: chip responded after %d CMD52 polls\n",
+				   i + 1);
+		}
+		/* Don't return ret; htc_wait_target has its own retry/timeout. */
 	}
 
 	return 0;
