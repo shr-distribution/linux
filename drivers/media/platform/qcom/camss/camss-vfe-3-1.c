@@ -203,8 +203,8 @@ static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable);
  *   1280 input pixels at 8bpp = 1280 bytes
  *   640 "fake" pixels at 16bpp = 1280 bytes (same data)
  *
- * Enabled per-device via the "qcom,vfe31-raw-through-pix" DT property
- * (V31(vfe)->raw_through_pix), applied only to RDI lines.
+ * Applied to RDI lines unconditionally (V31(vfe)->raw_through_pix, the
+ * default on this silicon; see vfe31_subdev_init()).
  */
 
 /*
@@ -255,7 +255,12 @@ struct vfe31_device {
 	/* "Bit bucket" buffer that unused write masters point at */
 	dma_addr_t dummy_buf_addr;
 	void *dummy_buf_vaddr;
-	/* Route RDI captures through the PIX path (DT: qcom,vfe31-raw-through-pix) */
+	/*
+	 * Route RDI captures through the PIX path. Always true: the 0x60 raw
+	 * bypass is non-functional on this silicon (see vfe31_subdev_init()).
+	 * Kept as a field so the unvalidated bypass branches remain reachable
+	 * for future RDI work.
+	 */
 	bool raw_through_pix;
 	/* Per-frame-boundary state machines and deferred PIX WM enable */
 	enum vfe31_rec_state recording_state;
@@ -6723,11 +6728,23 @@ static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 		}
 	}
 
-	/* Check DT for RAW-through-PIX mode (APQ8060 AXI=0x60 workaround) */
-	V31(vfe)->raw_through_pix = of_property_read_bool(dev->of_node,
-						     "qcom,vfe31-raw-through-pix");
-	if (V31(vfe)->raw_through_pix)
-		dev_dbg(dev, "VFE31: RAW-through-PIX mode enabled via DT\n");
+	/*
+	 * Route RDI/raw captures through the PIX datapath unconditionally. The
+	 * AXI=0x60 raw-bypass mode is non-functional on this silicon (APQ8060
+	 * VFE HW 0x00030217), so RDI lines reuse the PIX path - the only RDI
+	 * routing that has been validated on hardware.
+	 *
+	 * The bypass path (raw_through_pix == false) and its 0x60 branches are
+	 * retained as scaffolding for a future developer who validates native
+	 * RDI. It used to be selected per-board by a DT property:
+	 *
+	 *	V31(vfe)->raw_through_pix = of_property_read_bool(dev->of_node,
+	 *						"qcom,vfe31-raw-through-pix");
+	 *
+	 * That property was undocumented and set on every board, so it is gone;
+	 * re-add the read above if the bypass path is ever made to work.
+	 */
+	V31(vfe)->raw_through_pix = true;
 
 	dev_dbg(dev, "VFE31 subdev_init: complete\n");
 }
