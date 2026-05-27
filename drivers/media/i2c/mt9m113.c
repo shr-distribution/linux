@@ -63,8 +63,6 @@
 #define MT9M113_PLL_CONTROL			CCI_REG16(0x0014)
 #define MT9M113_CLOCKS_CONTROL			CCI_REG16(0x0016)
 #define MT9M113_STANDBY_CONTROL			CCI_REG16(0x0018)
-#define MT9M113_STANDBY_CONTROL_STANDBY		BIT(1)	/* Bit 1 per webOS (0x0028 vs 0x002A) */
-#define MT9M113_STANDBY_CONTROL_DONE		BIT(14)	/* Hardware status bit */
 #define MT9M113_RESET_AND_MISC_CONTROL		CCI_REG16(0x001a)
 #define MT9M113_RESET_SOC			BIT(0)
 #define MT9M113_MCU_BOOT_MODE			CCI_REG16(0x001c)
@@ -268,7 +266,6 @@ struct mt9m113 {
 	s64 link_freq;
 	bool streaming;
 	bool was_streaming;	/* set by stop, cleared by start - skips REFRESH on restart */
-	bool in_standby;
 	bool test_pattern_active;
 
 	/* Pixel Array sub-device */
@@ -556,92 +553,6 @@ static int mt9m113_configure_sensor_context(struct mt9m113 *sensor,
 			return ret;
 	}
 
-	return 0;
-}
-
-/* -----------------------------------------------------------------------------
- * Soft Standby Control
- */
-
-static int mt9m113_standby_enter(struct mt9m113 *sensor)
-{
-	u64 value;
-	int ret;
-	unsigned int i;
-
-	/* Set STANDBY bit to enter soft standby */
-	ret = cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &value, NULL);
-	if (ret)
-		return ret;
-
-	value |= MT9M113_STANDBY_CONTROL_STANDBY;
-	ret = cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, value, NULL);
-	if (ret)
-		return ret;
-
-	/* Poll STANDBY_DONE bit until set (timeout 100ms) */
-	for (i = 0; i < 10; i++) {
-		ret = cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL,
-			       &value, NULL);
-		if (ret)
-			return ret;
-		if (value & MT9M113_STANDBY_CONTROL_DONE) {
-			sensor->in_standby = true;
-			return 0;
-		}
-		msleep(10);
-	}
-
-	dev_err(&sensor->client->dev, "Standby enter timeout\n");
-	return -ETIMEDOUT;
-}
-
-static int mt9m113_standby_exit(struct mt9m113 *sensor)
-{
-	struct device *dev = &sensor->client->dev;
-	u64 value;
-	int ret;
-	unsigned int i;
-
-	/* Clear STANDBY bit to exit soft standby */
-	ret = cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL, &value, NULL);
-	if (ret)
-		return ret;
-
-	value &= ~MT9M113_STANDBY_CONTROL_STANDBY;
-	ret = cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, value, NULL);
-	if (ret)
-		return ret;
-
-	/* Poll STANDBY_DONE bit until clear (timeout 100ms) */
-	for (i = 0; i < 10; i++) {
-		ret = cci_read(sensor->regmap, MT9M113_STANDBY_CONTROL,
-			       &value, NULL);
-		if (ret)
-			return ret;
-		if (!(value & MT9M113_STANDBY_CONTROL_DONE))
-			break;
-		msleep(10);
-	}
-
-	if (i >= 10) {
-		dev_err(dev, "Standby exit timeout\n");
-		return -ETIMEDOUT;
-	}
-
-	sensor->in_standby = false;
-
-	/*
-	 * After exiting standby, the MCU needs time to fully wake up before
-	 * accepting commands. The webOS driver only used simple REFRESH after
-	 * init, not REFRESH_MODE. Let start_streaming handle MCU synchronization
-	 * via its existing pre-streaming REFRESH sequence.
-	 *
-	 * Add a delay to let the MCU stabilize after standby exit.
-	 */
-	msleep(50);
-
-	dev_dbg(dev, "Standby exit complete\n");
 	return 0;
 }
 
@@ -1387,7 +1298,6 @@ retry:
 	 */
 	dev_dbg(dev, "MT9M113: start_streaming\n");
 	cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL, 0x0028, NULL);
-	sensor->in_standby = false;
 	msleep(50);
 
 	/* MCU health check and recovery */
