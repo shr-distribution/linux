@@ -20,6 +20,7 @@
 #include <sound/pcm_params.h>
 #include <sound/jack.h>
 #include <sound/soc.h>
+#include <sound/soc-dapm.h>
 #include <uapi/linux/input-event-codes.h>
 
 #include "../codecs/wm8994.h"
@@ -238,7 +239,7 @@ static int apq8060_lpaif_spkr_event(struct snd_soc_dapm_widget *w,
 				    struct snd_kcontrol *k, int event)
 {
 	struct snd_soc_dapm_context *dapm = w->dapm;
-	struct snd_soc_card *card = dapm->card;
+	struct snd_soc_card *card = snd_soc_dapm_to_card(dapm);
 	struct apq8060_lpaif_data *data = snd_soc_card_get_drvdata(card);
 
 	if (!data->spkr_amp_gpio)
@@ -282,7 +283,6 @@ static int apq8060_lpaif_dai_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_card *card = rtd->card;
 	struct apq8060_lpaif_data *data = snd_soc_card_get_drvdata(card);
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
-	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_component *component = codec_dai->component;
 	int ret;
 

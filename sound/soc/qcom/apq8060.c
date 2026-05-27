@@ -482,16 +482,16 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	 * SPKOUT pins are not connected - speakers use LINEOUT with external amp.
 	 * This matches the webOS legacy kernel configuration.
 	 */
-	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTRN");
-	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTRP");
-	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTLN");
-	snd_soc_dapm_nc_pin(&card->dapm, "SPKOUTLP");
-	snd_soc_dapm_nc_pin(&card->dapm, "HPOUT2P");
-	snd_soc_dapm_nc_pin(&card->dapm, "HPOUT2N");
-	snd_soc_dapm_nc_pin(&card->dapm, "IN2RP:VXRP");
-	snd_soc_dapm_nc_pin(&card->dapm, "IN2RN");
-	snd_soc_dapm_nc_pin(&card->dapm, "IN1RN");
-	snd_soc_dapm_nc_pin(&card->dapm, "IN1RP");
+	snd_soc_dapm_disable_pin(card->dapm, "SPKOUTRN");
+	snd_soc_dapm_disable_pin(card->dapm, "SPKOUTRP");
+	snd_soc_dapm_disable_pin(card->dapm, "SPKOUTLN");
+	snd_soc_dapm_disable_pin(card->dapm, "SPKOUTLP");
+	snd_soc_dapm_disable_pin(card->dapm, "HPOUT2P");
+	snd_soc_dapm_disable_pin(card->dapm, "HPOUT2N");
+	snd_soc_dapm_disable_pin(card->dapm, "IN2RP:VXRP");
+	snd_soc_dapm_disable_pin(card->dapm, "IN2RN");
+	snd_soc_dapm_disable_pin(card->dapm, "IN1RN");
+	snd_soc_dapm_disable_pin(card->dapm, "IN1RP");
 
 	/* Setup headphone jack */
 	ret = snd_soc_card_jack_new_pins(card, "Headphone Jack",
@@ -514,8 +514,8 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	/* Force-enable Headphone and Speaker pins for testing
 	 * TODO: Implement proper jack detection via WM8994 or GPIO
 	 */
-	snd_soc_dapm_force_enable_pin(&card->dapm, "Headphone");
-	snd_soc_dapm_force_enable_pin(&card->dapm, "Speaker");
+	snd_soc_dapm_force_enable_pin(card->dapm, "Headphone");
+	snd_soc_dapm_force_enable_pin(card->dapm, "Speaker");
 
 	/*
 	 * Force-enable the AIF1 Playback stream widget.
@@ -523,9 +523,9 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 	 * when playback starts, but it's not working correctly. Force-enable
 	 * it as a workaround to complete the DAPM path to the outputs.
 	 */
-	snd_soc_dapm_force_enable_pin(&card->dapm, "AIF1 Playback");
+	snd_soc_dapm_force_enable_pin(card->dapm, "AIF1 Playback");
 
-	snd_soc_dapm_sync(&card->dapm);
+	snd_soc_dapm_sync(card->dapm);
 
 	/*
 	 * Configure WM8994 internal mixer routing and clocks for playback.
@@ -547,8 +547,8 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				 * These must be enabled on the component's DAPM context,
 				 * not the card's, since they're codec-internal widgets.
 				 */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "AIF1CLK");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "CLK_SYS");
+				snd_soc_dapm_force_enable_pin(component->dapm, "AIF1CLK");
+				snd_soc_dapm_force_enable_pin(component->dapm, "CLK_SYS");
 
 				/*
 				 * Force-enable the entire audio path from AIF1 to speakers.
@@ -559,35 +559,35 @@ static int apq8060_init(struct snd_soc_pcm_runtime *rtd)
 				 *              Output PGA → Line Mixer → LINEOUT → Ext Amp
 				 */
 				/* AIF1 DAC input widgets */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "AIF1DAC1L");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "AIF1DAC1R");
+				snd_soc_dapm_force_enable_pin(component->dapm, "AIF1DAC1L");
+				snd_soc_dapm_force_enable_pin(component->dapm, "AIF1DAC1R");
 				/* DAC mixer widgets */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1L Mixer");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1R Mixer");
+				snd_soc_dapm_force_enable_pin(component->dapm, "DAC1L Mixer");
+				snd_soc_dapm_force_enable_pin(component->dapm, "DAC1R Mixer");
 				/* DAC widgets */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1L");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "DAC1R");
+				snd_soc_dapm_force_enable_pin(component->dapm, "DAC1L");
+				snd_soc_dapm_force_enable_pin(component->dapm, "DAC1R");
 				/* Output mixer and PGA widgets (needed for DAC→LINEOUT path) */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "Left Output Mixer");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "Right Output Mixer");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "Left Output PGA");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "Right Output PGA");
+				snd_soc_dapm_force_enable_pin(component->dapm, "Left Output Mixer");
+				snd_soc_dapm_force_enable_pin(component->dapm, "Right Output Mixer");
+				snd_soc_dapm_force_enable_pin(component->dapm, "Left Output PGA");
+				snd_soc_dapm_force_enable_pin(component->dapm, "Right Output PGA");
 				/* LINEOUT output pins - connected to external amplifier */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1P");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1N");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2P");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2N");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT1P");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT1N");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT2P");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT2N");
 				/* LINEOUT driver widgets - required for actual output */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1P Driver");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1N Driver");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2P Driver");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2N Driver");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT1P Driver");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT1N Driver");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT2P Driver");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT2N Driver");
 				/* LINEOUT mixer widgets - required to route signal to drivers */
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1P Mixer");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT1N Mixer");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2P Mixer");
-				snd_soc_dapm_force_enable_pin(&component->dapm, "LINEOUT2N Mixer");
-				snd_soc_dapm_sync(&component->dapm);
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT1P Mixer");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT1N Mixer");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT2P Mixer");
+				snd_soc_dapm_force_enable_pin(component->dapm, "LINEOUT2N Mixer");
+				snd_soc_dapm_sync(component->dapm);
 
 				/*
 				 * Enable AIF1.1 → DAC1 path:
