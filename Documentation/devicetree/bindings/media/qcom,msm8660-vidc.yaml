@@ -15,7 +15,10 @@ description:
   fetched from the System Memory Interface (SMI) SRAM window and the driver
   exposes two V4L2 mem2mem devices, an H.264 decoder and encoder. The RISC
   addresses memory physically (no IOMMU), so its working buffers live in
-  reserved-memory regions inside the SMI window it can reach.
+  reserved-memory regions inside the SMI window it can reach. The decoder
+  emits the firmware's native 64x32 macroblock-tiled NV12
+  (V4L2_PIX_FMT_NV12MT), consumed directly by the MDP4 display overlay or
+  detiled in software.
 
 properties:
   compatible:
