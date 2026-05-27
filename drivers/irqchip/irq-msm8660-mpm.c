@@ -538,7 +538,7 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 
 	mpm->domain = irq_domain_create_hierarchy(parent_domain, 0,
 						  MSM8660_MPM_PIN_COUNT,
-						  of_node_to_fwnode(np),
+						  of_fwnode_handle(np),
 						  &msm8660_mpm_domain_ops,
 						  mpm);
 	if (!mpm->domain) {
