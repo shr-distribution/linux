@@ -21346,6 +21346,14 @@ T:	git git://linuxtv.org/media.git
 F:	Documentation/devicetree/bindings/media/*venus*
 F:	drivers/media/platform/qcom/venus/
 
+QUALCOMM VIDC VIDEO CODEC DRIVER
+M:	Herman van Hazendonk <github.com@herrie.org>
+L:	linux-media@vger.kernel.org
+L:	linux-arm-msm@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/media/qcom,msm8660-vidc.yaml
+F:	drivers/media/platform/qcom/vidc/
+
 QUALCOMM VPE VIDEO PROCESSING ENGINE DRIVER
 M:	Herman van Hazendonk <github.com@herrie.org>
 L:	linux-media@vger.kernel.org
