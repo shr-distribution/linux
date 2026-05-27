@@ -45,6 +45,42 @@
 static bool bt_tx_trace;
 module_param(bt_tx_trace, bool, 0644);
 MODULE_PARM_DESC(bt_tx_trace, "Trace GSBI6 BT UART TX bursts for inter-byte gap detection");
+
+/*
+ * TouchPad BT TX diagnostics (no oscilloscope required). See
+ * reports/bt-trace/bt-bringup-summary-2026-05-27.md. These probe the
+ * analog/timing suspects for the "chip only-SYNCs, ignores our TX" blocker:
+ *
+ *  - bt_diag: dump the TLMM pad config (drive strength / pull / output-enable /
+ *    idle line level) for the BT UART pads gpio53-56 at port open, to diff the
+ *    *programmed* pad state against the known-good webOS setup (8 mA, no pull).
+ *  - bt_tx_pio_bursts / bt_tx_pio_underruns (read-only): count PIO TX bursts and
+ *    how many drained the TX FIFO mid-frame -> inter-byte WIRE GAPs at the pad
+ *    that do not show in a "bytes queued" trace.
+ *  - bt_diag_loopback (write 1): internal-loopback self-test (UARTDM MR2 bit 7),
+ *    transmits a BCSP SYNC-RSP payload and reads it back through the controller,
+ *    isolating "digital framing wrong" from "analog/pad wrong".
+ */
+static bool bt_diag;
+module_param(bt_diag, bool, 0644);
+MODULE_PARM_DESC(bt_diag, "BT UART: dump TLMM pad config (gpio53-56) at port open");
+
+static unsigned int bt_tx_pio_bursts;
+module_param(bt_tx_pio_bursts, uint, 0444);
+MODULE_PARM_DESC(bt_tx_pio_bursts, "BT UART: PIO TX burst count (read-only diag)");
+
+static unsigned int bt_tx_pio_underruns;
+module_param(bt_tx_pio_underruns, uint, 0444);
+MODULE_PARM_DESC(bt_tx_pio_underruns,
+	"BT UART: PIO TX bursts where TX_READY dropped mid-frame = potential wire gap (read-only diag)");
+
+/*
+ * bt_force_8e1: force even parity (8E1) on the BT UART, to test the
+ * "BCSP uses even parity" claim on-device. See msm_set_termios. Default off.
+ */
+static bool bt_force_8e1;
+module_param(bt_force_8e1, bool, 0644);
+MODULE_PARM_DESC(bt_force_8e1, "BT UART: force even parity 8E1 (diag; default 8N1)");
 #include <linux/wait.h>
 
 #define MSM_UART_MR1			0x0000
@@ -943,6 +979,19 @@ static void msm_handle_tx_pio(struct uart_port *port, unsigned int tx_count)
 		tf_pointer += num_chars;
 	}
 
+	/*
+	 * BT UART PIO underrun diag: a mid-frame TX_READY drop (tf_pointer <
+	 * tx_count above) means the TX FIFO emptied before the burst finished,
+	 * so the shift register can idle the line between bytes = an inter-byte
+	 * WIRE GAP the CSR BCSP receiver may reject. Counted unconditionally for
+	 * GSBI6; read via /sys/module/msm_serial/parameters/bt_tx_pio_*.
+	 */
+	if (port->mapbase == 0x16540000 && tx_count) {
+		bt_tx_pio_bursts++;
+		if (tf_pointer < tx_count)
+			bt_tx_pio_underruns++;
+	}
+
 	if (trace) {
 		static ktime_t prev_end;
 		ktime_t t1 = ktime_get();
@@ -1331,6 +1380,167 @@ MODULE_PARM_DESC(bt_wake_period_ms,
 static struct uart_port *msm_bt_wake_port;
 static DEFINE_MUTEX(msm_bt_wake_lock);
 
+/* ---- TouchPad BT TX diagnostics (no scope required) ---------------------- */
+
+/*
+ * MSM8660 TLMM pad config, used to diff the BT UART pads (TX gpio53, RX gpio54,
+ * CTS gpio55, RFR/RTS gpio56) against the known-good webOS setup WITHOUT a
+ * scope. ctl_reg encodes mux/drive/pull/output-enable; io_reg holds the live
+ * IN/OUT line level (idle polarity). Register layout + bit positions are from
+ * drivers/pinctrl/qcom/pinctrl-msm8660.c (ctl=0x1000+0x10*id, io=ctl+4;
+ * mux@2, drv@6, pull@0, oe@9; io in@0, out@1). TLMM base = phys 0x800000.
+ */
+#define MSM_TLMM_PHYS		0x800000
+#define MSM_TLMM_GPIO_CTL(n)	(0x1000 + 0x10 * (n))
+
+static void msm_bt_diag_dump_pads(struct uart_port *port, const char *when)
+{
+	static const struct { int gpio; const char *name; } pads[] = {
+		{ 53, "TX" }, { 54, "RX" }, { 55, "CTS" }, { 56, "RFR/RTS" },
+	};
+	static const unsigned int drv_ma[8] = { 2, 4, 6, 8, 10, 12, 14, 16 };
+	static const char * const pull_s[4] = {
+		"no-pull", "pull-down", "keeper", "pull-up"
+	};
+	void __iomem *tlmm;
+	int i;
+
+	/* Map a small window covering gpio53..56 ctl/io (4 pins * 0x10). */
+	tlmm = ioremap(MSM_TLMM_PHYS + MSM_TLMM_GPIO_CTL(53), 0x40);
+	if (!tlmm) {
+		dev_warn(port->dev, "BT-DIAG: TLMM ioremap failed\n");
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(pads); i++) {
+		unsigned int off = MSM_TLMM_GPIO_CTL(pads[i].gpio) -
+				   MSM_TLMM_GPIO_CTL(53);
+		u32 ctl = readl(tlmm + off);
+		u32 io  = readl(tlmm + off + 4);
+
+		dev_info(port->dev,
+			 "BT-DIAG[%s] gpio%d %-7s func=%u drive=%umA %s oe=%u | idle line in=%u out=%u (ctl=0x%08x io=0x%08x)\n",
+			 when, pads[i].gpio, pads[i].name,
+			 (ctl >> 2) & 7, drv_ma[(ctl >> 6) & 7], pull_s[ctl & 3],
+			 (ctl >> 9) & 1, io & 1, (io >> 1) & 1, ctl, io);
+	}
+	iounmap(tlmm);
+}
+
+/*
+ * Internal-loopback self-test (UARTDM MR2 LOOP_MODE = BIT(7), confirmed against
+ * MSM8660 msm_serial_hs_hwreg.h). Routes TX->RX inside the controller, sends a
+ * BCSP SYNC-RSP payload, and reads it back. A clean readback proves the digital
+ * framing/divisor/start-stop path is internally consistent, isolating the
+ * remaining suspect to the pad/analog (or the chip RX being gated). This
+ * BYPASSES the gpio pad, so it does NOT validate the wire itself.
+ *
+ * INVASIVE: masks IRQs and resets TX/RX, which tears down any armed RX DMA.
+ * Run as a one-shot check (BT interface up so clocks are on), then re-open the
+ * BT interface. Trigger: echo 1 > /sys/module/msm_serial/parameters/bt_diag_loopback
+ */
+static int msm_bt_diag_loopback_run(void)
+{
+	struct uart_port *port = READ_ONCE(msm_bt_wake_port);
+	static const u8 pat[4] = { 0xac, 0xaf, 0xef, 0xee }; /* BCSP SYNC-RSP */
+	struct msm_port *msm_port;
+	u8 got[4] = { 0 };
+	u32 save_mr1, save_mr2, save_imr, sr, err_sr = 0;
+	unsigned long flags;
+	int i, n = 0, ret;
+
+	if (!port)
+		return -ENODEV;
+	msm_port = to_msm_port(port);
+	if (!msm_port->is_uartdm)
+		return -EOPNOTSUPP;
+
+	msm_bt_diag_dump_pads(port, "loopback-pre");
+
+	uart_port_lock_irqsave(port, &flags);
+
+	save_imr = msm_port->imr;
+	save_mr1 = msm_read(port, MSM_UART_MR1);
+	save_mr2 = msm_read(port, MSM_UART_MR2);
+
+	/* Mask all UART IRQs so the normal (serdev) RX path can't eat our bytes. */
+	msm_write(port, 0, MSM_UART_IMR);
+
+	msm_write(port, MSM_UART_CR_CMD_RESET_RX, MSM_UART_CR);
+	msm_write(port, MSM_UART_CR_CMD_RESET_TX, MSM_UART_CR);
+	msm_write(port, MSM_UART_CR_CMD_RESET_ERR, MSM_UART_CR);
+
+	/* Enable internal loopback. */
+	msm_write(port, save_mr2 | 0x80, MSM_UART_MR2);
+	msm_write(port, MSM_UART_CR_TX_ENABLE | MSM_UART_CR_RX_ENABLE,
+		  MSM_UART_CR);
+
+	/* UARTDM needs the TX char count programmed before the TF writes. */
+	msm_reset_dm_count(port, sizeof(pat));
+	for (i = 0; i < 20000 &&
+		    !(msm_read(port, MSM_UART_SR) & MSM_UART_SR_TX_READY); i++)
+		cpu_relax();
+	iowrite32_rep(port->membase + UARTDM_TF, pat, 1);
+
+	/* Poll the RX FIFO for the looped-back bytes (bounded). */
+	for (i = 0; i < 20000 && n < (int)sizeof(pat); i++) {
+		sr = msm_read(port, MSM_UART_SR);
+		err_sr |= sr & (MSM_UART_SR_PAR_FRAME_ERR | MSM_UART_SR_OVERRUN);
+		if (sr & MSM_UART_SR_RX_READY) {
+			u32 w = msm_read(port, UARTDM_RF);
+			int j;
+
+			for (j = 0; j < 4 && n < (int)sizeof(pat); j++)
+				got[n++] = (w >> (8 * j)) & 0xff;
+		}
+		cpu_relax();
+	}
+
+	/* Restore: disable loopback, reset, re-enable, unmask IRQs. */
+	msm_write(port, MSM_UART_CR_CMD_RESET_RX, MSM_UART_CR);
+	msm_write(port, MSM_UART_CR_CMD_RESET_TX, MSM_UART_CR);
+	msm_write(port, save_mr2, MSM_UART_MR2);
+	msm_write(port, save_mr1, MSM_UART_MR1);
+	msm_write(port, MSM_UART_CR_TX_ENABLE | MSM_UART_CR_RX_ENABLE,
+		  MSM_UART_CR);
+	msm_port->imr = save_imr;
+	msm_write(port, save_imr, MSM_UART_IMR);
+
+	uart_port_unlock_irqrestore(port, flags);
+
+	ret = (n == (int)sizeof(pat) && !memcmp(pat, got, sizeof(pat)) &&
+	       !err_sr) ? 0 : -EIO;
+
+	dev_info(port->dev,
+		 "BT-DIAG loopback: sent %zu got %d [%*ph] err_sr=0x%x -> %s\n",
+		 sizeof(pat), n, n, got, err_sr,
+		 ret ? "MISMATCH/FRAMING (digital path suspect)" :
+		       "OK (controller TX->RX digital path clean -> suspect pad/analog or chip RX)");
+	dev_info(port->dev,
+		 "BT-DIAG loopback was invasive (RX reset) -> re-open the BT interface\n");
+	return ret;
+}
+
+static int msm_bt_diag_loopback_set(const char *val,
+				    const struct kernel_param *kp)
+{
+	bool run;
+	int ret = kstrtobool(val, &run);
+
+	if (ret)
+		return ret;
+	if (run)
+		return msm_bt_diag_loopback_run();
+	return 0;
+}
+
+static const struct kernel_param_ops bt_diag_loopback_ops = {
+	.set = msm_bt_diag_loopback_set,
+};
+module_param_cb(bt_diag_loopback, &bt_diag_loopback_ops, NULL, 0220);
+MODULE_PARM_DESC(bt_diag_loopback,
+	"BT UART: write 1 to run internal-loopback TX->RX self-test (invasive; re-open BT after)");
+
 /*
  * Flip the chip-facing UART pins (TX gpio53 + RFR/RTS gpio56) to GPIO-high and
  * back, to wake the power-gated CSR BlueCore UART RX — the webOS btuart_pin_mux
@@ -1421,6 +1631,10 @@ static int msm_startup(struct uart_port *port)
 					      msecs_to_jiffies(bt_wake_period_ms));
 		}
 	}
+
+	/* BT diag: dump the BT UART pad config to diff against webOS (8 mA, no pull). */
+	if (msm_port->bt_is_bt_uart && bt_diag)
+		msm_bt_diag_dump_pads(port, "startup");
 
 	if (likely(port->fifosize > 12))
 		rfr_level = port->fifosize - 12;
@@ -1523,6 +1737,23 @@ static void msm_set_termios(struct uart_port *port, struct ktermios *termios,
 			mr |= MSM_UART_MR2_PARITY_MODE_SPACE;
 		else
 			mr |= MSM_UART_MR2_PARITY_MODE_EVEN;
+	}
+
+	/*
+	 * BT diag (bt_force_8e1): force even parity on the BT UART regardless of
+	 * the requested termios, to test the HP "BCSP uses 8E1" claim on-device.
+	 * Our extracted PSKEY uartConfigBcsp=0x082e DOES set bit2 (even parity) —
+	 * but that applies only to the post-warm-reset 3.6864M steady-state link;
+	 * the 115200 ROM-default link-establishment phase is 8N1 (the chip SYNCs
+	 * to us cleanly at 8N1, which is impossible if it required parity we omit).
+	 * Expect forcing 8E1 here to LOSE the chip's SYNC (RX parity/framing
+	 * errors) -> a live on-device demonstration that LE is 8N1, not 8E1.
+	 */
+	if (msm_port->bt_is_bt_uart && bt_force_8e1) {
+		mr &= ~MSM_UART_MR2_PARITY_MODE;
+		mr |= MSM_UART_MR2_PARITY_MODE_EVEN;
+		dev_info(port->dev,
+			 "BT-DIAG: forcing EVEN parity (8E1) on BT UART (diag)\n");
 	}
 
 	/* calculate bits per char */
