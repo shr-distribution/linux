@@ -659,7 +659,7 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 			 * Trigger it now that streaming is active.
 			 */
 			if (!inst->seq_parsed && !inst->seq_hdr_direct) {
-				dev_info(core->dev,
+				dev_dbg(core->dev,
 					 "start_streaming: queuing seq_header_work\n");
 				queue_work(system_wq, &inst->seq_header_work);
 			}
@@ -934,18 +934,6 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	vidc_write(core, VIDC_REG_CH0_STREAM_ADDR,
 		   (src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT);
 	vidc_write(core, VIDC_REG_CH0_STREAM_SIZE, src_size);
-
-	/* DEBUG: dump first 40 bytes of the stream the firmware will read.
-	 * DEBUG-only: at loglevel=8 over the 115200 serial console this
-	 * per-frame dump (plus the other per-frame logs) throttles decode
-	 * to ~1 s/frame.  Use print_hex_dump_debug so it compiles out unless
-	 * dynamic debug is enabled. */
-	if (inst->src_buf) {
-		const u8 *kva = vb2_plane_vaddr(&inst->src_buf->vb2_buf, 0);
-		if (kva)
-			print_hex_dump_debug("vidc stream[0:40]: ",
-				       DUMP_PREFIX_NONE, 16, 1, kva, 40, false);
-	}
 
 	/*
 	 * Descriptor buffer: webOS DDL always allocates a 128 KB desc buffer
@@ -1355,7 +1343,7 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 	 * to this SOURCE_CHANGE. Just publish the geometry and notify userspace.
 	 */
 	dpb_ret = 0;
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "Sequence parsed: %ux%u, min_dpb=%u — awaiting CAPTURE setup\n",
 		 inst->seq_width, inst->seq_height, inst->min_dpb_count);
 
@@ -1490,7 +1478,7 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 			.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
 		};
 
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "mid-stream resolution change reported by firmware\n");
 		v4l2_event_queue_fh(&inst->fh, &ev);
 		inst->display_resl_change = 0;
@@ -1653,7 +1641,7 @@ static void vidc_dec_device_run(void *priv)
 	}
 
 	if (!src_buf || !dst_buf) {
-		dev_info(inst->core->dev,
+		dev_dbg(inst->core->dev,
 			 "device_run: no buffers (src=%p dst=%p), aborting\n",
 			 src_buf, dst_buf);
 		v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);

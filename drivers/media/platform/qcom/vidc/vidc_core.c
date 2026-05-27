@@ -432,7 +432,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	/* Release reset */
 	vidc_write(core, VIDC_REG_SW_RESET, VIDC_RESET_NONE);
 
-	dev_info(core->dev, "hw_reset: released RISC from reset\n");
+	dev_dbg(core->dev, "hw_reset: released RISC from reset\n");
 
 	/* Sample AXI_STATUS immediately and after short delays to detect RISC instruction fetches */
 	{
@@ -592,7 +592,7 @@ static void vidc_handle_seq_done(struct vidc_core *core,
 				   inst->seq_height - top - bottom : inst->seq_height;
 	}
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "Sequence done: %ux%u (visible %ux%u+%u+%u), min_dpb=%u, fw min_luma=0x%x, min_chroma=0x%x\n",
 		 inst->seq_width, inst->seq_height,
 		 inst->crop_width, inst->crop_height,
@@ -654,11 +654,11 @@ static irqreturn_t vidc_isr(int irq, void *data)
 			"VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
 			cmd, arg1, arg2, inst);
 	else if (cmd != VIDC_RESP_EMPTY)
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
 			 cmd, arg1, arg2, inst);
 	else if (__ratelimit(&rs))
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "VIDC IRQ: cmd=0 (empty) inst=%p\n", inst);
 
 	/*
@@ -711,18 +711,18 @@ static irqreturn_t vidc_isr(int irq, void *data)
 				 * vidc_init_enc_buffers, which both wait on
 				 * inst->done after setting init_buffers_pending.
 				 */
-				dev_info(core->dev,
+				dev_dbg(core->dev,
 					 "recovery INIT_BUFFERS ack via EMPTY IRQ\n");
 				inst->init_buffers_pending = false;
 				inst->state = VIDC_STATE_RUNNING;
 				complete(&inst->done);
 			} else if (inst && inst->seq_header_pending) {
-				dev_info(core->dev,
+				dev_dbg(core->dev,
 					 "recovery SEQ_HEADER ack via EMPTY IRQ\n");
 				inst->seq_header_pending = false;
 				queue_work(system_wq, &inst->seq_done_work);
 			} else if (inst && inst->seq_hdr_direct) {
-				dev_info(core->dev,
+				dev_dbg(core->dev,
 					 "recovery decoder SEQ_HEADER ack via EMPTY IRQ\n");
 				vidc_handle_seq_done(core, inst);
 				queue_work(system_wq, &inst->seq_done_work);
@@ -761,13 +761,13 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		 * sent within ~10 ms of the recovery announcement, while the
 		 * firmware is still actively waiting for it.
 		 */
-		dev_info(core->dev, "Firmware recovery-mode boot (cmd=51)\n");
+		dev_warn(core->dev, "Firmware recovery-mode boot (cmd=51)\n");
 		core->fw_recovery_mode = true;
 		complete(&core->fw_status_done);
 		break;
 
 	case VIDC_RESP_SYS_INIT:
-		dev_info(core->dev, "Firmware initialized\n");
+		dev_dbg(core->dev, "Firmware initialized\n");
 		complete(&core->sys_init_done);
 		break;
 
@@ -799,7 +799,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		 * Note: SEQ_HEADER in recovery mode uses cmd=0 (EMPTY) instead;
 		 * that is handled by the VIDC_RESP_EMPTY case above.
 		 */
-		dev_info(core->dev, "Firmware recovery ACK (cmd=0x%x)\n", cmd);
+		dev_warn(core->dev, "Firmware recovery ACK (cmd=0x%x)\n", cmd);
 		core->fw_recovery_mode = true;
 		complete(&core->sys_init_done);
 		/*
@@ -814,7 +814,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 		if (core->fw_running && inst) {
 			if (inst->state == VIDC_STATE_IDLE) {
 				inst->inst_id = arg1;
-				dev_info(core->dev,
+				dev_dbg(core->dev,
 					 "Recovery OPEN_CH ack: arg1=0x%08x inst_id=0x%08x\n",
 					 arg1, inst->inst_id);
 				inst->state = VIDC_STATE_OPEN;
@@ -837,7 +837,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 			 */
 			ret_ch = vidc_read(core, VIDC_REG_RETURNED_CH_INST_ID);
 			inst->inst_id = arg1;
-			dev_info(core->dev,
+			dev_dbg(core->dev,
 				 "Channel opened, arg1=0x%08x ret_ch=0x%08x inst_id=0x%08x\n",
 				 arg1, ret_ch, inst->inst_id);
 			inst->state = VIDC_STATE_OPEN;
@@ -962,21 +962,21 @@ int vidc_load_firmware(struct vidc_core *core)
 {
 	int ret;
 
-	dev_info(core->dev, "load_firmware: entry, fw_loaded=%d\n", core->fw_loaded);
+	dev_dbg(core->dev, "load_firmware: entry, fw_loaded=%d\n", core->fw_loaded);
 
 	if (core->fw_loaded) {
-		dev_info(core->dev, "load_firmware: already loaded, returning\n");
+		dev_dbg(core->dev, "load_firmware: already loaded, returning\n");
 		return 0;
 	}
 
-	dev_info(core->dev, "load_firmware: requesting firmware %s\n", VIDC_FW_NAME);
+	dev_dbg(core->dev, "load_firmware: requesting firmware %s\n", VIDC_FW_NAME);
 	ret = request_firmware(&core->fw, VIDC_FW_NAME, core->dev);
 	if (ret) {
 		dev_err(core->dev, "failed to load firmware %s: %d\n",
 			VIDC_FW_NAME, ret);
 		return ret;
 	}
-	dev_info(core->dev, "load_firmware: got firmware, size=%zu\n", core->fw->size);
+	dev_dbg(core->dev, "load_firmware: got firmware, size=%zu\n", core->fw->size);
 
 	if (core->fw->size > VIDC_FW_SIZE_MAX) {
 		dev_err(core->dev, "firmware too large: %zu > %d\n",
@@ -1144,7 +1144,7 @@ int vidc_load_firmware(struct vidc_core *core)
 	if (ret)
 		goto err_free_dma;
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "Firmware loaded at dma=0x%08x (%zu bytes), version 0x%08x\n",
 		 (u32)core->fw_dma_addr, core->fw_size, core->fw_version);
 
@@ -1282,9 +1282,9 @@ int vidc_boot_firmware(struct vidc_core *core)
 	reinit_completion(&core->fw_status_done);
 	reinit_completion(&core->sys_init_done);
 
-	dev_info(core->dev, "boot_fw: about to call vidc_hw_reset (dram_base=0x%08x)\n",
+	dev_dbg(core->dev, "boot_fw: about to call vidc_hw_reset (dram_base=0x%08x)\n",
 		 (u32)core->fw_dma_addr);
-	dev_info(core->dev, "boot_fw: pre-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
+	dev_dbg(core->dev, "boot_fw: pre-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
 		 vidc_read(core, VIDC_REG_SW_RESET),
 		 vidc_read(core, VIDC_REG_FW_VERSION));
 	ret = vidc_hw_reset(core, core->fw_dma_addr);
@@ -1293,7 +1293,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 		return ret;
 	}
 	pr_debug("VIDC: boot_fw: about to read post-reset registers\n");
-	dev_info(core->dev, "boot_fw: post-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
+	dev_dbg(core->dev, "boot_fw: post-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
 		 vidc_read(core, VIDC_REG_SW_RESET),
 		 vidc_read(core, VIDC_REG_FW_VERSION));
 	pr_debug("VIDC: boot_fw: post-reset register reads completed\n");
@@ -1325,17 +1325,17 @@ int vidc_boot_firmware(struct vidc_core *core)
 			pr_debug("VIDC: poll: no RISC activity after 2s (RISC not executing)\n");
 	}
 
-	dev_info(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (2000ms)\n");
+	dev_dbg(core->dev, "boot_fw: hw_reset returned ok, waiting FW_STATUS_RET (2000ms)\n");
 
 	{
 		unsigned long ret_jif = wait_for_completion_timeout(
 				&core->fw_status_done, msecs_to_jiffies(2000));
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "boot_fw: FW_STATUS wait returned, jiffies_left=%lu (%s)\n",
 			 ret_jif, ret_jif ? "got signal" : "timed out");
 	}
 
-	dev_info(core->dev, "boot_fw: about to send SYS_INIT (arg1=%zu)\n",
+	dev_dbg(core->dev, "boot_fw: about to send SYS_INIT (arg1=%zu)\n",
 		 core->fw_alloc_size);
 	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT,
 			    core->fw_alloc_size, 0, 0, 0);
@@ -1343,19 +1343,19 @@ int vidc_boot_firmware(struct vidc_core *core)
 		dev_err(core->dev, "failed to send SYS_INIT: %d\n", ret);
 		return ret;
 	}
-	dev_info(core->dev, "boot_fw: SYS_INIT sent, waiting SYS_INIT_RET (1s)\n");
+	dev_dbg(core->dev, "boot_fw: SYS_INIT sent, waiting SYS_INIT_RET (1s)\n");
 
 	{
 		unsigned long ret_jif = wait_for_completion_timeout(
 				&core->sys_init_done, msecs_to_jiffies(1000));
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "boot_fw: SYS_INIT wait returned, jiffies_left=%lu (%s)\n",
 			 ret_jif, ret_jif ? "got signal" : "timed out");
 	}
 
 	core->fw_running = true;
 	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
-	dev_info(core->dev, "boot_fw: done, FW_VERSION=0x%08x\n",
+	dev_dbg(core->dev, "boot_fw: done, FW_VERSION=0x%08x\n",
 		 core->fw_version);
 
 	/*
@@ -1372,7 +1372,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 	if (!core->fw_pinned) {
 		pm_runtime_get_noresume(core->dev);
 		core->fw_pinned = true;
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "boot_fw: pinned VED resident (firmware kept alive across sessions)\n");
 	}
 
@@ -1395,7 +1395,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 	}
 	vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
 		   VIDC_PIX_CACHE_CONFIG_DEFAULT);
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "boot_fw: pix cache cfg=0x%x readback=0x%x sw_reset_reg=0x%x\n",
 		 VIDC_PIX_CACHE_CONFIG_DEFAULT,
 		 vidc_read(core, VIDC_REG_PIX_CACHE_CONFIG),
@@ -1496,13 +1496,13 @@ int vidc_open_channel(struct vidc_inst *inst)
 	 * so GDSC + clocks are on and vidc_boot_firmware can safely write
 	 * the boot-control registers.
 	 */
-	dev_info(core->dev, "open_ch: about to call vidc_load_firmware\n");
+	dev_dbg(core->dev, "open_ch: about to call vidc_load_firmware\n");
 	ret = vidc_load_firmware(core);
 	if (ret) {
 		dev_err(core->dev, "open_ch: load_firmware failed: %d\n", ret);
 		return ret;
 	}
-	dev_info(core->dev, "open_ch: load_firmware returned ok\n");
+	dev_dbg(core->dev, "open_ch: load_firmware returned ok\n");
 
 	mutex_lock(&core->lock);
 
@@ -1544,7 +1544,7 @@ int vidc_open_channel(struct vidc_inst *inst)
 		"OPEN_CH codec=%u pcache=%u ctxt_off=0x%x sz=%u\n",
 		fw_codec, pcache, ctxt_offset_shifted, VIDC_CTXT_MEM_SIZE);
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "open_ch: sending OPEN_CH codec=%u pcache=%u ctxt_off=0x%x\n",
 		 fw_codec, pcache, ctxt_offset_shifted);
 	ret = vidc_send_cmd(core, VIDC_CMD_OPEN_CH, fw_codec, pcache,
@@ -1553,12 +1553,12 @@ int vidc_open_channel(struct vidc_inst *inst)
 		dev_err(core->dev, "OPEN_CH send failed: %d\n", ret);
 		goto release_ctxt;
 	}
-	dev_info(core->dev, "open_ch: OPEN_CH sent, waiting RESP_OPEN_CH (1s)\n");
+	dev_dbg(core->dev, "open_ch: OPEN_CH sent, waiting RESP_OPEN_CH (1s)\n");
 
 	{
 		unsigned long ret_jif = wait_for_completion_timeout(
 				&inst->done, msecs_to_jiffies(1000));
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "open_ch: wait returned, jiffies_left=%lu (%s)\n",
 			 ret_jif, ret_jif ? "got signal" : "timed out");
 		if (!ret_jif) {
@@ -1576,7 +1576,7 @@ int vidc_open_channel(struct vidc_inst *inst)
 	}
 
 	inst->ch_open = true;
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "VIDC channel opened (codec=%u, ctxt off=0x%x sz=%u)\n",
 		 fw_codec, inst->ctxt_mem_offset, VIDC_CTXT_MEM_SIZE);
 	return 0;
@@ -1799,7 +1799,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 
 	if (!inst->seq_width || !inst->seq_height) {
 		if (inst->width && inst->height) {
-			dev_info(core->dev,
+			dev_dbg(core->dev,
 				 "vidc_init_buffers: firmware geometry missing, using S_FMT %ux%u\n",
 				 inst->width, inst->height);
 			inst->seq_width  = inst->width;
@@ -1896,7 +1896,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		vidc_write(core, VIDC_REG_H264_NB_IP,
 			   fw_off >> VIDC_ADDR_SHIFT);
 
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "H264 work bufs: vert_nb_mv at %pad, nb_ip at %pad\n",
 			 &inst->h264_vert_nb_mv_dma_addr,
 			 &inst->h264_nb_ip_dma_addr);
@@ -1933,7 +1933,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		}
 	}
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "DPB: %u CAPTURE slots (y=%u c=%u mv=%u), %u Y+C bytes, slot0 %pad\n",
 		 inst->dpb_count, y_size, c_size, mv_size, total_size,
 		 &inst->dpb_cap_dma[0]);
@@ -1994,11 +1994,11 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	core->cmd_seq_num++;
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "INIT_BUFFERS pre-trigger: shm=0x%x dpb_cnt=%u seq_num=%u inst_id=0x%x op=0x%x\n",
 		 core->shm_offset, inst->dpb_count, core->cmd_seq_num,
 		 inst->inst_id, VIDC_OP_INIT_BUFFERS | inst->inst_id);
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "INIT_BUFFERS regs: DPB[0]=0x%x H264_NB_VERT_MV=0x%x H264_NB_IP=0x%x SHM[mv_sz]=0x%x SHM[y_sz]=0x%x\n",
 		 vidc_read(core, VIDC_REG_DPB_LUMA_BASE),
 		 vidc_read(core, VIDC_REG_H264_VERT_NB_MV),
@@ -2024,7 +2024,7 @@ int vidc_init_buffers(struct vidc_inst *inst)
 			if (wait_for_completion_timeout(&inst->done,
 				msecs_to_jiffies(250)))
 				goto init_buf_done;
-			dev_info(core->dev,
+			dev_dbg(core->dev,
 				 "INIT_BUFFERS poll t=%d ms: CH0_INST=0x%x R2H=0x%x INTR=0x%x\n",
 				 (i + 1) * 250,
 				 vidc_read(core, VIDC_REG_CH0_INST_ID),
@@ -2067,7 +2067,7 @@ init_buf_done:
 	 * the CAPTURE buf_queue path (s5p-mfc dec_dst_flag model): one bit per
 	 * QBUF'd buffer, cleared on display, re-set on re-queue.
 	 */
-	dev_info(core->dev, "VIDC DPB initialised, %u slots (hw_mask=0x%x from queued bufs)\n",
+	dev_dbg(core->dev, "VIDC DPB initialised, %u slots (hw_mask=0x%x from queued bufs)\n",
 		 inst->dpb_count, inst->dpb_hw_mask);
 
 	return 0;
@@ -2302,7 +2302,7 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 				 */
 				if (hdr_size > 6)
 					inst->seq_hdr[6] = 0xC0;
-				dev_info(core->dev,
+				dev_dbg(core->dev,
 					 "encoder SEQ_HEADER done (%u byte SPS/PPS captured)\n",
 					 hdr_size);
 			} else {
@@ -2424,7 +2424,7 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 		}
 	}
 
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "recon pool: %u slots × (y=%u c=%u), total %u bytes at %pad\n",
 		 inst->dpb_count, y_size, c_size, total_size,
 		 &inst->dpb_y_dma_addr);
@@ -2518,14 +2518,14 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 		/* MB_INFO disabled to match webOS (see comment above). */
 		vidc_write(core, VIDC_REG_ENC_MB_INFO, 0);
 
-		dev_info(core->dev,
+		dev_dbg(core->dev,
 			 "enc work bufs: %u B at %pad (mv=%u colz=%u md=%u pred=%u nbor=%u mbinfo=0)\n",
 			 total, &inst->enc_work_dma_addr,
 			 sz_mv, sz_colzero, sz_md, sz_pred, sz_nbor);
 	}
 
 	inst->dpb_inited = true;
-	dev_info(core->dev,
+	dev_dbg(core->dev,
 		 "VIDC encoder recon programmed: %u slots at %pad (latched by SEQ_HEADER)\n",
 		 inst->dpb_count, &inst->dpb_y_dma_addr);
 	return 0;
@@ -3060,7 +3060,7 @@ static int vidc_probe(struct platform_device *pdev)
 			if (of_address_to_resource(mem_node, 0, &r) == 0) {
 				core->fw_phys_base = r.start;
 				core->fw_phys_size = resource_size(&r);
-				dev_info(dev, "SMI firmware region: 0x%08x size 0x%zx\n",
+				dev_dbg(dev, "SMI firmware region: 0x%08x size 0x%zx\n",
 					 (u32)core->fw_phys_base, core->fw_phys_size);
 			} else {
 				dev_err(dev, "failed to get SMI memory-region address\n");
@@ -3089,7 +3089,7 @@ static int vidc_probe(struct platform_device *pdev)
 				if (of_address_to_resource(pool_node, 0, &pr) == 0) {
 					core->smipool_phys_base = pr.start;
 					core->smipool_phys_size = resource_size(&pr);
-					dev_info(dev,
+					dev_dbg(dev,
 						"SMIPOOL region: 0x%08x size 0x%zx\n",
 						(u32)core->smipool_phys_base,
 						core->smipool_phys_size);
@@ -3111,7 +3111,7 @@ static int vidc_probe(struct platform_device *pdev)
 				ret);
 			return ret;
 		}
-		dev_info(dev, "SMIPOOL attached as coherent DMA pool\n");
+		dev_dbg(dev, "SMIPOOL attached as coherent DMA pool\n");
 	}
 
 	/* video-smi: RISC AXI fetch from SMI (critical: without this vote the
@@ -3124,7 +3124,7 @@ static int vidc_probe(struct platform_device *pdev)
 		dev_err(dev, "video-smi ICC path failed (err=%d): RISC will stall on first fetch\n", ret);
 		core->icc_path = NULL;
 	} else if (core->icc_path) {
-		dev_info(dev, "video-smi ICC path acquired OK\n");
+		dev_dbg(dev, "video-smi ICC path acquired OK\n");
 	}
 
 	/* video-ebi: RISC access to EBI DRAM (decoded frame buffers) */
@@ -3136,7 +3136,7 @@ static int vidc_probe(struct platform_device *pdev)
 		dev_err(dev, "video-ebi ICC path failed (err=%d)\n", ret);
 		core->icc_ebi_path = NULL;
 	} else if (core->icc_ebi_path) {
-		dev_info(dev, "video-ebi ICC path acquired OK\n");
+		dev_dbg(dev, "video-ebi ICC path acquired OK\n");
 	}
 
 	/*
@@ -3158,7 +3158,7 @@ static int vidc_probe(struct platform_device *pdev)
 	ret = v4l2_device_register(dev, &core->v4l2_dev);
 	if (ret) {
 		dev_err(dev, "failed to register V4L2 device: %d\n", ret);
-		return ret;
+		goto err_rmem;
 	}
 
 	/* Register decoder video device */
@@ -3179,7 +3179,7 @@ static int vidc_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(dev);
 
-	dev_info(dev, "Qualcomm VIDC 1080p driver probed\n");
+	dev_dbg(dev, "Qualcomm VIDC 1080p driver probed\n");
 
 	return 0;
 
@@ -3187,6 +3187,9 @@ err_dec_unregister:
 	vidc_dec_unregister(core);
 err_v4l2_unregister:
 	v4l2_device_unregister(&core->v4l2_dev);
+err_rmem:
+	/* Release the SMIPOOL coherent pool attached above (no-op if none). */
+	of_reserved_mem_device_release(dev);
 	return ret;
 }
 
@@ -3204,6 +3207,8 @@ static void vidc_remove(struct platform_device *pdev)
 	vidc_core_deinit(core);
 	pm_runtime_disable(core->dev);
 	v4l2_device_unregister(&core->v4l2_dev);
+	/* Release the SMIPOOL coherent pool attached in probe. */
+	of_reserved_mem_device_release(core->dev);
 }
 
 static int vidc_runtime_suspend(struct device *dev)
@@ -3319,7 +3324,7 @@ static int vidc_runtime_resume(struct device *dev)
 	}
 
 	if (core->icc_path) {
-		dev_info(dev, "voting video-smi bw: avg=%u peak=%u kbps\n",
+		dev_dbg(dev, "voting video-smi bw: avg=%u peak=%u kbps\n",
 			 core->icc_bw_avg, core->icc_bw_peak);
 		ret = icc_set_bw(core->icc_path, core->icc_bw_avg, core->icc_bw_peak);
 		if (ret) {
@@ -3327,7 +3332,7 @@ static int vidc_runtime_resume(struct device *dev)
 				ret);
 			goto err_gdsc;
 		}
-		dev_info(dev, "video-smi bandwidth vote ok\n");
+		dev_dbg(dev, "video-smi bandwidth vote ok\n");
 	} else {
 		dev_err(dev, "video-smi ICC path is NULL — RISC fetch will be blocked\n");
 	}
