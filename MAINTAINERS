@@ -17570,6 +17570,14 @@ L:	linux-mtd@lists.infradead.org
 S:	Maintained
 F:	drivers/mtd/devices/docg3*
 
+MT9M113 APTINA CAMERA SENSOR
+M:	Herman van Hazendonk <github.com@herrie.org>
+L:	linux-media@vger.kernel.org
+S:	Maintained
+T:	git git://linuxtv.org/media.git
+F:	Documentation/devicetree/bindings/media/i2c/aptina,mt9m113.yaml
+F:	drivers/media/i2c/mt9m113.c
+
 MT9M114 ONSEMI SENSOR DRIVER
 M:	Laurent Pinchart <laurent.pinchart@ideasonboard.com>
 L:	linux-media@vger.kernel.org
