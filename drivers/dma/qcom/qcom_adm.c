@@ -165,7 +165,6 @@ struct adm_chan {
 	struct adm_async_desc *curr_txd;
 	struct dma_slave_config slave;
 	u32 crci;
-	u32 mux;
 
 	/*
 	 * Per-channel exec_func, set via adm_slave_config from
@@ -668,7 +667,15 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		}
 	}
 
-	async_desc->mux = achan->mux ? ADM_CRCI_CTL_MUX_SEL : 0;
+	/*
+	 * Derive MUX_SEL from the CRCI's mux-select flag (BIT4). Muxed CRCIs
+	 * encode the flag in the DT value, e.g. GSBI10 HSUART2 RX touchscreen
+	 * CRCI 26 = (1<<4)+10: base CRCI 10 + ADM_CRCI_MUX_SEL. Since Fix #4
+	 * writes CRCI_CTL at the live EE=0, failing to set MUX_SEL clears it on
+	 * hardware and kills the muxed CRCI handshake (touchscreen RX went
+	 * dead). On EE=1 the write was dropped, so this was previously latent.
+	 */
+	async_desc->mux = (achan->crci & ADM_CRCI_MUX_SEL) ? ADM_CRCI_CTL_MUX_SEL : 0;
 	async_desc->crci = crci;
 	async_desc->blk_size = blk_size;
 	/* Inherit exec_func from channel slave config */
