@@ -80,7 +80,7 @@ struct q6v2_lpass {
 
 	bool use_pas;			/* Use PAS (trusted) boot */
 
-	struct qcom_scm_pas_metadata pas_metadata;
+	struct qcom_scm_pas_context *pas_ctx;
 	struct qcom_rproc_subdev smd_subdev;
 };
 
@@ -97,16 +97,8 @@ static int q6v2_lpass_load(struct rproc *rproc, const struct firmware *fw)
 
 	if (q6v2->use_pas) {
 		pr_emerg("Q6V2: using PAS load\n");
-		ret = qcom_mdt_pas_init(q6v2->dev, fw, rproc->firmware,
-					PAS_Q6_ID, q6v2->mem_phys,
-					&q6v2->pas_metadata);
-		if (ret)
-			return ret;
-
-		ret = qcom_mdt_load_no_init(q6v2->dev, fw, rproc->firmware,
-					    q6v2->mem_region,
-					    q6v2->mem_phys, q6v2->mem_size,
-					    &q6v2->mem_reloc);
+		ret = qcom_mdt_pas_load(q6v2->pas_ctx, fw, rproc->firmware,
+					q6v2->mem_region, &q6v2->mem_reloc);
 	} else {
 		pr_emerg("Q6V2: using direct load (untrusted)\n");
 		pr_emerg("Q6V2: calling qcom_mdt_load_no_init (skip PAS/SCM)...\n");
@@ -307,7 +299,7 @@ static int q6v2_lpass_stop_trusted(struct q6v2_lpass *q6v2)
 	if (ret)
 		dev_err(q6v2->dev, "PAS shutdown failed: %d\n", ret);
 
-	qcom_scm_pas_metadata_release(&q6v2->pas_metadata);
+	qcom_scm_pas_metadata_release(q6v2->pas_ctx);
 
 	return ret;
 }
@@ -463,6 +455,14 @@ static int q6v2_lpass_probe(struct platform_device *pdev)
 	ret = q6v2_lpass_alloc_memory_region(q6v2);
 	if (ret)
 		return ret;
+
+	if (q6v2->use_pas) {
+		q6v2->pas_ctx = devm_qcom_scm_pas_context_alloc(dev, PAS_Q6_ID,
+								q6v2->mem_phys,
+								q6v2->mem_size);
+		if (IS_ERR(q6v2->pas_ctx))
+			return PTR_ERR(q6v2->pas_ctx);
+	}
 
 	platform_set_drvdata(pdev, q6v2);
 

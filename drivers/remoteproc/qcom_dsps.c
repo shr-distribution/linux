@@ -64,7 +64,7 @@ struct qcom_dsps {
 	bool use_pas;			/* Use PAS (trusted) boot */
 	bool is_on;			/* Power state tracking */
 
-	struct qcom_scm_pas_metadata pas_metadata;
+	struct qcom_scm_pas_context *pas_ctx;
 };
 
 static int qcom_dsps_power_on(struct qcom_dsps *dsps)
@@ -182,16 +182,8 @@ static int qcom_dsps_load(struct rproc *rproc, const struct firmware *fw)
 	int ret;
 
 	if (dsps->use_pas) {
-		ret = qcom_mdt_pas_init(dsps->dev, fw, rproc->firmware,
-					PAS_DSPS_ID, dsps->mem_phys,
-					&dsps->pas_metadata);
-		if (ret)
-			return ret;
-
-		ret = qcom_mdt_load_no_init(dsps->dev, fw, rproc->firmware,
-					    dsps->mem_region,
-					    dsps->mem_phys, dsps->mem_size,
-					    &dsps->mem_reloc);
+		ret = qcom_mdt_pas_load(dsps->pas_ctx, fw, rproc->firmware,
+					dsps->mem_region, &dsps->mem_reloc);
 	} else {
 		ret = qcom_mdt_load_no_init(dsps->dev, fw, rproc->firmware,
 					    dsps->mem_region,
@@ -256,7 +248,7 @@ static int qcom_dsps_stop(struct rproc *rproc)
 		if (ret)
 			dev_err(dsps->dev, "PAS shutdown failed: %d\n", ret);
 
-		qcom_scm_pas_metadata_release(&dsps->pas_metadata);
+		qcom_scm_pas_metadata_release(dsps->pas_ctx);
 	} else {
 		/* Put DSPS into reset - assert PPSS_RESET */
 		ret = reset_control_assert(dsps->reset);
@@ -399,6 +391,14 @@ static int qcom_dsps_probe(struct platform_device *pdev)
 	ret = qcom_dsps_alloc_memory_region(dsps);
 	if (ret)
 		return ret;
+
+	if (dsps->use_pas) {
+		dsps->pas_ctx = devm_qcom_scm_pas_context_alloc(dev, PAS_DSPS_ID,
+								dsps->mem_phys,
+								dsps->mem_size);
+		if (IS_ERR(dsps->pas_ctx))
+			return PTR_ERR(dsps->pas_ctx);
+	}
 
 	platform_set_drvdata(pdev, dsps);
 
