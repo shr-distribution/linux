@@ -23,6 +23,7 @@
 /* Additional internal-use only BO flags: */
 #define MSM_BO_STOLEN        0x10000000    /* try to use stolen/splash memory */
 #define MSM_BO_MAP_PRIV      0x20000000    /* use IOMMU_PRIV when mapping */
+#define MSM_BO_CONTIGUOUS    0x40000000    /* DMA-allocated contiguous memory */
 
 /**
  * struct msm_gem_vm_log_entry - An entry in the VM log
@@ -219,6 +220,30 @@ struct msm_gem_object {
 	struct sg_table *sgt;
 	void *vaddr;
 
+	/* For MSM_BO_CONTIGUOUS: DMA-allocated contiguous memory */
+	dma_addr_t dma_addr;
+
+	/*
+	 * Set when the BO was allocated from a no-map reserved-memory pool
+	 * (the device has of-pool dma_mem set up via memory-region in DT)
+	 * OR from the custom msm_smi_pool. No struct page exists for these
+	 * allocations — the sgt is built from PFNs without sg_set_page(),
+	 * and code that walks the sgt (sync_for_gpu, sync_for_cpu,
+	 * put_pages, mmap fault handler) takes a separate path.
+	 *
+	 * vaddr is from ioremap_wc / memremap_wc — write-combine, NOT in
+	 * the kernel's linear map and NOT cached. virt_to_page() on it
+	 * returns garbage.
+	 */
+	bool nomap_backed;
+
+	/*
+	 * Set when the BO was allocated from the custom msm_smi_pool
+	 * (drm_smi_mem). On free we route to msm_smi_free() instead of
+	 * dma_free_wc(). Implies nomap_backed.
+	 */
+	bool smi_backed;
+
 	char name[32]; /* Identifier to print for the debugfs files */
 
 	/* userspace metadata backchannel */
@@ -278,6 +303,8 @@ int msm_gem_get_and_pin_iova_range(struct drm_gem_object *obj,
 int msm_gem_get_and_pin_iova(struct drm_gem_object *obj, struct drm_gpuvm *vm,
 			     uint64_t *iova);
 void msm_gem_unpin_iova(struct drm_gem_object *obj, struct drm_gpuvm *vm);
+void msm_gem_sync_for_gpu(struct drm_gem_object *obj);
+void msm_gem_sync_for_display(struct drm_gem_object *obj);
 void msm_gem_pin_obj_locked(struct drm_gem_object *obj);
 struct page **msm_gem_get_pages_locked(struct drm_gem_object *obj, unsigned madv);
 struct page **msm_gem_pin_pages_locked(struct drm_gem_object *obj);

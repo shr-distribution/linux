@@ -414,13 +414,19 @@ int adreno_get_param(struct msm_gpu *gpu, struct msm_context *ctx,
 		*value = gpu->suspend_count;
 		return 0;
 	case MSM_PARAM_VA_START:
-		if (vm == gpu->vm)
-			return UERR(EINVAL, drm, "requires per-process pgtables");
+		/*
+		 * For GPUs without per-process page tables (a2xx with GPUMMU),
+		 * all contexts share the global VM. Allow the query to succeed
+		 * so userspace can know the VA range bounds for buffer allocation.
+		 * The legacy submit path handles address management internally.
+		 */
+		if (!vm)
+			return UERR(EINVAL, drm, "no VM context");
 		*value = vm->mm_start;
 		return 0;
 	case MSM_PARAM_VA_SIZE:
-		if (vm == gpu->vm)
-			return UERR(EINVAL, drm, "requires per-process pgtables");
+		if (!vm)
+			return UERR(EINVAL, drm, "no VM context");
 		*value = vm->mm_range;
 		return 0;
 	case MSM_PARAM_HIGHEST_BANK_BIT:
@@ -1099,16 +1105,29 @@ static int adreno_get_pwrlevels(struct device *dev,
 
 	gpu->fast_rate = 0;
 
+	/*
+	 * Check if OPP table already exists (can happen on deferred probe retry).
+	 * If so, skip adding a new one.
+	 */
+	if (dev_pm_opp_get_opp_count(dev) > 0) {
+		/* OPP table already configured, skip setup */
+		goto find_fast_rate;
+	}
+
 	/* devm_pm_opp_of_add_table may error out but will still create an OPP table */
 	ret = devm_pm_opp_of_add_table(dev);
 	if (ret == -ENODEV) {
 		/* Special cases for ancient hw with ancient DT bindings */
 		if (adreno_is_a2xx(adreno_gpu)) {
-			dev_warn(dev, "Unable to find the OPP table. Falling back to 200 MHz.\n");
-			dev_pm_opp_add(dev, 200000000, 0);
+			dev_info(dev, "No OPP table in DT, using 200 MHz fallback.\n");
+			ret = dev_pm_opp_add(dev, 200000000, 0);
+			if (ret && ret != -EEXIST)
+				return ret;
 		} else if (adreno_is_a320(adreno_gpu)) {
-			dev_warn(dev, "Unable to find the OPP table. Falling back to 450 MHz.\n");
-			dev_pm_opp_add(dev, 450000000, 0);
+			dev_info(dev, "No OPP table in DT, using 450 MHz fallback.\n");
+			ret = dev_pm_opp_add(dev, 450000000, 0);
+			if (ret && ret != -EEXIST)
+				return ret;
 		} else {
 			DRM_DEV_ERROR(dev, "Unable to find the OPP table\n");
 			return -ENODEV;
@@ -1117,6 +1136,8 @@ static int adreno_get_pwrlevels(struct device *dev,
 		DRM_DEV_ERROR(dev, "Unable to set the OPP table\n");
 		return ret;
 	}
+
+find_fast_rate:
 
 	/* Find the fastest defined rate */
 	opp = dev_pm_opp_find_freq_floor(dev, &freq);
@@ -1201,17 +1222,20 @@ int adreno_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	    adreno_gpu->info->family < ADRENO_6XX_GEN1) {
 		/*
 		 * This can only be done before devm_pm_opp_of_add_table(), or
-		 * dev_pm_opp_set_config() will WARN_ON()
+		 * dev_pm_opp_set_config() will WARN_ON(). Skip if OPP is
+		 * already configured (can happen on deferred probe retry).
 		 */
-		if (IS_ERR(devm_clk_get(dev, "core"))) {
-			/*
-			 * If "core" is absent, go for the legacy clock name.
-			 * If we got this far in probing, it's a given one of
-			 * them exists.
-			 */
-			devm_pm_opp_set_clkname(dev, "core_clk");
-		} else
-			devm_pm_opp_set_clkname(dev, "core");
+		if (dev_pm_opp_get_opp_count(dev) < 0) {
+			if (IS_ERR(devm_clk_get(dev, "core"))) {
+				/*
+				 * If "core" is absent, go for the legacy clock name.
+				 * If we got this far in probing, it's a given one of
+				 * them exists.
+				 */
+				devm_pm_opp_set_clkname(dev, "core_clk");
+			} else
+				devm_pm_opp_set_clkname(dev, "core");
+		}
 	}
 
 	gpu_name = devm_kasprintf(dev, GFP_KERNEL, "%"ADRENO_CHIPID_FMT,

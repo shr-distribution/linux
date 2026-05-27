@@ -243,9 +243,16 @@ static int adreno_bind(struct device *dev, struct device *master, void *data)
 		return PTR_ERR(gpu);
 	}
 
-	ret = dev_pm_opp_of_find_icc_paths(dev, NULL);
-	if (ret)
-		return ret;
+	/*
+	 * Set up OPP interconnect paths for bandwidth scaling.
+	 * Skip for A2XX which handles ICC manually in a2xx_gpu.c
+	 * to avoid duplicate/conflicting ICC paths.
+	 */
+	if (!adreno_is_a2xx(to_adreno_gpu(gpu))) {
+		ret = dev_pm_opp_of_find_icc_paths(dev, NULL);
+		if (ret)
+			return ret;
+	}
 
 	return 0;
 }
@@ -377,7 +384,16 @@ static int adreno_system_suspend(struct device *dev)
 		goto out;
 	}
 
+	/*
+	 * Select the deep suspend path for the duration of the force-suspend:
+	 * system sleep must drop the GPU rail/power domain (unlike a runtime
+	 * idle, which on RPM_ALWAYS_ON GPUs only gates clocks). force_suspend
+	 * invokes the runtime-suspend callback synchronously, so clearing the
+	 * flag immediately after is safe and covers the failure path too.
+	 */
+	gpu->suspend_to_system = true;
 	ret = pm_runtime_force_suspend(dev);
+	gpu->suspend_to_system = false;
 out:
 	if (ret)
 		resume_scheduler(gpu);

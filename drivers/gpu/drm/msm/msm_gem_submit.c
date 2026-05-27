@@ -13,11 +13,26 @@
 #include <drm/drm_file.h>
 #include <drm/drm_syncobj.h>
 
+#include <linux/dma-mapping.h>
+
 #include "msm_drv.h"
 #include "msm_gpu.h"
 #include "msm_gem.h"
 #include "msm_gpu_trace.h"
 #include "msm_syncobj.h"
+
+/* Test knob: force per-BO dma_sync_sgtable_for_device() before submit to
+ * ensure CPU write-combined buffers are explicitly synced to the device.
+ * Disabled by default; enable via module parameter for diagnostics.
+ *
+ * Note: We use dma_sync_sgtable_for_device(), NOT dma_map_sgtable().
+ * The buffers are already mapped when created; dma_map_sgtable() on an
+ * already-mapped buffer is undefined behavior. dma_sync_sgtable_for_device()
+ * is the correct API for cache maintenance on already-mapped buffers.
+ */
+static bool msm_test_force_dma_sync = false;
+module_param_named(msm_test_force_dma_sync, msm_test_force_dma_sync, bool, 0644);
+MODULE_PARM_DESC(msm_test_force_dma_sync, "Test: force dma_sync_sgtable_for_device() per-BO before submit");
 
 /* For userspace errors, use DRM_UT_DRIVER.. so that userspace can enable
  * error msgs for debugging, but we don't spam dmesg by default
@@ -355,6 +370,8 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 	struct msm_drm_private *priv = submit->dev->dev_private;
 	int i, ret = 0;
 
+	/* Test knob: per-BO dma_map_sgtable handled at file scope */
+
 	for (i = 0; i < submit->nr_bos; i++) {
 		struct drm_gem_object *obj = submit->bos[i].obj;
 		struct drm_gpuva *vma;
@@ -386,6 +403,51 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 		msm_gem_pin_obj_locked(submit->bos[i].obj);
 	}
 	mutex_unlock(&priv->lru.lock);
+
+	/*
+	 * On non-coherent platforms (A2XX), sync CPU caches for GPU access.
+	 * This ensures any CPU writes to vertex buffers, textures, etc. are
+	 * visible to the GPU before command execution begins.
+	 *
+	 * The webOS KGSL driver does this with dmac_flush_range() and
+	 * outer_flush_range() before every GPU submission. Without this,
+	 * the GPU may read stale data from memory, causing intermittent
+	 * rendering artifacts (e.g., triangulated surfaces in glmark2).
+	 */
+	if (!priv->has_cached_coherent) {
+		unsigned int n_synced = 0;
+
+		for (i = 0; i < submit->nr_bos; i++) {
+			struct drm_gem_object *obj = submit->bos[i].obj;
+			struct msm_gem_object *msm_obj = to_msm_bo(obj);
+
+			/*
+			 * Sync EVERY GPU-readable BO regardless of cache type.
+			 * MSM_BO_CACHED buffers especially need an explicit clean
+			 * before submit because the kernel has no other notification
+			 * point for CPU writes from userspace mmap'd pages.
+			 * MSM_BO_WC buffers also need it: dsb alone does not drain
+			 * the PL310 outer L2 controller on ARMv7 / Scorpion.
+			 */
+			msm_gem_sync_for_gpu(obj);
+			n_synced++;
+
+			/* Diagnostic knob: also do dma_sync_sgtable_for_device(). */
+			if (msm_test_force_dma_sync && msm_obj->sgt) {
+				dma_sync_sgtable_for_device(submit->dev->dev,
+							    msm_obj->sgt,
+							    DMA_TO_DEVICE);
+			}
+		}
+
+		/* One-shot debug: confirm path runs and how many BOs got synced. */
+		{
+			static unsigned int n_submits;
+			if ((n_submits++ & 0x1ff) == 0)
+				pr_info_ratelimited("msm: sync_for_gpu: submit %u, n_bos=%u, n_synced=%u\n",
+						    n_submits, submit->nr_bos, n_synced);
+		}
+	}
 
 	submit->bos_pinned = true;
 

@@ -5,12 +5,19 @@
  */
 
 #include <linux/dma-map-ops.h>
+#include <linux/dma-mapping.h>
 #include <linux/vmalloc.h>
 #include <linux/spinlock.h>
 #include <linux/shmem_fs.h>
 #include <linux/dma-buf.h>
 
 #include <drm/drm_dumb_buffers.h>
+
+#ifdef CONFIG_ARM
+#include <asm/cacheflush.h>
+#include <asm/outercache.h>
+#endif
+
 #include <drm/drm_prime.h>
 #include <drm/drm_file.h>
 #include <drm/drm_fourcc.h>
@@ -21,6 +28,69 @@
 #include "msm_gem.h"
 #include "msm_gpu.h"
 #include "msm_kms.h"
+
+/*
+ * FIX #2 (gated): force contiguous allocation for BOs in a band of sizes on
+ * non-cached-coherent platforms. The lower bound is `force_contiguous_pages`
+ * (0 = disabled). The upper bound is `force_contiguous_max_pages` (0 = no
+ * upper bound) — set this to keep very large BOs OFF the CMA pool, since
+ * draining CMA causes cma_alloc to block on page migration (looks like a
+ * hang). On tenderloin our CMA pool is 32 MiB; sizing the upper bound to
+ * leave headroom for fbcon+other-CMA-users keeps surface-manager safe.
+ *
+ * Recommended starting point on tenderloin (32 MiB CMA):
+ *   force_contiguous_pages = 16    (force CMA for BOs ≥ 64 KB)
+ *   force_contiguous_max_pages = 256 (skip CMA for BOs ≥ 1 MB)
+ *
+ * Both knobs in /sys/module/msm/parameters/ are runtime-tunable.
+ */
+static unsigned int msm_force_contiguous_pages;
+module_param_named(force_contiguous_pages, msm_force_contiguous_pages,
+		   uint, 0644);
+MODULE_PARM_DESC(force_contiguous_pages,
+	"Lower-bound (in pages) for forcing CMA-backed allocation on non-coherent platforms (0 = disabled)");
+
+static unsigned int msm_force_contiguous_max_pages;
+module_param_named(force_contiguous_max_pages, msm_force_contiguous_max_pages,
+		   uint, 0644);
+MODULE_PARM_DESC(force_contiguous_max_pages,
+	"Upper-bound (in pages) for forcing CMA-backed allocation; BOs at or above this fall back to buddy (0 = no upper bound)");
+
+/*
+ * Check if contiguous memory is required for this object.
+ * When running without IOMMU, scanout buffers need physically contiguous
+ * memory because the display controller reads linearly from a single
+ * base address and cannot handle scatter-gather.
+ */
+static bool msm_gem_needs_contiguous(struct drm_device *dev, uint32_t flags,
+				     size_t size)
+{
+	struct msm_drm_private *priv = dev->dev_private;
+
+#ifdef CONFIG_DRM_MSM_KMS
+	/* Scanout buffers without IOMMU need contiguous memory */
+	if ((flags & MSM_BO_SCANOUT) && priv->kms && !priv->kms->vm)
+		return true;
+#endif
+
+	/*
+	 * FIX #2: on non-coherent platforms, optionally force CMA-backed
+	 * contiguous allocation for BOs in [lower, upper) page count band.
+	 * This eliminates the fragmentation pattern (3 MB BO with nents=406)
+	 * for the size range where it hurts most, while keeping very large
+	 * BOs off CMA so it doesn't get drained.
+	 */
+	if (!priv->has_cached_coherent &&
+	    msm_force_contiguous_pages > 0 &&
+	    !(flags & MSM_BO_CONTIGUOUS) &&
+	    size >= ((size_t)msm_force_contiguous_pages * PAGE_SIZE) &&
+	    (msm_force_contiguous_max_pages == 0 ||
+	     size < ((size_t)msm_force_contiguous_max_pages * PAGE_SIZE))) {
+		return true;
+	}
+
+	return false;
+}
 
 static void update_device_mem(struct msm_drm_private *priv, ssize_t size)
 {
@@ -105,6 +175,10 @@ void msm_gem_vma_put(struct drm_gem_object *obj)
 		return;
 
 #ifdef CONFIG_DRM_MSM_KMS
+	/* Skip IOVA cleanup when running without IOMMU (vm is NULL) */
+	if (!priv->kms->vm)
+		return;
+
 	struct drm_exec exec;
 
 	msm_gem_lock_vm_and_obj(&exec, obj, priv->kms->vm);
@@ -141,12 +215,151 @@ static void sync_for_cpu(struct msm_gem_object *msm_obj)
 	dma_unmap_sgtable(dev, msm_obj->sgt, DMA_BIDIRECTIONAL, 0);
 }
 
+/**
+ * msm_gem_sync_for_gpu() - Sync GEM buffer for GPU access
+ * @obj: the GEM object
+ *
+ * On non-coherent ARMv7 platforms like MSM8660 (Scorpion + PL310 L2
+ * controller), CPU writes to GPU-readable buffers may sit in the
+ * write-combine buffer, the L1 dcache, or the PL310 L2 controller's
+ * pending writes — none of which are visible to the GPU's bus master
+ * read until explicitly drained.
+ *
+ * `dsb(sy)` only drains the CPU's store buffer. It does NOT drain the
+ * PL310 L2 controller. To match what the legacy webOS KGSL driver does
+ * before every submit, we must clean the inner (L1) and outer (L2)
+ * caches over each scatterlist segment, then issue a final dsb.
+ *
+ * Must be called before submitting commands that reference this buffer
+ * to the GPU on non-coherent platforms.
+ */
+void msm_gem_sync_for_gpu(struct drm_gem_object *obj)
+{
+#ifdef CONFIG_ARM
+	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+	struct sg_table *sgt;
+	struct scatterlist *sg;
+	int i;
+
+	msm_gem_assert_locked(obj);
+
+	/*
+	 * Nomap-backed BO is allocated from a no-map of-pool with
+	 * memremap_wc — write-combine, non-cached. There are no L1/L2
+	 * cache lines to flush; we just need a barrier to drain the WC
+	 * store buffer before the GPU reads.
+	 */
+	if (msm_obj->nomap_backed) {
+		dsb(sy);
+		return;
+	}
+
+	sgt = msm_obj->sgt;
+	if (!sgt) {
+		/* No mapping yet — at least drain the store buffer. */
+		dsb(sy);
+		return;
+	}
+
+	for_each_sgtable_sg(sgt, sg, i) {
+		void *vaddr = sg_virt(sg);
+		phys_addr_t phys = sg_phys(sg);
+		size_t len = sg->length;
+
+		if (vaddr)
+			dmac_flush_range(vaddr, vaddr + len);
+
+		/*
+		 * Order L1->L2->memory transitively. After dmac_flush_range
+		 * issues its DCCMVAC ops, dirty L1 lines are written into L2,
+		 * but those writes may still be pending in the L1<->L2 store
+		 * buffer when outer_clean_range runs. Without an intervening
+		 * DSB, outer_clean_range can drain L2 to memory before the
+		 * freshly-evicted L1 data has arrived in L2, leaving the page
+		 * stale -- seen on heavily fragmented BOs (many small per-page
+		 * sg entries in tight succession).
+		 */
+		dsb(sy);
+		outer_clean_range(phys, phys + len);
+	}
+	dsb(sy);
+#endif
+}
+
+/**
+ * msm_gem_sync_for_display() - Sync GEM buffer cache for display scanout
+ * @obj: the GEM object
+ *
+ * On non-coherent platforms like MSM8660, after the GPU finishes rendering
+ * to a buffer, the outer L2 cache may contain stale entries. The display
+ * controller reads from memory directly (or through its own IOMMU path),
+ * potentially bypassing the CPU's cache hierarchy.
+ *
+ * This function flushes both inner (L1) and outer (L2) caches to ensure
+ * the display controller reads the GPU's rendered data from memory.
+ *
+ * Must be called after waiting for GPU fences and before submitting
+ * the buffer for display scanout.
+ */
+void msm_gem_sync_for_display(struct drm_gem_object *obj)
+{
+#ifdef CONFIG_ARM
+	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+	struct sg_table *sgt;
+	struct scatterlist *sg;
+	int i;
+
+	msm_gem_assert_locked(obj);
+
+	/*
+	 * Nomap-backed (memremap_wc) is non-cached — no L1/L2 to flush.
+	 * Drain the WC store buffer so the display controller sees the
+	 * latest GPU writes.
+	 */
+	if (msm_obj->nomap_backed) {
+		dsb(sy);
+		return;
+	}
+
+	sgt = msm_obj->sgt;
+	if (!sgt)
+		return;
+
+	/*
+	 * Flush both inner and outer caches for each page in the buffer.
+	 * This matches what the webOS kgsl driver does with dmac_flush_range
+	 * and outer_flush_range to ensure GPU-rendered data is visible to
+	 * the display controller.
+	 *
+	 * We iterate through the scatterlist and flush each segment's
+	 * virtual address range and physical address range for L2.
+	 */
+	for_each_sgtable_sg(sgt, sg, i) {
+		void *vaddr = sg_virt(sg);
+		phys_addr_t phys = sg_phys(sg);
+		size_t len = sg->length;
+
+		if (vaddr) {
+			/* Flush inner cache (L1) - clean and invalidate */
+			dmac_flush_range(vaddr, vaddr + len);
+		}
+		/* Flush outer cache (L2) */
+		outer_flush_range(phys, phys + len);
+	}
+#endif
+}
+
 static void update_lru_active(struct drm_gem_object *obj)
 {
 	struct msm_drm_private *priv = obj->dev->dev_private;
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 
-	GEM_WARN_ON(!msm_obj->pages);
+	/*
+	 * nomap_backed BOs (SMI pool / of-pool) have permanent backing
+	 * for their entire lifetime — there are no struct pages, but the
+	 * BO is never in lru.unbacked. Skip the pages assertion for them.
+	 */
+	GEM_WARN_ON(!msm_obj->pages && !msm_obj->nomap_backed);
 
 	if (msm_obj->pin_count) {
 		drm_gem_lru_move_tail_locked(&priv->lru.pinned, obj);
@@ -166,7 +379,11 @@ static void update_lru_locked(struct drm_gem_object *obj)
 
 	msm_gem_assert_locked(&msm_obj->base);
 
-	if (!msm_obj->pages) {
+	/*
+	 * nomap_backed BOs always have backing — treat them as active
+	 * for LRU purposes regardless of pages == NULL.
+	 */
+	if (!msm_obj->pages && !msm_obj->nomap_backed) {
 		GEM_WARN_ON(msm_obj->pin_count);
 
 		drm_gem_lru_move_tail_locked(&priv->lru.unbacked, obj);
@@ -190,17 +407,153 @@ static struct page **get_pages(struct drm_gem_object *obj)
 
 	msm_gem_assert_locked(obj);
 
+	/*
+	 * Cache check: nomap-backed BOs leave msm_obj->pages NULL but set
+	 * msm_obj->sgt on first allocation. Use sgt as the "already
+	 * allocated" sentinel for them so we don't re-allocate every call.
+	 */
+	if (msm_obj->nomap_backed && msm_obj->sgt)
+		return NULL;
+
 	if (!msm_obj->pages) {
 		struct drm_device *dev = obj->dev;
 		struct page **p;
 		size_t npages = obj->size >> PAGE_SHIFT;
 
-		p = drm_gem_get_pages(obj);
+		/*
+		 * For contiguous allocations (scanout without IOMMU, or
+		 * FIX#2-forced via msm_gem_needs_contiguous), use DMA API
+		 * to get physically contiguous memory.
+		 *
+		 * Two sub-cases:
+		 *   (a) System CMA / regular dma-coherent pool: dma_alloc_wc
+		 *       returns vaddr in the kernel linear map -> virt_to_page
+		 *       works -> drm_prime_pages_to_sg builds a normal sgt.
+		 *   (b) No-map of-pool (memory-region pointing at a no-map
+		 *       reserved-memory): dma_alloc_wc routes through
+		 *       dma_alloc_from_dev_coherent and returns a vaddr from
+		 *       memremap_wc. No struct page exists for the underlying
+		 *       memory, so virt_to_page() returns garbage. We must
+		 *       build the sgt from PFNs directly via sg_dma_address.
+		 *
+		 * Detect (b) by virt_addr_valid() — true only for kernel
+		 * linear-map pages. Failing that detection we fall back to
+		 * the normal path, which is safe for (a).
+		 */
+		if (msm_obj->flags & MSM_BO_CONTIGUOUS) {
+			void *vaddr;
+			dma_addr_t dma_addr;
 
-		if (IS_ERR(p)) {
-			DRM_DEV_ERROR(dev->dev, "could not get pages: %ld\n",
-					PTR_ERR(p));
-			return p;
+			/*
+			 * Note: an earlier iteration of this code routed
+			 * MSM_BO_CONTIGUOUS allocations through the custom
+			 * msm_smi_pool when available (drm_smi_mem at
+			 * 0x38300000 on tenderloin). The SMI allocator works
+			 * fine for kernel/userspace mmap, but MDP4 scanout
+			 * from the SMI region produces visible red/green
+			 * horizontal stripes — and cross-checked reference
+			 * kernels (webOS, HTC pyramid, Samsung Q1) confirm
+			 * MSM8660 framebuffers were always in EBI/main DDR;
+			 * SMI was reserved purely for camera/video codec
+			 * buffers via /dev/pmem_smipool. We follow that
+			 * pattern: contiguous BOs go to system CMA, the SMI
+			 * pool stays available for future non-display use.
+			 */
+			vaddr = dma_alloc_wc(dev->dev, obj->size,
+					     &dma_addr, GFP_KERNEL);
+			if (!vaddr) {
+				DRM_DEV_ERROR(dev->dev,
+					      "failed to allocate %zu bytes contiguous\n",
+					      obj->size);
+				return ERR_PTR(-ENOMEM);
+			}
+
+			msm_obj->vaddr = vaddr;
+			msm_obj->dma_addr = dma_addr;
+			msm_obj->nomap_backed = !virt_addr_valid(vaddr);
+
+			dev_info_ratelimited(dev->dev,
+				"scanout/contig: %zu bytes at phys %pad (%s)\n",
+				obj->size, &dma_addr,
+				msm_obj->nomap_backed ? "pinned no-map pool" : "movable linear/CMA");
+
+			if (msm_obj->nomap_backed) {
+				struct sg_table *sgt;
+
+				/*
+				 * No struct page available — build a
+				 * single-segment sgt with sg_dma_address set
+				 * directly. gpummu_map iterates this via
+				 * sg_page_iter_dma_address, which works
+				 * without struct page. Cache management
+				 * (sync_for_gpu/cpu) is no-op for the
+				 * memremap_wc / ioremap_wc mapping.
+				 * msm_obj->pages stays NULL — callers that
+				 * walk pages[] (e.g. the mmap fault handler)
+				 * check nomap_backed and use dma_addr.
+				 */
+				sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+				if (!sgt)
+					goto fail_nomap_sgt;
+				if (sg_alloc_table(sgt, 1, GFP_KERNEL)) {
+					kfree(sgt);
+					goto fail_nomap_sgt;
+				}
+
+				sg_set_page(sgt->sgl, NULL, obj->size, 0);
+				sg_dma_address(sgt->sgl) = msm_obj->dma_addr;
+				sg_dma_len(sgt->sgl)     = obj->size;
+				sgt->nents      = 1;
+				sgt->orig_nents = 1;
+
+				msm_obj->sgt   = sgt;
+				msm_obj->pages = NULL;
+
+				update_device_mem(dev->dev_private, obj->size);
+				update_lru(obj);
+				/*
+				 * Return NULL — pages[] doesn't exist for
+				 * nomap. Callers must check nomap_backed.
+				 */
+				return NULL;
+
+fail_nomap_sgt:
+				if (msm_obj->smi_backed) {
+					msm_smi_free(dev, msm_obj->dma_addr,
+						     obj->size,
+						     (void __iomem *)msm_obj->vaddr);
+				} else {
+					dma_free_wc(dev->dev, obj->size,
+						    msm_obj->vaddr,
+						    msm_obj->dma_addr);
+				}
+				msm_obj->vaddr        = NULL;
+				msm_obj->dma_addr     = 0;
+				msm_obj->nomap_backed = false;
+				msm_obj->smi_backed   = false;
+				return ERR_PTR(-ENOMEM);
+			}
+
+			/* Linear-map case: virt_to_page works. */
+			p = kvmalloc_array(npages, sizeof(*p), GFP_KERNEL);
+			if (!p) {
+				dma_free_wc(dev->dev, obj->size, vaddr, dma_addr);
+				return ERR_PTR(-ENOMEM);
+			}
+
+			{
+				int i;
+				for (i = 0; i < npages; i++)
+					p[i] = virt_to_page(vaddr + i * PAGE_SIZE);
+			}
+		} else {
+			p = drm_gem_get_pages(obj);
+
+			if (IS_ERR(p)) {
+				DRM_DEV_ERROR(dev->dev, "could not get pages: %ld\n",
+						PTR_ERR(p));
+				return p;
+			}
 		}
 
 		update_device_mem(dev->dev_private, obj->size);
@@ -239,13 +592,55 @@ static void put_pages(struct drm_gem_object *obj)
 	if (kref_read(&obj->refcount))
 		drm_gpuvm_bo_gem_evict(obj, true);
 
+	/*
+	 * Nomap-backed BO: free back to the originating pool (custom SMI
+	 * pool or system CMA via dma_free_wc), drop the synthetic sgt.
+	 * No struct page coverage means no cache flush — the
+	 * memremap_wc / ioremap_wc mapping is non-cached and unique to
+	 * this BO. No drm_gem_put_pages — there's no shmem backing.
+	 */
+	if (msm_obj->nomap_backed) {
+		struct drm_device *dev = obj->dev;
+
+		if (msm_obj->sgt) {
+			sg_free_table(msm_obj->sgt);
+			kfree(msm_obj->sgt);
+			msm_obj->sgt = NULL;
+		}
+		if (msm_obj->smi_backed) {
+			msm_smi_free(dev, msm_obj->dma_addr, obj->size,
+				     (void __iomem *)msm_obj->vaddr);
+		} else if (msm_obj->vaddr) {
+			dma_free_wc(dev->dev, obj->size,
+				    msm_obj->vaddr, msm_obj->dma_addr);
+		}
+		msm_obj->vaddr        = NULL;
+		msm_obj->dma_addr     = 0;
+		msm_obj->nomap_backed = false;
+		msm_obj->smi_backed   = false;
+		update_device_mem(obj->dev->dev_private, -obj->size);
+		update_lru(obj);
+		return;
+	}
+
 	if (msm_obj->pages) {
 		if (msm_obj->sgt) {
-			/* For non-cached buffers, ensure the new
-			 * pages are clean because display controller,
-			 * GPU, etc. are not coherent:
+			struct msm_drm_private *priv = obj->dev->dev_private;
+
+			/*
+			 * On non-coherent platforms (e.g. MSM8660), CPU cache
+			 * lines for these pages may still be live when the
+			 * buffer is freed. Once pages return to the buddy
+			 * allocator and get reused, those stale cache lines
+			 * can later evict and overwrite the new owner's data.
+			 *
+			 * Match the submit-side behavior (sync_for_gpu on
+			 * every GPU-readable BO regardless of cache type):
+			 * invalidate CPU cache for ALL BOs on non-coherent
+			 * platforms, not just MSM_BO_WC.
 			 */
-			if (msm_obj->flags & MSM_BO_WC)
+			if ((msm_obj->flags & MSM_BO_WC) ||
+			    !priv->has_cached_coherent)
 				sync_for_cpu(msm_obj);
 
 			sg_free_table(msm_obj->sgt);
@@ -255,7 +650,20 @@ static void put_pages(struct drm_gem_object *obj)
 
 		update_device_mem(obj->dev->dev_private, -obj->size);
 
-		drm_gem_put_pages(obj, msm_obj->pages, true, false);
+		/*
+		 * For contiguous allocations, free via DMA API.
+		 * The vaddr was set during allocation and dma_addr tracks
+		 * the DMA address.
+		 */
+		if (msm_obj->flags & MSM_BO_CONTIGUOUS) {
+			dma_free_wc(obj->dev->dev, obj->size,
+				    msm_obj->vaddr, msm_obj->dma_addr);
+			kvfree(msm_obj->pages);
+			msm_obj->vaddr = NULL;
+			msm_obj->dma_addr = 0;
+		} else {
+			drm_gem_put_pages(obj, msm_obj->pages, true, false);
+		}
 
 		msm_obj->pages = NULL;
 		update_lru(obj);
@@ -362,7 +770,17 @@ static vm_fault_t msm_gem_fault(struct vm_fault *vmf)
 	/* We don't use vmf->pgoff since that has the fake offset: */
 	pgoff = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
-	pfn = page_to_pfn(pages[pgoff]);
+	if (msm_obj->nomap_backed) {
+		/*
+		 * No struct page available — derive the PFN directly from
+		 * the contiguous DMA address. The vma is already set up
+		 * with VM_IO/VM_PFNMAP by drm_gem_mmap_obj for our
+		 * private object init path.
+		 */
+		pfn = (msm_obj->dma_addr >> PAGE_SHIFT) + pgoff;
+	} else {
+		pfn = page_to_pfn(pages[pgoff]);
+	}
 
 	VERB("Inserting %p pfn %lx, pa %lx", (void *)vmf->address,
 			pfn, pfn << PAGE_SHIFT);
@@ -1238,6 +1656,7 @@ struct drm_gem_object *msm_gem_new(struct drm_device *dev, size_t size, uint32_t
 	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_gem_object *msm_obj;
 	struct drm_gem_object *obj = NULL;
+	bool use_contiguous;
 	int ret;
 
 	size = PAGE_ALIGN(size);
@@ -1248,22 +1667,39 @@ struct drm_gem_object *msm_gem_new(struct drm_device *dev, size_t size, uint32_t
 	if (size == 0)
 		return ERR_PTR(-EINVAL);
 
+	/*
+	 * Check if we need contiguous memory (scanout without IOMMU).
+	 * This must be done before msm_gem_new_impl() so the flag is set.
+	 */
+	use_contiguous = msm_gem_needs_contiguous(dev, flags, size);
+	if (use_contiguous)
+		flags |= MSM_BO_CONTIGUOUS;
+
 	ret = msm_gem_new_impl(dev, flags, &obj);
 	if (ret)
 		return ERR_PTR(ret);
 
 	msm_obj = to_msm_bo(obj);
 
-	ret = drm_gem_object_init(dev, obj, size);
-	if (ret)
-		goto fail;
 	/*
-	 * Our buffers are kept pinned, so allocating them from the
-	 * MOVABLE zone is a really bad idea, and conflicts with CMA.
-	 * See comments above new_inode() why this is required _and_
-	 * expected if you're going to pin these pages.
+	 * For contiguous allocations, use private init since we don't
+	 * use shmem backing. The pages will be allocated via DMA API
+	 * in get_pages().
 	 */
-	mapping_set_gfp_mask(obj->filp->f_mapping, GFP_HIGHUSER);
+	if (use_contiguous) {
+		drm_gem_private_object_init(dev, obj, size);
+	} else {
+		ret = drm_gem_object_init(dev, obj, size);
+		if (ret)
+			goto fail;
+		/*
+		 * Our buffers are kept pinned, so allocating them from the
+		 * MOVABLE zone is a really bad idea, and conflicts with CMA.
+		 * See comments above new_inode() why this is required _and_
+		 * expected if you're going to pin these pages.
+		 */
+		mapping_set_gfp_mask(obj->filp->f_mapping, GFP_HIGHUSER);
+	}
 
 	drm_gem_lru_move_tail(&priv->lru.unbacked, obj);
 

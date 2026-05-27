@@ -70,6 +70,36 @@ enum msm_dsi_controller {
 
 #define MSM_GPU_MAX_RINGS 4
 
+/*
+ * SMI pool — custom bitmap allocator for the drm_smi_mem reserved-memory
+ * region (61 MiB no-map at 0x38300000 on tenderloin). Manages the pool
+ * outside the dma-coherent / CMA framework because:
+ *
+ *   - dma_alloc_from_dev_coherent() relies on memremap(WC) of the entire
+ *     region at probe time. On 32-bit ARM with the SMI region outside
+ *     PHYS_OFFSET, memremap only populates a subset of the L2 page tables
+ *     for the region — leaving holes that crash with a kernel paging
+ *     fault when the allocator's internal memset() touches an unmapped
+ *     offset.
+ *
+ *   - Reference Android-kernel BSPs for MSM8660 (HTC pyramid, Samsung Q1)
+ *     don't go through the dma framework either; pmem owned its own
+ *     bitmap allocator and ioremap()'d each open region on demand. This
+ *     mirrors that model.
+ *
+ * Allocation grain is PAGE_SIZE (4 KiB). On every allocation we ioremap_wc
+ * the requested chunk and return both the kernel virtual address (for
+ * Mesa mmap fallthrough) and the physical address (for the GPU sgt). On
+ * free we iounmap and clear the bitmap.
+ */
+struct msm_smi_pool {
+	phys_addr_t base;
+	size_t size;
+	unsigned long *bitmap;	/* one bit per PAGE_SIZE */
+	size_t nr_pages;
+	struct mutex lock;
+};
+
 struct msm_drm_private {
 
 	struct drm_device *dev;
@@ -86,6 +116,13 @@ struct msm_drm_private {
 	/* gpu is only set on open(), but we need this info earlier */
 	bool is_a2xx;
 	bool has_cached_coherent;
+
+	/*
+	 * SMI pool. NULL if drm_smi_mem reserved-memory node not found,
+	 * in which case GEM allocations fall through to system CMA via
+	 * the regular dma_alloc_wc path.
+	 */
+	struct msm_smi_pool *smi;
 
 	struct msm_rd_state *rd;       /* debugfs to dump all submits */
 	struct msm_rd_state *hangrd;   /* debugfs to dump hanging submits */
@@ -256,6 +293,7 @@ void msm_gem_prime_unpin(struct drm_gem_object *obj);
 
 int msm_framebuffer_prepare(struct drm_framebuffer *fb, bool needs_dirtyfb);
 void msm_framebuffer_cleanup(struct drm_framebuffer *fb, bool needed_dirtyfb);
+void msm_framebuffer_sync_for_display(struct drm_framebuffer *fb);
 uint32_t msm_framebuffer_iova(struct drm_framebuffer *fb, int plane);
 struct drm_gem_object *msm_framebuffer_bo(struct drm_framebuffer *fb, int plane);
 const struct msm_format *msm_framebuffer_format(struct drm_framebuffer *fb);
@@ -556,5 +594,18 @@ void msm_kms_shutdown(struct platform_device *pdev);
 bool msm_disp_drv_should_bind(struct device *dev, bool dpu_driver);
 
 bool msm_gpu_no_components(void);
+
+/*
+ * SMI pool API. Initialised lazily on first allocation; teardown is
+ * driver-removal time. msm_smi_alloc returns 0 on failure (no pool, or
+ * pool exhausted). On success *vaddr_out gets an ioremap_wc-mapped
+ * kernel virtual address and *phys_out gets the physical address.
+ */
+int msm_smi_init(struct drm_device *dev);
+void msm_smi_fini(struct drm_device *dev);
+phys_addr_t msm_smi_alloc(struct drm_device *dev, size_t size,
+			  void __iomem **vaddr_out);
+void msm_smi_free(struct drm_device *dev, phys_addr_t phys, size_t size,
+		  void __iomem *vaddr);
 
 #endif /* __MSM_DRV_H__ */

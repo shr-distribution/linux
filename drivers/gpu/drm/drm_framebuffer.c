@@ -211,11 +211,22 @@ static int framebuffer_check(struct drm_device *dev,
 		/* modifier specific checks: */
 		switch (r->modifier[i]) {
 		case DRM_FORMAT_MOD_SAMSUNG_64_32_TILE:
-			/* NOTE: the pitch restriction may be lifted later if it turns
-			 * out that no hw has this restriction:
+			/*
+			 * The 64x32 tile / 128-px alignment constraint is a
+			 * property of the full (luma) image, not of each plane.
+			 * Use the framebuffer width/height here rather than the
+			 * subsampled per-plane width/height: for NV12 the chroma
+			 * plane's logical width is W/2, which need not be a
+			 * multiple of 128 (e.g. 640x480 -> chroma width 320) even
+			 * though the underlying tile layout is valid and the
+			 * hardware (MDP4 / MSM8660 VIDC) handles it.  Keep the
+			 * per-plane pitch %128 check.
+			 *
+			 * NOTE: the pitch restriction may be lifted later if it
+			 * turns out that no hw has this restriction.
 			 */
 			if (r->pixel_format != DRM_FORMAT_NV12 ||
-					width % 128 || height % 32 ||
+					r->width % 128 || r->height % 32 ||
 					r->pitches[i] % 128) {
 				drm_dbg_kms(dev, "bad modifier data for plane %d\n", i);
 				return -EINVAL;

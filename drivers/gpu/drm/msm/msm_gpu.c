@@ -104,9 +104,18 @@ int msm_gpu_pm_resume(struct msm_gpu *gpu)
 	DBG("%s", gpu->name);
 	trace_msm_gpu_resume(0);
 
-	ret = enable_pwrrail(gpu);
-	if (ret)
-		return ret;
+	/*
+	 * A light (clock-gated) resume retained the rail and GPU power domain,
+	 * so the rail is already on and GPU state -- including loaded microcode
+	 * -- survived: only clocks need re-enabling. A cold resume (first
+	 * power-on, or wake from a deep/system suspend that dropped power) must
+	 * charge the rail and force a full hw_init. See struct msm_gpu.gpu_cold.
+	 */
+	if (gpu->gpu_cold) {
+		ret = enable_pwrrail(gpu);
+		if (ret)
+			return ret;
+	}
 
 	ret = enable_clk(gpu);
 	if (ret)
@@ -118,13 +127,25 @@ int msm_gpu_pm_resume(struct msm_gpu *gpu)
 
 	msm_devfreq_resume(gpu);
 
-	gpu->needs_hw_init = true;
+	if (gpu->gpu_cold) {
+		gpu->needs_hw_init = true;
+		gpu->gpu_cold = false;
+	}
 
 	return 0;
 }
 
 int msm_gpu_pm_suspend(struct msm_gpu *gpu)
 {
+	/*
+	 * Deep suspend drops the rail and lets the GPU power domain collapse
+	 * (state lost -> next resume must hw_init). It is taken for system sleep
+	 * and, when two-tier runtime PM is not enabled for this GPU, for every
+	 * suspend -- making behaviour identical to upstream by default. A light
+	 * suspend (retain_power_runtime + plain runtime idle) only gates clocks;
+	 * the rail and the RPM_ALWAYS_ON domain keep GPU state alive.
+	 */
+	bool deep = gpu->suspend_to_system || !gpu->retain_power_runtime;
 	int ret;
 
 	DBG("%s", gpu->name);
@@ -140,9 +161,12 @@ int msm_gpu_pm_suspend(struct msm_gpu *gpu)
 	if (ret)
 		return ret;
 
-	ret = disable_pwrrail(gpu);
-	if (ret)
-		return ret;
+	if (deep) {
+		ret = disable_pwrrail(gpu);
+		if (ret)
+			return ret;
+		gpu->gpu_cold = true;
+	}
 
 	gpu->suspend_count++;
 
@@ -471,11 +495,35 @@ static void recover_worker(struct kthread_work *work)
 	char *comm = NULL, *cmd = NULL;
 	unsigned int noreclaim_flag;
 	struct task_struct *task;
+	bool drop_pending;
 	int i;
+
+	/* recovery-storm thresholds: > recover_burst_max recoveries each within
+	 * recover_burst_ms of the previous one means replaying isn't helping. */
+	const unsigned recover_burst_ms = 3000;
+	const int recover_burst_max = 3;
 
 	mutex_lock(&gpu->lock);
 
 	DRM_DEV_ERROR(dev->dev, "%s: hangcheck recover!\n", gpu->name);
+
+	/*
+	 * Detect a recover->replay->re-wedge loop: if recoveries keep firing in
+	 * quick succession the pending submits are deterministically re-hanging
+	 * the GPU on the same draw. Replaying them again wastes time and, with
+	 * several queued, can wedge the box. Once we have burst past the
+	 * threshold, drop (neutralise) the pending submits below instead.
+	 */
+	if (time_before(jiffies, gpu->last_recover + msecs_to_jiffies(recover_burst_ms)))
+		gpu->recover_burst++;
+	else
+		gpu->recover_burst = 0;
+	gpu->last_recover = jiffies;
+	drop_pending = gpu->recover_burst >= recover_burst_max;
+	if (drop_pending)
+		DRM_DEV_ERROR(dev->dev,
+			"%s: recovery not progressing (%d consecutive), dropping pending submits to unwedge\n",
+			gpu->name, gpu->recover_burst);
 
 	submit = find_submit(cur_ring, cur_ring->memptrs->fence + 1);
 
@@ -568,10 +616,13 @@ static void recover_worker(struct kthread_work *work)
 		spin_lock_irqsave(&ring->submit_lock, flags);
 		list_for_each_entry(submit, &ring->submits, node) {
 			/*
-			 * If the submit uses an unusable vm make sure
-			 * we don't actually run it
+			 * If the submit uses an unusable vm, or recovery
+			 * is looping (the pending submits keep re-wedging
+			 * the GPU), make sure we don't actually run it --
+			 * neutralise to a no-op so its fence still signals
+			 * and the ring drains to idle.
 			 */
-			if (to_msm_vm(submit->vm)->unusable)
+			if (drop_pending || to_msm_vm(submit->vm)->unusable)
 				submit->nr_cmds = 0;
 			gpu->funcs->submit(gpu, submit);
 		}
@@ -634,7 +685,7 @@ static void hangcheck_timer_reset(struct msm_gpu *gpu)
 
 static bool made_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 {
-	if (ring->hangcheck_progress_retries >= DRM_MSM_HANGCHECK_PROGRESS_RETRIES)
+	if (ring->hangcheck_progress_retries >= gpu->hangcheck_progress_retries)
 		return false;
 
 	if (!gpu->funcs->progress)
@@ -998,6 +1049,9 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	gpu->funcs = funcs;
 	gpu->name = name;
 
+	/* The GPU starts unpowered: the first resume must do a full hw_init. */
+	gpu->gpu_cold = true;
+
 	gpu->worker = kthread_run_worker(0, "gpu-worker");
 	if (IS_ERR(gpu->worker)) {
 		ret = PTR_ERR(gpu->worker);
@@ -1023,6 +1077,8 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	if (funcs->progress)
 		priv->hangcheck_period /= 2;
 
+	gpu->hangcheck_progress_retries = DRM_MSM_HANGCHECK_PROGRESS_RETRIES;
+
 	timer_setup(&gpu->hangcheck_timer, hangcheck_handler, 0);
 
 	spin_lock_init(&gpu->perf_lock);
@@ -1045,8 +1101,16 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	ret = devm_request_irq(&pdev->dev, gpu->irq, irq_handler,
 			IRQF_TRIGGER_HIGH, "gpu-irq", gpu);
 	if (ret) {
-		DRM_DEV_ERROR(drm->dev, "failed to request IRQ%u: %d\n", gpu->irq, ret);
-		goto fail;
+		/*
+		 * EBUSY can happen on deferred probe retry if the IRQ wasn't
+		 * freed from the previous attempt. Log a warning but continue.
+		 */
+		if (ret == -EBUSY) {
+			DRM_DEV_DEBUG(drm->dev, "IRQ%u already registered, continuing\n", gpu->irq);
+		} else {
+			DRM_DEV_ERROR(drm->dev, "failed to request IRQ%u: %d\n", gpu->irq, ret);
+			goto fail;
+		}
 	}
 
 	ret = get_clocks(pdev, gpu);
@@ -1058,13 +1122,13 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	if (IS_ERR(gpu->ebi1_clk))
 		gpu->ebi1_clk = NULL;
 
-	/* Acquire regulators: */
-	gpu->gpu_reg = devm_regulator_get(&pdev->dev, "vdd");
+	/* Acquire regulators (optional - older SoCs use hardware footswitches): */
+	gpu->gpu_reg = devm_regulator_get_optional(&pdev->dev, "vdd");
 	DBG("gpu_reg: %p", gpu->gpu_reg);
 	if (IS_ERR(gpu->gpu_reg))
 		gpu->gpu_reg = NULL;
 
-	gpu->gpu_cx = devm_regulator_get(&pdev->dev, "vddcx");
+	gpu->gpu_cx = devm_regulator_get_optional(&pdev->dev, "vddcx");
 	DBG("gpu_cx: %p", gpu->gpu_cx);
 	if (IS_ERR(gpu->gpu_cx))
 		gpu->gpu_cx = NULL;
