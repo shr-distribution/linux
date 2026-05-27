@@ -29,15 +29,24 @@ module_param_named(fe_input_format, fe_input_format, uint, 0644);
 MODULE_PARM_DESC(fe_input_format,
 	"FE_INPUT_FORMAT register value (default 0x10 matches OPAL trace; try 0x00..0x07 for 8-bit NV12 enum sweep)");
 
-static unsigned int we_y_threshold = 0x016A0190;
+/*
+ * WE_Y/CBCR_THRESHOLD layout is { ceiling[31:16], watermark[15:0] }. The mako
+ * (MSM8960, same gemini IP gen) kernel carries this in-kernel as a [mode][2]
+ * table that pairs each watermark (0x190 or 0x16a) with a fixed 0x1ff ceiling
+ * -> register 0x01FF0190. Our previous 0x016A0190 default mis-packed mako's two
+ * mode-variants (0x16a, 0x190) into one register, leaving ceiling (0x16a=362)
+ * BELOW watermark (0x190=400) -- inverted, which stalls the write engine so it
+ * never emits output / never fires FRAMEDONE. Use the mako-correct packing.
+ */
+static unsigned int we_y_threshold = 0x01FF0190;
 module_param_named(we_y_threshold, we_y_threshold, uint, 0644);
 MODULE_PARM_DESC(we_y_threshold,
-	"WE_Y_THRESHOLD register value (default 0x016A0190 from OPAL; try 0x01FF01FF to disable)");
+	"WE_Y_THRESHOLD register value (default 0x01FF0190 = {ceiling 0x1ff, watermark 0x190}, mako-correct; try 0x01FF016A or 0x01FF01FF)");
 
-static unsigned int we_cbcr_threshold = 0x016A0190;
+static unsigned int we_cbcr_threshold = 0x01FF0190;
 module_param_named(we_cbcr_threshold, we_cbcr_threshold, uint, 0644);
 MODULE_PARM_DESC(we_cbcr_threshold,
-	"WE_CBCR_THRESHOLD register value (default 0x016A0190 from OPAL)");
+	"WE_CBCR_THRESHOLD register value (default 0x01FF0190 = {ceiling 0x1ff, watermark 0x190}, mako-correct)");
 
 static unsigned int we_y_ub_cfg = 0x01FF0000;
 module_param_named(we_y_ub_cfg, we_y_ub_cfg, uint, 0644);
