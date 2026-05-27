@@ -1029,7 +1029,7 @@ int vfe_reserve_wm(struct vfe_device *vfe, enum vfe_line_id line_id)
  * @wm: The specific WM index to reserve (0-6)
  * @line_id: The line ID to map to this WM
  *
- * Used by VFE31 for dual-output mode where VFE_LINE_VIDEO must use
+ * Used by VFE31 for dual-output mode where the VIDEO output line must use
  * WM4/WM5 specifically (not just any available WM).
  *
  * Return: The WM index on success, negative error code otherwise
@@ -2460,9 +2460,17 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 		 * lines once here so the rest of the core can test l->pix instead
 		 * of comparing against backend-specific line IDs.
 		 */
-		l->pix = (i == VFE_LINE_PIX || i == VFE_LINE_VIDEO);
-		l->secondary = (i == VFE_LINE_VIDEO || i == VFE_LINE_ZSL);
-		l->shares_pix_csid = (i == VFE_LINE_VIDEO);
+		/*
+		 * Default line capabilities: only PIX is a pixel-processed
+		 * output, nothing is secondary or shares the PIX CSID pad. A
+		 * backend with extra outputs (e.g. VFE31 VIDEO/ZSL) overrides
+		 * these through the init_line hw op.
+		 */
+		l->pix = (i == VFE_LINE_PIX);
+		l->secondary = false;
+		l->shares_pix_csid = false;
+		if (vfe->res->hw_ops->init_line)
+			vfe->res->hw_ops->init_line(l, i);
 		init_completion(&l->output.sof);
 		init_completion(&l->output.reg_update);
 
@@ -2605,7 +2613,7 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		if (i == VFE_LINE_PIX)
 			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s",
 				 MSM_VFE_NAME, vfe->id, "pix");
-		else if (i == VFE_LINE_VIDEO)
+		else if (vfe->line[i].pix && vfe->line[i].secondary)
 			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s",
 				 MSM_VFE_NAME, vfe->id, "video");
 		else

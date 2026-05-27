@@ -47,6 +47,16 @@ static void vfe31_set_module_cfg(struct vfe_device *vfe, u8 enable);
 #define VFE31_AXI_OUT_MODE_PIX		0x01
 
 /*
+ * VFE31-private output line indices into vfe_device.line[]. VFE31 exposes two
+ * extra pixel-processed outputs beyond the shared RDI0-2/PIX model: VIDEO
+ * (dual output via WM1/WM5) and ZSL/snapshot (via WM2/WM6). These are not part
+ * of the shared enum vfe_line_id - only this backend knows them - so they are
+ * defined here and used as plain line[] indices.
+ */
+#define VFE31_LINE_VIDEO	4
+#define VFE31_LINE_ZSL		5
+
+/*
  * VFE31 video output enable:
  *   1 = Video output enabled (default, matches webOS - uses XBAR CFG1=0x1a1b)
  *   0 = Video output disabled (uses XBAR CFG1=0x1a03)
@@ -372,7 +382,7 @@ struct vfe31_wm_config {
 
 /**
  * struct vfe31_line_config - Complete line configuration
- * @path:           VFE_LINE_RDI, VFE_LINE_PIX, or VFE_LINE_VIDEO
+ * @path:           VFE_LINE_RDI, VFE_LINE_PIX, or VFE31_LINE_VIDEO
  * @pixelformat:    V4L2 pixel format (NV12, NV16, etc.)
  * @width:          Frame width in pixels
  * @height:         Frame height in lines
@@ -2848,7 +2858,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 
 		/* Process ZSL state machine at frame boundary */
 		if (V31(vfe)->zsl_state == VFE31_REC_START_REQUESTED) {
-			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
+			struct vfe_output *zsl_out = &vfe->line[VFE31_LINE_ZSL].output;
 
 			/* Enable ZSL Y WM at frame boundary */
 			writel_relaxed(BIT(0), vfe->base +
@@ -2863,7 +2873,7 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 				 VFE31_ZSL_WM_Y,
 				 zsl_out->wm_num == 2 ? "+WM6" : " only");
 		} else if (V31(vfe)->zsl_state == VFE31_REC_STOP_REQUESTED) {
-			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
+			struct vfe_output *zsl_out = &vfe->line[VFE31_LINE_ZSL].output;
 
 			/* Disable ZSL WMs at frame boundary */
 			writel_relaxed(0, vfe->base +
@@ -3126,12 +3136,12 @@ static int vfe31_reserve_line_wms(struct vfe_device *vfe,
 	/*
 	 * VFE31 WM assignment (from webOS msm_vfe31.c lines 719-722):
 	 * - VFE_LINE_PIX:   WM0 (Y) + WM4 (CbCr)  [output0.ch0 + output0.ch1]
-	 * - VFE_LINE_VIDEO: WM1 (Y) + WM5 (CbCr)  [output2.ch0 + output2.ch1]
+	 * - VFE31_LINE_VIDEO: WM1 (Y) + WM5 (CbCr)  [output2.ch0 + output2.ch1]
 	 *
 	 * This is OUTPUT_1_AND_3 mode with "offset-by-4" CbCr channel pairing.
 	 * XBAR routing determines which WMs receive Y vs CbCr data.
 	 */
-	if (line->id == VFE_LINE_VIDEO) {
+	if (line->id == VFE31_LINE_VIDEO) {
 		/* VIDEO line: WM1 (Y) + WM5 (CbCr) - separate from PIX WMs */
 		u8 video_y_wm = VFE31_VIDEO_WM_Y;	/* WM1 */
 		u8 video_cbcr_wm = VFE31_VIDEO_WM_CBCR;/* WM5 */
@@ -3173,7 +3183,7 @@ static int vfe31_reserve_line_wms(struct vfe_device *vfe,
 		}
 		dev_dbg(vfe->camss->dev, "VFE31: VIDEO line using WM%d(Y), WM%d(CbCr)\n",
 			 output->wm_idx[0], output->wm_num == 2 ? output->wm_idx[1] : -1);
-	} else if (line->id == VFE_LINE_ZSL) {
+	} else if (line->id == VFE31_LINE_ZSL) {
 		/* ZSL/Snapshot line: WM2 (Y) + WM6 (CbCr) */
 		u8 zsl_y_wm = VFE31_ZSL_WM_Y;		/* WM2 */
 		u8 zsl_cbcr_wm = VFE31_ZSL_WM_CBCR;	/* WM6 */
@@ -3590,7 +3600,7 @@ static int vfe31_enable(struct vfe_line *line)
 		vfe->camif_pending = true;
 		V31(vfe)->camif_pending_wm = y_wm;
 		V31(vfe)->camif_pending_line_id = line->id;
-	} else if (line->id == VFE_LINE_VIDEO && vfe->stream_count > 0) {
+	} else if (line->id == VFE31_LINE_VIDEO && vfe->stream_count > 0) {
 		/*
 		 * VIDEO joining already-running PIX stream.
 		 *
@@ -3658,7 +3668,7 @@ static int vfe31_enable(struct vfe_line *line)
 		dev_dbg(vfe->camss->dev,
 			 "VFE31: VIDEO WM%d+WM%d configured, waiting for REG_UPDATE to enable\n",
 			 y_wm, output->wm_num == 2 ? output->wm_idx[1] : -1);
-	} else if (line->id == VFE_LINE_ZSL && vfe->stream_count > 0) {
+	} else if (line->id == VFE31_LINE_ZSL && vfe->stream_count > 0) {
 		/*
 		 * ZSL joining already-running PIX stream.
 		 *
@@ -3754,8 +3764,8 @@ static int vfe31_enable(struct vfe_line *line)
 			u8 cbcr_wm = (output->wm_num == 2) ?
 				      output->wm_idx[1] : 0xff;
 			bool video_active =
-				(vfe->line[VFE_LINE_VIDEO].output.state == VFE_OUTPUT_ON ||
-				 vfe->line[VFE_LINE_VIDEO].output.state == VFE_OUTPUT_CONTINUOUS);
+				(vfe->line[VFE31_LINE_VIDEO].output.state == VFE_OUTPUT_ON ||
+				 vfe->line[VFE31_LINE_VIDEO].output.state == VFE_OUTPUT_CONTINUOUS);
 
 			/*
 			 * ZSL shares UB with PIX: 2 outputs, ZSL
@@ -3844,9 +3854,9 @@ static int vfe31_enable(struct vfe_line *line)
 		V31(vfe)->camif_pending_line_id = line->id;
 
 		/* VIDEO/ZSL starting alone also uses recording state */
-		if (line->id == VFE_LINE_VIDEO)
+		if (line->id == VFE31_LINE_VIDEO)
 			V31(vfe)->recording_state = VFE31_REC_START_REQUESTED;
-		if (line->id == VFE_LINE_ZSL)
+		if (line->id == VFE31_LINE_ZSL)
 			V31(vfe)->zsl_state = VFE31_REC_START_REQUESTED;
 	}
 
@@ -3918,12 +3928,12 @@ static int vfe31_disable(struct vfe_line *line)
 		 line->id, is_rdi ? "RDI" : "PIX/VIDEO");
 
 	/* Request recording stop for VIDEO line */
-	if (line->id == VFE_LINE_VIDEO &&
+	if (line->id == VFE31_LINE_VIDEO &&
 	    V31(vfe)->recording_state == VFE31_REC_STARTED)
 		V31(vfe)->recording_state = VFE31_REC_STOP_REQUESTED;
 
 	/* Request ZSL stop */
-	if (line->id == VFE_LINE_ZSL &&
+	if (line->id == VFE31_LINE_ZSL &&
 	    V31(vfe)->zsl_state == VFE31_REC_STARTED)
 		V31(vfe)->zsl_state = VFE31_REC_STOP_REQUESTED;
 
@@ -4944,7 +4954,7 @@ static void vfe31_config_axi_bus(struct vfe_device *vfe, struct vfe_line *line,
 		 * been configured before enable_pending_camif runs.
 		 */
 		{
-			bool video_active = (line->id == VFE_LINE_VIDEO);
+			bool video_active = (line->id == VFE31_LINE_VIDEO);
 			bool zsl_active = (V31(vfe)->zsl_state != VFE31_REC_IDLE);
 
 			xbar_value = vfe31_calc_xbar(true, video_active, zsl_active);
@@ -5010,13 +5020,13 @@ static void vfe31_config_irqs(struct vfe_device *vfe, struct vfe_line *line,
 		 * frame per completion, not multiple partial frames.
 		 */
 		{
-			struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+			struct vfe_output *video_out = &vfe->line[VFE31_LINE_VIDEO].output;
 			struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
-			struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
+			struct vfe_output *zsl_out = &vfe->line[VFE31_LINE_ZSL].output;
 			/* Consider the line being started as active */
 			bool starting_pix = (line->id == VFE_LINE_PIX);
-			bool starting_video = (line->id == VFE_LINE_VIDEO);
-			bool starting_zsl = (line->id == VFE_LINE_ZSL);
+			bool starting_video = (line->id == VFE31_LINE_VIDEO);
+			bool starting_zsl = (line->id == VFE31_LINE_ZSL);
 			bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
 					     video_out->state == VFE_OUTPUT_RESERVED ||
 					     video_out->state == VFE_OUTPUT_CONTINUOUS);
@@ -5620,7 +5630,7 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	 *
 	 * Save the address for the PRIMARY Y WM of the pending line:
 	 *   - PIX mode (VFE_LINE_PIX): WM0
-	 *   - VIDEO mode (VFE_LINE_VIDEO): WM4
+	 *   - VIDEO mode (VFE31_LINE_VIDEO): WM4
 	 *
 	 * For semi-planar formats (NV12/NV16), WM1's address (CbCr) is computed
 	 * as Y_addr + cbcr_offset. During streaming, gen1 passes addr=0 for
@@ -5633,9 +5643,9 @@ static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 		 * Check if this is the primary Y WM for the pending line.
 		 * PIX uses WM0, VIDEO uses WM1, ZSL uses WM2.
 		 */
-		if (V31(vfe)->camif_pending_line_id == VFE_LINE_VIDEO)
+		if (V31(vfe)->camif_pending_line_id == VFE31_LINE_VIDEO)
 			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
-		else if (V31(vfe)->camif_pending_line_id == VFE_LINE_ZSL)
+		else if (V31(vfe)->camif_pending_line_id == VFE31_LINE_ZSL)
 			is_primary_wm = (wm == VFE31_ZSL_WM_Y);
 		else
 			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
@@ -5703,9 +5713,9 @@ static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr)
 	if (vfe->camif_pending) {
 		bool is_primary_wm;
 
-		if (V31(vfe)->camif_pending_line_id == VFE_LINE_VIDEO)
+		if (V31(vfe)->camif_pending_line_id == VFE31_LINE_VIDEO)
 			is_primary_wm = (wm == VFE31_VIDEO_WM_Y);
-		else if (V31(vfe)->camif_pending_line_id == VFE_LINE_ZSL)
+		else if (V31(vfe)->camif_pending_line_id == VFE31_LINE_ZSL)
 			is_primary_wm = (wm == VFE31_ZSL_WM_Y);
 		else
 			is_primary_wm = (wm == VFE31_PREVIEW_WM_Y);
@@ -5884,16 +5894,16 @@ static void vfe31_config_composite_mask(struct vfe_device *vfe,
 		writel_relaxed(comp_mask, vfe->base + VFE_0_IRQ_COMPOSITE_MASK_0);
 	} else {
 		/* PIX/VIDEO/ZSL mode - check which lines are active */
-		struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+		struct vfe_output *video_out = &vfe->line[VFE31_LINE_VIDEO].output;
 		struct vfe_output *pix_out = &vfe->line[VFE_LINE_PIX].output;
-		struct vfe_output *zsl_out = &vfe->line[VFE_LINE_ZSL].output;
+		struct vfe_output *zsl_out = &vfe->line[VFE31_LINE_ZSL].output;
 		/*
 		 * CRITICAL: Consider the line we're currently enabling as active!
 		 * The output state may not be updated yet when enable_camif runs.
 		 */
 		bool starting_pix = (line->id == VFE_LINE_PIX);
-		bool starting_video = (line->id == VFE_LINE_VIDEO);
-		bool starting_zsl = (line->id == VFE_LINE_ZSL);
+		bool starting_video = (line->id == VFE31_LINE_VIDEO);
+		bool starting_zsl = (line->id == VFE31_LINE_ZSL);
 		bool video_state_active = (video_out->state == VFE_OUTPUT_ON ||
 				     video_out->state == VFE_OUTPUT_RESERVED ||
 				     video_out->state == VFE_OUTPUT_CONTINUOUS);
@@ -5999,7 +6009,7 @@ static void vfe31_config_axi_xbar(struct vfe_device *vfe, struct vfe_line *line)
 	if (is_rdi && !V31(vfe)->raw_through_pix) {
 		/* RDI 0x60 bypasses XBAR - no config needed */
 	} else {
-		bool vid = (line->id == VFE_LINE_VIDEO);
+		bool vid = (line->id == VFE31_LINE_VIDEO);
 		u32 xbar_val = vfe31_calc_xbar(true, vid, zsl_active);
 
 		dev_dbg(vfe->camss->dev,
@@ -6064,7 +6074,7 @@ static void vfe31_config_irq_masks(struct vfe_device *vfe, struct vfe_line *line
 			 V31(vfe)->irq_mask0_shadow);
 	} else {
 		/* PIX mode: Use webOS value with composite interrupts */
-		struct vfe_output *video_out = &vfe->line[VFE_LINE_VIDEO].output;
+		struct vfe_output *video_out = &vfe->line[VFE31_LINE_VIDEO].output;
 		bool video_active = (video_out->state == VFE_OUTPUT_ON ||
 				     video_out->state == VFE_OUTPUT_RESERVED ||
 				     video_out->state == VFE_OUTPUT_CONTINUOUS);
@@ -6076,7 +6086,7 @@ static void vfe31_config_irq_masks(struct vfe_device *vfe, struct vfe_line *line
 		 * VIDEO line with CbCr uses WM1 in group 2 (COMPOSITE_DONE_2).
 		 * Add bit 23 to receive WM1 completion interrupts.
 		 */
-		if (line->id == VFE_LINE_VIDEO || video_needs_cbcr)
+		if (line->id == VFE31_LINE_VIDEO || video_needs_cbcr)
 			V31(vfe)->irq_mask0_shadow |= VFE_0_IRQ_MASK_0_IMAGE_COMPOSITE_DONE_n(2);
 
 		dev_dbg(vfe->camss->dev,
@@ -6673,6 +6683,17 @@ static void vfe31_subdev_init(struct device *dev, struct vfe_device *vfe)
 	dev_dbg(dev, "VFE31 subdev_init: complete\n");
 }
 
+/*
+ * Set per-line capability flags for the VFE31 line layout: RDI0-2 + PIX, plus
+ * the two extra pixel-processed outputs VIDEO and ZSL at indices 4 and 5.
+ */
+static void vfe31_init_line(struct vfe_line *line, u8 idx)
+{
+	line->pix = (idx == VFE_LINE_PIX || idx == VFE31_LINE_VIDEO);
+	line->secondary = (idx == VFE31_LINE_VIDEO || idx == VFE31_LINE_ZSL);
+	line->shares_pix_csid = (idx == VFE31_LINE_VIDEO);
+}
+
 const struct vfe_hw_ops vfe_ops_3_1 = {
 	.global_reset = vfe31_global_reset,
 	.hw_version = vfe31_hw_version,
@@ -6689,4 +6710,5 @@ const struct vfe_hw_ops vfe_ops_3_1 = {
 	.violation_read = vfe31_violation_read,
 	.enable_pending_camif = vfe31_enable_pending_camif,
 	.vfe_cleanup = vfe31_cleanup,
+	.init_line = vfe31_init_line,
 };

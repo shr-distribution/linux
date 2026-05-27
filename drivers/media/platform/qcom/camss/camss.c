@@ -173,16 +173,14 @@ static const struct camss_subdev_resources vfe_res_8x60[] = {
 		.interrupt = { "vfe0" },
 		.vfe = {
 			/*
-			 * line_num = 6 to include VFE_LINE_PIX (3) for CAMIF,
-			 * VFE_LINE_VIDEO (4) for dual-output via WM1/WM5,
-			 * and VFE_LINE_ZSL (5) for snapshot via WM2/WM6.
-			 *
-			 * VFE_LINE_VIDEO provides a second output path that
-			 * receives the same frame data as VFE_LINE_PIX but
-			 * writes to separate buffers via WM1/WM5.
-			 *
-			 * VFE_LINE_ZSL provides a third output path for
-			 * Zero Shutter Lag snapshot capture via WM2/WM6.
+			 * line_num = 6: RDI0-2 + PIX (3) for CAMIF, plus the
+			 * two VFE31-private pixel-processed outputs at line[]
+			 * indices 4 and 5 - VIDEO (a second output path that
+			 * receives the same frame data as PIX but writes
+			 * separate buffers via WM1/WM5) and ZSL (a third path
+			 * for Zero Shutter Lag snapshot via WM2/WM6). Those
+			 * indices are private to the VFE31 backend; the core
+			 * treats them via the per-line pix/secondary flags.
 			 *
 			 * has_pd is NOT set because MSM8660 has a single power
 			 * domain that is attached at platform probe level. The

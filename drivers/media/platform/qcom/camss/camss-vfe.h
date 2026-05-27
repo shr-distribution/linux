@@ -53,8 +53,13 @@ enum vfe_line_id {
 	VFE_LINE_RDI1 = 1,
 	VFE_LINE_RDI2 = 2,
 	VFE_LINE_PIX = 3,
-	VFE_LINE_VIDEO = 4,	/* VFE31: dual output via WM1/WM5 */
-	VFE_LINE_ZSL = 5,	/* VFE31: snapshot output via WM2/WM6 */
+	/*
+	 * A backend may expose extra output lines beyond PIX (e.g. VFE31's
+	 * VIDEO and ZSL outputs at line[] indices 4 and 5). Those are private
+	 * to the backend and deliberately not named here; the shared core
+	 * treats every line generically via its per-line capability flags
+	 * (pix/secondary/shares_pix_csid). NUM_MAX only sizes vfe_device.line[].
+	 */
 	VFE_LINE_NUM_MAX = 6
 };
 
@@ -137,6 +142,13 @@ struct vfe_hw_ops {
 			      struct vfe_line *line);
 	void (*enable_pending_camif)(struct vfe_device *vfe);
 	void (*vfe_cleanup)(struct vfe_device *vfe);
+	/*
+	 * Optional: set a line's capability flags (pix/secondary/
+	 * shares_pix_csid) at init for backends with non-default line layouts
+	 * (e.g. VFE31's VIDEO/ZSL outputs). If NULL the core applies the
+	 * default (only VFE_LINE_PIX is a pixel output).
+	 */
+	void (*init_line)(struct vfe_line *line, u8 idx);
 };
 
 struct vfe_isr_ops {
