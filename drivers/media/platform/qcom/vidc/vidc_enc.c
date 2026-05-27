@@ -772,8 +772,6 @@ static const struct vb2_ops vidc_enc_vb2_ops = {
 	.start_streaming = vidc_enc_start_streaming,
 	.stop_streaming = vidc_enc_stop_streaming,
 	.buf_queue = vidc_enc_buf_queue,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
 };
 
 /* M2M operations */
@@ -910,7 +908,7 @@ static void vidc_enc_complete_work(struct work_struct *w)
 	dst_buf->sequence = inst->sequence_cap++;
 
 	/* Carry the input timestamp to the encoded buffer (in-order). */
-	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf, false);
+	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf);
 
 	if (inst->error) {
 		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
