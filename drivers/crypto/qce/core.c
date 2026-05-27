@@ -445,7 +445,8 @@ static int qce_test_pio_mode(struct qce_device *qce)
 		udelay(10);
 	}
 	dev_info(qce->dev, "Post-GOPROC STATUS: 0x%08x (CRYPTO_STATE=%u)\n",
-		 status, (status & CE2_CRYPTO_STATE_MASK) >> CE2_CRYPTO_STATE_SHIFT);
+		 status,
+		 (u32)((status & CE2_CRYPTO_STATE_MASK) >> CE2_CRYPTO_STATE_SHIFT));
 
 	/* Step 7: Write 4 dwords (16 bytes) to DATA_IN. HTC sbl3 always feeds
 	 * CE2 in 16-byte chunks, even for inputs smaller than 16 bytes - the
@@ -674,7 +675,7 @@ static int qce_crypto_probe(struct platform_device *pdev)
 
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		dev_info(dev, "CE2: STATUS after SW_RST: 0x%08x (SW_ERR=%d)\n",
-			 status, status & BIT(CE2_SW_ERR_SHIFT));
+			 status, !!(status & BIT(CE2_SW_ERR_SHIFT)));
 
 		/* ENGINES_AVAIL @ +0x044: which crypto engines are physically
 		 * implemented on this die. Log each engine so we know what's
