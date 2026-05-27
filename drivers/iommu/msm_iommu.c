@@ -15,6 +15,7 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
+#include <linux/ratelimit.h>
 #include <linux/iommu.h>
 #include <linux/clk.h>
 #include <linux/err.h>
@@ -357,23 +358,35 @@ static int msm_iommu_domain_config(struct msm_priv *priv)
 	return 0;
 }
 
+/*
+ * Find or create a master context for a device on a specific IOMMU.
+ * Each IOMMU instance maintains its own ctx_list of masters. When a device
+ * references multiple IOMMU instances (like MDP with mdp_port0 and mdp_port1),
+ * each IOMMU gets its own master context for that device.
+ */
+static struct msm_iommu_ctx_dev *find_master_for_dev(struct msm_iommu_dev *iommu,
+						     struct device *dev)
+{
+	struct msm_iommu_ctx_dev *master;
+
+	list_for_each_entry(master, &iommu->ctx_list, list) {
+		if (master->of_node == dev->of_node)
+			return master;
+	}
+	return NULL;
+}
+
 /* Must be called under msm_iommu_lock */
 static struct msm_iommu_dev *find_iommu_for_dev(struct device *dev)
 {
-	struct msm_iommu_dev *iommu, *ret = NULL;
-	struct msm_iommu_ctx_dev *master;
+	struct msm_iommu_dev *iommu;
 
 	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
-		master = list_first_entry(&iommu->ctx_list,
-					  struct msm_iommu_ctx_dev,
-					  list);
-		if (master->of_node == dev->of_node) {
-			ret = iommu;
-			break;
-		}
+		if (find_master_for_dev(iommu, dev))
+			return iommu;
 	}
 
-	return ret;
+	return NULL;
 }
 
 static struct iommu_device *msm_iommu_probe_device(struct device *dev)
@@ -405,34 +418,47 @@ static int msm_iommu_attach_dev(struct iommu_domain *domain, struct device *dev,
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
 	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
-		master = list_first_entry(&iommu->ctx_list,
-					  struct msm_iommu_ctx_dev,
-					  list);
-		if (master->of_node == dev->of_node) {
-			ret = __enable_clocks(iommu);
-			if (ret)
-				goto fail;
+		/*
+		 * Find the master context for this device on this IOMMU.
+		 * A device can reference multiple IOMMU instances, so we
+		 * need to check each IOMMU for a matching master.
+		 */
+		master = find_master_for_dev(iommu, dev);
+		if (!master)
+			continue;
 
-			list_for_each_entry(master, &iommu->ctx_list, list) {
-				if (master->num) {
-					dev_err(dev, "domain already attached");
-					ret = -EEXIST;
-					goto fail;
-				}
-				master->num =
-					msm_iommu_alloc_ctx(iommu->context_map,
-							    0, iommu->ncb);
-				if (IS_ERR_VALUE(master->num)) {
-					ret = -ENODEV;
-					goto fail;
-				}
-				config_mids(iommu, master);
-				__program_context(iommu->base, master->num,
-						  priv);
-			}
-			__disable_clocks(iommu);
-			list_add(&iommu->dom_node, &priv->list_attached);
+		ret = __enable_clocks(iommu);
+		if (ret)
+			goto fail;
+
+		/* Perform deferred IOMMU reset on first attach */
+		if (!iommu->reset_done) {
+			msm_iommu_reset(iommu->base, iommu->ncb);
+			iommu->reset_done = true;
 		}
+
+		/*
+		 * Only process the master context for this specific device.
+		 * Other masters in the ctx_list may belong to different devices.
+		 */
+		if (master->num) {
+			dev_err(dev, "domain already attached\n");
+			ret = -EEXIST;
+			__disable_clocks(iommu);
+			goto fail;
+		}
+		master->num = msm_iommu_alloc_ctx(iommu->context_map,
+						  0, iommu->ncb);
+		if (IS_ERR_VALUE(master->num)) {
+			ret = -ENODEV;
+			__disable_clocks(iommu);
+			goto fail;
+		}
+		config_mids(iommu, master);
+		__program_context(iommu->base, master->num, priv);
+
+		__disable_clocks(iommu);
+		list_add(&iommu->dom_node, &priv->list_attached);
 	}
 
 fail:
@@ -459,14 +485,22 @@ static int msm_iommu_identity_attach(struct iommu_domain *identity_domain,
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
 	list_for_each_entry(iommu, &priv->list_attached, dom_node) {
+		/*
+		 * Only detach the master context for this specific device.
+		 * Other masters in the ctx_list may belong to different devices.
+		 */
+		master = find_master_for_dev(iommu, dev);
+		if (!master)
+			continue;
+
 		ret = __enable_clocks(iommu);
 		if (ret)
 			goto fail;
 
-		list_for_each_entry(master, &iommu->ctx_list, list) {
-			msm_iommu_free_ctx(iommu->context_map, master->num);
-			__reset_context(iommu->base, master->num);
-		}
+		msm_iommu_free_ctx(iommu->context_map, master->num);
+		__reset_context(iommu->base, master->num);
+		master->num = 0;
+
 		__disable_clocks(iommu);
 	}
 fail:
@@ -572,49 +606,55 @@ fail:
 	return ret;
 }
 
-static void print_ctx_regs(void __iomem *base, int ctx)
+static void print_ctx_regs(struct device *dev, void __iomem *base, int ctx)
 {
 	unsigned int fsr = GET_FSR(base, ctx);
-	pr_err("FAR    = %08x    PAR    = %08x\n",
-	       GET_FAR(base, ctx), GET_PAR(base, ctx));
-	pr_err("FSR    = %08x [%s%s%s%s%s%s%s%s%s%s]\n", fsr,
-			(fsr & 0x02) ? "TF " : "",
-			(fsr & 0x04) ? "AFF " : "",
-			(fsr & 0x08) ? "APF " : "",
-			(fsr & 0x10) ? "TLBMF " : "",
-			(fsr & 0x20) ? "HTWDEEF " : "",
-			(fsr & 0x40) ? "HTWSEEF " : "",
-			(fsr & 0x80) ? "MHF " : "",
-			(fsr & 0x10000) ? "SL " : "",
-			(fsr & 0x40000000) ? "SS " : "",
-			(fsr & 0x80000000) ? "MULTI " : "");
 
-	pr_err("FSYNR0 = %08x    FSYNR1 = %08x\n",
-	       GET_FSYNR0(base, ctx), GET_FSYNR1(base, ctx));
-	pr_err("TTBR0  = %08x    TTBR1  = %08x\n",
-	       GET_TTBR0(base, ctx), GET_TTBR1(base, ctx));
-	pr_err("SCTLR  = %08x    ACTLR  = %08x\n",
-	       GET_SCTLR(base, ctx), GET_ACTLR(base, ctx));
+	dev_err(dev, "FAR    = %08x    PAR    = %08x\n",
+		GET_FAR(base, ctx), GET_PAR(base, ctx));
+	dev_err(dev, "FSR    = %08x [%s%s%s%s%s%s%s%s%s%s]\n", fsr,
+		(fsr & 0x02) ? "TF " : "",
+		(fsr & 0x04) ? "AFF " : "",
+		(fsr & 0x08) ? "APF " : "",
+		(fsr & 0x10) ? "TLBMF " : "",
+		(fsr & 0x20) ? "HTWDEEF " : "",
+		(fsr & 0x40) ? "HTWSEEF " : "",
+		(fsr & 0x80) ? "MHF " : "",
+		(fsr & 0x10000) ? "SL " : "",
+		(fsr & 0x40000000) ? "SS " : "",
+		(fsr & 0x80000000) ? "MULTI " : "");
+	dev_err(dev, "FSYNR0 = %08x    FSYNR1 = %08x\n",
+		GET_FSYNR0(base, ctx), GET_FSYNR1(base, ctx));
+	dev_err(dev, "TTBR0  = %08x    TTBR1  = %08x\n",
+		GET_TTBR0(base, ctx), GET_TTBR1(base, ctx));
+	dev_err(dev, "SCTLR  = %08x    ACTLR  = %08x\n",
+		GET_SCTLR(base, ctx), GET_ACTLR(base, ctx));
 }
 
 static int insert_iommu_master(struct device *dev,
 				struct msm_iommu_dev **iommu,
 				const struct of_phandle_args *spec)
 {
-	struct msm_iommu_ctx_dev *master = dev_iommu_priv_get(dev);
+	struct msm_iommu_ctx_dev *master;
 	int sid;
 
-	if (list_empty(&(*iommu)->ctx_list)) {
-		master = kzalloc_obj(*master, GFP_ATOMIC);
+	/*
+	 * Look up the master context for this device on this specific IOMMU.
+	 * A device can reference multiple IOMMU instances, so we can't use
+	 * dev_iommu_priv_get() which stores only one pointer per device.
+	 */
+	master = find_master_for_dev(*iommu, dev);
+	if (!master) {
+		master = kzalloc(sizeof(*master), GFP_ATOMIC);
 		if (!master) {
 			dev_err(dev, "Failed to allocate iommu_master\n");
 			return -ENOMEM;
 		}
 		master->of_node = dev->of_node;
 		list_add(&master->list, &(*iommu)->ctx_list);
-		dev_iommu_priv_set(dev, master);
 	}
 
+	/* Check for duplicate MIDs */
 	for (sid = 0; sid < master->num_mids; sid++)
 		if (master->mids[sid] == spec->args[0]) {
 			dev_warn(dev, "Stream ID 0x%x repeated; ignoring\n",
@@ -658,6 +698,7 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 	struct msm_iommu_dev *iommu = dev_id;
 	unsigned int fsr;
 	int i, ret;
+	irqreturn_t result = IRQ_NONE;
 
 	spin_lock(&msm_iommu_lock);
 
@@ -666,9 +707,6 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 		goto fail;
 	}
 
-	pr_err("Unexpected IOMMU page fault!\n");
-	pr_err("base = %08x\n", (unsigned int)iommu->base);
-
 	ret = __enable_clocks(iommu);
 	if (ret)
 		goto fail;
@@ -676,20 +714,61 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 	for (i = 0; i < iommu->ncb; i++) {
 		fsr = GET_FSR(iommu->base, i);
 		if (fsr) {
-			pr_err("Fault occurred in context %d.\n", i);
-			pr_err("Interesting registers:\n");
-			print_ctx_regs(iommu->base, i);
+			/*
+			 * Rate-limit BOTH the dev_err header line AND the
+			 * print_ctx_regs() multi-line dump together. On
+			 * Tenderloin/APQ8060 with Gemini using the IDENTITY
+			 * (passthrough) default domain — necessary because
+			 * IOMMU_DOMAIN_DMA with msm_iommu deadlocks the
+			 * system — every JPEG encode generates thousands of
+			 * these prints. The engine reads raw CMA physical
+			 * addresses, the SMMU has no mapping for them, but
+			 * the read still completes through the passthrough
+			 * so the encode produces correct output. The "fault"
+			 * is purely a logging event, not a data error. At
+			 * full rate the prints saturate netconsole and hide
+			 * everything else.
+			 *
+			 * Keep the FSR clear and IRQ_HANDLED accounting
+			 * outside the ratelimit gate — those are functional,
+			 * not logging.
+			 */
+			static DEFINE_RATELIMIT_STATE(rs,
+				DEFAULT_RATELIMIT_INTERVAL,
+				DEFAULT_RATELIMIT_BURST);
+			if (__ratelimit(&rs)) {
+				dev_err(iommu->dev,
+					"Unexpected IOMMU page fault in context %d\n",
+					i);
+				print_ctx_regs(iommu->dev, iommu->base, i);
+			}
 			SET_FSR(iommu->base, i, 0x4000000F);
+			result = IRQ_HANDLED;
 		}
 	}
 	__disable_clocks(iommu);
 fail:
 	spin_unlock(&msm_iommu_lock);
-	return 0;
+	return result;
+}
+
+static int msm_iommu_def_domain_type(struct device *dev)
+{
+	/*
+	 * Default to identity (passthrough) domain so that the IOMMU
+	 * framework does not attach a DMA paging domain during bus probe.
+	 * A paging domain attach triggers the deferred IOMMU hardware
+	 * reset and enables the MMU, which will fault on any in-flight
+	 * DMA from the bootloader (e.g. display framebuffer scanning).
+	 * Drivers that need IOMMU translation (like DRM/MSM) create
+	 * their own paging domain after safely quiescing their hardware.
+	 */
+	return IOMMU_DOMAIN_IDENTITY;
 }
 
 static struct iommu_ops msm_iommu_ops = {
 	.identity_domain = &msm_iommu_identity_domain,
+	.def_domain_type = msm_iommu_def_domain_type,
 	.domain_alloc_paging = msm_iommu_domain_alloc_paging,
 	.probe_device = msm_iommu_probe_device,
 	.device_group = generic_device_group,
@@ -716,7 +795,7 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	struct resource *r;
 	resource_size_t ioaddr;
 	struct msm_iommu_dev *iommu;
-	int ret, par, val;
+	int ret, val;
 
 	iommu = devm_kzalloc(&pdev->dev, sizeof(*iommu), GFP_KERNEL);
 	if (!iommu)
@@ -754,19 +833,13 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	}
 	iommu->ncb = val;
 
-	msm_iommu_reset(iommu->base, iommu->ncb);
-	SET_M(iommu->base, 0, 1);
-	SET_PAR(iommu->base, 0, 0);
-	SET_V2PCFG(iommu->base, 0, 1);
-	SET_V2PPR(iommu->base, 0, 0);
-	par = GET_PAR(iommu->base, 0);
-	SET_V2PCFG(iommu->base, 0, 0);
-	SET_M(iommu->base, 0, 0);
-
-	if (!par) {
-		pr_err("Invalid PAR value detected\n");
-		return -ENODEV;
-	}
+	/*
+	 * Defer IOMMU reset to first device attach. This prevents disruption
+	 * of bootloader display output which may be using memory paths that
+	 * go through this IOMMU. The MDP display controller disables its
+	 * output before attaching to IOMMU, so reset at attach time is safe.
+	 */
+	iommu->reset_done = false;
 
 	ret = devm_request_threaded_irq(iommu->dev, iommu->irq, NULL,
 					msm_iommu_fault_handler,
@@ -774,7 +847,8 @@ static int msm_iommu_probe(struct platform_device *pdev)
 					"msm_iommu_secure_irpt_handler",
 					iommu);
 	if (ret) {
-		pr_err("Request IRQ %d failed with ret=%d\n", iommu->irq, ret);
+		dev_err(iommu->dev, "Request IRQ %d failed with ret=%d\n",
+			iommu->irq, ret);
 		return ret;
 	}
 
@@ -783,24 +857,27 @@ static int msm_iommu_probe(struct platform_device *pdev)
 	ret = iommu_device_sysfs_add(&iommu->iommu, iommu->dev, NULL,
 				     "msm-smmu.%pa", &ioaddr);
 	if (ret) {
-		pr_err("Could not add msm-smmu at %pa to sysfs\n", &ioaddr);
+		dev_err(iommu->dev, "Could not add msm-smmu at %pa to sysfs\n",
+			&ioaddr);
 		return ret;
 	}
 
 	ret = iommu_device_register(&iommu->iommu, &msm_iommu_ops, &pdev->dev);
 	if (ret) {
-		pr_err("Could not register msm-smmu at %pa\n", &ioaddr);
+		dev_err(iommu->dev, "Could not register msm-smmu at %pa\n",
+			&ioaddr);
 		return ret;
 	}
 
-	pr_info("device mapped at %p, irq %d with %d ctx banks\n",
-		iommu->base, iommu->irq, iommu->ncb);
+	dev_info(iommu->dev, "device mapped at %p, irq %d with %d ctx banks\n",
+		 iommu->base, iommu->irq, iommu->ncb);
 
 	return ret;
 }
 
 static const struct of_device_id msm_iommu_dt_match[] = {
 	{ .compatible = "qcom,apq8064-iommu" },
+	{ .compatible = "qcom,msm8660-iommu" },
 	{}
 };
 
