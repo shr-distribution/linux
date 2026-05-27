@@ -337,11 +337,18 @@ static void gemini_device_run(void *priv)
 		  ctx->dst.sizeimage - hdr_aligned - 2 : 0;
 
 	/*
-	 * H2V2 NV12 uses 16×16 MCUs, so the per-row count is height/16, not
-	 * height/8. The cross-vendor libgemini wire format (Wm = (W+15)>>4,
-	 * Hm = (H+15)>>4) confirms this for all four vendor binaries.
+	 * FE_BUFFER_CFG's "MCU_ROWS" fields actually carry the number of MCUs
+	 * per row (the horizontal MCU count Wm), which the fetch engine uses
+	 * to compute the row stride when walking the source frame. The live
+	 * webOS delta-log confirms this: for a 1024x1280 (Wm=64, Hm=80) frame
+	 * FE_BUFFER_CFG = 0x003f003f, i.e. Wm-1 = 63 in both fields (== the
+	 * high half of FE_DIMS), NOT Hm-1 = 79. Feeding Hm here gave the FE
+	 * the wrong stride, so only the first MCU row read correctly and the
+	 * rest was misaligned garbage / the encode produced no output.
+	 *
+	 * H2V2 NV12 uses 16x16 MCUs: Wm = (W+15)>>4.
 	 */
-	num_mcu_rows = (ctx->src.height + 15) / 16;
+	num_mcu_rows = (ctx->src.width + 15) / 16;
 
 	/*
 	 * Cache coherency for the offline DMA path.
