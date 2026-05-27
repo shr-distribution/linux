@@ -4322,7 +4322,7 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 					&vfe_entity->pads[MSM_VFE_PAD_SINK]);
 				if (link) {
 					dev_info(camss->dev,
-						 "Found link, enabling (flags=0x%x)\n",
+						 "Found link, enabling (flags=0x%lx)\n",
 						 link->flags);
 					ret = media_entity_setup_link(link,
 						MEDIA_LNK_FL_ENABLED);

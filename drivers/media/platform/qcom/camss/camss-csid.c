@@ -792,7 +792,7 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 
 			remote = media_pad_remote_pad_first(&csid->pads[MSM_CSID_PAD_SINK]);
 			dev_info(csid->camss->dev,
-				 "CSID%d: testgen disabled, remote_pad=%px sink_pad flags=0x%x\n",
+				 "CSID%d: testgen disabled, remote_pad=%px sink_pad flags=0x%lx\n",
 				 csid->id, remote, csid->pads[MSM_CSID_PAD_SINK].flags);
 			if (!remote) {
 				dev_err(csid->camss->dev,

@@ -218,12 +218,12 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 			 * clock rate while the clock is enabled. webOS sets
 			 * rates before enable in msm_camio_clk_enable().
 			 */
-			dev_info(dev, "CSIPHY%d: setting %s rate to %lu Hz\n",
+			dev_info(dev, "CSIPHY%d: setting %s rate to %u Hz\n",
 				 csiphy->id, clock->name, clock->freq[0]);
 			ret = clk_set_rate(clock->clk, clock->freq[0]);
 			if (ret < 0) {
 				dev_err(dev,
-					"clk %s set rate %lu failed: %d\n",
+					"clk %s set rate %u failed: %d\n",
 					clock->name, clock->freq[0], ret);
 				return ret;
 			}
