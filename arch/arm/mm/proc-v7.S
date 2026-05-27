@@ -291,6 +291,127 @@ SYM_FUNC_END(cpu_pj4b_do_resume)
  *	It is assumed that:
  *	- cache type register is implemented
  */
+/*
+ * Qualcomm Scorpion (MSM8660/APQ8060) setup.
+ *
+ * Empirical history: removing the c15 implementation-defined writes
+ * (L2CR0, L2CR1, BPCR) made boot hang at "Zone ranges:" even though
+ * post-boot CP15 readback suggested the writes were silently dropped
+ * (L2CR1 / BPCR) or only partially landing (L2CR0 — high half lost).
+ * That readback was misleading: the MCR sequence is load-bearing for
+ * boot on this part. Either the partial L2CR0 state (`0x00050F0F`)
+ * is what L2 actually needs (vs. the hardware default `0x0003c007`),
+ * or the c15 MCR instructions have a config-commit side effect on
+ * Scorpion beyond just storing bits. Either way: keep the writes.
+ *
+ * Bits that we know stick (verifiable via scorpion-verify):
+ *   NMRR Scorpion override (c10, NS-accessible)
+ *   ACTLR L1/L2 error reporting + Scorpion MP SMP enable
+ *
+ * Bits where the write is required to boot but readback shows
+ * incomplete take-up — leave them anyway, the silicon expects to
+ * see the sequence:
+ *   L2CR1 = 0x100  (DBB-related; reads back as 0)
+ *   L2CR0 = 0xC0050F0F  (reads back as 0x00050F0F)
+ *   BPCR  = 0x01FF01FF  (reads back as 0)
+ *
+ * Uses movw/movt instead of ldr =value to avoid literal pool issues
+ * in the .proc.info.init section context.
+ */
+__v7_scorpion_setup:
+	do_invalidate_l1
+
+	/*
+	 * Minimal Scorpion-MP CP15 setup — mirror legacy webOS exactly.
+	 *
+	 * Legacy webOS arch/arm/mm/proc-v7.S (kernel 2.6.35-palm-tenderloin,
+	 * CONFIG_ARCH_MSM_SCORPIONMP=y, confirmed via the on-disk config at
+	 * /boot/config-2.6.35-palm-tenderloin on a running TouchPad) writes
+	 * only TWO registers in the Scorpion-MP path:
+	 *   - ACTLR  (|= 0x37 + bit 24)   — error reporting + SMP enable
+	 *   - L2CPUCR (|= bit 21)         — "optimal setting for Scorpion MP"
+	 *
+	 * Earlier revisions of this function added four more writes —
+	 * L2CR1=0x33, L2CR0=0xC0050F0F, BPCR=0x01FF01FF, SPCR=0x0F —
+	 * copied from the QSD8x50 (Halcyon) BOOTLOADER source
+	 * (arch-init-scorpion.S), under the assumption that what worked
+	 * on the single-core Scorpion would also be safe on Scorpion-MP.
+	 *
+	 * That assumption was empirically falsified on 2026-05-13. With
+	 * the four extra writes active, hand-written NEON streaming-read
+	 * (ddrbench-sizes 8 MB buffer, pld [src,#256]) measured 565 MB/s
+	 * on this hardware — within 5% of the same kernel with all PLD
+	 * hints stripped out (543 MB/s). i.e. the prefetcher was
+	 * effectively disabled. The same binary on legacy webOS
+	 * @ 1188 MHz hit 1660 MB/s with PLD (603 MB/s without) — a 2.76x
+	 * speedup proving the prefetcher works on this silicon, just not
+	 * after we touch those four registers.
+	 *
+	 * Removing this block restored the prefetcher: NEON streaming
+	 * read jumps from 565 → 1701 MB/s @ 1512 MHz (2.96x), with a
+	 * full PLD speedup ratio of 2.62x. eMMC ADM DMA stays stable
+	 * (30 MB/s sustained, no recovery failures over multi-minute
+	 * tests) because we leave L2CR1 at the bootloader's value rather
+	 * than overriding it. Numbers archived in
+	 * reports/ram-speed-benchmark.md.
+	 *
+	 * Removing just L2CR1=0x33 in isolation (test/scorpionmp-no-l2cr1)
+	 * broke eMMC after ~60s of sustained DMA — the four writes
+	 * destabilise each other and only the full removal restores a
+	 * working configuration. Bisect branches for identifying which
+	 * single write is the prefetch killer
+	 * (test/scorpionmp-add-{spcr,bpcr,l2cr0}) are queued in
+	 * shr-distribution/linux for future investigation if a future
+	 * Scorpion-MP variant ever needs any of those writes back; do
+	 * NOT re-apply them unconditionally to all SCORPIONMP without
+	 * benchmarking PLD effectiveness first.
+	 */
+
+	/*
+	 * L2CPUCR (p15,3,c15,c0,2): OR in bit 21, the only Scorpion-MP-
+	 * specific write legacy proc-v7.S does. Skip the base 0xe0 write —
+	 * the bootloader handles that, and we don't want to clobber any
+	 * bits the bootloader set.
+	 */
+	mrc	p15, 3, r0, c15, c0, 2		@ read L2CPUCR
+	orr	r0, r0, #(1 << 21)		@ Scorpion MP optimal bit
+	mcr	p15, 3, r0, c15, c0, 2		@ write back
+
+	/*
+	 * Program ACTLR with Scorpion-specific bit semantics, mirroring
+	 * legacy webOS arch/arm/mm/proc-v7.S:
+	 *
+	 *   bits 0..5 (0x37) = L1/L2 error reporting cluster
+	 *   bit 24           = Scorpion MP SMP enable (CONFIG_SMP)
+	 *
+	 * The generic-v7 Cortex-A* ACTLR layout differs (bit 0 = "Cache/
+	 * TLB ops broadcasting", bit 6 = SMP/nAMP). Setting bit 0 on
+	 * Scorpion actively hangs early boot (it is a partial half-set
+	 * of the error-reporting cluster). Stick to the legacy-documented
+	 * bits. Read-modify-write so we don't clobber bootloader/TZ-set
+	 * bits. scorpion-verify arch_initcall reports back which bits
+	 * actually stuck.
+	 */
+	mrc	p15, 0, r0, c1, c0, 1		@ read ACTLR
+	orr	r0, r0, #0x37			@ Scorpion L1/L2 error reporting
+#ifdef CONFIG_SMP
+	orr	r0, r0, #(1 << 24)		@ Scorpion MP SMP enable
+#endif
+	mcr	p15, 0, r0, c1, c0, 1		@ write ACTLR
+	/*
+	 * Run common v7 setup (TTB, errata, PRRR/NMRR, SCTLR), then
+	 * override NMRR with Scorpion-optimized value before returning.
+	 * Save lr in r11 (callee-saved, preserved through __v7_setup_cont)
+	 * since __v7_setup_cont returns directly via "ret lr".
+	 */
+	mov	r11, lr
+	bl	__v7_setup_cont
+	/* Override NMRR: 0x40e040e0 (generic) -> 0x40e080e0 (Scorpion) */
+	movw	r6, #0x80e0
+	movt	r6, #0x40e0
+	mcr	p15, 0, r6, c10, c2, 1		@ write Scorpion NMRR
+	ret	r11
+
 __v7_ca5mp_setup:
 __v7_ca9mp_setup:
 __v7_cr7mp_setup:
@@ -799,6 +920,16 @@ __v7_ca75_proc_info:
 	.long	0xff0ffff0
 	__v7_proc __v7_ca75_proc_info, __v7_setup, proc_fns = HARDENED_BPIALL_PROCESSOR_FUNCTIONS
 	.size	__v7_ca75_proc_info, . - __v7_ca75_proc_info
+
+	/*
+	 * Qualcomm Inc. Scorpion processors (MSM8660/APQ8060).
+	 */
+	.type	__v7_scorpion_proc_info, #object
+__v7_scorpion_proc_info:
+	.long	0x510f02d0		@ Required ID value (Scorpion MP)
+	.long	0xff0ffff0		@ Mask for ID (match part 0x02d, any rev)
+	__v7_proc __v7_scorpion_proc_info, __v7_scorpion_setup
+	.size	__v7_scorpion_proc_info, . - __v7_scorpion_proc_info
 
 	/*
 	 * Qualcomm Inc. Krait processors.
