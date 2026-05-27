@@ -687,7 +687,7 @@ static int vidc_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 			 */
 			if (!inst->seq_parsed && !inst->seq_hdr_direct) {
 				dev_dbg(core->dev,
-					 "start_streaming: queuing seq_header_work\n");
+					"start_streaming: queuing seq_header_work\n");
 				queue_work(system_wq, &inst->seq_header_work);
 			}
 		}
@@ -1137,22 +1137,22 @@ static void vidc_dec_submit_frame(struct vidc_inst *inst,
 	}
 
 	dev_dbg(core->dev,
-		 "submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x payload=%u buf_sz=%u desc_addr=0x%x meta_addr=0x%x\n",
-		 op, inst->inst_id, &src_addr,
-		 (u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
-		 src_size,
-		 (u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
-		 (u32)(core->desc_offset >> VIDC_ADDR_SHIFT),
-		 core->shm_offset + VIDC_META_INPUT_OFF);
+		"submit_frame: op=0x%x inst_id=0x%x src_phys=0x%pad fw_rel=0x%x payload=%u buf_sz=%u desc_addr=0x%x meta_addr=0x%x\n",
+		op, inst->inst_id, &src_addr,
+		(u32)((src_addr - core->fw_dma_addr) >> VIDC_ADDR_SHIFT),
+		src_size,
+		(u32)vb2_plane_size(&inst->src_buf->vb2_buf, 0),
+		(u32)(core->desc_offset >> VIDC_ADDR_SHIFT),
+		core->shm_offset + VIDC_META_INPUT_OFF);
 
 	if (op == VIDC_OP_SEQ_HEADER) {
 		dev_dbg(core->dev,
-			 "SEQ_HDR SHM[0x38]=0x%08x SHM[0x44]=0x%08x meta_hdr[v/p/t]=0x%08x/0x%08x/0x%08x\n",
-			 readl(core->shm_vaddr + VIDC_SHM_METADATA_ENABLE),
-			 readl(core->shm_vaddr + VIDC_SHM_EXT_METADATA_START_ADDR),
-			 readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 33 * 4),
-			 readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 34 * 4),
-			 readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 35 * 4));
+			"SEQ_HDR SHM[0x38]=0x%08x SHM[0x44]=0x%08x meta_hdr[v/p/t]=0x%08x/0x%08x/0x%08x\n",
+			readl(core->shm_vaddr + VIDC_SHM_METADATA_ENABLE),
+			readl(core->shm_vaddr + VIDC_SHM_EXT_METADATA_START_ADDR),
+			readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 33 * 4),
+			readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 34 * 4),
+			readl(core->shm_vaddr + VIDC_META_INPUT_OFF + 35 * 4));
 	}
 
 	/* Trigger: operation type | instance id */
@@ -1188,8 +1188,8 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 	u32 src_size;
 
 	dev_dbg(core->dev,
-		 "seq_header_work: seq_parsed=%d hdr_direct=%d\n",
-		 inst->seq_parsed, inst->seq_hdr_direct);
+		"seq_header_work: seq_parsed=%d hdr_direct=%d\n",
+		inst->seq_parsed, inst->seq_hdr_direct);
 
 	if (inst->seq_parsed || inst->seq_hdr_direct)
 		return;
@@ -1240,8 +1240,8 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 		 */
 		if (!inst->seq_scratch_vaddr) {
 			inst->seq_scratch_vaddr = dma_alloc_coherent(core->dev,
-					VIDC_SEQ_SCRATCH_SIZE,
-					&inst->seq_scratch_dma, GFP_KERNEL);
+								     VIDC_SEQ_SCRATCH_SIZE,
+								     &inst->seq_scratch_dma, GFP_KERNEL);
 		}
 		if (!inst->seq_scratch_vaddr ||
 		    inst->seq_scratch_dma < core->fw_dma_addr)
@@ -1253,8 +1253,8 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 		src_size = copy;
 
 		print_hex_dump_debug("vidc seq_hdr BEFORE[0:16]: ",
-			       DUMP_PREFIX_NONE, 16, 1, kva,
-			       min_t(u32, src_size, 16), false);
+				     DUMP_PREFIX_NONE, 16, 1, kva,
+				     min_t(u32, src_size, 16), false);
 
 		/* Step 1: strip leading AUD */
 		if (src_size >= 6 &&
@@ -1273,8 +1273,8 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 				skip++;
 			}
 			dev_dbg(core->dev,
-				 "seq_header_work: memmove past %u-byte AUD; next NAL=0x%02x\n",
-				 skip, kva[skip + 4] & 0x1f);
+				"seq_header_work: memmove past %u-byte AUD; next NAL=0x%02x\n",
+				skip, kva[skip + 4] & 0x1f);
 			memmove(kva, kva + skip, src_size - skip);
 			src_size -= skip;
 			/* src_addr stays at the aligned buffer base */
@@ -1294,8 +1294,8 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 						after_pps = true;
 					} else if (after_pps) {
 						dev_dbg(core->dev,
-							 "seq_header_work: truncated %u bytes at NAL type %u after PPS\n",
-							 src_size - pos, nal_type);
+							"seq_header_work: truncated %u bytes at NAL type %u after PPS\n",
+							src_size - pos, nal_type);
 						src_size = pos;
 						break;
 					}
@@ -1307,8 +1307,8 @@ static void vidc_dec_seq_header_work_fn(struct work_struct *w)
 		}
 
 		print_hex_dump_debug("vidc seq_hdr AFTER[0:40]: ",
-			       DUMP_PREFIX_NONE, 16, 1, kva,
-			       min_t(u32, src_size, 40), false);
+				     DUMP_PREFIX_NONE, 16, 1, kva,
+				     min_t(u32, src_size, 40), false);
 
 		/*
 		 * No dma_sync needed.  vb2 buffers now come from the SMIPOOL
@@ -1371,8 +1371,8 @@ static void vidc_dec_seq_done_work(struct work_struct *w)
 	 */
 	dpb_ret = 0;
 	dev_dbg(core->dev,
-		 "Sequence parsed: %ux%u, min_dpb=%u — awaiting CAPTURE setup\n",
-		 inst->seq_width, inst->seq_height, inst->min_dpb_count);
+		"Sequence parsed: %ux%u, min_dpb=%u — awaiting CAPTURE setup\n",
+		inst->seq_width, inst->seq_height, inst->min_dpb_count);
 
 	v4l2_event_queue_fh(&inst->fh, &ev);
 
@@ -1506,7 +1506,7 @@ static void vidc_dec_frame_done_work(struct work_struct *w)
 		};
 
 		dev_dbg(core->dev,
-			 "mid-stream resolution change reported by firmware\n");
+			"mid-stream resolution change reported by firmware\n");
 		v4l2_event_queue_fh(&inst->fh, &ev);
 		inst->display_resl_change = 0;
 	}
@@ -1669,8 +1669,8 @@ static void vidc_dec_device_run(void *priv)
 
 	if (!src_buf || !dst_buf) {
 		dev_dbg(inst->core->dev,
-			 "device_run: no buffers (src=%p dst=%p), aborting\n",
-			 src_buf, dst_buf);
+			"device_run: no buffers (src=%p dst=%p), aborting\n",
+			src_buf, dst_buf);
 		v4l2_m2m_job_finish(inst->core->m2m_dev_dec, inst->m2m_ctx);
 		return;
 	}
@@ -1684,8 +1684,8 @@ static void vidc_dec_device_run(void *priv)
 	src_size = vb2_get_plane_payload(&src_buf->vb2_buf, 0);
 
 	dev_dbg(inst->core->dev,
-		 "device_run: FRAME_DATA src=0x%pad size=%u seq_parsed=%d\n",
-		 &src_addr, src_size, inst->seq_parsed);
+		"device_run: FRAME_DATA src=0x%pad size=%u seq_parsed=%d\n",
+		&src_addr, src_size, inst->seq_parsed);
 	inst->error = 0;
 	vidc_dec_submit_frame(inst, src_addr, src_size, dst_addr);
 

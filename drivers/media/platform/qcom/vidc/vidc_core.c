@@ -200,9 +200,9 @@ static int vidc_clk_enable(struct vidc_core *core)
 	 */
 
 	pr_debug("VIDC: clk_enable: core=%lu iface=%lu axi=%lu (axi_a/b managed at probe)\n",
-	       clk_get_rate(core->core_clk),
-	       clk_get_rate(core->iface_clk),
-	       clk_get_rate(core->axi_clk));
+		 clk_get_rate(core->core_clk),
+		 clk_get_rate(core->iface_clk),
+		 clk_get_rate(core->axi_clk));
 
 	return 0;
 
@@ -297,7 +297,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 */
 	if (sw_reset != (VIDC_RESET_NONE & ~VIDC_RESET_RISC)) {
 		pr_debug("VIDC: hw_reset: normalizing 0x%08x -> 0x3fe -> 0x000 -> 0x3fe\n",
-		       sw_reset);
+			 sw_reset);
 		/*
 		 * Three-step pulse so EVERY block sees a clean 1→0 reset edge
 		 * regardless of entry state.
@@ -383,12 +383,12 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 * behavior which never reads these registers back.
 	 */
 	pr_debug("VIDC: hw_reset: writing DRAM_BASE=0x%08x to offsets 0x%03x/0x%03x\n",
-	       dram_base_addr, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
+		 dram_base_addr, VIDC_REG_DRAM_BASE_A, VIDC_REG_DRAM_BASE_B);
 	vidc_write(core, VIDC_REG_DRAM_BASE_A, dram_base_addr);
 	vidc_write(core, VIDC_REG_DRAM_BASE_B, dram_base_addr);
 	pr_debug("VIDC: hw_reset: readback DRAM_BASE_A=0x%08x DRAM_BASE_B=0x%08x\n",
-	       vidc_read(core, VIDC_REG_DRAM_BASE_A),
-	       vidc_read(core, VIDC_REG_DRAM_BASE_B));
+		 vidc_read(core, VIDC_REG_DRAM_BASE_A),
+		 vidc_read(core, VIDC_REG_DRAM_BASE_B));
 
 	/*
 	 * Clear RETURNED_CH_INST_ID early, matching webOS sequence.
@@ -425,7 +425,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 
 	if (timeout == 0) {
 		pr_debug("VIDC: hw_reset: AXI halt timeout, final status=0x%08x\n",
-		       vidc_read(core, VIDC_REG_AXI_STATUS));
+			 vidc_read(core, VIDC_REG_AXI_STATUS));
 		dev_err(core->dev, "AXI halt timeout\n");
 		return -ETIMEDOUT;
 	}
@@ -466,7 +466,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 		vidc_fw_copy_to_smi(core, core->fw_vaddr, core->fw->data,
 				    core->fw_size);
 		memset_io(core->fw_vaddr + core->fw_size, 0,
-		       core->fw_alloc_size - core->fw_size);
+			  core->fw_alloc_size - core->fw_size);
 		/* Verify that CPU writes actually land in SMI SRAM (check a non-zero offset) */
 		{
 			/* Find first non-zero dword in firmware for a meaningful check */
@@ -495,7 +495,6 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 				pr_debug("VIDC: fw recopy: first 1KB all zeros, cannot verify\n");
 			}
 		}
-
 	}
 
 	/* Initialize channel instance IDs */
@@ -521,7 +520,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 			sw_rst = vidc_read(core, VIDC_REG_SW_RESET);
 			fwver  = vidc_read(core, VIDC_REG_FW_VERSION);
 			pr_debug("VIDC: post-release[%d]: AXI_STATUS=0x%08x SW_RESET=0x%08x FW_VERSION=0x%08x\n",
-			       i, axi_st, sw_rst, fwver);
+				 i, axi_st, sw_rst, fwver);
 			usleep_range(2000, 2100);
 		}
 	}
@@ -670,11 +669,11 @@ static void vidc_handle_seq_done(struct vidc_core *core,
 	}
 
 	dev_dbg(core->dev,
-		 "Sequence done: %ux%u (visible %ux%u+%u+%u), min_dpb=%u, fw min_luma=0x%x, min_chroma=0x%x\n",
-		 inst->seq_width, inst->seq_height,
-		 inst->crop_width, inst->crop_height,
-		 inst->crop_left, inst->crop_top, inst->min_dpb_count,
-		 min_luma_size, min_chroma_size);
+		"Sequence done: %ux%u (visible %ux%u+%u+%u), min_dpb=%u, fw min_luma=0x%x, min_chroma=0x%x\n",
+		inst->seq_width, inst->seq_height,
+		inst->crop_width, inst->crop_height,
+		inst->crop_left, inst->crop_top, inst->min_dpb_count,
+		min_luma_size, min_chroma_size);
 
 	inst->state = VIDC_STATE_SEQ_PARSED;
 }
@@ -732,11 +731,11 @@ static irqreturn_t vidc_isr(int irq, void *data)
 			cmd, arg1, arg2, inst);
 	else if (cmd != VIDC_RESP_EMPTY)
 		dev_dbg(core->dev,
-			 "VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
-			 cmd, arg1, arg2, inst);
+			"VIDC IRQ: cmd=%u arg1=0x%x arg2=0x%x inst=%p\n",
+			cmd, arg1, arg2, inst);
 	else if (__ratelimit(&rs))
 		dev_dbg(core->dev,
-			 "VIDC IRQ: cmd=0 (empty) inst=%p\n", inst);
+			"VIDC IRQ: cmd=0 (empty) inst=%p\n", inst);
 
 	/*
 	 * Storm guard: if firmware boot has stalled, the hardware can
@@ -789,18 +788,18 @@ static irqreturn_t vidc_isr(int irq, void *data)
 				 * inst->done after setting init_buffers_pending.
 				 */
 				dev_dbg(core->dev,
-					 "recovery INIT_BUFFERS ack via EMPTY IRQ\n");
+					"recovery INIT_BUFFERS ack via EMPTY IRQ\n");
 				inst->init_buffers_pending = false;
 				inst->state = VIDC_STATE_RUNNING;
 				complete(&inst->done);
 			} else if (inst && inst->seq_header_pending) {
 				dev_dbg(core->dev,
-					 "recovery SEQ_HEADER ack via EMPTY IRQ\n");
+					"recovery SEQ_HEADER ack via EMPTY IRQ\n");
 				inst->seq_header_pending = false;
 				queue_work(system_wq, &inst->seq_done_work);
 			} else if (inst && inst->seq_hdr_direct) {
 				dev_dbg(core->dev,
-					 "recovery decoder SEQ_HEADER ack via EMPTY IRQ\n");
+					"recovery decoder SEQ_HEADER ack via EMPTY IRQ\n");
 				vidc_handle_seq_done(core, inst);
 				queue_work(system_wq, &inst->seq_done_work);
 			}
@@ -892,8 +891,8 @@ static irqreturn_t vidc_isr(int irq, void *data)
 			if (inst->state == VIDC_STATE_IDLE) {
 				inst->inst_id = arg1;
 				dev_dbg(core->dev,
-					 "Recovery OPEN_CH ack: arg1=0x%08x inst_id=0x%08x\n",
-					 arg1, inst->inst_id);
+					"Recovery OPEN_CH ack: arg1=0x%08x inst_id=0x%08x\n",
+					arg1, inst->inst_id);
 				inst->state = VIDC_STATE_OPEN;
 			} else {
 				inst->state = VIDC_STATE_RUNNING;
@@ -915,8 +914,8 @@ static irqreturn_t vidc_isr(int irq, void *data)
 			ret_ch = vidc_read(core, VIDC_REG_RETURNED_CH_INST_ID);
 			inst->inst_id = arg1;
 			dev_dbg(core->dev,
-				 "Channel opened, arg1=0x%08x ret_ch=0x%08x inst_id=0x%08x\n",
-				 arg1, ret_ch, inst->inst_id);
+				"Channel opened, arg1=0x%08x ret_ch=0x%08x inst_id=0x%08x\n",
+				arg1, ret_ch, inst->inst_id);
 			inst->state = VIDC_STATE_OPEN;
 			complete(&inst->done);
 		}
@@ -985,7 +984,7 @@ static irqreturn_t vidc_isr(int irq, void *data)
 	case VIDC_RESP_ENC_COMPLETE:
 		/*
 		 * ENC_COMPLETE_RET (cmd 7) is the encoder END-OF-STREAM
-		 * acknowledgement (webOS ddl_encoder_eos_done), not a
+		 * acknowledgment (webOS ddl_encoder_eos_done), not a
 		 * per-frame event — per-frame encode completion arrives as
 		 * FRAME_DONE_RET above.  We don't issue an explicit EOS yet,
 		 * so just note it and wake any synchronous waiter.
@@ -1117,7 +1116,7 @@ int vidc_load_firmware(struct vidc_core *core)
 
 	/* CPU reads from SMI return 0; readback is not meaningful. */
 	pr_debug("VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
-	       (u32)core->fw_dma_addr, core->fw_alloc_size, core->fw_size);
+		 (u32)core->fw_dma_addr, core->fw_alloc_size, core->fw_size);
 
 	/*
 	 * Carve out per-channel scratch regions inside the firmware
@@ -1222,8 +1221,8 @@ int vidc_load_firmware(struct vidc_core *core)
 		goto err_free_dma;
 
 	dev_dbg(core->dev,
-		 "Firmware loaded at dma=0x%08x (%zu bytes), version 0x%08x\n",
-		 (u32)core->fw_dma_addr, core->fw_size, core->fw_version);
+		"Firmware loaded at dma=0x%08x (%zu bytes), version 0x%08x\n",
+		(u32)core->fw_dma_addr, core->fw_size, core->fw_version);
 
 	return 0;
 
@@ -1331,7 +1330,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 	 * stale instance IDs that trips the IRQ storm guard.
 	 */
 	memset_io(core->fw_vaddr + core->fw_size, 0,
-	       core->fw_alloc_size - core->fw_size);
+		  core->fw_alloc_size - core->fw_size);
 
 	/*
 	 * Bring the RISC out of reset and program firmware. We need
@@ -1361,10 +1360,10 @@ int vidc_boot_firmware(struct vidc_core *core)
 	reinit_completion(&core->sys_init_done);
 
 	dev_dbg(core->dev, "boot_fw: about to call vidc_hw_reset (dram_base=0x%08x)\n",
-		 (u32)core->fw_dma_addr);
+		(u32)core->fw_dma_addr);
 	dev_dbg(core->dev, "boot_fw: pre-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
-		 vidc_read(core, VIDC_REG_SW_RESET),
-		 vidc_read(core, VIDC_REG_FW_VERSION));
+		vidc_read(core, VIDC_REG_SW_RESET),
+		vidc_read(core, VIDC_REG_FW_VERSION));
 	ret = vidc_hw_reset(core, core->fw_dma_addr);
 	if (ret) {
 		dev_err(core->dev, "hw reset failed: %d\n", ret);
@@ -1372,8 +1371,8 @@ int vidc_boot_firmware(struct vidc_core *core)
 	}
 	pr_debug("VIDC: boot_fw: about to read post-reset registers\n");
 	dev_dbg(core->dev, "boot_fw: post-reset SW_RESET=0x%08x FW_VERSION=0x%08x\n",
-		 vidc_read(core, VIDC_REG_SW_RESET),
-		 vidc_read(core, VIDC_REG_FW_VERSION));
+		vidc_read(core, VIDC_REG_SW_RESET),
+		vidc_read(core, VIDC_REG_FW_VERSION));
 	pr_debug("VIDC: boot_fw: post-reset register reads completed\n");
 
 	/*
@@ -1409,12 +1408,12 @@ int vidc_boot_firmware(struct vidc_core *core)
 		unsigned long ret_jif = wait_for_completion_timeout(
 				&core->fw_status_done, msecs_to_jiffies(2000));
 		dev_dbg(core->dev,
-			 "boot_fw: FW_STATUS wait returned, jiffies_left=%lu (%s)\n",
-			 ret_jif, ret_jif ? "got signal" : "timed out");
+			"boot_fw: FW_STATUS wait returned, jiffies_left=%lu (%s)\n",
+			ret_jif, ret_jif ? "got signal" : "timed out");
 	}
 
 	dev_dbg(core->dev, "boot_fw: about to send SYS_INIT (arg1=%zu)\n",
-		 core->fw_alloc_size);
+		core->fw_alloc_size);
 	ret = vidc_send_cmd(core, VIDC_CMD_SYS_INIT,
 			    core->fw_alloc_size, 0, 0, 0);
 	if (ret) {
@@ -1427,14 +1426,14 @@ int vidc_boot_firmware(struct vidc_core *core)
 		unsigned long ret_jif = wait_for_completion_timeout(
 				&core->sys_init_done, msecs_to_jiffies(1000));
 		dev_dbg(core->dev,
-			 "boot_fw: SYS_INIT wait returned, jiffies_left=%lu (%s)\n",
-			 ret_jif, ret_jif ? "got signal" : "timed out");
+			"boot_fw: SYS_INIT wait returned, jiffies_left=%lu (%s)\n",
+			ret_jif, ret_jif ? "got signal" : "timed out");
 	}
 
 	core->fw_running = true;
 	core->fw_version = vidc_read(core, VIDC_REG_FW_VERSION);
 	dev_dbg(core->dev, "boot_fw: done, FW_VERSION=0x%08x\n",
-		 core->fw_version);
+		core->fw_version);
 
 	/*
 	 * Strategy 1 "keep-resident": the first boot after a fresh reboot is
@@ -1451,7 +1450,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 		pm_runtime_get_noresume(core->dev);
 		core->fw_pinned = true;
 		dev_dbg(core->dev,
-			 "boot_fw: pinned VED resident (firmware kept alive across sessions)\n");
+			"boot_fw: pinned VED resident (firmware kept alive across sessions)\n");
 	}
 
 	/*
@@ -1474,10 +1473,10 @@ int vidc_boot_firmware(struct vidc_core *core)
 	vidc_write(core, VIDC_REG_PIX_CACHE_CONFIG,
 		   VIDC_PIX_CACHE_CONFIG_DEFAULT);
 	dev_dbg(core->dev,
-		 "boot_fw: pix cache cfg=0x%x readback=0x%x sw_reset_reg=0x%x\n",
-		 VIDC_PIX_CACHE_CONFIG_DEFAULT,
-		 vidc_read(core, VIDC_REG_PIX_CACHE_CONFIG),
-		 vidc_read(core, VIDC_REG_PIX_CACHE_SW_RESET));
+		"boot_fw: pix cache cfg=0x%x readback=0x%x sw_reset_reg=0x%x\n",
+		VIDC_PIX_CACHE_CONFIG_DEFAULT,
+		vidc_read(core, VIDC_REG_PIX_CACHE_CONFIG),
+		vidc_read(core, VIDC_REG_PIX_CACHE_SW_RESET));
 	return 0;
 }
 
@@ -1623,8 +1622,8 @@ int vidc_open_channel(struct vidc_inst *inst)
 		fw_codec, pcache, ctxt_offset_shifted, VIDC_CTXT_MEM_SIZE);
 
 	dev_dbg(core->dev,
-		 "open_ch: sending OPEN_CH codec=%u pcache=%u ctxt_off=0x%x\n",
-		 fw_codec, pcache, ctxt_offset_shifted);
+		"open_ch: sending OPEN_CH codec=%u pcache=%u ctxt_off=0x%x\n",
+		fw_codec, pcache, ctxt_offset_shifted);
 	ret = vidc_send_cmd(core, VIDC_CMD_OPEN_CH, fw_codec, pcache,
 			    ctxt_offset_shifted, VIDC_CTXT_MEM_SIZE);
 	if (ret) {
@@ -1637,8 +1636,8 @@ int vidc_open_channel(struct vidc_inst *inst)
 		unsigned long ret_jif = wait_for_completion_timeout(
 				&inst->done, msecs_to_jiffies(1000));
 		dev_dbg(core->dev,
-			 "open_ch: wait returned, jiffies_left=%lu (%s)\n",
-			 ret_jif, ret_jif ? "got signal" : "timed out");
+			"open_ch: wait returned, jiffies_left=%lu (%s)\n",
+			ret_jif, ret_jif ? "got signal" : "timed out");
 		if (!ret_jif) {
 			dev_err(core->dev, "OPEN_CH timeout\n");
 			ret = -ETIMEDOUT;
@@ -1655,8 +1654,8 @@ int vidc_open_channel(struct vidc_inst *inst)
 
 	inst->ch_open = true;
 	dev_dbg(core->dev,
-		 "VIDC channel opened (codec=%u, ctxt off=0x%x sz=%u)\n",
-		 fw_codec, inst->ctxt_mem_offset, VIDC_CTXT_MEM_SIZE);
+		"VIDC channel opened (codec=%u, ctxt off=0x%x sz=%u)\n",
+		fw_codec, inst->ctxt_mem_offset, VIDC_CTXT_MEM_SIZE);
 	return 0;
 
 release_ctxt:
@@ -1671,7 +1670,7 @@ unlock:
  * Close the channel previously opened with vidc_open_channel().
  *
  * Sends HOST2RISC CLOSE_CH with no codec arg and waits for the
- * RESP_CLOSE_CH acknowledgement. Recycles the context pool cursor so
+ * RESP_CLOSE_CH acknowledgment. Recycles the context pool cursor so
  * sequential single-instance use reuses slot 0.
  *
  * Safe to call when the channel is already closed (returns 0).
@@ -1878,8 +1877,8 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	if (!inst->seq_width || !inst->seq_height) {
 		if (inst->width && inst->height) {
 			dev_dbg(core->dev,
-				 "vidc_init_buffers: firmware geometry missing, using S_FMT %ux%u\n",
-				 inst->width, inst->height);
+				"vidc_init_buffers: firmware geometry missing, using S_FMT %ux%u\n",
+				inst->width, inst->height);
 			inst->seq_width  = inst->width;
 			inst->seq_height = inst->height;
 		} else {
@@ -1917,8 +1916,8 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	if (mv_size) {
 		inst->dpb_mv_alloc_size = (size_t)mv_slot * inst->dpb_count;
 		inst->dpb_mv_vaddr = dma_alloc_coherent(core->dev,
-				inst->dpb_mv_alloc_size, &inst->dpb_mv_dma_addr,
-				GFP_KERNEL);
+							inst->dpb_mv_alloc_size, &inst->dpb_mv_dma_addr,
+							GFP_KERNEL);
 		if (!inst->dpb_mv_vaddr) {
 			dev_err(core->dev, "DPB MV pool alloc failed (%zu bytes)\n",
 				inst->dpb_mv_alloc_size);
@@ -1947,8 +1946,8 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		dma_addr_t fw_off;
 
 		inst->h264_vert_nb_mv_vaddr = dma_alloc_coherent(core->dev,
-				VIDC_H264_VERT_NB_MV_SIZE,
-				&inst->h264_vert_nb_mv_dma_addr, GFP_KERNEL);
+								 VIDC_H264_VERT_NB_MV_SIZE,
+								 &inst->h264_vert_nb_mv_dma_addr, GFP_KERNEL);
 		if (!inst->h264_vert_nb_mv_vaddr) {
 			dev_err(core->dev,
 				"H264 vert_nb_mv (%u bytes) alloc failed\n",
@@ -1958,8 +1957,8 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		}
 
 		inst->h264_nb_ip_vaddr = dma_alloc_coherent(core->dev,
-				VIDC_H264_NB_IP_SIZE,
-				&inst->h264_nb_ip_dma_addr, GFP_KERNEL);
+							    VIDC_H264_NB_IP_SIZE,
+							    &inst->h264_nb_ip_dma_addr, GFP_KERNEL);
 		if (!inst->h264_nb_ip_vaddr) {
 			dev_err(core->dev, "H264 nb_ip (%u bytes) alloc failed\n",
 				VIDC_H264_NB_IP_SIZE);
@@ -1975,9 +1974,9 @@ int vidc_init_buffers(struct vidc_inst *inst)
 			   fw_off >> VIDC_ADDR_SHIFT);
 
 		dev_dbg(core->dev,
-			 "H264 work bufs: vert_nb_mv at %pad, nb_ip at %pad\n",
-			 &inst->h264_vert_nb_mv_dma_addr,
-			 &inst->h264_nb_ip_dma_addr);
+			"H264 work bufs: vert_nb_mv at %pad, nb_ip at %pad\n",
+			&inst->h264_vert_nb_mv_dma_addr,
+			&inst->h264_nb_ip_dma_addr);
 	}
 
 	/*
@@ -2012,9 +2011,9 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	}
 
 	dev_dbg(core->dev,
-		 "DPB: %u CAPTURE slots (y=%u c=%u mv=%u), %u Y+C bytes, slot0 %pad\n",
-		 inst->dpb_count, y_size, c_size, mv_size, total_size,
-		 &inst->dpb_cap_dma[0]);
+		"DPB: %u CAPTURE slots (y=%u c=%u mv=%u), %u Y+C bytes, slot0 %pad\n",
+		inst->dpb_count, y_size, c_size, mv_size, total_size,
+		&inst->dpb_cap_dma[0]);
 
 	/*
 	 * Publish the per-slot buffer sizes via the shared-memory region.
@@ -2073,16 +2072,16 @@ int vidc_init_buffers(struct vidc_inst *inst)
 	vidc_write(core, VIDC_REG_CH0_CMD_SEQ_NUM, core->cmd_seq_num);
 
 	dev_dbg(core->dev,
-		 "INIT_BUFFERS pre-trigger: shm=0x%x dpb_cnt=%u seq_num=%u inst_id=0x%x op=0x%x\n",
-		 core->shm_offset, inst->dpb_count, core->cmd_seq_num,
-		 inst->inst_id, VIDC_OP_INIT_BUFFERS | inst->inst_id);
+		"INIT_BUFFERS pre-trigger: shm=0x%x dpb_cnt=%u seq_num=%u inst_id=0x%x op=0x%x\n",
+		core->shm_offset, inst->dpb_count, core->cmd_seq_num,
+		inst->inst_id, VIDC_OP_INIT_BUFFERS | inst->inst_id);
 	dev_dbg(core->dev,
-		 "INIT_BUFFERS regs: DPB[0]=0x%x H264_NB_VERT_MV=0x%x H264_NB_IP=0x%x SHM[mv_sz]=0x%x SHM[y_sz]=0x%x\n",
-		 vidc_read(core, VIDC_REG_DPB_LUMA_BASE),
-		 vidc_read(core, VIDC_REG_H264_VERT_NB_MV),
-		 vidc_read(core, VIDC_REG_H264_NB_IP),
-		 readl(core->shm_vaddr + VIDC_SHM_ALLOCATED_MV_SIZE),
-		 readl(core->shm_vaddr + VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE));
+		"INIT_BUFFERS regs: DPB[0]=0x%x H264_NB_VERT_MV=0x%x H264_NB_IP=0x%x SHM[mv_sz]=0x%x SHM[y_sz]=0x%x\n",
+		vidc_read(core, VIDC_REG_DPB_LUMA_BASE),
+		vidc_read(core, VIDC_REG_H264_VERT_NB_MV),
+		vidc_read(core, VIDC_REG_H264_NB_IP),
+		readl(core->shm_vaddr + VIDC_SHM_ALLOCATED_MV_SIZE),
+		readl(core->shm_vaddr + VIDC_SHM_ALLOCATED_LUMA_DPB_SIZE));
 
 	/* Kick INIT_BUFFERS via the operation-type bits in INST_ID */
 	vidc_write(core, VIDC_REG_CH0_INST_ID,
@@ -2100,14 +2099,14 @@ int vidc_init_buffers(struct vidc_inst *inst)
 		int i;
 		for (i = 0; i < 12; i++) {
 			if (wait_for_completion_timeout(&inst->done,
-				msecs_to_jiffies(250)))
+			    msecs_to_jiffies(250)))
 				goto init_buf_done;
 			dev_dbg(core->dev,
-				 "INIT_BUFFERS poll t=%d ms: CH0_INST=0x%x R2H=0x%x INTR=0x%x\n",
-				 (i + 1) * 250,
-				 vidc_read(core, VIDC_REG_CH0_INST_ID),
-				 vidc_read(core, VIDC_REG_RISC2HOST_CMD),
-				 vidc_read(core, VIDC_REG_INTERRUPT));
+				"INIT_BUFFERS poll t=%d ms: CH0_INST=0x%x R2H=0x%x INTR=0x%x\n",
+				(i + 1) * 250,
+				vidc_read(core, VIDC_REG_CH0_INST_ID),
+				vidc_read(core, VIDC_REG_RISC2HOST_CMD),
+				vidc_read(core, VIDC_REG_INTERRUPT));
 		}
 
 		dev_err(core->dev,
@@ -2146,7 +2145,7 @@ init_buf_done:
 	 * QBUF'd buffer, cleared on display, re-set on re-queue.
 	 */
 	dev_dbg(core->dev, "VIDC DPB initialised, %u slots (hw_mask=0x%x from queued bufs)\n",
-		 inst->dpb_count, inst->dpb_hw_mask);
+		inst->dpb_count, inst->dpb_hw_mask);
 
 	return 0;
 
@@ -2381,8 +2380,8 @@ int vidc_enc_send_seq_header(struct vidc_inst *inst)
 				if (hdr_size > 6)
 					inst->seq_hdr[6] = 0xC0;
 				dev_dbg(core->dev,
-					 "encoder SEQ_HEADER done (%u byte SPS/PPS captured)\n",
-					 hdr_size);
+					"encoder SEQ_HEADER done (%u byte SPS/PPS captured)\n",
+					hdr_size);
 			} else {
 				inst->seq_hdr_size = 0;
 				inst->seq_hdr_pending_out = false;
@@ -2503,9 +2502,9 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 	}
 
 	dev_dbg(core->dev,
-		 "recon pool: %u slots × (y=%u c=%u), total %u bytes at %pad\n",
-		 inst->dpb_count, y_size, c_size, total_size,
-		 &inst->dpb_y_dma_addr);
+		"recon pool: %u slots × (y=%u c=%u), total %u bytes at %pad\n",
+		inst->dpb_count, y_size, c_size, total_size,
+		&inst->dpb_y_dma_addr);
 
 	/* Publish sizes to SHM (same offsets as decoder uses) */
 	writel(y_size,
@@ -2565,7 +2564,7 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 		u32 base_rel;
 
 		inst->enc_work_vaddr = dma_alloc_coherent(core->dev, total,
-				&inst->enc_work_dma_addr, GFP_KERNEL);
+							  &inst->enc_work_dma_addr, GFP_KERNEL);
 		if (!inst->enc_work_vaddr) {
 			dev_err(core->dev,
 				"enc work-buffer alloc failed (%u bytes)\n", total);
@@ -2597,15 +2596,15 @@ int vidc_init_enc_buffers(struct vidc_inst *inst)
 		vidc_write(core, VIDC_REG_ENC_MB_INFO, 0);
 
 		dev_dbg(core->dev,
-			 "enc work bufs: %u B at %pad (mv=%u colz=%u md=%u pred=%u nbor=%u mbinfo=0)\n",
-			 total, &inst->enc_work_dma_addr,
-			 sz_mv, sz_colzero, sz_md, sz_pred, sz_nbor);
+			"enc work bufs: %u B at %pad (mv=%u colz=%u md=%u pred=%u nbor=%u mbinfo=0)\n",
+			total, &inst->enc_work_dma_addr,
+			sz_mv, sz_colzero, sz_md, sz_pred, sz_nbor);
 	}
 
 	inst->dpb_inited = true;
 	dev_dbg(core->dev,
-		 "VIDC encoder recon programmed: %u slots at %pad (latched by SEQ_HEADER)\n",
-		 inst->dpb_count, &inst->dpb_y_dma_addr);
+		"VIDC encoder recon programmed: %u slots at %pad (latched by SEQ_HEADER)\n",
+		inst->dpb_count, &inst->dpb_y_dma_addr);
 	return 0;
 
 err_free_work:
@@ -3143,7 +3142,7 @@ static int vidc_probe(struct platform_device *pdev)
 				core->fw_phys_base = r.start;
 				core->fw_phys_size = resource_size(&r);
 				dev_dbg(dev, "SMI firmware region: 0x%08x size 0x%zx\n",
-					 (u32)core->fw_phys_base, core->fw_phys_size);
+					(u32)core->fw_phys_base, core->fw_phys_size);
 			} else {
 				dev_err(dev, "failed to get SMI memory-region address\n");
 				of_node_put(mem_node);
@@ -3166,7 +3165,7 @@ static int vidc_probe(struct platform_device *pdev)
 			struct resource pr;
 
 			pool_node = of_parse_phandle(dev->of_node,
-						    "memory-region", 1);
+						     "memory-region", 1);
 			if (pool_node) {
 				if (of_address_to_resource(pool_node, 0, &pr) == 0) {
 					core->smipool_phys_base = pr.start;
@@ -3402,7 +3401,7 @@ static int vidc_runtime_resume(struct device *dev)
 
 	if (core->icc_path) {
 		dev_dbg(dev, "voting video-smi bw: avg=%u peak=%u kbps\n",
-			 core->icc_bw_avg, core->icc_bw_peak);
+			core->icc_bw_avg, core->icc_bw_peak);
 		ret = icc_set_bw(core->icc_path, core->icc_bw_avg, core->icc_bw_peak);
 		if (ret) {
 			dev_err(dev, "failed to set video-smi bandwidth: %d\n",
