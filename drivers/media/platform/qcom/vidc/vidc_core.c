@@ -77,6 +77,61 @@ static const struct vidc_soc_data vidc_msm8660_soc = {
 	.bw_peak	= VIDC_BW_PEAK,
 };
 
+/*
+ * The VIDC RISC fetches its firmware big-endian. Two firmware packagings exist
+ * in the wild and the driver supports both without a config/DT/firmware-package
+ * change: vendor and Yocto blobs are stored big-endian (loaded verbatim), while
+ * the webOS-extracted blob is stored little-endian and must be swab32'd per
+ * 32-bit word. Detect which from the image itself.
+ *
+ * The image opens with a run of zero padding followed by a small header
+ * constant as its first non-zero 32-bit word. Read native-endian, a
+ * big-endian-stored image carries that byte in the MSB lane, a
+ * little-endian-stored image in the LSB lane.
+ */
+static bool vidc_fw_needs_swab(const void *data, size_t size)
+{
+	const u32 *w = data;
+	size_t i, words = size / sizeof(*w);
+
+	for (i = 0; i < words; i++) {
+		if (!w[i])
+			continue;
+		if ((w[i] & 0x00ffffffu) == 0)	/* header in MSB: big-endian */
+			return false;
+		if ((w[i] & 0xffffff00u) == 0)	/* header in LSB: little-endian */
+			return true;
+		break;				/* unrecognised */
+	}
+	return false;				/* default: load verbatim */
+}
+
+/*
+ * Copy the firmware blob into the SMI window, byte-swapping per 32-bit word
+ * when the stored image is little-endian (core->fw_swab, see
+ * vidc_fw_needs_swab). The CPU cannot meaningfully read SMI back, so this is
+ * write-only.
+ */
+static void vidc_fw_copy_to_smi(struct vidc_core *core, void __iomem *dst,
+				const void *src, size_t size)
+{
+	const u32 *s = src;
+	size_t i, words = size / sizeof(*s);
+
+	if (!core->fw_swab) {
+		memcpy_toio(dst, src, size);
+		return;
+	}
+
+	for (i = 0; i < words; i++)
+		iowrite32(swab32(s[i]), dst + i * sizeof(*s));
+
+	/* Copy any non-word-multiple tail verbatim (none for the known blobs). */
+	if (size & 3)
+		memcpy_toio(dst + words * sizeof(*s),
+			    (const u8 *)src + words * sizeof(*s), size & 3);
+}
+
 static int vidc_clk_enable(struct vidc_core *core)
 {
 	int ret;
@@ -408,7 +463,8 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 		 * The VIDC RISC reads firmware big-endian and the blob is
 		 * stored in matching byte order, so copy it verbatim.
 		 */
-		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
+		vidc_fw_copy_to_smi(core, core->fw_vaddr, core->fw->data,
+				    core->fw_size);
 		memset_io(core->fw_vaddr + core->fw_size, 0,
 		       core->fw_alloc_size - core->fw_size);
 		/* Verify that CPU writes actually land in SMI SRAM (check a non-zero offset) */
@@ -428,6 +484,9 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 				u32 rb  = readl_relaxed(core->fw_vaddr + chk_off);
 				u32 exp = fw32[chk_off / 4];
 
+				/* Swabbed blobs are stored byte-reversed in SMI. */
+				if (core->fw_swab)
+					exp = swab32(exp);
 				pr_debug(
 				       "VIDC: fw recopy rb[0x%x]=0x%08x exp=0x%08x %s\n",
 				       chk_off, rb, exp,
@@ -1004,6 +1063,10 @@ int vidc_load_firmware(struct vidc_core *core)
 		goto err_release_fw;
 	}
 
+	core->fw_swab = vidc_fw_needs_swab(core->fw->data, core->fw->size);
+	dev_dbg(core->dev, "load_firmware: %s-endian blob (swab=%d)\n",
+		core->fw_swab ? "little" : "big", core->fw_swab);
+
 	/*
 	 * Place firmware + context pool + descriptor + shared-mem in SMI
 	 * (System Memory Interface SRAM at 0x38000000). The RISC is designed
@@ -1049,7 +1112,8 @@ int vidc_load_firmware(struct vidc_core *core)
 	 * firmware blob (qcom/vidc_1080p.fw, ABI 0x00121130) is stored in
 	 * matching byte order, so copy it verbatim into the SMI window.
 	 */
-	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw->size);
+	vidc_fw_copy_to_smi(core, core->fw_vaddr, core->fw->data,
+			    core->fw->size);
 
 	/* CPU reads from SMI return 0; readback is not meaningful. */
 	pr_debug("VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
@@ -1256,7 +1320,8 @@ int vidc_boot_firmware(struct vidc_core *core)
 	 * the image, identical to what vidc_load_firmware does on first
 	 * load. Desc buffer and SHM are zeroed for the same reason.
 	 */
-	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
+	vidc_fw_copy_to_smi(core, core->fw_vaddr, core->fw->data,
+			    core->fw_size);
 	/*
 	 * Zero everything after the firmware blob: alignment gap, context
 	 * pool, descriptor buffer, and SHM. The context pool in particular

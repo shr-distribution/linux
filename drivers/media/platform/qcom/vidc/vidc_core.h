@@ -541,6 +541,7 @@ struct vidc_core {
 	dma_addr_t fw_dma_addr;		/* 128KB-aligned phys for DRAM_BASE */
 	void __iomem *fw_vaddr;		/* ioremap() virtual address */
 	size_t fw_size;			/* firmware blob size */
+	bool fw_swab;			/* blob is little-endian, swab32 on load */
 	size_t fw_alloc_size;		/* total layout size in SMI */
 	/* Legacy fields — kept for iounmap reference tracking */
 	dma_addr_t fw_alloc_dma_addr;
