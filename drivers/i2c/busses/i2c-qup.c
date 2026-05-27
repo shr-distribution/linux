@@ -18,6 +18,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
@@ -283,6 +284,12 @@ struct qup_i2c_dev {
 	void (*read_rx_fifo)(struct qup_i2c_dev *qup);
 	/* function to write tags in tx fifo for i2c read transfer */
 	void (*write_rx_tags)(struct qup_i2c_dev *qup);
+
+	/* Generic GPIO-based bus recovery: opt-in via DT scl-gpios/sda-gpios
+	 * plus a "gpio" pinctrl state. Stays zero-cost when DT does not
+	 * provide those properties.
+	 */
+	struct i2c_bus_recovery_info	bri;
 };
 
 static irqreturn_t qup_i2c_interrupt(int irq, void *dev)
@@ -1921,6 +1928,24 @@ nodma:
 
 	strscpy(qup->adap.name, "QUP I2C adapter", sizeof(qup->adap.name));
 
+	/*
+	 * Optional GPIO bus recovery. If the board provides a pinctrl handle
+	 * (any platform DT description does), let the i2c core pick up
+	 * scl-gpios / sda-gpios and the "gpio" pinctrl state from DT and
+	 * wire i2c_generic_scl_recovery() automatically. Without pinctrl
+	 * we silently keep the original no-recovery behaviour.
+	 */
+	qup->bri.pinctrl = devm_pinctrl_get(qup->dev);
+	if (IS_ERR(qup->bri.pinctrl)) {
+		ret = PTR_ERR(qup->bri.pinctrl);
+		if (ret == -EPROBE_DEFER)
+			goto fail_runtime;
+		dev_dbg(qup->dev,
+			"no pinctrl; bus recovery unavailable (%d)\n", ret);
+	} else {
+		qup->adap.bus_recovery_info = &qup->bri;
+	}
+
 	pm_runtime_set_autosuspend_delay(qup->dev, MSEC_PER_SEC);
 	pm_runtime_use_autosuspend(qup->dev);
 	pm_runtime_set_active(qup->dev);
@@ -2018,7 +2043,17 @@ static struct platform_driver qup_i2c_driver = {
 	},
 };
 
-module_platform_driver(qup_i2c_driver);
+static int __init qup_i2c_driver_init(void)
+{
+	return platform_driver_register(&qup_i2c_driver);
+}
+subsys_initcall(qup_i2c_driver_init);
+
+static void __exit qup_i2c_driver_exit(void)
+{
+	platform_driver_unregister(&qup_i2c_driver);
+}
+module_exit(qup_i2c_driver_exit);
 
 MODULE_DESCRIPTION("Qualcomm QUP based I2C controller");
 MODULE_LICENSE("GPL v2");

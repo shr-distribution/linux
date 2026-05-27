@@ -28,6 +28,73 @@
 #include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/pinctrl/consumer.h>
+#include <linux/workqueue.h>
+#include <linux/mutex.h>
+#include <linux/ktime.h>
+#include <linux/moduleparam.h>
+
+/*
+ * Debug: trace BT (GSBI6, mapbase 0x16540000) UART TX bursts to detect
+ * inter-byte/wire gaps without a scope (Gemini 2026-05-25). Logs per burst:
+ * requested vs written bytes, feed time, on-wire floor, gap since previous
+ * burst. A SYNC_RSP fed in one burst (wrote==req) drains contiguously = no
+ * gap; a split burst (TX_READY dropped) = FIFO refill = potential wire gap.
+ * Enable: echo 1 > /sys/module/msm_serial/parameters/bt_tx_trace
+ */
+static bool bt_tx_trace;
+module_param(bt_tx_trace, bool, 0644);
+MODULE_PARM_DESC(bt_tx_trace, "Trace GSBI6 BT UART TX bursts for inter-byte gap detection");
+
+/*
+ * TouchPad BT TX diagnostics (no oscilloscope required). See
+ * reports/bt-trace/bt-bringup-summary-2026-05-27.md. These probe the
+ * analog/timing suspects for the "chip only-SYNCs, ignores our TX" blocker:
+ *
+ *  - bt_diag: dump the TLMM pad config (drive strength / pull / output-enable /
+ *    idle line level) for the BT UART pads gpio53-56 at port open, to diff the
+ *    *programmed* pad state against the known-good webOS setup (8 mA, no pull).
+ *  - bt_tx_pio_bursts / bt_tx_pio_underruns (read-only): count PIO TX bursts and
+ *    how many drained the TX FIFO mid-frame -> inter-byte WIRE GAPs at the pad
+ *    that do not show in a "bytes queued" trace.
+ *  - bt_diag_loopback (write 1): internal-loopback self-test (UARTDM MR2 bit 7),
+ *    transmits a BCSP SYNC-RSP payload and reads it back through the controller,
+ *    isolating "digital framing wrong" from "analog/pad wrong".
+ */
+static bool bt_diag;
+module_param(bt_diag, bool, 0644);
+MODULE_PARM_DESC(bt_diag, "BT UART: dump TLMM pad config (gpio53-56) at port open");
+
+static unsigned int bt_tx_pio_bursts;
+module_param(bt_tx_pio_bursts, uint, 0444);
+MODULE_PARM_DESC(bt_tx_pio_bursts, "BT UART: PIO TX burst count (read-only diag)");
+
+static unsigned int bt_tx_pio_underruns;
+module_param(bt_tx_pio_underruns, uint, 0444);
+MODULE_PARM_DESC(bt_tx_pio_underruns,
+	"BT UART: PIO TX bursts where TX_READY dropped mid-frame = potential wire gap (read-only diag)");
+
+/*
+ * bt_force_8e1: force even parity (8E1) on the BT UART, to test the
+ * "BCSP uses even parity" claim on-device. See msm_set_termios. Default off.
+ */
+static bool bt_force_8e1;
+module_param(bt_force_8e1, bool, 0644);
+MODULE_PARM_DESC(bt_force_8e1, "BT UART: force even parity 8E1 (diag; default 8N1)");
+
+/*
+ * bt_tx_bytegap_us: forced inter-byte gap experiment. When >0, the BT UART
+ * PIO TX sends one byte at a time, waits for the transmitter to fully drain
+ * (SR TX_EMPTY), then idles the line for this many microseconds before the
+ * next byte. This intentionally starves the UARTDM to put real idle gaps
+ * BETWEEN bytes on gpio53 -- the one thing a single gapless FIFO burst cannot
+ * produce. If the CSR chip suddenly answers, it relies on inter-byte timing.
+ * INVASIVE / slow (busy-waits with IRQs off); BT port only; default 0 = off.
+ */
+static unsigned int bt_tx_bytegap_us;
+module_param(bt_tx_bytegap_us, uint, 0644);
+MODULE_PARM_DESC(bt_tx_bytegap_us,
+	"BT UART: force N us idle gap between TX bytes on the wire (diag; 0=off)");
 #include <linux/wait.h>
 
 #define MSM_UART_MR1			0x0000
@@ -185,6 +252,30 @@ struct msm_port {
 	bool			break_detected;
 	struct msm_dma		tx_dma;
 	struct msm_dma		rx_dma;
+	/*
+	 * Optional startup pin-mux glitch (webOS btuart_pin_mux dance): briefly
+	 * flip the UART pins to a GPIO state and back at port-open, to wake a
+	 * power-gated peer UART RX (TouchPad CSR BlueCore BT). Gated on the DT
+	 * bool "qcom,startup-mux-glitch"; needs a "gpio" pinctrl state.
+	 */
+	struct pinctrl		*pinctrl;
+	struct pinctrl_state	*pinctrl_default;
+	struct pinctrl_state	*pinctrl_gpio;
+	/*
+	 * RX-safe wake glitch: flips ONLY TX(gpio53)+RFR/RTS(gpio56) — the lines
+	 * we drive toward the chip — leaving RX/CTS in UART mode so an inbound
+	 * frame is never clipped. Preferred over pinctrl_gpio for the BT wake.
+	 */
+	struct pinctrl_state	*pinctrl_gpio_txrts;
+	bool			startup_mux_glitch;
+	/*
+	 * TouchPad BT (H2): re-arm the wake glitch during BCSP link
+	 * establishment. bt_linkest is true from port-open until we leave the
+	 * 115200 link-est baud (see msm_set_termios) or shut down.
+	 */
+	struct delayed_work	bt_wake_work;
+	bool			bt_is_bt_uart;
+	bool			bt_linkest;
 };
 
 static inline struct msm_port *to_msm_port(struct uart_port *up)
@@ -246,6 +337,7 @@ static void msm_serial_set_mnd_regs(struct uart_port *port)
 }
 
 static void msm_handle_tx(struct uart_port *port);
+void msm_serial_bt_wake_glitch(void);	/* exported; called by hci_bcsp */
 static void msm_start_rx_dma(struct msm_port *msm_port);
 
 static void msm_stop_dma(struct uart_port *port, struct msm_dma *dma)
@@ -274,12 +366,13 @@ static void msm_stop_dma(struct uart_port *port, struct msm_dma *dma)
 	val &= ~dma->enable_bit;
 	msm_write(port, val, UARTDM_DMEN);
 
-	if (mapped) {
-		if (dma->dir == DMA_TO_DEVICE) {
-			dma_unmap_sg(dev, &dma->tx_sg, 1, dma->dir);
-			sg_init_table(&dma->tx_sg, 1);
-		} else
-			dma_unmap_single(dev, dma->rx.phys, mapped, dma->dir);
+	/*
+	 * RX uses a coherent buffer allocated once in msm_request_rx_dma(), so
+	 * there is nothing to unmap here -- only the streaming TX scatterlist.
+	 */
+	if (mapped && dma->dir == DMA_TO_DEVICE) {
+		dma_unmap_sg(dev, &dma->tx_sg, 1, dma->dir);
+		sg_init_table(&dma->tx_sg, 1);
 	}
 }
 
@@ -299,7 +392,8 @@ static void msm_release_dma(struct msm_port *msm_port)
 	if (dma->chan) {
 		msm_stop_dma(&msm_port->uart, dma);
 		dma_release_channel(dma->chan);
-		kfree(dma->rx.virt);
+		dma_free_coherent(msm_port->uart.dev, UARTDM_RX_SIZE,
+				  dma->rx.virt, dma->rx.phys);
 	}
 
 	memset(dma, 0, sizeof(*dma));
@@ -318,8 +412,10 @@ static void msm_request_tx_dma(struct msm_port *msm_port, resource_size_t base)
 
 	/* allocate DMA resources, if available */
 	dma->chan = dma_request_chan(dev, "tx");
-	if (IS_ERR(dma->chan))
+	if (IS_ERR(dma->chan)) {
+		dev_err(dev, "Failed to get TX DMA channel: %ld\n", PTR_ERR(dma->chan));
 		goto no_tx;
+	}
 
 	of_property_read_u32(dev->of_node, "qcom,tx-crci", &crci);
 
@@ -327,6 +423,7 @@ static void msm_request_tx_dma(struct msm_port *msm_port, resource_size_t base)
 	conf.direction = DMA_MEM_TO_DEV;
 	conf.device_fc = true;
 	conf.dst_addr = base + UARTDM_TF;
+	conf.dst_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
 	conf.dst_maxburst = UARTDM_BURST_SIZE;
 	if (crci) {
 		conf.peripheral_config = &periph_conf;
@@ -338,6 +435,7 @@ static void msm_request_tx_dma(struct msm_port *msm_port, resource_size_t base)
 	if (ret)
 		goto rel_tx;
 
+	dev_info(dev, "TX DMA channel acquired (CRCI %u)\n", crci);
 	dma->dir = DMA_TO_DEVICE;
 
 	if (msm_port->is_uartdm < UARTDM_1P4)
@@ -366,12 +464,26 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 
 	/* allocate DMA resources, if available */
 	dma->chan = dma_request_chan(dev, "rx");
-	if (IS_ERR(dma->chan))
+	if (IS_ERR(dma->chan)) {
+		dev_err(dev, "Failed to get RX DMA channel: %ld\n", PTR_ERR(dma->chan));
 		goto no_rx;
+	}
 
 	of_property_read_u32(dev->of_node, "qcom,rx-crci", &crci);
 
-	dma->rx.virt = kzalloc(UARTDM_RX_SIZE, GFP_KERNEL);
+	/*
+	 * Use a coherent (uncached) RX buffer, like the legacy webOS hsuart
+	 * driver. With a streaming kzalloc buffer + dma_map/unmap_single, the
+	 * cache invalidate can win the race against the ADM3 graceful-flush
+	 * write retiring to DRAM: the CPU then reads back the original zeros
+	 * while UARTDM_RX_TOTAL_SNAP (an independent HW counter) reports the
+	 * correct byte count -- the "correct count, zero data" symptom seen on
+	 * the TouchPad BT (GSBI6) RX. A coherent buffer has no cache line to
+	 * race, so ADM writes are always visible, and its phys address is
+	 * stable for the channel's lifetime (no per-cycle map/unmap).
+	 */
+	dma->rx.virt = dma_alloc_coherent(dev, UARTDM_RX_SIZE, &dma->rx.phys,
+					  GFP_KERNEL);
 	if (!dma->rx.virt)
 		goto rel_rx;
 
@@ -379,6 +491,7 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 	conf.direction = DMA_DEV_TO_MEM;
 	conf.device_fc = true;
 	conf.src_addr = base + UARTDM_RF;
+	conf.src_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
 	conf.src_maxburst = UARTDM_BURST_SIZE;
 	if (crci) {
 		conf.peripheral_config = &periph_conf;
@@ -390,6 +503,7 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 	if (ret)
 		goto err;
 
+	dev_info(dev, "RX DMA channel acquired (CRCI %u)\n", crci);
 	dma->dir = DMA_FROM_DEVICE;
 
 	if (msm_port->is_uartdm < UARTDM_1P4)
@@ -399,7 +513,7 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 
 	return;
 err:
-	kfree(dma->rx.virt);
+	dma_free_coherent(dev, UARTDM_RX_SIZE, dma->rx.virt, dma->rx.phys);
 rel_rx:
 	dma_release_channel(dma->chan);
 no_rx:
@@ -588,7 +702,11 @@ static void msm_complete_rx_dma(void *args)
 
 	dma->rx.count = 0;
 
-	dma_unmap_single(port->dev, dma->rx.phys, UARTDM_RX_SIZE, dma->dir);
+	/*
+	 * Coherent buffer: no unmap needed. Order the CPU reads after the ADM
+	 * completion IRQ so the flushed RX bytes are guaranteed visible.
+	 */
+	dma_rmb();
 
 	for (i = 0; i < count; i++) {
 		char flag = TTY_NORMAL;
@@ -630,17 +748,12 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	if (!dma->chan)
 		return;
 
-	dma->rx.phys = dma_map_single(uart->dev, dma->rx.virt,
-				   UARTDM_RX_SIZE, dma->dir);
-	ret = dma_mapping_error(uart->dev, dma->rx.phys);
-	if (ret)
-		goto sw_mode;
-
+	/* Coherent RX buffer: phys is stable, no per-cycle mapping needed. */
 	dma->desc = dmaengine_prep_slave_single(dma->chan, dma->rx.phys,
 						UARTDM_RX_SIZE, DMA_DEV_TO_MEM,
 						DMA_PREP_INTERRUPT);
 	if (!dma->desc)
-		goto unmap;
+		goto sw_mode;
 
 	dma->desc->callback = msm_complete_rx_dma;
 	dma->desc->callback_param = msm_port;
@@ -648,7 +761,7 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	dma->cookie = dmaengine_submit(dma->desc);
 	ret = dma_submit_error(dma->cookie);
 	if (ret)
-		goto unmap;
+		goto sw_mode;
 	/*
 	 * Using DMA for FIFO off-load, no need for "Rx FIFO over
 	 * watermark" or "stale" interrupts, disable them
@@ -683,8 +796,6 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 		msm_write(uart, val, UARTDM_DMEN);
 
 	return;
-unmap:
-	dma_unmap_single(uart->dev, dma->rx.phys, UARTDM_RX_SIZE, dma->dir);
 
 sw_mode:
 	/*
@@ -852,11 +963,44 @@ static void msm_handle_tx_pio(struct uart_port *port, unsigned int tx_count)
 	unsigned int num_chars;
 	unsigned int tf_pointer = 0;
 	void __iomem *tf;
+	/* BT TX gap trace (bt_tx_trace param + GSBI6): detect inter-byte gaps. */
+	bool trace = bt_tx_trace && port->mapbase == 0x16540000;
+	ktime_t t0 = trace ? ktime_get() : 0;
+	u32 sr_enter = trace ? msm_read(port, MSM_UART_SR) : 0;
 
 	if (msm_port->is_uartdm)
 		tf = port->membase + UARTDM_TF;
 	else
 		tf = port->membase + MSM_UART_TF;
+
+	/*
+	 * Forced inter-byte gap experiment (bt_tx_bytegap_us, BT port only): send
+	 * one byte per UARTDM transfer, wait for the transmitter to fully drain
+	 * (SR TX_EMPTY), then idle the line for the configured gap before the next
+	 * byte. Produces real gaps BETWEEN bytes on gpio53 that a single gapless
+	 * FIFO burst never can. Busy-waits with IRQs off -> diag only.
+	 */
+	if (bt_tx_bytegap_us && port->mapbase == 0x16540000 && msm_port->is_uartdm) {
+		while (tf_pointer < tx_count) {
+			unsigned char buf[4] = { 0 };
+			int g;
+
+			if (uart_fifo_out(port, buf, 1) != 1)
+				break;
+			msm_reset_dm_count(port, 1);
+			for (g = 0; g < 50000 && !(msm_read(port, MSM_UART_SR) &
+						   MSM_UART_SR_TX_READY); g++)
+				cpu_relax();
+			iowrite32_rep(tf, buf, 1);
+			tf_pointer++;
+			for (g = 0; g < 100000 && !(msm_read(port, MSM_UART_SR) &
+						    MSM_UART_SR_TX_EMPTY); g++)
+				cpu_relax();
+			udelay(bt_tx_bytegap_us);
+		}
+		bt_tx_pio_bursts++;
+		goto tx_done;
+	}
 
 	if (tx_count && msm_port->is_uartdm)
 		msm_reset_dm_count(port, tx_count);
@@ -878,6 +1022,38 @@ static void msm_handle_tx_pio(struct uart_port *port, unsigned int tx_count)
 		tf_pointer += num_chars;
 	}
 
+	/*
+	 * BT UART PIO underrun diag: a mid-frame TX_READY drop (tf_pointer <
+	 * tx_count above) means the TX FIFO emptied before the burst finished,
+	 * so the shift register can idle the line between bytes = an inter-byte
+	 * WIRE GAP the CSR BCSP receiver may reject. Counted unconditionally for
+	 * GSBI6; read via /sys/module/msm_serial/parameters/bt_tx_pio_*.
+	 */
+	if (port->mapbase == 0x16540000 && tx_count) {
+		bt_tx_pio_bursts++;
+		if (tf_pointer < tx_count)
+			bt_tx_pio_underruns++;
+	}
+
+	if (trace) {
+		static ktime_t prev_end;
+		ktime_t t1 = ktime_get();
+		s64 feed_us = ktime_us_delta(t1, t0);
+		s64 gap_us = prev_end ? ktime_us_delta(t0, prev_end) : -1;
+		/* on-wire time floor for this burst: bytes * 10 bits / baud */
+		unsigned int floor_us =
+			tx_count ? (tx_count * 10u * 1000000u) / 115200u : 0;
+		dev_info(port->dev,
+			 "BTTX: req=%u wrote=%u feed=%lldus floor=%uus gap_since_prev=%lldus SR_in=0x%x SR_out=0x%x%s\n",
+			 tx_count, tf_pointer, feed_us, floor_us, gap_us,
+			 sr_enter, msm_read(port, MSM_UART_SR),
+			 (tf_pointer < tx_count) ?
+			 " [TX_READY dropped mid-frame -> FIFO refill needed -> potential WIRE GAP]" :
+			 " [whole burst fed -> drains contiguously, no intra-burst gap]");
+		prev_end = t1;
+	}
+
+tx_done:
 	/* disable tx interrupts if nothing more to send */
 	if (kfifo_is_empty(&tport->xmit_fifo))
 		msm_stop_tx(port);
@@ -1060,7 +1236,7 @@ msm_find_best_baud(struct uart_port *port, unsigned int baud,
 		   unsigned long *rate)
 {
 	struct msm_port *msm_port = to_msm_port(port);
-	unsigned int divisor, result;
+	unsigned int divisor, result, clk_mult = 1;
 	unsigned long target, old, best_rate = 0, diff, best_diff = ULONG_MAX;
 	const struct msm_baud_map *entry, *end, *best;
 	static const struct msm_baud_map table[] = {
@@ -1082,8 +1258,21 @@ msm_find_best_baud(struct uart_port *port, unsigned int baud,
 		{ 1536, 0x00,  1 },
 	};
 
+	/*
+	 * GSBI6 (phys 0x16540000) is the TouchPad BT (CSR BlueCore) UART. The
+	 * CSR chip decodes webOS's TX but not ours despite identical MR1/MR2/
+	 * 8N1/115200. The one remaining config difference: webOS clocks this
+	 * UART from a higher fundamental rate and divides via CSR (fund_clk
+	 * 7372800 / CSR DIV_4 for 115200) instead of fund_clk = 16*baud / CSR
+	 * DIV_1. Mirror that here for low baud on the BT UART: target a 4x
+	 * higher clock so the selector picks a CSR /4 divider from a cleaner
+	 * higher source clock (mainline gcc-msm8660 ftbl supports 7372800).
+	 */
+	if (port->mapbase == 0x16540000 && baud && baud <= 460800)
+		clk_mult = 4;
+
 	best = table; /* Default to smallest divider */
-	target = clk_round_rate(msm_port->clk, 16 * baud);
+	target = clk_round_rate(msm_port->clk, clk_mult * 16 * baud);
 	divisor = DIV_ROUND_CLOSEST(target, 16 * baud);
 
 	end = table + ARRAY_SIZE(table);
@@ -1164,8 +1353,16 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	watermark = (port->fifosize * 3) / 4;
 	msm_write(port, watermark, MSM_UART_RFWR);
 
-	/* set TX watermark */
-	msm_write(port, 10, MSM_UART_TFWR);
+	/*
+	 * Set TX watermark (level at which the TX-FIFO "need more data" IRQ
+	 * fires). Mainline default is 10 = refill late = little headroom =
+	 * prone to TX-FIFO underrun -> inter-byte gaps when the ISR is slow.
+	 * The legacy webOS hsuart uses 32 on the BT UART (msm_uart_dm.c:1641)
+	 * = refill early = no underrun. The CSR BlueCore chip's RX flushes on
+	 * a mid-frame gap, so match webOS=32 on GSBI6 (BT) to keep our SYNC_RSP
+	 * gap-free. Other UARTs keep 10 (work fine).
+	 */
+	msm_write(port, (port->mapbase == 0x16540000) ? 32 : 10, MSM_UART_TFWR);
 
 	msm_write(port, MSM_UART_CR_CMD_PROTECTION_EN, MSM_UART_CR);
 	msm_reset(port);
@@ -1198,6 +1395,252 @@ static void msm_init_clock(struct uart_port *port)
 	msm_serial_set_mnd_regs(port);
 }
 
+/*
+ * TouchPad Bluetooth bring-up (H2). The CSR BlueCore's UART RX is power-gated
+ * and the legacy webOS driver re-ran a pin-mux wake "glitch" right before every
+ * BCSP link-establishment TX. We approximate that by re-running the glitch
+ * periodically (only while the TX line is idle, so a frame in flight is never
+ * corrupted) while the BT UART sits at the 115200 link-est baud. 0 disables.
+ * Tune on-device against the chip's RX re-gate timeout.
+ */
+/*
+ * Default OFF: the periodic (asynchronous) glitch was found to clip inbound
+ * frames on the TouchPad. The faithful wake is now done synchronously right
+ * before each TX from the BCSP driver via msm_serial_bt_wake_glitch(). Set
+ * >0 only to also re-arm the (now RX-safe, TX/RTS-only) glitch periodically.
+ */
+static int bt_wake_period_ms;	/* 0 = off */
+module_param(bt_wake_period_ms, int, 0644);
+MODULE_PARM_DESC(bt_wake_period_ms,
+	"TouchPad BT: re-arm UART pin-mux wake glitch every N ms during link-est (0=off, default 0)");
+
+#define MSM_BT_UART_MAPBASE	0x16540000
+
+/*
+ * The single BT UART port + a lock to serialize wake glitches (the synchronous
+ * pre-TX glitch from the BCSP driver, the periodic work, and startup can all
+ * race on the shared pinctrl). Set in probe for mapbase 0x16540000.
+ */
+static struct uart_port *msm_bt_wake_port;
+static DEFINE_MUTEX(msm_bt_wake_lock);
+
+/* ---- TouchPad BT TX diagnostics (no scope required) ---------------------- */
+
+/*
+ * MSM8660 TLMM pad config, used to diff the BT UART pads (TX gpio53, RX gpio54,
+ * CTS gpio55, RFR/RTS gpio56) against the known-good webOS setup WITHOUT a
+ * scope. ctl_reg encodes mux/drive/pull/output-enable; io_reg holds the live
+ * IN/OUT line level (idle polarity). Register layout + bit positions are from
+ * drivers/pinctrl/qcom/pinctrl-msm8660.c (ctl=0x1000+0x10*id, io=ctl+4;
+ * mux@2, drv@6, pull@0, oe@9; io in@0, out@1). TLMM base = phys 0x800000.
+ */
+#define MSM_TLMM_PHYS		0x800000
+#define MSM_TLMM_GPIO_CTL(n)	(0x1000 + 0x10 * (n))
+
+static void msm_bt_diag_dump_pads(struct uart_port *port, const char *when)
+{
+	static const struct { int gpio; const char *name; } pads[] = {
+		{ 53, "TX" }, { 54, "RX" }, { 55, "CTS" }, { 56, "RFR/RTS" },
+	};
+	static const unsigned int drv_ma[8] = { 2, 4, 6, 8, 10, 12, 14, 16 };
+	static const char * const pull_s[4] = {
+		"no-pull", "pull-down", "keeper", "pull-up"
+	};
+	void __iomem *tlmm;
+	int i;
+
+	/* Map a small window covering gpio53..56 ctl/io (4 pins * 0x10). */
+	tlmm = ioremap(MSM_TLMM_PHYS + MSM_TLMM_GPIO_CTL(53), 0x40);
+	if (!tlmm) {
+		dev_warn(port->dev, "BT-DIAG: TLMM ioremap failed\n");
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(pads); i++) {
+		unsigned int off = MSM_TLMM_GPIO_CTL(pads[i].gpio) -
+				   MSM_TLMM_GPIO_CTL(53);
+		u32 ctl = readl(tlmm + off);
+		u32 io  = readl(tlmm + off + 4);
+
+		dev_info(port->dev,
+			 "BT-DIAG[%s] gpio%d %-7s func=%u drive=%umA %s oe=%u | idle line in=%u out=%u (ctl=0x%08x io=0x%08x)\n",
+			 when, pads[i].gpio, pads[i].name,
+			 (ctl >> 2) & 7, drv_ma[(ctl >> 6) & 7], pull_s[ctl & 3],
+			 (ctl >> 9) & 1, io & 1, (io >> 1) & 1, ctl, io);
+	}
+	iounmap(tlmm);
+}
+
+/*
+ * Internal-loopback self-test (UARTDM MR2 LOOP_MODE = BIT(7), confirmed against
+ * MSM8660 msm_serial_hs_hwreg.h). Routes TX->RX inside the controller, sends a
+ * BCSP SYNC-RSP payload, and reads it back. A clean readback proves the digital
+ * framing/divisor/start-stop path is internally consistent, isolating the
+ * remaining suspect to the pad/analog (or the chip RX being gated). This
+ * BYPASSES the gpio pad, so it does NOT validate the wire itself.
+ *
+ * INVASIVE: masks IRQs and resets TX/RX, which tears down any armed RX DMA.
+ * Run as a one-shot check (BT interface up so clocks are on), then re-open the
+ * BT interface. Trigger: echo 1 > /sys/module/msm_serial/parameters/bt_diag_loopback
+ */
+static int msm_bt_diag_loopback_run(void)
+{
+	struct uart_port *port = READ_ONCE(msm_bt_wake_port);
+	static const u8 pat[4] = { 0xac, 0xaf, 0xef, 0xee }; /* BCSP SYNC-RSP */
+	struct msm_port *msm_port;
+	u8 got[4] = { 0 };
+	u32 save_mr1, save_mr2, save_imr, sr, err_sr = 0;
+	unsigned long flags;
+	int i, n = 0, ret;
+
+	if (!port)
+		return -ENODEV;
+	msm_port = to_msm_port(port);
+	if (!msm_port->is_uartdm)
+		return -EOPNOTSUPP;
+
+	msm_bt_diag_dump_pads(port, "loopback-pre");
+
+	uart_port_lock_irqsave(port, &flags);
+
+	save_imr = msm_port->imr;
+	save_mr1 = msm_read(port, MSM_UART_MR1);
+	save_mr2 = msm_read(port, MSM_UART_MR2);
+
+	/* Mask all UART IRQs so the normal (serdev) RX path can't eat our bytes. */
+	msm_write(port, 0, MSM_UART_IMR);
+
+	msm_write(port, MSM_UART_CR_CMD_RESET_RX, MSM_UART_CR);
+	msm_write(port, MSM_UART_CR_CMD_RESET_TX, MSM_UART_CR);
+	msm_write(port, MSM_UART_CR_CMD_RESET_ERR, MSM_UART_CR);
+
+	/* Enable internal loopback. */
+	msm_write(port, save_mr2 | 0x80, MSM_UART_MR2);
+	msm_write(port, MSM_UART_CR_TX_ENABLE | MSM_UART_CR_RX_ENABLE,
+		  MSM_UART_CR);
+
+	/* UARTDM needs the TX char count programmed before the TF writes. */
+	msm_reset_dm_count(port, sizeof(pat));
+	for (i = 0; i < 20000 &&
+		    !(msm_read(port, MSM_UART_SR) & MSM_UART_SR_TX_READY); i++)
+		cpu_relax();
+	iowrite32_rep(port->membase + UARTDM_TF, pat, 1);
+
+	/* Poll the RX FIFO for the looped-back bytes (bounded). */
+	for (i = 0; i < 20000 && n < (int)sizeof(pat); i++) {
+		sr = msm_read(port, MSM_UART_SR);
+		err_sr |= sr & (MSM_UART_SR_PAR_FRAME_ERR | MSM_UART_SR_OVERRUN);
+		if (sr & MSM_UART_SR_RX_READY) {
+			u32 w = msm_read(port, UARTDM_RF);
+			int j;
+
+			for (j = 0; j < 4 && n < (int)sizeof(pat); j++)
+				got[n++] = (w >> (8 * j)) & 0xff;
+		}
+		cpu_relax();
+	}
+
+	/* Restore: disable loopback, reset, re-enable, unmask IRQs. */
+	msm_write(port, MSM_UART_CR_CMD_RESET_RX, MSM_UART_CR);
+	msm_write(port, MSM_UART_CR_CMD_RESET_TX, MSM_UART_CR);
+	msm_write(port, save_mr2, MSM_UART_MR2);
+	msm_write(port, save_mr1, MSM_UART_MR1);
+	msm_write(port, MSM_UART_CR_TX_ENABLE | MSM_UART_CR_RX_ENABLE,
+		  MSM_UART_CR);
+	msm_port->imr = save_imr;
+	msm_write(port, save_imr, MSM_UART_IMR);
+
+	uart_port_unlock_irqrestore(port, flags);
+
+	ret = (n == (int)sizeof(pat) && !memcmp(pat, got, sizeof(pat)) &&
+	       !err_sr) ? 0 : -EIO;
+
+	dev_info(port->dev,
+		 "BT-DIAG loopback: sent %zu got %d [%*ph] err_sr=0x%x -> %s\n",
+		 sizeof(pat), n, n, got, err_sr,
+		 ret ? "MISMATCH/FRAMING (digital path suspect)" :
+		       "OK (controller TX->RX digital path clean -> suspect pad/analog or chip RX)");
+	dev_info(port->dev,
+		 "BT-DIAG loopback was invasive (RX reset) -> re-open the BT interface\n");
+	return ret;
+}
+
+static int msm_bt_diag_loopback_set(const char *val,
+				    const struct kernel_param *kp)
+{
+	bool run;
+	int ret = kstrtobool(val, &run);
+
+	if (ret)
+		return ret;
+	if (run)
+		return msm_bt_diag_loopback_run();
+	return 0;
+}
+
+static const struct kernel_param_ops bt_diag_loopback_ops = {
+	.set = msm_bt_diag_loopback_set,
+};
+module_param_cb(bt_diag_loopback, &bt_diag_loopback_ops, NULL, 0220);
+MODULE_PARM_DESC(bt_diag_loopback,
+	"BT UART: write 1 to run internal-loopback TX->RX self-test (invasive; re-open BT after)");
+
+/*
+ * Flip the chip-facing UART pins (TX gpio53 + RFR/RTS gpio56) to GPIO-high and
+ * back, to wake the power-gated CSR BlueCore UART RX — the webOS btuart_pin_mux
+ * off->on dance. Uses the RX-safe "gpio-txrts" state when present so an inbound
+ * frame is never clipped, falling back to the full "gpio" state. Sleeps; call
+ * from process context only.
+ */
+static void msm_bt_wake_glitch(struct uart_port *port)
+{
+	struct msm_port *msm_port = to_msm_port(port);
+	struct pinctrl_state *gpio;
+
+	if (!msm_port->startup_mux_glitch || !msm_port->pinctrl)
+		return;
+
+	gpio = msm_port->pinctrl_gpio_txrts ?: msm_port->pinctrl_gpio;
+
+	mutex_lock(&msm_bt_wake_lock);
+	pinctrl_select_state(msm_port->pinctrl, gpio);
+	usleep_range(500, 1000);
+	pinctrl_select_state(msm_port->pinctrl, msm_port->pinctrl_default);
+	usleep_range(500, 1000);
+	mutex_unlock(&msm_bt_wake_lock);
+}
+
+/*
+ * Exported wake glitch for the BT UART, callable by the BCSP serdev driver
+ * (hci_bcsp) synchronously right before a link-establishment TX. No-op until
+ * the BT port has probed. Process context only (it sleeps).
+ */
+void msm_serial_bt_wake_glitch(void)
+{
+	struct uart_port *port = READ_ONCE(msm_bt_wake_port);
+
+	if (port)
+		msm_bt_wake_glitch(port);
+}
+EXPORT_SYMBOL_GPL(msm_serial_bt_wake_glitch);
+
+static void msm_bt_wake_work(struct work_struct *w)
+{
+	struct msm_port *msm_port =
+		container_of(to_delayed_work(w), struct msm_port, bt_wake_work);
+	struct uart_port *port = &msm_port->uart;
+
+	if (!msm_port->bt_linkest || bt_wake_period_ms <= 0)
+		return;
+
+	/* Only glitch when TX is idle, so we never corrupt a frame in flight. */
+	if (msm_read(port, MSM_UART_SR) & MSM_UART_SR_TX_EMPTY)
+		msm_bt_wake_glitch(port);
+
+	schedule_delayed_work(&msm_port->bt_wake_work,
+			      msecs_to_jiffies(bt_wake_period_ms));
+}
+
 static int msm_startup(struct uart_port *port)
 {
 	struct msm_port *msm_port = to_msm_port(port);
@@ -1208,6 +1651,44 @@ static int msm_startup(struct uart_port *port)
 		 "msm_serial%d", port->line);
 
 	msm_init_clock(port);
+
+	/*
+	 * webOS btuart_pin_mux "dance": briefly flip the UART pins to a GPIO
+	 * state (TX/RTS driven high, 2 mA) and back to the UART function, once
+	 * at port-open before any TX. On the TouchPad this is what wakes the
+	 * CSR BlueCore BT chip's power-gated UART RX so it will accept our
+	 * (byte-perfect) SYNC_RSP. No-op unless qcom,startup-mux-glitch + a
+	 * "gpio" pinctrl state are present in DT.
+	 */
+	if (msm_port->startup_mux_glitch && msm_port->pinctrl) {
+		msm_bt_wake_glitch(port);
+		dev_info(port->dev, "startup pin-mux glitch applied (BT wake)\n");
+
+		/*
+		 * Keep re-arming the wake glitch through BCSP link establishment
+		 * (H2). Cleared when we switch to the operational baud (>115200)
+		 * in msm_set_termios, or at shutdown.
+		 */
+		if (msm_port->bt_is_bt_uart && bt_wake_period_ms > 0) {
+			msm_port->bt_linkest = true;
+			schedule_delayed_work(&msm_port->bt_wake_work,
+					      msecs_to_jiffies(bt_wake_period_ms));
+		}
+	}
+
+	/* BT diag: dump the BT UART pad config to diff against webOS (8 mA, no pull). */
+	if (msm_port->bt_is_bt_uart && bt_diag) {
+		msm_bt_diag_dump_pads(port, "startup");
+		/*
+		 * Ensure the IrDA encoder is OFF. UARTDM IrDA would pulse the
+		 * line at 3/16 bit-width instead of standard NRZ levels; internal
+		 * loopback would still pass (RX decodes it) but the CSR chip on
+		 * the wire would see garbage. MSM_UART_IRDA (0x38) is write-only
+		 * (reads return RX_TOTAL_SNAP), so enforce 0 rather than read-check.
+		 */
+		msm_write(port, 0, MSM_UART_IRDA);
+		dev_info(port->dev, "BT-DIAG: IRDA encoder forced off (NRZ levels)\n");
+	}
 
 	if (likely(port->fifosize > 12))
 		rfr_level = port->fifosize - 12;
@@ -1255,6 +1736,10 @@ static void msm_shutdown(struct uart_port *port)
 {
 	struct msm_port *msm_port = to_msm_port(port);
 
+	/* TouchPad BT (H2): stop the link-est wake glitch (process context). */
+	msm_port->bt_linkest = false;
+	cancel_delayed_work_sync(&msm_port->bt_wake_work);
+
 	msm_port->imr = 0;
 	msm_write(port, 0, MSM_UART_IMR); /* disable interrupts */
 
@@ -1286,6 +1771,16 @@ static void msm_set_termios(struct uart_port *port, struct ktermios *termios,
 	if (tty_termios_baud_rate(termios))
 		tty_termios_encode_baud_rate(termios, baud, baud);
 
+	/*
+	 * TouchPad BT (H2): once we leave the 115200 link-est baud the BCSP
+	 * link is up, so stop re-arming the wake glitch. cancel_delayed_work()
+	 * (async) is safe under the port lock held here.
+	 */
+	if (msm_port->bt_is_bt_uart && baud > 115200 && msm_port->bt_linkest) {
+		msm_port->bt_linkest = false;
+		cancel_delayed_work(&msm_port->bt_wake_work);
+	}
+
 	/* calculate parity */
 	mr = msm_read(port, MSM_UART_MR2);
 	mr &= ~MSM_UART_MR2_PARITY_MODE;
@@ -1296,6 +1791,23 @@ static void msm_set_termios(struct uart_port *port, struct ktermios *termios,
 			mr |= MSM_UART_MR2_PARITY_MODE_SPACE;
 		else
 			mr |= MSM_UART_MR2_PARITY_MODE_EVEN;
+	}
+
+	/*
+	 * BT diag (bt_force_8e1): force even parity on the BT UART regardless of
+	 * the requested termios, to test the HP "BCSP uses 8E1" claim on-device.
+	 * Our extracted PSKEY uartConfigBcsp=0x082e DOES set bit2 (even parity) —
+	 * but that applies only to the post-warm-reset 3.6864M steady-state link;
+	 * the 115200 ROM-default link-establishment phase is 8N1 (the chip SYNCs
+	 * to us cleanly at 8N1, which is impossible if it required parity we omit).
+	 * Expect forcing 8E1 here to LOSE the chip's SYNC (RX parity/framing
+	 * errors) -> a live on-device demonstration that LE is 8N1, not 8E1.
+	 */
+	if (msm_port->bt_is_bt_uart && bt_force_8e1) {
+		mr &= ~MSM_UART_MR2_PARITY_MODE;
+		mr |= MSM_UART_MR2_PARITY_MODE_EVEN;
+		dev_info(port->dev,
+			 "BT-DIAG: forcing EVEN parity (8E1) on BT UART (diag)\n");
 	}
 
 	/* calculate bits per char */
@@ -1857,6 +2369,43 @@ static int msm_serial_probe(struct platform_device *pdev)
 		return -ENXIO;
 	port->irq = irq;
 	port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_MSM_CONSOLE);
+
+	/*
+	 * Optional webOS-style startup pin-mux glitch (BT wake). Look up an
+	 * explicit pinctrl handle with "default" and "gpio" states; the core
+	 * already applies "default" at probe, this handle is only used to
+	 * briefly select "gpio" and back in msm_startup(). All optional.
+	 */
+	msm_port->startup_mux_glitch =
+		of_property_read_bool(pdev->dev.of_node, "qcom,startup-mux-glitch");
+	if (msm_port->startup_mux_glitch) {
+		msm_port->pinctrl = devm_pinctrl_get(&pdev->dev);
+		if (IS_ERR(msm_port->pinctrl)) {
+			msm_port->pinctrl = NULL;
+		} else {
+			msm_port->pinctrl_default =
+				pinctrl_lookup_state(msm_port->pinctrl, "default");
+			msm_port->pinctrl_gpio =
+				pinctrl_lookup_state(msm_port->pinctrl, "gpio");
+			if (IS_ERR(msm_port->pinctrl_default) ||
+			    IS_ERR(msm_port->pinctrl_gpio)) {
+				dev_warn(&pdev->dev,
+					 "startup-mux-glitch: missing default/gpio pinctrl state, disabled\n");
+				msm_port->startup_mux_glitch = false;
+			}
+			/* RX-safe TX/RTS-only glitch state (optional). */
+			msm_port->pinctrl_gpio_txrts =
+				pinctrl_lookup_state(msm_port->pinctrl, "gpio-txrts");
+			if (IS_ERR(msm_port->pinctrl_gpio_txrts))
+				msm_port->pinctrl_gpio_txrts = NULL;
+		}
+	}
+
+	/* TouchPad BT (H2): periodic wake-glitch re-arm during link establishment. */
+	INIT_DELAYED_WORK(&msm_port->bt_wake_work, msm_bt_wake_work);
+	msm_port->bt_is_bt_uart = (port->mapbase == MSM_BT_UART_MAPBASE);
+	if (msm_port->bt_is_bt_uart)
+		WRITE_ONCE(msm_bt_wake_port, port);
 
 	platform_set_drvdata(pdev, port);
 

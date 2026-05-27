@@ -379,7 +379,7 @@ static void qcom_smd_signal_channel(struct qcom_smd_channel *channel)
 		 */
 		mbox_send_message(edge->mbox_chan, NULL);
 		mbox_client_txdone(edge->mbox_chan, 0);
-	} else {
+	} else if (edge->ipc_regmap) {
 		regmap_write(edge->ipc_regmap, edge->ipc_offset, BIT(edge->ipc_bit));
 	}
 }
@@ -828,6 +828,46 @@ static int qcom_smd_channel_open(struct qcom_smd_channel *channel,
 		return -ENOMEM;
 
 	qcom_smd_channel_set_callback(channel, cb);
+
+	/*
+	 * For LPASS channels on MSM8660/APQ8060, follow webOS state sequence:
+	 * 1. APPS sets state to OPENING
+	 * 2. Q6 sees OPENING, sets its state to OPENING
+	 * 3. APPS sees Q6 OPENING, sets state to OPENED
+	 * 4. Q6 sees OPENED, sets its state to OPENED
+	 *
+	 * Note: Q6 may not respond to state changes via SMD. In webOS the
+	 * handshake works via SMSM/SMD irq handler. We set OPENED regardless
+	 * to allow data transfer - Q6 appears to accept data even without
+	 * proper state handshake.
+	 */
+	if (edge->name && !strcmp(edge->name, "lpass")) {
+		/*
+		 * LPASS on MSM8660/APQ8060: Follow webOS state sequence.
+		 * Set OPENING first, wait briefly, then set OPENED regardless
+		 * of Q6 response. The Q6 firmware may not respond to state
+		 * changes, but accepts data in OPENED state.
+		 */
+		qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENING);
+
+		/* Wait briefly for Q6 to respond - may not happen */
+		wait_event_interruptible_timeout(channel->state_change_event,
+				channel->remote_state == SMD_CHANNEL_OPENING ||
+				channel->remote_state == SMD_CHANNEL_OPENED,
+				HZ);
+
+		/* Set OPENED regardless of Q6 response */
+		qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENED);
+
+		/* Brief wait for Q6 to enter OPENED */
+		wait_event_interruptible_timeout(channel->state_change_event,
+				channel->remote_state == SMD_CHANNEL_OPENED,
+				HZ / 2);
+
+		/* Return success regardless - let APR handle failures */
+		return 0;
+	}
+
 	qcom_smd_channel_set_state(channel, SMD_CHANNEL_OPENING);
 
 	/* Wait for remote to enter opening or opened */
@@ -1253,13 +1293,11 @@ static void qcom_channel_scan_worker(struct work_struct *work)
 			list_add(&channel->list, &edge->channels);
 			spin_unlock_irqrestore(&edge->channels_lock, flags);
 
-			dev_dbg(&edge->dev, "new channel found: '%s'\n", channel->name);
 			set_bit(i, edge->allocated[tbl]);
 
 			wake_up_interruptible_all(&edge->new_channel_event);
 		}
 	}
-
 	schedule_work(&edge->state_work);
 }
 
@@ -1293,11 +1331,16 @@ static void qcom_channel_state_worker(struct work_struct *work)
 		/*
 		 * Always open rpm_requests, even when already opened which is
 		 * required on some SoCs like msm8953.
+		 * Also always register LPASS channels on MSM8660/APQ8060 where
+		 * the Q6 firmware expects APPS to initiate the open.
 		 */
 		remote_state = GET_RX_CHANNEL_INFO(channel, state);
 		if (remote_state != SMD_CHANNEL_OPENING &&
 		    remote_state != SMD_CHANNEL_OPENED &&
-		    strcmp(channel->name, "rpm_requests"))
+		    strcmp(channel->name, "rpm_requests") &&
+		    strcmp(channel->name, "apr_audio_svc") &&
+		    strcmp(channel->name, "DIAG") &&
+		    strcmp(channel->name, "DIAG_CNTL"))
 			continue;
 
 		if (channel->registered)
@@ -1418,8 +1461,9 @@ static int qcom_smd_parse_edge(struct device *dev,
 		goto put_node;
 	}
 
-	ret = devm_request_irq(dev, irq,
-			       qcom_smd_edge_intr, IRQF_TRIGGER_RISING,
+	ret = devm_request_threaded_irq(dev, irq,
+			       NULL, qcom_smd_edge_intr,
+			       IRQF_TRIGGER_RISING | IRQF_SHARED | IRQF_ONESHOT,
 			       node->name, edge);
 	if (ret) {
 		dev_err(dev, "failed to request smd irq\n");
