@@ -1249,4 +1249,9 @@ static int __init icc_init(void)
 	return 0;
 }
 
-device_initcall(icc_init);
+/*
+ * Initialize the interconnect framework early so providers can register
+ * during subsys_initcall_sync and consumers don't have to defer waiting
+ * for the framework.
+ */
+subsys_initcall(icc_init);
