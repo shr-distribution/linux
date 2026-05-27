@@ -47,11 +47,6 @@
  */
 #define MT9M113_STREAM_START_RETRIES	5
 
-/* MT9M113 Context V4L2 Control */
-#define V4L2_CID_MT9M113_CONTEXT	(V4L2_CID_USER_BASE + 0x1001)
-#define MT9M113_CONTEXT_A		0	/* 640x480 preview */
-#define MT9M113_CONTEXT_B		1	/* 1280x1024 capture */
-
 /* MT9M113 chip ID */
 #define MT9M113_CHIP_ID				CCI_REG16(0x0000)
 #define MT9M113_CHIP_ID_VALUE			0x2480
@@ -281,7 +276,6 @@ struct mt9m113 {
 		struct media_pad pads[2];
 
 		struct v4l2_ctrl_handler hdl;
-		struct v4l2_ctrl *context;
 	} ifp;
 };
 
@@ -2434,11 +2428,6 @@ static const struct v4l2_subdev_internal_ops mt9m113_ifp_internal_ops = {
  * Controls
  */
 
-static const char * const mt9m113_context_menu[] = {
-	"Context A (640x480)",
-	"Context B (1280x1024)",
-};
-
 static const char * const mt9m113_test_pattern_menu[] = {
 	"Disabled",
 	"Solid Color",
@@ -2463,25 +2452,6 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 		return 0;
 
 	switch (ctrl->id) {
-	case V4L2_CID_MT9M113_CONTEXT:
-		if (sensor->streaming) {
-			if (ctrl->val == MT9M113_CONTEXT_B) {
-				/* Video mode (bit 1=1) for continuous streaming */
-				mt9m113_write_mcu_var(sensor,
-					MT9M113_SEQ_CAP_MODE, 0x0002);
-				ret = mt9m113_write_mcu_var(sensor,
-					MT9M113_SEQ_CMD,
-					MT9M113_SEQ_CMD_CAPTURE);
-			} else {
-				ret = mt9m113_write_mcu_var(sensor,
-					MT9M113_SEQ_CMD,
-					MT9M113_SEQ_CMD_RUN);
-			}
-			mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD,
-					     0x0000, 500);
-		}
-		break;
-
 	case V4L2_CID_HFLIP: {
 		u64 mode_a, mode_b;
 
@@ -2716,17 +2686,6 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 
 static const struct v4l2_ctrl_ops mt9m113_ctrl_ops = {
 	.s_ctrl = mt9m113_s_ctrl,
-};
-
-static const struct v4l2_ctrl_config mt9m113_context_ctrl_cfg = {
-	.ops = &mt9m113_ctrl_ops,
-	.id = V4L2_CID_MT9M113_CONTEXT,
-	.name = "MT9M113 Context",
-	.type = V4L2_CTRL_TYPE_MENU,
-	.min = MT9M113_CONTEXT_A,
-	.max = MT9M113_CONTEXT_B,
-	.def = MT9M113_CONTEXT_A,
-	.qmenu = mt9m113_context_menu,
 };
 
 /* -----------------------------------------------------------------------------
@@ -3086,9 +3045,7 @@ static int mt9m113_probe(struct i2c_client *client)
 		goto error_pa_subdev;
 
 	/* Initialize controls on IFP */
-	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 14);
-	sensor->ifp.context = v4l2_ctrl_new_custom(&sensor->ifp.hdl,
-						   &mt9m113_context_ctrl_cfg, NULL);
+	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 13);
 	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			  V4L2_CID_HFLIP, 0, 1, 1, 0);
 	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
