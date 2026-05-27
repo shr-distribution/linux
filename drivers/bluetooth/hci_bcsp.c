@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
- *  Bluetooth HCI UART driver
+ *  Bluetooth HCI UART driver for BCSP protocol
  *
  *  Copyright (C) 2002-2003  Fabrizio Gennari <fabrizio.gennari@philips.com>
  *  Copyright (C) 2004-2005  Marcel Holtmann <marcel@holtmann.org>
+ *  Copyright (C) 2024       HP TouchPad serdev support
+ *
+ *  This driver supports both line discipline and serdev modes:
+ *  - Line discipline: Used with hciattach for legacy compatibility
+ *  - Serdev: Direct device tree integration with GPIO power control
+ *
+ *  For HP TouchPad (BCM4329), serdev mode enables proper two-phase
+ *  initialization: PSKEYs + WARM_RESET, then reconnect with configured chip.
  */
 
 #include <linux/module.h>
@@ -26,6 +34,11 @@
 #include <linux/skbuff.h>
 #include <linux/bitrev.h>
 #include <linux/unaligned.h>
+#include <linux/of.h>
+#include <linux/serdev.h>
+#include <linux/gpio/consumer.h>
+#include <linux/delay.h>
+#include <linux/completion.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -34,11 +47,230 @@
 
 static bool txcrc = true;
 static bool hciextn = true;
+static char *bdaddr;
+/*
+ * Number of 0xFF idle bytes to prepend before each TX frame's leading 0xc0
+ * SLIP delimiter. Gives the CSR BlueCore UART RX oversampler garbage to
+ * re-lock its baud clock on after an idle period, so it is primed for our
+ * 0xc0. 0 = disabled. Tunable at runtime via /sys/module/hci_uart/parameters.
+ */
+static uint tx_preamble;
+/*
+ * Default to SKIPPING the PSKEY/WARM_RESET configuration.
+ *
+ * The PSKEY id #defines below (PSKEY_ANA_FREQ, PSKEY_HOST_INTERFACE, etc.)
+ * are SCRAMBLED — they map the correct values to the WRONG CSR PSKEY ids.
+ * On-wire capture proved the driver writes ANA_FREQ(0x01FE)=0x0001
+ * (crystal set to 1) and UART_BAUDRATE(0x01BE)=0x0000 (baud 0). The
+ * WARM_RESET then applies these and bricks the chip's clock/UART — it can
+ * only emit BCSP SYNC afterwards and never completes link establishment
+ * or HCI. The damage lands in volatile psram, so it persists until a true
+ * cold power-cycle of the chip.
+ *
+ * The chip works fine from its factory EEPROM defaults (it boots, sends
+ * SYNC at 115200, links, and answers HCI). So sending NO PSKEYs is
+ * strictly safer than sending garbage. Re-enable (skip_pskeys=0) only
+ * after the PSKEY id<->value mapping is corrected against the webOS
+ * CsrTmBlueCore bootstrap (canonical CSR ids: ANA_FREQ=0x01FE,
+ * ANA_FTRIM=0x01F6, HOST_INTERFACE=0x01F9, UART_BAUDRATE=0x01BE,
+ * LC_MAX_TX_POWER=0x0011, LC_DEFAULT_TX_POWER=0x0013).
+ */
+static bool skip_pskeys = true;  /* Skip PSKEY/WARM_RESET (scrambled ids brick chip) */
+
+/*
+ * Wake the CSR BlueCore's power-gated UART RX before each link-establishment
+ * TX by pulsing RTS (the chip's CTS line, GPIO56). The legacy webOS hsuart
+ * driver performed a "btuart_deassert_rts" get/put dance immediately before
+ * every handshake TX (reports/bt-trace/webos-cold-handshake-2026-05-22.log).
+ * Mainline previously woke the chip only once, at port open, so every later
+ * byte-perfect SYNC_RSP landed on a sleeping receiver and the chip only ever
+ * emitted SYNC. Re-arming the wake per-TX is the H2 fix. Default on; set 0 to
+ * isolate this from the msm_serial pin-mux glitch (bt_wake_period_ms).
+ */
+static bool bt_rx_wake = true;
+module_param(bt_rx_wake, bool, 0644);
+MODULE_PARM_DESC(bt_rx_wake, "Pulse RTS before link-est TX to wake the BT chip RX (default Y)");
+
+/*
+ * BCSP link-establishment "hammer". The CSR BlueCore's UART RX is gated
+ * between its 250 ms SYNC bursts and the FIRST frame after the RX wakes is
+ * lost/corrupted (CSR deep-sleep docs + the known-good CyanogenMod ubcsp stack,
+ * which retransmits every ~2.5 ms — ~40x faster than the chip's SYNC). Sending
+ * our link-est frames once per 250 ms loses that wake window. Instead burst
+ * this many frames (alternating SYNC / SYNC-RSP) per timer tick and re-arm at
+ * the fastest tick (10 ms @ HZ=100), keeping line activity ~continuous so a
+ * clean frame lands while the chip's RX is awake. Sized to stay under the
+ * 115200 TX budget (~115 B / 10 ms). 0 = legacy one-frame-per-250 ms.
+ * Reverts to idle once the link reaches ACTIVE.
+ */
+static int bt_linkest_burst = 6;
+module_param(bt_linkest_burst, int, 0644);
+MODULE_PARM_DESC(bt_linkest_burst, "BCSP link-est frames per fast (10ms) tick (0=legacy 250ms)");
+
+/*
+ * Synchronous TX/RFR pin-mux wake glitch, provided by the msm_serial UART
+ * driver (the only owner of the BT UART's pinctrl). On the TouchPad this is
+ * what wakes the CSR BlueCore's power-gated UART RX. No-op stub elsewhere.
+ */
+#if IS_ENABLED(CONFIG_SERIAL_MSM)
+extern void msm_serial_bt_wake_glitch(void);
+#else
+static inline void msm_serial_bt_wake_glitch(void) { }
+#endif
 
 #define BCSP_TXWINSIZE	4
 
 #define BCSP_ACK_PKT	0x05
 #define BCSP_LE_PKT	0x06
+#define BCSP_BCCMD_PKT	0x07
+
+/* BCCMD constants */
+#define BCCMD_SETREQ		0x0002
+#define BCCMD_VARID_PS		0x7003
+#define BCCMD_VARID_WARM_RESET	0x4002
+
+/*
+ * PSKEY definitions for CSR/BCM chip configuration
+ *
+ * Based on webOS libPmBtBsaif.so analysis:
+ * - All PSKEYs use stores=8 (PSRAM/volatile), not stores=4 (PSI/persistent)
+ * - PSKEYs are applied via BCCMD SETREQ (0x0002) with VARID_PS (0x7003)
+ * - WARM_RESET (0x4002) must be sent after PSKEYs to apply config
+ */
+
+/* Common PSKEYs (sent for all BlueCore devices) */
+#define PSKEY_BDADDR			0x0001	/* Bluetooth device address */
+#define PSKEY_ENC_KEY_LMIN		0x000E	/* Min encryption key length */
+#define PSKEY_ANA_FREQ			0x0011	/* Crystal frequency (26 MHz = 26000) */
+#define PSKEY_ANA_FTRIM			0x0013	/* Crystal fine trim (0x19) */
+#define PSKEY_LC_MAX_TX_POWER		0x0017	/* Maximum TX power level */
+#define PSKEY_LC_DEFAULT_TX_POWER	0x0021	/* Default TX power level */
+#define PSKEY_TX_POWER_LEVEL		0x0031	/* TX power level table */
+#define PSKEY_H_HC_FC_MAX_ACL		0x01AB	/* HCI FC max ACL packets */
+#define PSKEY_H_HC_FC_MAX_SCO		0x01B0	/* HCI FC max SCO packets */
+#define PSKEY_PCM_SAMPLE_SIZE		0x01B9	/* PCM sample size / UART config */
+#define PSKEY_PCM_MIN_CPU_CLOCK		0x01BE	/* Deep sleep config */
+#define PSKEY_BAUDRATE_CONFIG		0x01F6	/* UART baudrate */
+#define PSKEY_UNKNOWN_01F9		0x01F9	/* Unknown (0x0001) */
+#define PSKEY_HOST_INTERFACE		0x01FE	/* Host interface config */
+#define PSKEY_LC_MAX_TX_POWER_NO_RSSI	0x024D	/* Max TX power without RSSI */
+#define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI 0x025D /* Default TX power without RSSI */
+
+/* Palm Platform PSKEYs (12 entries from webOS) */
+#define PSKEY_PALM_01B3			0x01B3	/* Palm config (4 words) */
+#define PSKEY_PALM_01B6			0x01B6	/* Palm config (2 words) */
+#define PSKEY_PALM_01BF			0x01BF	/* Palm config (2 words) */
+#define PSKEY_PALM_01BA			0x01BA	/* Palm config (4 words) */
+#define PSKEY_PALM_01C7			0x01C7	/* Palm config (8 words) */
+#define PSKEY_PALM_01CA			0x01CA	/* Palm config (2 words) */
+#define PSKEY_PALM_001D			0x001D	/* Palm config (2 words) */
+
+/*
+ * TouchPad-Specific PSKEYs (LMP subversion 0x12E9)
+ * These contain RF calibration data extracted from webOS libPmBtBsaif.so
+ */
+#define PSKEY_TOUCHPAD_00F6		0x00F6	/* Configuration (1 word) */
+#define PSKEY_TOUCHPAD_0203		0x0203	/* Configuration (32 words) */
+#define PSKEY_TOUCHPAD_0394		0x0394	/* Configuration (1 word) */
+#define PSKEY_TOUCHPAD_03AA		0x03AA	/* Configuration (12 words) */
+#define PSKEY_TOUCHPAD_03AB		0x03AB	/* Configuration (12 words) */
+#define PSKEY_TOUCHPAD_03D4		0x03D4	/* Configuration (1 word) */
+#define PSKEY_TOUCHPAD_212C		0x212C	/* RF calibration (20 words) */
+#define PSKEY_TOUCHPAD_212D		0x212D	/* RF calibration (16 words) */
+#define PSKEY_TOUCHPAD_212E		0x212E	/* RF calibration (34 words) */
+#define PSKEY_TOUCHPAD_212F		0x212F	/* RF calibration (46 words) */
+#define PSKEY_TOUCHPAD_2130		0x2130	/* RF calibration (15 words) */
+#define PSKEY_TOUCHPAD_2131		0x2131	/* RF calibration (21 words) */
+#define PSKEY_TOUCHPAD_2132		0x2132	/* RF calibration (28 words) */
+#define PSKEY_TOUCHPAD_2133		0x2133	/* RF calibration (39 words) */
+#define PSKEY_TOUCHPAD_2134		0x2134	/* RF calibration (40 words) */
+#define PSKEY_TOUCHPAD_2135		0x2135	/* RF calibration (24 words) */
+#define PSKEY_TOUCHPAD_2136		0x2136	/* RF calibration (31 words) */
+#define PSKEY_TOUCHPAD_2137		0x2137	/* RF calibration (29 words) */
+#define PSKEY_TOUCHPAD_2138		0x2138	/* RF calibration (13 words) */
+#define PSKEY_TOUCHPAD_2139		0x2139	/* RF calibration (43 words) */
+#define PSKEY_TOUCHPAD_213A		0x213A	/* RF calibration (4 words) */
+#define PSKEY_TOUCHPAD_21E1		0x21E1	/* RF calibration (16 words) */
+#define PSKEY_TOUCHPAD_2215		0x2215	/* RF calibration (18 words) */
+#define PSKEY_TOUCHPAD_2216		0x2216	/* RF calibration (28 words) */
+#define PSKEY_TOUCHPAD_2227		0x2227	/* RF calibration (63 words) */
+#define PSKEY_TOUCHPAD_2228		0x2228	/* RF calibration (62 words) */
+#define PSKEY_TOUCHPAD_2229		0x2229	/* RF calibration (29 words) */
+#define PSKEY_TOUCHPAD_222A		0x222A	/* RF calibration (58 words) */
+#define PSKEY_TOUCHPAD_222B		0x222B	/* RF calibration (26 words) */
+
+/* Number of TouchPad-specific PSKEYs */
+#define TOUCHPAD_PSKEY_COUNT		29
+
+/* PSKEY storage types */
+#define PSKEY_STORES_DEFAULT		0x00	/* Default store */
+#define PSKEY_STORES_PSI		0x04	/* Persistent Store Implementation */
+#define PSKEY_STORES_PSRAM		0x08	/* RAM (volatile) - webOS uses this */
+
+/* Maximum size of TX power table from device tree (in u16 words) */
+#define BCSP_TX_POWER_TABLE_MAX		128
+
+/*
+ * Palm Platform PSKEY Data (extracted from webOS PmBtStack)
+ * These are the exact values sent by webOS for BCM4329 on HP TouchPad.
+ */
+
+/* palmPlatformCommonPskeys */
+static const u16 palm_pskey_01b3[] = { 0x08a0, 0x0016, 0x0060, 0x082e };
+static const u16 palm_pskey_01b6[] = { 0x0060, 0x082e };
+static const u16 palm_pskey_01bf[] = { 0x082e, 0x0000 };
+
+/* palmPlatformSpecificPskeys */
+static const u16 palm_pskey_01ba[] = { 0x1002, 0x0177, 0x0001, 0x03e8 };
+static const u16 palm_pskey_01c7[] = { 0x0001, 0x03e8, 0x000a, 0x0064,
+				       0x0031, 0x0004, 0x0004, 0x2200 };
+static const u16 palm_pskey_01ca[] = { 0x0031, 0x0004 };
+static const u16 palm_pskey_001d[] = { 0x2410, 0x08a0 };
+
+/* TX Power Table (PSKEY 0x0031) - 30 entries for RF calibration */
+static const u16 palm_tx_power_table[] = {
+	0x2200, 0x0050, 0x2600, 0x0050, 0xf000,  /* Entry 0 */
+	0x2800, 0x0050, 0x2d00, 0x0050, 0xf400,  /* Entry 1 */
+	0x2500, 0x0040, 0x2a00, 0x0040, 0xf800,  /* Entry 2 */
+	0x2200, 0x0020, 0x2700, 0x0020, 0xfc00,  /* Entry 3 */
+	0x2600, 0x0010, 0x2c00, 0x0010, 0x0000,  /* Entry 4 */
+	0x2c00, 0x0000, 0x3a00, 0x0000, 0x0400   /* Entry 5 */
+};
+
+/*
+ * Serdev device structure for BCM4329 with BCSP protocol
+ *
+ * This structure is used when the driver is instantiated via device tree
+ * (serdev path) rather than via hciattach (line discipline path).
+ *
+ * Serdev mode provides:
+ * - Direct GPIO control for power management
+ * - Proper two-phase initialization (PSKEYs + WARM_RESET + reconnect)
+ * - No dependency on hciattach
+ */
+struct bcsp_serdev {
+	/* Must be first member - hci_serdev.c expects this */
+	struct hci_uart		serdev_hu;
+
+	struct device		*dev;
+
+	/* GPIO descriptors for power control */
+	struct gpio_desc	*shutdown_gpio;	/* BT_REG_ON / BT_POWER */
+	struct gpio_desc	*device_wakeup;	/* BT_WAKE */
+	struct gpio_desc	*reset_gpio;	/* BT_RST_N (active low) */
+
+	/* Initialization state */
+	enum {
+		BCSP_SERDEV_INIT_POWER_OFF,	/* Chip powered off */
+		BCSP_SERDEV_INIT_PHASE1,	/* Sending PSKEYs + WARM_RESET */
+		BCSP_SERDEV_INIT_RECONNECTING,	/* Reconnecting after reset */
+		BCSP_SERDEV_INIT_DONE		/* Initialization complete */
+	} init_state;
+
+	/* UART settings */
+	u32			init_speed;
+	u32			oper_speed;
+};
 
 struct bcsp_struct {
 	struct sk_buff_head unack;	/* Unack'ed packets queue */
@@ -65,13 +297,171 @@ struct bcsp_struct {
 		BCSP_ESCSTATE_ESC
 	} rx_esc_state;
 
+	/* Link establishment state machine */
+	enum {
+		BCSP_LINK_UNINIT,	/* Initial: sending sync, waiting for sync_rsp */
+		BCSP_LINK_INIT,		/* Got sync_rsp: sending conf, waiting for conf_rsp */
+		BCSP_LINK_ACTIVE	/* Got conf_rsp: link established */
+	} link_state;
+
 	u8	use_crc;
 	u16	message_crc;
 	u8	txack_req;		/* Do we need to send ack's to the peer? */
 
 	/* Reliable packet sequence number - used to assign seq to each rel pkt. */
 	u8	msgq_txseq;
+
+	/* BD address configuration state machine */
+	enum {
+		BCSP_BDADDR_NONE,	/* No BD address to configure */
+		BCSP_BDADDR_PENDING,	/* Waiting for first link establishment */
+		BCSP_BDADDR_SENT,	/* BCCMD sent, waiting for chip reset */
+		BCSP_BDADDR_DONE	/* Configuration complete */
+	} bdaddr_state;
+	bdaddr_t bdaddr;		/* BD address to set */
+	bool	bdaddr_from_dt;		/* BD address was read from device tree */
+
+	/* TX power table from device tree (for RF calibration) */
+	u16	*tx_power_table;	/* Dynamically allocated from DT */
+	int	tx_power_table_len;	/* Length in u16 words, 0 if not available */
+
+	/*
+	 * PSKEYs from device tree (with Palm defaults as fallback)
+	 * All values match webOS PmBtStack for HP TouchPad BCM4329
+	 */
+	bool	pskeys_from_dt;		/* True if PSKEYs loaded from DT */
+
+	/* Common PSKEYs */
+	u16	pskey_ana_freq;		/* 0x0011: Crystal frequency (default: 26000) */
+	u16	pskey_ana_ftrim;	/* 0x0013: Crystal fine trim (default: 0x19) */
+	u16	pskey_host_interface;	/* 0x01FE: Host interface (default: 0x0001) */
+	u16	pskey_deep_sleep;	/* 0x01BE: Deep sleep config (default: 0x0000) */
+	u16	pskey_hci_max_acl;	/* 0x01AB: HCI FC max ACL (default: 0x03ec) */
+	u16	pskey_hci_max_sco;	/* 0x01B0: HCI FC max SCO (default: 0x0000) */
+	u16	pskey_uart_baudrate;	/* 0x01B9: UART baudrate (default: 0x01d8) */
+	u16	pskey_enc_key_min;	/* 0x000E: Enc key min len (default: 0x0001) */
+	u16	pskey_unknown_01f9;	/* 0x01F9: Unknown (default: 0x0001) */
+	u16	pskey_max_tx_power_no_rssi;	/* 0x024D (default: 0x0004) */
+	u16	pskey_default_tx_power_no_rssi;	/* 0x025D (default: 0x0001) */
+	u16	pskey_max_tx_power;	/* 0x0017: Max TX power (default: 0x0004) */
+	u16	pskey_default_tx_power;	/* 0x0021: Default TX power (default: 0x0004) */
+
+	/* Palm Platform PSKEYs (multi-word, stored as pointers) */
+	const u16 *pskey_palm_01b3;	/* 4 words */
+	int	pskey_palm_01b3_len;
+	const u16 *pskey_palm_01b6;	/* 2 words */
+	int	pskey_palm_01b6_len;
+	const u16 *pskey_palm_01bf;	/* 2 words */
+	int	pskey_palm_01bf_len;
+	const u16 *pskey_palm_01ba;	/* 4 words */
+	int	pskey_palm_01ba_len;
+	const u16 *pskey_palm_01c7;	/* 8 words */
+	int	pskey_palm_01c7_len;
+	const u16 *pskey_palm_01ca;	/* 2 words */
+	int	pskey_palm_01ca_len;
+	const u16 *pskey_palm_001d;	/* 2 words */
+	int	pskey_palm_001d_len;
+
+	/*
+	 * TouchPad-Specific PSKEYs (LMP subversion 0x12E9)
+	 * Loaded from device tree, NULL if not present.
+	 * Contains RF calibration data for optimal Bluetooth performance.
+	 */
+	bool	touchpad_pskeys_present;  /* True if TouchPad PSKEYs loaded */
+	u16	*touchpad_pskey_00f6;
+	int	touchpad_pskey_00f6_len;
+	u16	*touchpad_pskey_0203;
+	int	touchpad_pskey_0203_len;
+	u16	*touchpad_pskey_0394;
+	int	touchpad_pskey_0394_len;
+	u16	*touchpad_pskey_03aa;
+	int	touchpad_pskey_03aa_len;
+	u16	*touchpad_pskey_03ab;
+	int	touchpad_pskey_03ab_len;
+	u16	*touchpad_pskey_03d4;
+	int	touchpad_pskey_03d4_len;
+	u16	*touchpad_pskey_212c;
+	int	touchpad_pskey_212c_len;
+	u16	*touchpad_pskey_212d;
+	int	touchpad_pskey_212d_len;
+	u16	*touchpad_pskey_212e;
+	int	touchpad_pskey_212e_len;
+	u16	*touchpad_pskey_212f;
+	int	touchpad_pskey_212f_len;
+	u16	*touchpad_pskey_2130;
+	int	touchpad_pskey_2130_len;
+	u16	*touchpad_pskey_2131;
+	int	touchpad_pskey_2131_len;
+	u16	*touchpad_pskey_2132;
+	int	touchpad_pskey_2132_len;
+	u16	*touchpad_pskey_2133;
+	int	touchpad_pskey_2133_len;
+	u16	*touchpad_pskey_2134;
+	int	touchpad_pskey_2134_len;
+	u16	*touchpad_pskey_2135;
+	int	touchpad_pskey_2135_len;
+	u16	*touchpad_pskey_2136;
+	int	touchpad_pskey_2136_len;
+	u16	*touchpad_pskey_2137;
+	int	touchpad_pskey_2137_len;
+	u16	*touchpad_pskey_2138;
+	int	touchpad_pskey_2138_len;
+	u16	*touchpad_pskey_2139;
+	int	touchpad_pskey_2139_len;
+	u16	*touchpad_pskey_213a;
+	int	touchpad_pskey_213a_len;
+	u16	*touchpad_pskey_21e1;
+	int	touchpad_pskey_21e1_len;
+	u16	*touchpad_pskey_2215;
+	int	touchpad_pskey_2215_len;
+	u16	*touchpad_pskey_2216;
+	int	touchpad_pskey_2216_len;
+	u16	*touchpad_pskey_2227;
+	int	touchpad_pskey_2227_len;
+	u16	*touchpad_pskey_2228;
+	int	touchpad_pskey_2228_len;
+	u16	*touchpad_pskey_2229;
+	int	touchpad_pskey_2229_len;
+	u16	*touchpad_pskey_222a;
+	int	touchpad_pskey_222a_len;
+	u16	*touchpad_pskey_222b;
+	int	touchpad_pskey_222b_len;
+
+	/*
+	 * Serdev mode state tracking
+	 * When operating in serdev mode (device tree instantiated), we have
+	 * access to GPIO power control and can properly handle WARM_RESET
+	 * by power cycling the chip for a clean restart.
+	 */
+	bool	is_serdev;		/* True if operating in serdev mode */
+	bool	warm_reset_sent;	/* WARM_RESET sent, expecting chip restart */
+	void	*serdev_bdev;		/* Pointer to bcsp_serdev for GPIO access */
+
+	/* Link establishment completion for serdev mode */
+	struct completion link_up;	/* Signaled when BCSP link is established */
+	bool	link_established;	/* True after first successful handshake */
+
+	/*
+	 * Skip BCSP link-establishment SYNC handshake.
+	 *
+	 * The HP TouchPad's BCM4329 ships with PSKEY_HOST_INTERFACE = BCSP
+	 * in EEPROM, and the chip's BCSP link starts in operational state
+	 * (txseq=0/rxack=0) at every power-on. The webOS hsuart wire trace
+	 * confirms the host never sends sync/conf — it issues HCI traffic
+	 * immediately on channel 5 and the chip ACKs. Driving SYNC here
+	 * confuses the chip and times out the link.
+	 *
+	 * Enable via DT property "qcom,bcsp-skip-sync" on the
+	 * palm,bcm4329-bcsp node.
+	 */
+	bool	skip_sync;
 };
+
+/* Forward declaration for serdev power cycle */
+#ifdef CONFIG_SERIAL_DEV_BUS
+struct bcsp_serdev;
+static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev);
+#endif
 
 /* ---- BCSP CRC calculation ---- */
 
@@ -141,6 +531,17 @@ static int bcsp_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 		return 0;
 	}
 
+	/*
+	 * Reject HCI packets while chip is resetting after WARM_RESET.
+	 * The chip needs to re-establish the BCSP link first.
+	 * Also block during the re-establishment phase (BDADDR_SENT state).
+	 */
+	if (bcsp->warm_reset_sent || bcsp->bdaddr_state == BCSP_BDADDR_SENT) {
+		BT_DBG("BCSP: Dropping packet during chip reset/re-establishment");
+		kfree_skb(skb);
+		return 0;
+	}
+
 	switch (hci_skb_pkt_type(skb)) {
 	case HCI_ACLDATA_PKT:
 	case HCI_COMMAND_PKT:
@@ -189,6 +590,10 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 		chan = 0;	/* BCSP internal channel */
 		rel = 0;	/* unreliable channel */
 		break;
+	case BCSP_BCCMD_PKT:
+		chan = 2;	/* BCCMD channel */
+		rel = 0;	/* unreliable channel */
+		break;
 	default:
 		BT_ERR("Unknown packet type");
 		return NULL;
@@ -215,11 +620,23 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	 * + 2 (0xc0 delimiters at start and end).
 	 */
 
-	nskb = alloc_skb((len + 6) * 2 + 2, GFP_ATOMIC);
+	nskb = alloc_skb((len + 6) * 2 + 2 + tx_preamble, GFP_ATOMIC);
 	if (!nskb)
 		return NULL;
 
 	hci_skb_pkt_type(nskb) = pkt_type;
+
+	/*
+	 * Optional 0xFF idle preamble (tx_preamble) before the leading 0xc0,
+	 * to let the CSR BlueCore RX re-lock its baud clock. 0xFF needs no SLIP
+	 * escaping, so it is emitted raw ahead of the framed packet.
+	 */
+	if (tx_preamble) {
+		unsigned int i;
+
+		for (i = 0; i < tx_preamble; i++)
+			skb_put_u8(nskb, 0xff);
+	}
 
 	bcsp_slip_msgdelim(nskb);
 
@@ -233,7 +650,23 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 		bcsp->msgq_txseq = (bcsp->msgq_txseq + 1) & 0x07;
 	}
 
-	if (bcsp->use_crc)
+	/*
+	 * CRC handling for BCSP packets:
+	 * The CSR BlueCore chip on the TouchPad sends ALL packets WITH CRC,
+	 * including Link Establishment packets on channel 1 (header byte 0x40
+	 * + trailing CRC) and ACK frames. The webOS bcattach wire trace
+	 * confirms it sends SYNC as c0 40 41 00 7e da dc ed ed a9 7a c0 and
+	 * SYNC-RSP as c0 40 41 00 7e ac af ef ee bb 84 c0 — both CRC'd.
+	 *
+	 * A previous version excluded channel 1 ("LE packets without CRC per
+	 * spec"). That was wrong for this chip: our no-CRC SYNC/SYNC-RSP were
+	 * silently dropped, the chip never saw our SYNC, never sent SYNC-RSP,
+	 * and link establishment looped forever. Honor use_crc on every
+	 * channel (matches mainline hci_bcsp and webOS; txcrc defaults true).
+	 */
+	bool pkt_crc = bcsp->use_crc;
+
+	if (pkt_crc)
 		hdr[0] |= 0x40;
 
 	hdr[1] = ((len << 4) & 0xff) | chan;
@@ -244,7 +677,7 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	for (i = 0; i < 4; i++) {
 		bcsp_slip_one_byte(nskb, hdr[i]);
 
-		if (bcsp->use_crc)
+		if (pkt_crc)
 			bcsp_crc_update(&bcsp_txmsg_crc, hdr[i]);
 	}
 
@@ -252,18 +685,29 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	for (i = 0; i < len; i++) {
 		bcsp_slip_one_byte(nskb, data[i]);
 
-		if (bcsp->use_crc)
+		if (pkt_crc)
 			bcsp_crc_update(&bcsp_txmsg_crc, data[i]);
 	}
 
 	/* Put CRC */
-	if (bcsp->use_crc) {
+	if (pkt_crc) {
 		bcsp_txmsg_crc = bitrev16(bcsp_txmsg_crc);
 		bcsp_slip_one_byte(nskb, (u8)((bcsp_txmsg_crc >> 8) & 0x00ff));
 		bcsp_slip_one_byte(nskb, (u8)(bcsp_txmsg_crc & 0x00ff));
 	}
 
 	bcsp_slip_msgdelim(nskb);
+
+	/*
+	 * Debug: dump the full on-wire bytes of every prepared packet so we
+	 * can compare reliable (HCI command, chan 5/6) framing against the
+	 * working unreliable packets and against webOS captures. Enable with
+	 * `echo "module hci_uart +p" > /sys/kernel/debug/dynamic_debug/control`.
+	 */
+	BT_DBG("BCSP TXWIRE chan=%d rel=%d crc=%d hdr=%02x%02x%02x%02x len=%u: %*ph",
+	       chan, rel, pkt_crc ? 1 : 0, hdr[0], hdr[1], hdr[2], hdr[3],
+	       nskb->len, min_t(int, nskb->len, 32), nskb->data);
+
 	return nskb;
 }
 
@@ -282,9 +726,14 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 	if (skb != NULL) {
 		struct sk_buff *nskb;
 
+		BT_DBG("BCSP: dequeuing unrel pkt type %d len %d",
+		       hci_skb_pkt_type(skb), skb->len);
 		nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len,
 					hci_skb_pkt_type(skb));
 		if (nskb) {
+			/* Debug: show first bytes of prepared packet */
+			if (hci_skb_pkt_type(skb) == BCSP_LE_PKT && nskb->len <= 16)
+				BT_DBG("BCSP: TX LE pkt: %*ph", nskb->len, nskb->data);
 			kfree_skb(skb);
 			return nskb;
 		} else {
@@ -296,11 +745,22 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 	/* Now, try to send a reliable pkt. We can only send a
 	 * reliable packet if the number of packets sent but not yet ack'ed
 	 * is < than the winsize
+	 *
+	 * BCSP link-establishment gating: the reliable channel must NOT carry
+	 * data until the link is ACTIVE. During UNINIT/INIT we are still doing
+	 * the SYNC/CONF handshake (those go out on the unreliable channel,
+	 * handled above). On-device the CSR BlueCore was being flooded with
+	 * reliable channel-5 HCI packets (e.g. HCI Reset, retransmitted across
+	 * the whole TX window) while it was still only sending SYNC — the chip
+	 * never advanced. webOS userspace BCSP (bcattach) never sends HCI
+	 * traffic before link-up. Hold reliable packets in the queue until the
+	 * handshake completes so link establishment is not polluted.
 	 */
 
 	spin_lock_irqsave_nested(&bcsp->unack.lock, flags, SINGLE_DEPTH_NESTING);
 
-	if (bcsp->unack.qlen < BCSP_TXWINSIZE) {
+	if (bcsp->link_state == BCSP_LINK_ACTIVE &&
+	    bcsp->unack.qlen < BCSP_TXWINSIZE) {
 		skb = skb_dequeue(&bcsp->rel);
 		if (skb != NULL) {
 			struct sk_buff *nskb;
@@ -381,7 +841,13 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 		dev_kfree_skb_irq(skb);
 	}
 
-	if (skb_queue_empty(&bcsp->unack))
+	/*
+	 * Only delete timer if link is active and no retransmissions pending.
+	 * During link establishment (UNINIT/INIT states), the timer is used
+	 * to send sync/conf packets, so we must keep it running.
+	 */
+	if (skb_queue_empty(&bcsp->unack) &&
+	    bcsp->link_state == BCSP_LINK_ACTIVE)
 		timer_delete(&bcsp->tbcsp);
 
 	spin_unlock_irqrestore(&bcsp->unack.lock, flags);
@@ -390,35 +856,306 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 		BT_ERR("Removed only %u out of %u pkts", i, pkts_to_be_removed);
 }
 
-/* Handle BCSP link-establishment packets. When we
- * detect a "sync" packet, symptom that the BT module has reset,
- * we do nothing :) (yet)
+/* Forward declarations for BCCMD functions used in link establishment */
+static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr);
+static int bcsp_send_warm_reset(struct hci_uart *hu);
+static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value);
+static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
+				const u16 *data, u16 len_words);
+
+/*
+ * Pulse RTS (the chip's CTS, GPIO56) to wake the CSR BlueCore's power-gated
+ * UART RX immediately before a link-establishment transmit — the per-TX half
+ * of the legacy webOS btuart_deassert_rts dance. msm_set_mctrl() turns this
+ * into an RFR edge on the wire. Runs in serdev RX (process) context, so the
+ * short sleeps are safe; a no-op without serdev or when disabled.
+ */
+static void bcsp_wake_chip_rx(struct hci_uart *hu)
+{
+	if (!bt_rx_wake || !hu->serdev)
+		return;
+
+	/*
+	 * Faithful webOS dance, synchronously before TX: deassert RTS, glitch
+	 * the chip-facing UART pins (TX/RFR) GPIO-high->UART via msm_serial,
+	 * then re-assert RTS. The pin-mux glitch is the element that actually
+	 * wakes the CSR BlueCore's power-gated UART RX; the RTS toggle alone is
+	 * not enough. No-op on non-msm_serial platforms.
+	 */
+	serdev_device_set_tiocm(hu->serdev, 0, TIOCM_RTS);	/* deassert (put) */
+	usleep_range(150, 300);
+	msm_serial_bt_wake_glitch();				/* TX/RFR mux off->on */
+	serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);	/* re-assert (get) */
+	usleep_range(150, 300);
+}
+
+/* Handle BCSP link-establishment packets.
+ * This implements the full BCSP link establishment state machine:
+ * - sync: device is asking to establish link, we reply with sync_rsp
+ * - sync_rsp: device acknowledged our sync, we send conf
+ * - conf: device sends config, we reply with conf_rsp
+ * - conf_rsp: link is established
  */
 static void bcsp_handle_le_pkt(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp = hu->priv;
+	u8 sync_pkt[4]     = { 0xda, 0xdc, 0xed, 0xed };
+	u8 sync_rsp_pkt[4] = { 0xac, 0xaf, 0xef, 0xee };
 	u8 conf_pkt[4]     = { 0xad, 0xef, 0xac, 0xed };
 	u8 conf_rsp_pkt[4] = { 0xde, 0xad, 0xd0, 0xd0 };
-	u8 sync_pkt[4]     = { 0xda, 0xdc, 0xed, 0xed };
+	u8 len_nibble, len_high;
 
-	/* spot "conf" pkts and reply with a "conf rsp" pkt */
-	if (bcsp->rx_skb->data[1] >> 4 == 4 && bcsp->rx_skb->data[2] == 0 &&
-	    !memcmp(&bcsp->rx_skb->data[4], conf_pkt, 4)) {
+	/* Debug: log LE packet reception */
+	len_nibble = bcsp->rx_skb->data[1] >> 4;
+	len_high = bcsp->rx_skb->data[2];
+
+	/* Check packet has 4-byte payload (link establishment packets) */
+	if (len_nibble != 4 || len_high != 0) {
+		BT_DBG("BCSP LE pkt: not a 4-byte LE pkt, ignoring");
+		return;
+	}
+
+	/* Log raw bytes of LE packet for debugging */
+	BT_DBG("BCSP: RX LE payload: %02x %02x %02x %02x",
+	       bcsp->rx_skb->data[4], bcsp->rx_skb->data[5],
+	       bcsp->rx_skb->data[6], bcsp->rx_skb->data[7]);
+
+	/* Handle sync packet - device is starting link establishment */
+	if (!memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
+		struct sk_buff *nskb;
+
+		BT_DBG("BCSP: sync received%s",
+		       bcsp->warm_reset_sent ? " (after WARM_RESET)" : "");
+
+		/*
+		 * The chip enters BCSP link-establishment state on every boot
+		 * AND after every WARM_RESET — it sends SYNC continuously
+		 * until we ACK with SYNC_RSP. We must not hard-power-cycle
+		 * here (PSKEYs live in volatile PSRAM and would be wiped);
+		 * just reset our driver-side state to match the chip's fresh
+		 * sequence numbers, then respond with SYNC_RSP to advance the
+		 * handshake.
+		 */
+
+		/*
+		 * Reset sequence numbers - the chip has reset (e.g., after
+		 * WARM_RESET) and is starting fresh. We must reset our
+		 * sequence state to match.
+		 */
+		bcsp->rxseq_txack = 0;
+		bcsp->msgq_txseq = 0;
+
+		/*
+		 * Purge the reliable-channel queues to match the chip's fresh
+		 * sequence numbers. Do NOT purge unrel here: this runs on every
+		 * received SYNC (RX context) while the TX workqueue drains unrel,
+		 * so purging it can drop the SYNC_RSP we are about to queue below
+		 * before it is transmitted.
+		 */
+		skb_queue_purge(&bcsp->unack);
+		skb_queue_purge(&bcsp->rel);
+
+		/*
+		 * If this SYNC is post-WARM_RESET, mark the link back to
+		 * UNINIT so the timer/handshake state machine re-engages
+		 * before HCI traffic is allowed.
+		 */
+		if (bcsp->warm_reset_sent) {
+			bcsp->link_state = BCSP_LINK_UNINIT;
+			bcsp->link_established = false;
+			reinit_completion(&bcsp->link_up);
+			BT_INFO("BCSP: post-WARM_RESET sync — link returned to UNINIT");
+		}
+
+		/* Clear warm reset flag */
+		bcsp->warm_reset_sent = false;
+
+		nskb = alloc_skb(4, GFP_ATOMIC);
+		if (!nskb)
+			return;
+		skb_put_data(nskb, sync_rsp_pkt, 4);
+		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
+
+		BT_DBG("BCSP: sending sync_rsp");
+		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
+		skb_queue_head(&bcsp->unrel, nskb);  /* Head for immediate response */
+		hci_uart_tx_wakeup(hu);
+	}
+	/* Handle sync_rsp packet - device acknowledged our sync, send conf */
+	else if (!memcmp(&bcsp->rx_skb->data[4], sync_rsp_pkt, 4)) {
 		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
 
-		BT_DBG("Found a LE conf pkt");
+		BT_INFO("BCSP: sync_rsp received, moving to INIT state");
+
+		/* Transition to INIT state - will send conf via timer */
+		bcsp->link_state = BCSP_LINK_INIT;
+
+		if (!nskb)
+			return;
+		skb_put_data(nskb, conf_pkt, 4);
+		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
+
+		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
+		skb_queue_tail(&bcsp->unrel, nskb);
+		hci_uart_tx_wakeup(hu);
+	}
+	/* Handle conf packet - device sent config, reply with conf_rsp */
+	else if (!memcmp(&bcsp->rx_skb->data[4], conf_pkt, 4)) {
+		struct sk_buff *nskb = alloc_skb(4, GFP_ATOMIC);
+
+		BT_INFO("BCSP: conf received, responding with conf_rsp (bdaddr_state=%d)",
+			bcsp->bdaddr_state);
+
+		/* Transition to ACTIVE state */
+		bcsp->link_state = BCSP_LINK_ACTIVE;
+
 		if (!nskb)
 			return;
 		skb_put_data(nskb, conf_rsp_pkt, 4);
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
-		skb_queue_head(&bcsp->unrel, nskb);
+		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
+		skb_queue_head(&bcsp->unrel, nskb);  /* Head for immediate response */
 		hci_uart_tx_wakeup(hu);
+
+		/*
+		 * After sending conf_rsp, the link is established.
+		 * Signal any waiters (e.g., bcsp_setup waiting for link).
+		 */
+		if (!bcsp->link_established) {
+			BT_INFO("BCSP: Link established (first time)");
+			bcsp->link_established = true;
+			complete(&bcsp->link_up);
+		}
+
+		/*
+		 * If we were waiting for re-establishment after BD address
+		 * config, mark it as complete now.
+		 */
+		if (bcsp->bdaddr_state == BCSP_BDADDR_SENT) {
+			BT_INFO("BCSP: Link re-established after BD address config");
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+		}
 	}
-	/* Spot "sync" pkts. If we find one...disaster! */
-	else if (bcsp->rx_skb->data[1] >> 4 == 4 && bcsp->rx_skb->data[2] == 0 &&
-		 !memcmp(&bcsp->rx_skb->data[4], sync_pkt, 4)) {
-		BT_ERR("Found a LE sync pkt, card has reset");
+	/* Handle conf_rsp packet - link establishment complete */
+	else if (!memcmp(&bcsp->rx_skb->data[4], conf_rsp_pkt, 4)) {
+		BT_INFO("BCSP: conf_rsp received, link established (bdaddr_state=%d, is_serdev=%d)",
+			bcsp->bdaddr_state, bcsp->is_serdev);
+
+		/* Transition to ACTIVE state */
+		bcsp->link_state = BCSP_LINK_ACTIVE;
+
+		/* Signal link establishment completion */
+		if (!bcsp->link_established) {
+			BT_INFO("BCSP: Link established via conf_rsp");
+			bcsp->link_established = true;
+			complete(&bcsp->link_up);
+		}
+
+		if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING && bcsp->is_serdev) {
+			/*
+			 * Serdev mode: Link is now established, send full
+			 * PSKEY sequence + WARM_RESET. The chip will reset
+			 * and we'll power cycle it via GPIO for clean restart.
+			 */
+			BT_INFO("BCSP: Serdev link up, sending full PSKEYs + WARM_RESET");
+
+			/* === Common PSKEYs === */
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+					     bcsp->pskey_ana_freq);
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
+					     bcsp->pskey_ana_ftrim);
+			bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
+					     bcsp->pskey_host_interface);
+			bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+					     bcsp->pskey_deep_sleep);
+			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+					     bcsp->pskey_hci_max_acl);
+			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+					     bcsp->pskey_hci_max_sco);
+			bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+					     bcsp->pskey_uart_baudrate);
+			bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
+					     bcsp->pskey_enc_key_min);
+			bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+					     bcsp->pskey_unknown_01f9);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
+					     bcsp->pskey_max_tx_power_no_rssi);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+					     bcsp->pskey_default_tx_power_no_rssi);
+
+			/* === Palm Platform PSKEYs === */
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
+					     bcsp->pskey_palm_01b3,
+					     bcsp->pskey_palm_01b3_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01B6,
+					     bcsp->pskey_palm_01b6,
+					     bcsp->pskey_palm_01b6_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01BF,
+					     bcsp->pskey_palm_01bf,
+					     bcsp->pskey_palm_01bf_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01BA,
+					     bcsp->pskey_palm_01ba,
+					     bcsp->pskey_palm_01ba_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01C7,
+					     bcsp->pskey_palm_01c7,
+					     bcsp->pskey_palm_01c7_len);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_01CA,
+					     bcsp->pskey_palm_01ca,
+					     bcsp->pskey_palm_01ca_len);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+					     bcsp->pskey_default_tx_power);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+					     bcsp->pskey_max_tx_power);
+			bcsp_send_pskey_data(hu, PSKEY_PALM_001D,
+					     bcsp->pskey_palm_001d,
+					     bcsp->pskey_palm_001d_len);
+
+			/* TX Power Table */
+			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
+				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+						     bcsp->tx_power_table,
+						     bcsp->tx_power_table_len);
+			} else {
+				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+						     palm_tx_power_table,
+						     ARRAY_SIZE(palm_tx_power_table));
+			}
+
+			/* WARM_RESET to apply PSKEYs */
+			bcsp_send_warm_reset(hu);
+			bcsp->warm_reset_sent = true;
+
+			BT_INFO("BCSP: PSKEYs + WARM_RESET sent, chip will reset");
+			bcsp->bdaddr_state = BCSP_BDADDR_SENT;
+		} else if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
+			BT_INFO("BCSP: First link up, sending RF PSKEYs (no reset)");
+
+			/*
+			 * Line discipline mode: Send critical RF PSKEYs only.
+			 */
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+					     bcsp->pskey_ana_freq);
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
+					     bcsp->pskey_ana_ftrim);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+					     bcsp->pskey_max_tx_power);
+			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+					     bcsp->pskey_default_tx_power);
+
+			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
+				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+						     bcsp->tx_power_table,
+						     bcsp->tx_power_table_len);
+			} else {
+				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+						     palm_tx_power_table,
+						     ARRAY_SIZE(palm_tx_power_table));
+			}
+
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+			BT_INFO("BCSP: RF PSKEYs sent (no BD addr, no reset)");
+		}
 	}
 }
 
@@ -476,6 +1213,23 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 	struct bcsp_struct *bcsp = hu->priv;
 	int pass_up = 0;
 
+	/*
+	 * Debug: dump every decoded RX packet's header + payload (post-SLIP,
+	 * post-CRC-strip) so we can see exactly what the chip sends back —
+	 * in particular whether it ever sends a reliable HCI event/ack in
+	 * response to our reliable HCI commands.
+	 */
+	BT_DBG("BCSP RXPKT hdr=%02x%02x%02x%02x rel=%d crc=%d chan=%d seq=%d ack=%d len=%u: %*ph",
+	       bcsp->rx_skb->data[0], bcsp->rx_skb->data[1],
+	       bcsp->rx_skb->data[2], bcsp->rx_skb->data[3],
+	       (bcsp->rx_skb->data[0] & 0x80) ? 1 : 0,
+	       (bcsp->rx_skb->data[0] & 0x40) ? 1 : 0,
+	       bcsp->rx_skb->data[1] & 0x0f,
+	       bcsp->rx_skb->data[0] & 0x07,
+	       (bcsp->rx_skb->data[0] >> 3) & 0x07,
+	       bcsp->rx_skb->len, min_t(int, bcsp->rx_skb->len, 32),
+	       bcsp->rx_skb->data);
+
 	if (bcsp->rx_skb->data[0] & 0x80) {	/* reliable pkt */
 		BT_DBG("Received seqno %u from card", bcsp->rxseq_txack);
 
@@ -523,9 +1277,21 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 			pass_up = 1;
 		} else if ((bcsp->rx_skb->data[1] & 0x0f) == 1 &&
 			   !(bcsp->rx_skb->data[0] & 0x80)) {
+			BT_DBG("BCSP: RX LE hdr: %02x %02x %02x %02x",
+			       bcsp->rx_skb->data[0], bcsp->rx_skb->data[1],
+			       bcsp->rx_skb->data[2], bcsp->rx_skb->data[3]);
 			bcsp_handle_le_pkt(hu);
+			/*
+			 * bcsp_handle_le_pkt may free rx_skb (e.g., during
+			 * power cycle). Check before continuing.
+			 */
+			if (!bcsp->rx_skb)
+				return;
 			pass_up = 0;
 		} else {
+			BT_DBG("BCSP: unknown pkt chan=%d rel=%d",
+			       bcsp->rx_skb->data[1] & 0x0f,
+			       (bcsp->rx_skb->data[0] & 0x80) ? 1 : 0);
 			pass_up = 0;
 		}
 	}
@@ -582,11 +1348,32 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 	struct bcsp_struct *bcsp = hu->priv;
 	const unsigned char *ptr;
 
-	if (!test_bit(HCI_UART_REGISTERED, &hu->flags))
+	/*
+	 * Guard against race condition during serdev initialization:
+	 * After PROTO_INIT is set but before bcsp_open() completes,
+	 * packets may arrive but hu->priv hasn't been set yet.
+	 */
+	if (!bcsp)
+		return 0;
+
+	if (!test_bit(HCI_UART_REGISTERED, &hu->flags) &&
+	    !test_bit(HCI_UART_PROTO_INIT, &hu->flags))
 		return -EUNATCH;
 
 	BT_DBG("hu %p count %d rx_state %d rx_count %ld",
 	       hu, count, bcsp->rx_state, bcsp->rx_count);
+
+	/*
+	 * RXWIRE debug: dump the raw bytes the serdev RX path actually delivers.
+	 * Counterpart to the TXWIRE dump. Used to settle whether the chip's
+	 * SYNC frames are reaching us intact (c0 40 41 ... c0) or arriving as
+	 * zeros/garbage (DMA RX corruption vs chip-in-zeros-state). Gated on
+	 * dynamic debug like the rest; enable with
+	 * `echo 'file hci_bcsp.c +p' > /sys/kernel/debug/dynamic_debug/control`.
+	 */
+	if (count > 0)
+		print_hex_dump_debug("BCSP RXWIRE: ", DUMP_PREFIX_NONE, 16, 1,
+				     data, min(count, 32), false);
 
 	ptr = data;
 	while (count) {
@@ -688,16 +1475,851 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 	return count;
 }
 
-	/* Arrange to retransmit all messages in the relq. */
+/* ---- BCCMD support for CSR chip initialization ---- */
+
+/*
+ * Send a single-word PSKEY via BCCMD
+ * Used for simple configuration values like ANA_FREQ, TX power, etc.
+ */
+static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	struct sk_buff *skb;
+	u8 bccmd[18];
+
+	memset(bccmd, 0, sizeof(bccmd));
+
+	/* BCCMD header */
+	bccmd[0] = BCCMD_SETREQ & 0xff;
+	bccmd[1] = (BCCMD_SETREQ >> 8) & 0xff;
+	bccmd[2] = 0x09;	/* Length: 9 words (18 bytes) */
+	bccmd[3] = 0x00;
+	bccmd[4] = 0x00;	/* SeqNo */
+	bccmd[5] = 0x00;
+	bccmd[6] = BCCMD_VARID_PS & 0xff;
+	bccmd[7] = (BCCMD_VARID_PS >> 8) & 0xff;
+	bccmd[8] = 0x00;	/* Status */
+	bccmd[9] = 0x00;
+
+	/* PS payload */
+	bccmd[10] = pskey & 0xff;	/* PSKey (low) */
+	bccmd[11] = (pskey >> 8) & 0xff;	/* PSKey (high) */
+	bccmd[12] = 0x01;		/* Length: 1 word (2 bytes) */
+	bccmd[13] = 0x00;
+	bccmd[14] = PSKEY_STORES_PSRAM;	/* Stores: PSRAM (volatile) - matches webOS */
+	bccmd[15] = 0x00;
+	bccmd[16] = value & 0xff;	/* Value (low) */
+	bccmd[17] = (value >> 8) & 0xff;	/* Value (high) */
+
+	skb = alloc_skb(sizeof(bccmd), GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	skb_put_data(skb, bccmd, sizeof(bccmd));
+	hci_skb_pkt_type(skb) = BCSP_BCCMD_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+
+	BT_DBG("BCSP: Set PSKEY 0x%04x = 0x%04x", pskey, value);
+
+	return 0;
+}
+
+/*
+ * Send a multi-word PSKEY via BCCMD
+ * Used for power tables and other large configuration data.
+ */
+static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
+				const u16 *data, u16 len_words)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	struct sk_buff *skb;
+	u8 *bccmd;
+	int bccmd_len;
+	int payload_len;
+	int i;
+
+	/*
+	 * BCCMD format:
+	 * - Header: 10 bytes (Type, Length, SeqNo, VarID, Status)
+	 * - PS header: 6 bytes (PSKey, Length, Stores)
+	 * - Data: len_words * 2 bytes
+	 *
+	 * Total length in words must be set in header
+	 */
+	payload_len = 6 + (len_words * 2);  /* PS header + data */
+	bccmd_len = 10 + payload_len;       /* BCCMD header + payload */
+
+	bccmd = kmalloc(bccmd_len, GFP_KERNEL);
+	if (!bccmd)
+		return -ENOMEM;
+
+	memset(bccmd, 0, bccmd_len);
+
+	/* BCCMD header */
+	bccmd[0] = BCCMD_SETREQ & 0xff;
+	bccmd[1] = (BCCMD_SETREQ >> 8) & 0xff;
+	/* Length in words (including header, excluding type) */
+	bccmd[2] = ((bccmd_len / 2) - 1) & 0xff;
+	bccmd[3] = (((bccmd_len / 2) - 1) >> 8) & 0xff;
+	bccmd[4] = 0x00;	/* SeqNo */
+	bccmd[5] = 0x00;
+	bccmd[6] = BCCMD_VARID_PS & 0xff;
+	bccmd[7] = (BCCMD_VARID_PS >> 8) & 0xff;
+	bccmd[8] = 0x00;	/* Status */
+	bccmd[9] = 0x00;
+
+	/* PS payload header */
+	bccmd[10] = pskey & 0xff;
+	bccmd[11] = (pskey >> 8) & 0xff;
+	bccmd[12] = len_words & 0xff;
+	bccmd[13] = (len_words >> 8) & 0xff;
+	bccmd[14] = PSKEY_STORES_PSRAM;	/* Stores: PSRAM (volatile) - matches webOS */
+	bccmd[15] = 0x00;
+
+	/* Copy data (little-endian u16 values) */
+	for (i = 0; i < len_words; i++) {
+		bccmd[16 + i * 2] = data[i] & 0xff;
+		bccmd[16 + i * 2 + 1] = (data[i] >> 8) & 0xff;
+	}
+
+	skb = alloc_skb(bccmd_len, GFP_KERNEL);
+	if (!skb) {
+		kfree(bccmd);
+		return -ENOMEM;
+	}
+
+	skb_put_data(skb, bccmd, bccmd_len);
+	hci_skb_pkt_type(skb) = BCSP_BCCMD_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+
+	BT_DBG("BCSP: Set PSKEY 0x%04x with %d words", pskey, len_words);
+
+	kfree(bccmd);
+	return 0;
+}
+
+/*
+ * Send WARM_RESET BCCMD to apply PSKEY changes
+ * Format matches bcattach: 9 words (18 bytes) with 8 bytes padding
+ */
+static int bcsp_send_warm_reset(struct hci_uart *hu)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	struct sk_buff *skb;
+	u8 bccmd[18];
+
+	memset(bccmd, 0, sizeof(bccmd));
+
+	/* BCCMD header */
+	bccmd[0] = BCCMD_SETREQ & 0xff;
+	bccmd[1] = (BCCMD_SETREQ >> 8) & 0xff;
+	bccmd[2] = 0x09;	/* Length: 9 words (matches bcattach) */
+	bccmd[3] = 0x00;
+	bccmd[4] = 0x00;	/* SeqNo */
+	bccmd[5] = 0x00;
+	bccmd[6] = BCCMD_VARID_WARM_RESET & 0xff;
+	bccmd[7] = (BCCMD_VARID_WARM_RESET >> 8) & 0xff;
+	bccmd[8] = 0x00;	/* Status */
+	bccmd[9] = 0x00;
+	/* bytes 10-17 are zero padding (already cleared by memset) */
+
+	skb = alloc_skb(sizeof(bccmd), GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	skb_put_data(skb, bccmd, sizeof(bccmd));
+	hci_skb_pkt_type(skb) = BCSP_BCCMD_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+
+	BT_INFO("BCSP: Sent WARM_RESET to apply PSKEY changes");
+
+	return 0;
+}
+
+/*
+ * Send TouchPad-specific PSKEYs (RF calibration data)
+ * These are sent only when touchpad_pskeys_present is true (loaded from DT)
+ */
+static void bcsp_send_touchpad_pskeys(struct hci_uart *hu)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+
+	if (!bcsp->touchpad_pskeys_present)
+		return;
+
+	BT_INFO("BCSP: Sending TouchPad RF calibration PSKEYs...");
+
+#define SEND_TOUCHPAD_PSKEY(pskey_id, field) \
+	do { \
+		if (bcsp->touchpad_pskey_##field && \
+		    bcsp->touchpad_pskey_##field##_len > 0) { \
+			bcsp_send_pskey_data(hu, pskey_id, \
+				bcsp->touchpad_pskey_##field, \
+				bcsp->touchpad_pskey_##field##_len); \
+			msleep(20); \
+		} \
+	} while (0)
+
+	/* Configuration PSKEYs */
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_00F6, 00f6);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_0203, 0203);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_0394, 0394);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_03AA, 03aa);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_03AB, 03ab);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_03D4, 03d4);
+
+	/* RF Calibration PSKEYs */
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_212C, 212c);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_212D, 212d);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_212E, 212e);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_212F, 212f);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2130, 2130);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2131, 2131);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2132, 2132);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2133, 2133);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2134, 2134);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2135, 2135);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2136, 2136);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2137, 2137);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2138, 2138);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2139, 2139);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_213A, 213a);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_21E1, 21e1);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2215, 2215);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2216, 2216);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2227, 2227);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2228, 2228);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_2229, 2229);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_222A, 222a);
+	SEND_TOUCHPAD_PSKEY(PSKEY_TOUCHPAD_222B, 222b);
+
+#undef SEND_TOUCHPAD_PSKEY
+
+	BT_INFO("BCSP: TouchPad RF calibration PSKEYs sent");
+}
+
+/*
+ * Parse BD address string "XX:XX:XX:XX:XX:XX" into bdaddr_t
+ * Returns 0 on success, -1 on error
+ */
+static int bcsp_parse_bdaddr(const char *str, bdaddr_t *addr)
+{
+	unsigned int b[6];
+	int i;
+
+	if (!str || strlen(str) != 17)
+		return -1;
+
+	if (sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x",
+		   &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6)
+		return -1;
+
+	for (i = 0; i < 6; i++)
+		addr->b[5 - i] = b[i];  /* bdaddr_t is in reverse order */
+
+	return 0;
+}
+
+/*
+ * Send BCCMD to set PSKEY_BDADDR via BCSP channel 2
+ *
+ * BCCMD packet structure:
+ *   Type (2) | Length (2) | SeqNo (2) | VarID (2) | Status (2) | Payload
+ *
+ * For PSKEY_BDADDR:
+ *   Type   = 0x0002 (SETREQ)
+ *   Length = 0x000C (12 words)
+ *   VarID  = 0x7003 (CSR_VARID_PS)
+ *   Payload: PSKey (2) | Stores (2) | Length (2) | Data (8)
+ */
+static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	struct sk_buff *skb;
+	u8 bccmd[24];
+
+	/* BCCMD header */
+	bccmd[0] = 0x02;	/* Type: SETREQ (low byte) */
+	bccmd[1] = 0x00;	/* Type: SETREQ (high byte) */
+	bccmd[2] = 0x0c;	/* Length: 12 words (low byte) */
+	bccmd[3] = 0x00;	/* Length: 12 words (high byte) */
+	bccmd[4] = 0x00;	/* SeqNo (low byte) */
+	bccmd[5] = 0x00;	/* SeqNo (high byte) */
+	bccmd[6] = 0x03;	/* VarID: 0x7003 PS (low byte) */
+	bccmd[7] = 0x70;	/* VarID: 0x7003 PS (high byte) */
+	bccmd[8] = 0x00;	/* Status (low byte) */
+	bccmd[9] = 0x00;	/* Status (high byte) */
+
+	/*
+	 * PS payload format (from BlueZ bccmd.c):
+	 *   PSKey  (2 bytes) - which PSKEY to set
+	 *   Length (2 bytes) - data length in words
+	 *   Stores (2 bytes) - which store to use
+	 *   Data   (length * 2 bytes)
+	 */
+	bccmd[10] = 0x01;	/* PSKey: 0x0001 BDADDR (low byte) */
+	bccmd[11] = 0x00;	/* PSKey: 0x0001 BDADDR (high byte) */
+	bccmd[12] = 0x04;	/* Length: 4 words = 8 bytes (low byte) */
+	bccmd[13] = 0x00;	/* Length: 4 words (high byte) */
+	bccmd[14] = PSKEY_STORES_PSRAM;	/* Stores: PSRAM (volatile) - matches webOS */
+	bccmd[15] = 0x00;
+
+	/*
+	 * BD Address in CSR PSKEY format:
+	 *   Word 0: LAP[15:8] | (LAP[23:16] << 8)
+	 *   Word 1: LAP[7:0] with padding
+	 *   Word 2: UAP with padding
+	 *   Word 3: NAP (little endian)
+	 *
+	 * bdaddr_t.b[] stores address in little endian:
+	 *   b[0]=LAP[7:0], b[1]=LAP[15:8], b[2]=LAP[23:16],
+	 *   b[3]=UAP, b[4]=NAP[7:0], b[5]=NAP[15:8]
+	 */
+	bccmd[16] = addr->b[1];	/* Word 0 low: LAP[15:8] */
+	bccmd[17] = addr->b[2];	/* Word 0 high: LAP[23:16] */
+	bccmd[18] = addr->b[0];	/* Word 1 low: LAP[7:0] */
+	bccmd[19] = 0x00;	/* Word 1 high: padding */
+	bccmd[20] = addr->b[3];	/* Word 2 low: UAP */
+	bccmd[21] = 0x00;	/* Word 2 high: padding */
+	bccmd[22] = addr->b[4];	/* Word 3 low: NAP[7:0] */
+	bccmd[23] = addr->b[5];	/* Word 3 high: NAP[15:8] */
+
+	skb = alloc_skb(sizeof(bccmd), GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	skb_put_data(skb, bccmd, sizeof(bccmd));
+	hci_skb_pkt_type(skb) = BCSP_BCCMD_PKT;
+
+	skb_queue_tail(&bcsp->unrel, skb);
+	hci_uart_tx_wakeup(hu);
+
+	BT_INFO("BCSP: Sent BCCMD to set BD address %pMR", addr);
+
+	return 0;
+}
+
+static int bcsp_setup(struct hci_uart *hu)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	int i;
+
+	/*
+	 * BD address configuration for CSR chips.
+	 *
+	 * Note: hciattach performs BCSP link establishment in userspace before
+	 * setting the line discipline. By the time bcsp_setup() is called, the
+	 * link is already established. We cannot intercept conf_rsp packets.
+	 *
+	 * Instead, we send BCCMD commands here after link establishment:
+	 * 1. Send PSKEY_BDADDR to set the BD address
+	 * 2. Send WARM_RESET to apply the change
+	 * 3. Wait for chip to reset and re-establish link
+	 * 4. Continue with HCI initialization
+	 */
+	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
+		if (skip_pskeys) {
+			BT_INFO("BCSP: Skipping PSKEY configuration (skip_pskeys=1)");
+			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+			return 0;
+		}
+
+		/*
+		 * In serdev mode, wait for link establishment before
+		 * sending PSKEYs. Check hu->serdev directly since
+		 * bcsp->is_serdev isn't set until after hci_uart_register_device().
+		 */
+		if (hu->serdev && !bcsp->link_established) {
+			unsigned long timeout;
+
+			BT_INFO("BCSP: Serdev mode - waiting for link establishment");
+
+			timeout = wait_for_completion_timeout(&bcsp->link_up,
+							      msecs_to_jiffies(5000));
+			if (!timeout) {
+				BT_ERR("BCSP: Timeout waiting for link establishment");
+				return -ETIMEDOUT;
+			}
+
+			BT_INFO("BCSP: Link established, proceeding with PSKEY config");
+		}
+
+		BT_INFO("BCSP: Configuring chip with webOS PSKEYs + WARM_RESET");
+
+		/*
+		 * Send PSKEYs in webOS sequence (extracted from PmBtStack):
+		 * 1. Common PSKEYs (crystal freq, ftrim, etc.)
+		 * 2. Palm Platform Common PSKEYs (5 entries)
+		 * 3. Palm Platform Specific PSKEYs (7 entries incl power table)
+		 * 4. BD address
+		 * 5. WARM_RESET to apply all PSKEYs
+		 *
+		 * All PSKEYs use stores=8 (PSRAM/volatile).
+		 */
+
+		/* === Common PSKEYs (from DT or Palm defaults) === */
+
+		/* Crystal frequency - CRITICAL for RF */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, bcsp->pskey_ana_freq);
+		msleep(20);
+
+		/* Crystal fine trim */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM, bcsp->pskey_ana_ftrim);
+		msleep(20);
+
+		/* Host interface - BCSP mode */
+		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
+				     bcsp->pskey_host_interface);
+		msleep(20);
+
+		/* Deep sleep config */
+		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+				     bcsp->pskey_deep_sleep);
+		msleep(20);
+
+		/* HCI FC max ACL packets */
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+				     bcsp->pskey_hci_max_acl);
+		msleep(20);
+
+		/* HCI FC max SCO packets */
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+				     bcsp->pskey_hci_max_sco);
+		msleep(20);
+
+		/* UART baudrate divisor */
+		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+				     bcsp->pskey_uart_baudrate);
+		msleep(20);
+
+		/* Encryption key min length */
+		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
+				     bcsp->pskey_enc_key_min);
+		msleep(20);
+
+		/* Unknown 0x01F9 */
+		bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+				     bcsp->pskey_unknown_01f9);
+		msleep(20);
+
+		/* Max TX power without RSSI */
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
+				     bcsp->pskey_max_tx_power_no_rssi);
+		msleep(20);
+
+		/* Default TX power without RSSI */
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+				     bcsp->pskey_default_tx_power_no_rssi);
+		msleep(20);
+
+		/* === Palm Platform Common PSKEYs === */
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
+				     bcsp->pskey_palm_01b3,
+				     bcsp->pskey_palm_01b3_len);
+		msleep(20);
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01B6,
+				     bcsp->pskey_palm_01b6,
+				     bcsp->pskey_palm_01b6_len);
+		msleep(20);
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01BF,
+				     bcsp->pskey_palm_01bf,
+				     bcsp->pskey_palm_01bf_len);
+		msleep(20);
+
+		/* === Palm Platform Specific PSKEYs === */
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01BA,
+				     bcsp->pskey_palm_01ba,
+				     bcsp->pskey_palm_01ba_len);
+		msleep(20);
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01C7,
+				     bcsp->pskey_palm_01c7,
+				     bcsp->pskey_palm_01c7_len);
+		msleep(20);
+
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01CA,
+				     bcsp->pskey_palm_01ca,
+				     bcsp->pskey_palm_01ca_len);
+		msleep(20);
+
+		/* Default TX Power (PSKEY 0x0021) */
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+				     bcsp->pskey_default_tx_power);
+		msleep(20);
+
+		/* Max TX Power (PSKEY 0x0017) */
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+				     bcsp->pskey_max_tx_power);
+		msleep(20);
+
+		/* Palm config 0x001D */
+		bcsp_send_pskey_data(hu, PSKEY_PALM_001D,
+				     bcsp->pskey_palm_001d,
+				     bcsp->pskey_palm_001d_len);
+		msleep(20);
+
+		/* TouchPad-specific RF calibration PSKEYs (if present) */
+		bcsp_send_touchpad_pskeys(hu);
+
+		/*
+		 * TX Power Level Table (PSKEY 0x0031) - CRITICAL FOR RF
+		 * Use DT-provided table if available, otherwise use Palm defaults.
+		 */
+		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     bcsp->tx_power_table,
+					     bcsp->tx_power_table_len);
+		} else {
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     palm_tx_power_table,
+					     ARRAY_SIZE(palm_tx_power_table));
+		}
+		msleep(50);
+
+		/* BD address */
+		BT_INFO("BCSP: Setting BD address %pMR", &bcsp->bdaddr);
+		bcsp_send_bdaddr_bccmd(hu, &bcsp->bdaddr);
+		msleep(50);
+
+		/*
+		 * The chip will restart and re-emit SYNC after WARM_RESET, so
+		 * we need link_up to be re-armable. Reinit it BEFORE flipping
+		 * warm_reset_sent, otherwise the wait below can race with the
+		 * sync handler's reinit and miss the completion.
+		 */
+		reinit_completion(&bcsp->link_up);
+		bcsp->link_established = false;
+
+		/* WARM_RESET to apply all PSKEYs */
+		bcsp_send_warm_reset(hu);
+		bcsp->warm_reset_sent = true;
+		msleep(50);
+
+		/* Give TX time to send the packets */
+		for (i = 0; i < 10; i++) {
+			if (skb_queue_empty(&bcsp->unrel))
+				break;
+			msleep(50);
+			hci_uart_tx_wakeup(hu);
+		}
+
+		BT_INFO("BCSP: WARM_RESET sent, chip will reset...");
+
+		/*
+		 * After WARM_RESET, the chip resets and reloads PSKEYs from
+		 * PSRAM (the volatile store we just programmed). The BCSP
+		 * sequence numbers in the chip are reset to 0.
+		 *
+		 * In serdev mode: Wait for chip restart, then resync our
+		 * driver state to match. Do NOT hard-power-cycle here —
+		 * that would clear PSRAM and undo everything we just configured.
+		 *
+		 * In line discipline mode: Let hciattach restart with a fresh
+		 * connection to the now-configured chip.
+		 */
+		if (bcsp->is_serdev) {
+			unsigned long timeout;
+
+			BT_INFO("BCSP: Serdev mode - waiting for chip restart after WARM_RESET...");
+
+			/*
+			 * The chip restarts in BCSP link-establishment state and
+			 * will send SYNC packets until we ACK them. The sync
+			 * handler resets our seq numbers + sets link_state back
+			 * to UNINIT + reinits link_up. The CONF handler will
+			 * complete(link_up) once the handshake finishes.
+			 *
+			 * Wait up to 5 s for the re-handshake to complete. Without
+			 * this wait, bcsp_setup() returns before the link is
+			 * actually usable, and the very first HCI command (HCI
+			 * Reset, 0x0c03) times out.
+			 */
+			timeout = wait_for_completion_timeout(&bcsp->link_up,
+							      msecs_to_jiffies(5000));
+			if (!timeout) {
+				BT_ERR("BCSP: Timeout waiting for re-handshake after WARM_RESET");
+				return -ETIMEDOUT;
+			}
+			BT_INFO("BCSP: Link re-established after WARM_RESET");
+		} else {
+			msleep(500);
+			BT_INFO("BCSP: PSKEYs + BDADDR applied. Restart hciattach for fresh connection.");
+		}
+
+		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+	} else if (bcsp->bdaddr_state == BCSP_BDADDR_NONE) {
+		/*
+		 * Fast init mode - no BD address to configure, but we still
+		 * need to send RF calibration PSKEYs and WARM_RESET for the
+		 * radio to work. The crystal frequency (ANA_FREQ) in particular
+		 * requires a reset to take effect.
+		 */
+		if (skip_pskeys) {
+			BT_INFO("BCSP: Skipping PSKEY configuration (skip_pskeys=1)");
+			return 0;
+		}
+
+		/*
+		 * In serdev mode, bcsp_setup() is called before the BCSP link
+		 * is established. We must wait for link establishment before
+		 * sending PSKEYs. The conf handler will signal link_up when
+		 * the handshake completes.
+		 *
+		 * Note: Check hu->serdev directly since bcsp->is_serdev isn't
+		 * set until after hci_uart_register_device() returns.
+		 */
+		if (hu->serdev) {
+			unsigned long timeout;
+
+			BT_INFO("BCSP: Serdev mode - waiting for link establishment");
+
+			/* Wait up to 5 seconds for link to be established */
+			timeout = wait_for_completion_timeout(&bcsp->link_up,
+							      msecs_to_jiffies(5000));
+			if (!timeout) {
+				BT_ERR("BCSP: Timeout waiting for link establishment");
+				return -ETIMEDOUT;
+			}
+
+			BT_INFO("BCSP: Link established, proceeding with PSKEY config");
+		}
+
+		BT_INFO("BCSP: Sending PSKEYs + WARM_RESET (no BD addr)");
+
+		/*
+		 * Send PSKEYs in webOS sequence - same as BCSP_BDADDR_PENDING
+		 * but without BD address configuration.
+		 * Uses values from DT or Palm defaults.
+		 */
+
+		/* === Common PSKEYs === */
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, bcsp->pskey_ana_freq);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM, bcsp->pskey_ana_ftrim);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
+				     bcsp->pskey_host_interface);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+				     bcsp->pskey_deep_sleep);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+				     bcsp->pskey_hci_max_acl);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+				     bcsp->pskey_hci_max_sco);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+				     bcsp->pskey_uart_baudrate);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
+				     bcsp->pskey_enc_key_min);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+				     bcsp->pskey_unknown_01f9);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
+				     bcsp->pskey_max_tx_power_no_rssi);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+				     bcsp->pskey_default_tx_power_no_rssi);
+		msleep(20);
+
+		/* === Palm Platform Common PSKEYs === */
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
+				     bcsp->pskey_palm_01b3,
+				     bcsp->pskey_palm_01b3_len);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01B6,
+				     bcsp->pskey_palm_01b6,
+				     bcsp->pskey_palm_01b6_len);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01BF,
+				     bcsp->pskey_palm_01bf,
+				     bcsp->pskey_palm_01bf_len);
+		msleep(20);
+
+		/* === Palm Platform Specific PSKEYs === */
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01BA,
+				     bcsp->pskey_palm_01ba,
+				     bcsp->pskey_palm_01ba_len);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01C7,
+				     bcsp->pskey_palm_01c7,
+				     bcsp->pskey_palm_01c7_len);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_01CA,
+				     bcsp->pskey_palm_01ca,
+				     bcsp->pskey_palm_01ca_len);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
+				     bcsp->pskey_default_tx_power);
+		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
+				     bcsp->pskey_max_tx_power);
+		msleep(20);
+		bcsp_send_pskey_data(hu, PSKEY_PALM_001D,
+				     bcsp->pskey_palm_001d,
+				     bcsp->pskey_palm_001d_len);
+		msleep(20);
+
+		/* TouchPad-specific RF calibration PSKEYs (if present) */
+		bcsp_send_touchpad_pskeys(hu);
+
+		/* TX Power Table - use DT if available, else Palm defaults */
+		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     bcsp->tx_power_table,
+					     bcsp->tx_power_table_len);
+		} else {
+			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+					     palm_tx_power_table,
+					     ARRAY_SIZE(palm_tx_power_table));
+		}
+		msleep(50);
+
+		/* Re-arm link_up before WARM_RESET (see PSKEY path comment) */
+		reinit_completion(&bcsp->link_up);
+		bcsp->link_established = false;
+
+		/* WARM_RESET to apply PSKEYs */
+		bcsp_send_warm_reset(hu);
+		bcsp->warm_reset_sent = true;
+		msleep(50);
+
+		/* Wait for packets to be sent */
+		for (i = 0; i < 10; i++) {
+			if (skb_queue_empty(&bcsp->unrel))
+				break;
+			msleep(50);
+			hci_uart_tx_wakeup(hu);
+		}
+
+		BT_INFO("BCSP: WARM_RESET sent, chip will reset...");
+
+		/*
+		 * After WARM_RESET, the chip resets and reloads PSKEYs from
+		 * PSRAM (volatile store). The BCSP sequence numbers reset to 0.
+		 *
+		 * In serdev mode: Wait for chip restart, then resync driver
+		 * state to match. Do NOT hard-power-cycle — that would clear
+		 * PSRAM and undo the PSKEYs we just programmed.
+		 */
+		if (bcsp->is_serdev) {
+			unsigned long timeout;
+
+			BT_INFO("BCSP: Serdev mode - waiting for re-handshake after WARM_RESET...");
+
+			/*
+			 * After WARM_RESET the chip restarts in handshake state
+			 * and emits SYNCs; sync handler resets driver state and
+			 * advances toward LINK_ACTIVE. Wait for the link to come
+			 * back up before allowing HCI traffic.
+			 */
+			timeout = wait_for_completion_timeout(&bcsp->link_up,
+							      msecs_to_jiffies(5000));
+			if (!timeout) {
+				BT_ERR("BCSP: Timeout waiting for re-handshake after WARM_RESET");
+				return -ETIMEDOUT;
+			}
+			BT_INFO("BCSP: Link re-established after WARM_RESET");
+		} else {
+			msleep(500);
+			BT_INFO("BCSP: PSKEYs applied. Restart hciattach for fresh connection.");
+		}
+
+		bcsp->bdaddr_state = BCSP_BDADDR_DONE;
+	}
+
+	return 0;
+}
+
+/*
+ * Send a link establishment packet (sync or conf).
+ */
+static void bcsp_send_link_pkt(struct bcsp_struct *bcsp, const u8 *data, size_t len)
+{
+	struct sk_buff *skb;
+
+	skb = alloc_skb(len, GFP_ATOMIC);
+	if (!skb)
+		return;
+
+	skb_put_data(skb, data, len);
+	hci_skb_pkt_type(skb) = BCSP_LE_PKT;
+	skb_queue_tail(&bcsp->unrel, skb);
+}
+
+/*
+ * Timer callback for link establishment and retransmission.
+ * - In UNINIT state: send sync packets to initiate link
+ * - In INIT state: send conf packets to complete handshake
+ * - In ACTIVE state: handle reliable packet retransmission
+ */
 static void bcsp_timed_event(struct timer_list *t)
 {
+	static const u8 sync_pkt[4]     = { 0xda, 0xdc, 0xed, 0xed };
+	static const u8 sync_rsp_pkt[4] = { 0xac, 0xaf, 0xef, 0xee };
+	static const u8 conf_pkt[4]     = { 0xad, 0xef, 0xac, 0xed };
 	struct bcsp_struct *bcsp = timer_container_of(bcsp, t, tbcsp);
 	struct hci_uart *hu = bcsp->hu;
 	struct sk_buff *skb;
 	unsigned long flags;
 
-	BT_DBG("hu %p retransmitting %u pkts", hu, bcsp->unack.qlen);
+	BT_DBG("hu %p link_state %d unack %u", hu, bcsp->link_state, bcsp->unack.qlen);
 
+	/*
+	 * BCSP Link Establishment requires both sides to send sync.
+	 * When the chip receives our sync, it responds with sync_rsp.
+	 * When we receive sync_rsp, we move to INIT state.
+	 * Meanwhile, we also respond to chip's sync with our sync_rsp.
+	 *
+	 * When skip_sync is in effect, the chip is already in operational
+	 * state; never inject sync/conf frames or the chip will reject them.
+	 */
+	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_UNINIT) {
+		int n = bt_linkest_burst > 0 ? bt_linkest_burst : 1;
+
+		BT_DBG("BCSP: timer hammering sync/sync-rsp x%d", n);
+		/* Alternate SYNC (so the chip answers us) and SYNC-RSP (so the
+		 * chip advances), back-to-back, to flood the chip's wake window. */
+		while (n-- > 0) {
+			bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
+			if (n-- > 0)
+				bcsp_send_link_pkt(bcsp, sync_rsp_pkt,
+						   sizeof(sync_rsp_pkt));
+		}
+	}
+
+	/* Send conf packets in INIT state */
+	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_INIT) {
+		int n = bt_linkest_burst > 0 ? bt_linkest_burst : 1;
+
+		BT_DBG("BCSP: timer hammering conf x%d", n);
+		while (n-- > 0)
+			bcsp_send_link_pkt(bcsp, conf_pkt, sizeof(conf_pkt));
+	}
+
+	/* Re-arm timer if link not yet active — fast tick while hammering. */
+	BT_DBG("BCSP: timer check link_state=%d (ACTIVE=%d)",
+	       bcsp->link_state, BCSP_LINK_ACTIVE);
+	if (bcsp->link_state != BCSP_LINK_ACTIVE) {
+		mod_timer(&bcsp->tbcsp,
+			  jiffies + (bt_linkest_burst > 0 ? 1 : HZ / 4));
+		BT_DBG("BCSP: timer re-armed");
+	}
+
+	/* Handle retransmission of reliable packets */
 	spin_lock_irqsave_nested(&bcsp->unack.lock, flags, SINGLE_DEPTH_NESTING);
 
 	while ((skb = __skb_dequeue_tail(&bcsp->unack)) != NULL) {
@@ -708,6 +2330,246 @@ static void bcsp_timed_event(struct timer_list *t)
 	spin_unlock_irqrestore(&bcsp->unack.lock, flags);
 
 	hci_uart_tx_wakeup(hu);
+}
+
+/*
+ * Initialize PSKEY values with Palm/webOS defaults for HP TouchPad BCM4329.
+ * These can be overridden by device tree properties.
+ */
+static void bcsp_init_pskey_defaults(struct bcsp_struct *bcsp)
+{
+	/* Common PSKEYs - webOS defaults */
+	bcsp->pskey_ana_freq = 26000;		/* 26 MHz crystal */
+	bcsp->pskey_ana_ftrim = 0x19;		/* Crystal fine trim */
+	bcsp->pskey_host_interface = 0x0001;	/* BCSP mode */
+	bcsp->pskey_deep_sleep = 0x0000;	/* Deep sleep config */
+	bcsp->pskey_hci_max_acl = 0x03ec;	/* HCI FC max ACL */
+	bcsp->pskey_hci_max_sco = 0x0000;	/* HCI FC max SCO */
+	bcsp->pskey_uart_baudrate = 0x01d8;	/* 115200 baud */
+	bcsp->pskey_enc_key_min = 0x0001;	/* Encryption key min */
+	bcsp->pskey_unknown_01f9 = 0x0001;	/* Unknown */
+	bcsp->pskey_max_tx_power_no_rssi = 0x0004;
+	bcsp->pskey_default_tx_power_no_rssi = 0x0001;
+	bcsp->pskey_max_tx_power = 0x0004;	/* Max TX power */
+	bcsp->pskey_default_tx_power = 0x0004;	/* Default TX power */
+
+	/* Palm Platform PSKEYs - use static defaults */
+	bcsp->pskey_palm_01b3 = palm_pskey_01b3;
+	bcsp->pskey_palm_01b3_len = ARRAY_SIZE(palm_pskey_01b3);
+	bcsp->pskey_palm_01b6 = palm_pskey_01b6;
+	bcsp->pskey_palm_01b6_len = ARRAY_SIZE(palm_pskey_01b6);
+	bcsp->pskey_palm_01bf = palm_pskey_01bf;
+	bcsp->pskey_palm_01bf_len = ARRAY_SIZE(palm_pskey_01bf);
+	bcsp->pskey_palm_01ba = palm_pskey_01ba;
+	bcsp->pskey_palm_01ba_len = ARRAY_SIZE(palm_pskey_01ba);
+	bcsp->pskey_palm_01c7 = palm_pskey_01c7;
+	bcsp->pskey_palm_01c7_len = ARRAY_SIZE(palm_pskey_01c7);
+	bcsp->pskey_palm_01ca = palm_pskey_01ca;
+	bcsp->pskey_palm_01ca_len = ARRAY_SIZE(palm_pskey_01ca);
+	bcsp->pskey_palm_001d = palm_pskey_001d;
+	bcsp->pskey_palm_001d_len = ARRAY_SIZE(palm_pskey_001d);
+
+	/* TX power table - use Palm default */
+	bcsp->tx_power_table = NULL;  /* Will use palm_tx_power_table */
+	bcsp->tx_power_table_len = 0;
+}
+
+/*
+ * Read PSKEY configuration from device tree.
+ * PSKEYs are stored in properties of a compatible = "brcm,bcm4329-bt" node.
+ * Values from DT override the Palm defaults.
+ */
+static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
+{
+	struct device_node *np;
+	int len, ret;
+	int pskeys_read = 0;
+
+	/* Initialize with Palm/webOS defaults first */
+	bcsp_init_pskey_defaults(bcsp);
+	bcsp->pskeys_from_dt = false;
+
+	/* Try palm-specific compatible first, then generic */
+	np = of_find_compatible_node(NULL, NULL, "palm,bcm4329-bcsp");
+	if (!np) {
+		BT_DBG("BCSP: palm,bcm4329-bcsp not found, trying generic");
+		np = of_find_compatible_node(NULL, NULL, "brcm,bcm4329-bt");
+	}
+	if (!np) {
+		BT_INFO("BCSP: No DT node found, using Palm defaults");
+		return;
+	}
+
+	BT_INFO("BCSP: Found DT node for bluetooth config");
+
+	/*
+	 * BCM4329 on TouchPad ships in BCSP-operational state — no SYNC
+	 * handshake is needed (or accepted). Honour DT opt-in.
+	 */
+	if (of_property_read_bool(np, "qcom,bcsp-skip-sync")) {
+		bcsp->skip_sync = true;
+		BT_INFO("BCSP: skip-sync ENABLED via DT (chip already operational)");
+	} else {
+		BT_DBG("BCSP: skip-sync property not found or false");
+	}
+
+	/* Read TX power table from DT (overrides Palm default) */
+	if (of_find_property(np, "brcm,tx-power-table", &len)) {
+		len = len / sizeof(u16);
+		if (len > 0 && len <= BCSP_TX_POWER_TABLE_MAX) {
+			bcsp->tx_power_table = kmalloc_array(len, sizeof(u16),
+							     GFP_KERNEL);
+			if (bcsp->tx_power_table) {
+				ret = of_property_read_u16_array(np,
+					"brcm,tx-power-table",
+					bcsp->tx_power_table, len);
+				if (ret) {
+					kfree(bcsp->tx_power_table);
+					bcsp->tx_power_table = NULL;
+				} else {
+					bcsp->tx_power_table_len = len;
+					pskeys_read++;
+				}
+			}
+		}
+	}
+
+	/* Read individual PSKEYs from DT (override defaults) */
+	if (!of_property_read_u16(np, "brcm,ana-freq",
+				  &bcsp->pskey_ana_freq))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,ana-ftrim",
+				  &bcsp->pskey_ana_ftrim))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,host-interface",
+				  &bcsp->pskey_host_interface))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,deep-sleep",
+				  &bcsp->pskey_deep_sleep))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,hci-max-acl",
+				  &bcsp->pskey_hci_max_acl))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,hci-max-sco",
+				  &bcsp->pskey_hci_max_sco))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,uart-baudrate",
+				  &bcsp->pskey_uart_baudrate))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,enc-key-min",
+				  &bcsp->pskey_enc_key_min))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,max-tx-power",
+				  &bcsp->pskey_max_tx_power))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,default-tx-power",
+				  &bcsp->pskey_default_tx_power))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,max-tx-power-no-rssi",
+				  &bcsp->pskey_max_tx_power_no_rssi))
+		pskeys_read++;
+	if (!of_property_read_u16(np, "brcm,default-tx-power-no-rssi",
+				  &bcsp->pskey_default_tx_power_no_rssi))
+		pskeys_read++;
+
+	if (pskeys_read > 0) {
+		bcsp->pskeys_from_dt = true;
+		BT_INFO("BCSP: %d PSKEYs overridden from DT", pskeys_read);
+	} else {
+		BT_INFO("BCSP: Using Palm defaults (no DT overrides)");
+	}
+
+	/*
+	 * Read TouchPad-specific PSKEYs (RF calibration data)
+	 * These are only present on HP TouchPad (LMP subversion 0x12E9)
+	 */
+	bcsp->touchpad_pskeys_present = false;
+
+#define READ_TOUCHPAD_PSKEY(name, field) \
+	do { \
+		if (of_find_property(np, "brcm,pskey-" name, &len)) { \
+			len = len / sizeof(u16); \
+			if (len > 0) { \
+				bcsp->touchpad_pskey_##field = \
+					kmalloc_array(len, sizeof(u16), GFP_KERNEL); \
+				if (bcsp->touchpad_pskey_##field) { \
+					ret = of_property_read_u16_array(np, \
+						"brcm,pskey-" name, \
+						bcsp->touchpad_pskey_##field, len); \
+					if (ret) { \
+						kfree(bcsp->touchpad_pskey_##field); \
+						bcsp->touchpad_pskey_##field = NULL; \
+					} else { \
+						bcsp->touchpad_pskey_##field##_len = len; \
+						bcsp->touchpad_pskeys_present = true; \
+					} \
+				} \
+			} \
+		} \
+	} while (0)
+
+	/* Configuration PSKEYs */
+	READ_TOUCHPAD_PSKEY("00f6", 00f6);
+	READ_TOUCHPAD_PSKEY("0203", 0203);
+	READ_TOUCHPAD_PSKEY("0394", 0394);
+	READ_TOUCHPAD_PSKEY("03aa", 03aa);
+	READ_TOUCHPAD_PSKEY("03ab", 03ab);
+	READ_TOUCHPAD_PSKEY("03d4", 03d4);
+
+	/* RF Calibration PSKEYs */
+	READ_TOUCHPAD_PSKEY("212c", 212c);
+	READ_TOUCHPAD_PSKEY("212d", 212d);
+	READ_TOUCHPAD_PSKEY("212e", 212e);
+	READ_TOUCHPAD_PSKEY("212f", 212f);
+	READ_TOUCHPAD_PSKEY("2130", 2130);
+	READ_TOUCHPAD_PSKEY("2131", 2131);
+	READ_TOUCHPAD_PSKEY("2132", 2132);
+	READ_TOUCHPAD_PSKEY("2133", 2133);
+	READ_TOUCHPAD_PSKEY("2134", 2134);
+	READ_TOUCHPAD_PSKEY("2135", 2135);
+	READ_TOUCHPAD_PSKEY("2136", 2136);
+	READ_TOUCHPAD_PSKEY("2137", 2137);
+	READ_TOUCHPAD_PSKEY("2138", 2138);
+	READ_TOUCHPAD_PSKEY("2139", 2139);
+	READ_TOUCHPAD_PSKEY("213a", 213a);
+	READ_TOUCHPAD_PSKEY("21e1", 21e1);
+	READ_TOUCHPAD_PSKEY("2215", 2215);
+	READ_TOUCHPAD_PSKEY("2216", 2216);
+	READ_TOUCHPAD_PSKEY("2227", 2227);
+	READ_TOUCHPAD_PSKEY("2228", 2228);
+	READ_TOUCHPAD_PSKEY("2229", 2229);
+	READ_TOUCHPAD_PSKEY("222a", 222a);
+	READ_TOUCHPAD_PSKEY("222b", 222b);
+
+#undef READ_TOUCHPAD_PSKEY
+
+	if (bcsp->touchpad_pskeys_present)
+		BT_INFO("BCSP: TouchPad RF calibration PSKEYs loaded from DT");
+
+	/*
+	 * Read local-bd-address from device tree.
+	 * Standard Bluetooth DT binding uses little-endian format:
+	 * For address 00:1D:FE:85:64:A9, the DT value is [A9 64 85 FE 1D 00]
+	 */
+	{
+		u8 bd_addr_le[6];
+
+		if (!of_property_read_u8_array(np, "local-bd-address",
+					       bd_addr_le, 6)) {
+			/* Convert from DT little-endian to bdaddr_t format */
+			bcsp->bdaddr.b[0] = bd_addr_le[0];
+			bcsp->bdaddr.b[1] = bd_addr_le[1];
+			bcsp->bdaddr.b[2] = bd_addr_le[2];
+			bcsp->bdaddr.b[3] = bd_addr_le[3];
+			bcsp->bdaddr.b[4] = bd_addr_le[4];
+			bcsp->bdaddr.b[5] = bd_addr_le[5];
+			bcsp->bdaddr_from_dt = true;
+			BT_INFO("BCSP: BD address from DT: %pMR", &bcsp->bdaddr);
+			pskeys_read++;
+		}
+	}
+
+	of_node_put(np);
 }
 
 static int bcsp_open(struct hci_uart *hu)
@@ -726,12 +2588,148 @@ static int bcsp_open(struct hci_uart *hu)
 	skb_queue_head_init(&bcsp->rel);
 	skb_queue_head_init(&bcsp->unrel);
 
+	/*
+	 * Tell HCI core to send HCI_Reset as the first command after
+	 * bcsp_setup() returns. CSR BlueCore chips emit one or two unsolicited
+	 * "Command Complete" events with opcode=0x0000 (NOP, ncmd=1) at
+	 * link-up as a flow-control indicator. Without an initial HCI_Reset,
+	 * the first real command (Read Local Features) races those NOPs and
+	 * the response matching breaks ("unexpected event for opcode 0x0000",
+	 * then the real command times out -110). HCI_Reset absorbs the NOPs
+	 * and puts the chip in a clean command-response state.
+	 *
+	 * Without this bit, hci_ldisc.c sets HCI_QUIRK_RESET_ON_CLOSE which
+	 * suppresses the init-time Reset.
+	 */
+	set_bit(HCI_UART_RESET_ON_INIT, &hu->hdev_flags);
+
+	/*
+	 * Run the GSBI6 UART with hardware flow control DISABLED, matching
+	 * webOS. The legacy board file (board-tenderloin.c btuart_data) sets
+	 *   .uart_mode = HSUART_MODE_FLOW_CTRL_NONE | HSUART_MODE_PARITY_NONE
+	 * i.e. no automatic CRTSCTS gating. The UART_WITH_FLOW_CONTROL flag
+	 * passed to board_gsbi6_init() only muxes the RTS/CTS *pins* as the
+	 * GSBI6 function; it does NOT enable CRTSCTS in the UART driver. A
+	 * previous version of this driver misread that and turned CRTSCTS on,
+	 * which gates host TX on the chip's CTS line — the chip then never
+	 * receives our SYNC_RSP and loops SYNC (da dc ed ed) forever, so BCSP
+	 * link establishment times out. hci_serdev already left flow control
+	 * disabled before calling us; keep it that way explicitly.
+	 */
+	if (hu->serdev) {
+		serdev_device_set_flow_control(hu->serdev, false);
+		BT_INFO("BCSP: Hardware flow control disabled (webOS FLOW_CTRL_NONE)");
+
+		/*
+		 * Assert RTS (RFR, gpio56) during BCSP link establishment.
+		 *
+		 * The webOS cold-handshake capture
+		 * (reports/bt-trace/webos-cold-handshake-2026-05-22.log) shows
+		 * the legacy hsuart driving RFR ASSERTED (low; FUNC_1/OUT_LOW
+		 * via btuart_deassert_rts "get") immediately before TX SYNC.
+		 * RFR is the CSR chip's CTS input. With RFR DEASSERTED (high —
+		 * msm_serial's state when flow control is off) the chip treats
+		 * the host as "not ready to receive" and never transmits its
+		 * CONF/SYNC-RSP — it just streams SYNC forever and link
+		 * establishment never completes. That is exactly our symptom,
+		 * even though our SYNC bytes are byte-identical to webOS's.
+		 *
+		 * set_tiocm(TIOCM_RTS) -> msm_set_mctrl sets MR1 RX_RDY_CTL
+		 * (auto-RFR), asserting RFR low while the RX FIFO has room
+		 * (always true during light link-establishment traffic).
+		 * CTS_CTL stays clear so our TX is NOT gated by the chip's CTS.
+		 */
+		serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);
+		BT_INFO("BCSP: Asserted RTS (RFR) for link establishment (webOS-style)");
+	}
+
 	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
 
 	bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
 
+	/* Initialize link establishment state machine */
+	bcsp->link_state = BCSP_LINK_UNINIT;
+	init_completion(&bcsp->link_up);
+	bcsp->link_established = false;
+
 	if (txcrc)
 		bcsp->use_crc = 1;
+
+	/*
+	 * Load PSKEY table and skip-sync flag from device tree before
+	 * deciding how to drive the BCSP link.
+	 */
+	bcsp_read_pskeys_from_dt(bcsp);
+
+	if (bcsp->skip_sync) {
+		/*
+		 * Chip is already in BCSP operational state from EEPROM.
+		 * Don't queue a SYNC packet, don't arm the link-establishment
+		 * timer — just signal the link as up so bcsp_setup() can
+		 * proceed straight to PSKEY replay.
+		 */
+		bcsp->link_state = BCSP_LINK_ACTIVE;
+		bcsp->link_established = true;
+		complete(&bcsp->link_up);
+		BT_INFO("BCSP: skip-sync — link forced ACTIVE, no SYNC sent");
+	} else {
+		/*
+		 * Send one initial sync packet to wake the chip.
+		 * The chip will respond with sync, and we'll respond with sync_rsp.
+		 */
+		static const u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
+		struct sk_buff *skb = alloc_skb(4, GFP_KERNEL);
+
+		/*
+		 * webOS "reinit before TX": the legacy hsuart driver does a full
+		 * port disable->reinit immediately before the first SYNC
+		 * (msm_uartdm __port_disable: pin-mux OFF; __port_init: pin-mux
+		 * ON + set_baud + UART RESET; then __set_rx_flow re-asserts RTS).
+		 * The UART RESET (RESET_RX/TX/ERR/BREAK/CTS/RFR) re-arms the
+		 * chip-facing TX/RX state right before we transmit — mainline
+		 * never resets here, and our prior pin-mux-only glitch missed it.
+		 * Re-applying the baud routes through msm_set_termios ->
+		 * msm_set_baud_rate -> msm_reset, giving the same reset tightly
+		 * before TX. Because msm_reset() clears MR1 RX_RDY_CTL (auto-RFR),
+		 * it deasserts RTS, so we must re-assert RTS AFTER the reset (same
+		 * order webOS uses: port_init reset, then set_rx_flow asserts).
+		 */
+		if (hu->serdev) {
+			serdev_device_set_baudrate(hu->serdev, 115200);
+			serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);
+			BT_INFO("BCSP: UART reset + RTS re-assert before SYNC (webOS reinit)");
+		}
+
+		if (skb) {
+			skb_put_data(skb, sync_pkt, 4);
+			hci_skb_pkt_type(skb) = BCSP_LE_PKT;
+			bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
+			skb_queue_tail(&bcsp->unrel, skb);
+			BT_INFO("BCSP: Sent initial sync to wake chip");
+		}
+
+		/* Start timer for link-est hammer / retransmission (fast tick). */
+		mod_timer(&bcsp->tbcsp,
+			  jiffies + (bt_linkest_burst > 0 ? 1 : HZ / 4));
+	}
+
+	/*
+	 * Initialize BD address configuration state.
+	 * Priority: 1) Device tree, 2) Module parameter
+	 */
+	bcsp->bdaddr_state = BCSP_BDADDR_NONE;
+	if (bcsp->bdaddr_from_dt) {
+		/* BD address already loaded from device tree */
+		bcsp->bdaddr_state = BCSP_BDADDR_PENDING;
+		BT_INFO("BCSP: Will configure BD address from DT on link up");
+	} else if (bdaddr && bdaddr[0]) {
+		if (bcsp_parse_bdaddr(bdaddr, &bcsp->bdaddr) == 0) {
+			bcsp->bdaddr_state = BCSP_BDADDR_PENDING;
+			BT_INFO("BCSP: Will configure BD address %s on link up", bdaddr);
+		} else {
+			BT_ERR("BCSP: Invalid bdaddr parameter: %s", bdaddr);
+		}
+	}
 
 	return 0;
 }
@@ -755,6 +2753,39 @@ static int bcsp_close(struct hci_uart *hu)
 		bcsp->rx_skb = NULL;
 	}
 
+	kfree(bcsp->tx_power_table);
+
+	/* Free TouchPad PSKEYs */
+	kfree(bcsp->touchpad_pskey_00f6);
+	kfree(bcsp->touchpad_pskey_0203);
+	kfree(bcsp->touchpad_pskey_0394);
+	kfree(bcsp->touchpad_pskey_03aa);
+	kfree(bcsp->touchpad_pskey_03ab);
+	kfree(bcsp->touchpad_pskey_03d4);
+	kfree(bcsp->touchpad_pskey_212c);
+	kfree(bcsp->touchpad_pskey_212d);
+	kfree(bcsp->touchpad_pskey_212e);
+	kfree(bcsp->touchpad_pskey_212f);
+	kfree(bcsp->touchpad_pskey_2130);
+	kfree(bcsp->touchpad_pskey_2131);
+	kfree(bcsp->touchpad_pskey_2132);
+	kfree(bcsp->touchpad_pskey_2133);
+	kfree(bcsp->touchpad_pskey_2134);
+	kfree(bcsp->touchpad_pskey_2135);
+	kfree(bcsp->touchpad_pskey_2136);
+	kfree(bcsp->touchpad_pskey_2137);
+	kfree(bcsp->touchpad_pskey_2138);
+	kfree(bcsp->touchpad_pskey_2139);
+	kfree(bcsp->touchpad_pskey_213a);
+	kfree(bcsp->touchpad_pskey_21e1);
+	kfree(bcsp->touchpad_pskey_2215);
+	kfree(bcsp->touchpad_pskey_2216);
+	kfree(bcsp->touchpad_pskey_2227);
+	kfree(bcsp->touchpad_pskey_2228);
+	kfree(bcsp->touchpad_pskey_2229);
+	kfree(bcsp->touchpad_pskey_222a);
+	kfree(bcsp->touchpad_pskey_222b);
+
 	kfree(bcsp);
 	return 0;
 }
@@ -764,19 +2795,276 @@ static const struct hci_uart_proto bcsp = {
 	.name		= "BCSP",
 	.open		= bcsp_open,
 	.close		= bcsp_close,
+	.setup		= bcsp_setup,
 	.enqueue	= bcsp_enqueue,
 	.dequeue	= bcsp_dequeue,
 	.recv		= bcsp_recv,
 	.flush		= bcsp_flush
 };
 
+/* ---- Serdev support for BCM4329 with BCSP protocol ---- */
+
+#ifdef CONFIG_SERIAL_DEV_BUS
+
+/*
+ * Power control for BCM4329 Bluetooth chip
+ *
+ * GPIO signals (active high unless noted):
+ * - shutdown_gpio: BT_REG_ON / BT_POWER - main power enable
+ * - device_wakeup: BT_WAKE - wake signal to chip
+ * - reset_gpio: BT_RST_N - active low reset
+ */
+static int bcsp_serdev_set_power(struct bcsp_serdev *bdev, bool powered)
+{
+	if (powered) {
+		/*
+		 * Power-on + reset sequence matching webOS bcattach
+		 * (webOS-ports/utilities tenderloin-halium/bcattach/main.c):
+		 * power on, hold reset asserted (low) for 100 ms, deassert,
+		 * then wait a FULL SECOND for the CSR BlueCore to finish
+		 * booting before any UART traffic.
+		 *
+		 * The previous code deasserted reset with no hold (a ~µs pulse)
+		 * and waited only 100 ms. On-device that left the chip with a
+		 * working autonomous SYNC transmitter but a dead/uninitialised
+		 * UART receiver: it streamed SYNC (da dc ed ed) forever and
+		 * never parsed our SYNC/SYNC-RSP, so BCSP link establishment
+		 * never completed. A proper 100 ms reset pulse + 1 s settle (and
+		 * staying silent until the chip is up) matches webOS.
+		 */
+		/*
+		 * Force a TRUE cold start first. The chip may have been left
+		 * powered (bootloader, or a previous link attempt) — a bare reset
+		 * pulse does not clear the CSR BlueCore's power-gated UART RX
+		 * state, only removing BT_POWER does. Continuous power across
+		 * attempts is the one variable never controlled while the chip
+		 * only-SYNCs and ignores our byte-perfect TX. Drive everything off
+		 * and hold long enough for the rails to drain, then power on.
+		 */
+		if (bdev->device_wakeup)
+			gpiod_set_value_cansleep(bdev->device_wakeup, 0);
+		if (bdev->reset_gpio)
+			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* assert reset */
+		if (bdev->shutdown_gpio) {
+			gpiod_set_value_cansleep(bdev->shutdown_gpio, 0); /* power OFF */
+			msleep(500);
+		}
+
+		if (bdev->shutdown_gpio)
+			gpiod_set_value_cansleep(bdev->shutdown_gpio, 1);
+
+		/* Hold reset asserted (active-low) for 100 ms, then release */
+		if (bdev->reset_gpio) {
+			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* assert */
+			msleep(100);
+			gpiod_set_value_cansleep(bdev->reset_gpio, 0); /* deassert */
+		}
+
+		if (bdev->device_wakeup)
+			gpiod_set_value_cansleep(bdev->device_wakeup, 1);
+
+		/* Wait for the chip to fully boot before talking to it */
+		msleep(1000);
+	} else {
+		/* Power off sequence */
+		if (bdev->device_wakeup)
+			gpiod_set_value_cansleep(bdev->device_wakeup, 0);
+
+		if (bdev->reset_gpio)
+			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* Assert reset */
+
+		if (bdev->shutdown_gpio)
+			gpiod_set_value_cansleep(bdev->shutdown_gpio, 0);
+
+		msleep(10);
+	}
+
+	return 0;
+}
+
+/*
+ * Power cycle the chip - used after WARM_RESET to cleanly restart
+ *
+ * After power cycle, the chip boots at its default baud rate (115200).
+ * We must reset our UART to init_speed to match, otherwise we get
+ * baud mismatch and communication fails.
+ */
+static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
+{
+	dev_info(bdev->dev, "Power cycling Bluetooth chip...\n");
+
+	/*
+	 * Cancel any pending TX work and wait for completion.
+	 * Clear TX state bits to ensure clean restart.
+	 */
+	cancel_work_sync(&bdev->serdev_hu.write_work);
+	clear_bit(HCI_UART_SENDING, &bdev->serdev_hu.tx_state);
+	clear_bit(HCI_UART_TX_WAKEUP, &bdev->serdev_hu.tx_state);
+
+	bcsp_serdev_set_power(bdev, false);
+	msleep(100);
+
+	/*
+	 * Flush TX buffer and reset baud rate.
+	 * Note: We do NOT close/reopen serdev as that breaks TX path
+	 * (serdev_device_write_buf returns 0 after reopen).
+	 */
+	serdev_device_write_flush(bdev->serdev_hu.serdev);
+	serdev_device_set_baudrate(bdev->serdev_hu.serdev, bdev->init_speed);
+	dev_info(bdev->dev, "Reset UART to %u baud\n", bdev->init_speed);
+
+	bcsp_serdev_set_power(bdev, true);
+
+	/*
+	 * Wait for chip to fully initialize after power on.
+	 * WebOS waits ~2-3 seconds here before expecting SYNC.
+	 */
+	msleep(2000);
+
+	return 0;
+}
+
+static int bcsp_serdev_probe(struct serdev_device *serdev)
+{
+	struct bcsp_serdev *bdev;
+	struct device *dev = &serdev->dev;
+	int err;
+
+	dev_info(dev, "BCSP serdev probe starting\n");
+
+	bdev = devm_kzalloc(dev, sizeof(*bdev), GFP_KERNEL);
+	if (!bdev)
+		return -ENOMEM;
+
+	bdev->dev = dev;
+	bdev->serdev_hu.serdev = serdev;
+	bdev->init_state = BCSP_SERDEV_INIT_POWER_OFF;
+	serdev_device_set_drvdata(serdev, bdev);
+
+	/* Get GPIO descriptors */
+	bdev->shutdown_gpio = devm_gpiod_get_optional(dev, "shutdown",
+						       GPIOD_OUT_LOW);
+	if (IS_ERR(bdev->shutdown_gpio)) {
+		dev_err(dev, "Failed to get shutdown GPIO: %ld\n",
+			PTR_ERR(bdev->shutdown_gpio));
+		return PTR_ERR(bdev->shutdown_gpio);
+	}
+
+	bdev->device_wakeup = devm_gpiod_get_optional(dev, "device-wakeup",
+						       GPIOD_OUT_LOW);
+	if (IS_ERR(bdev->device_wakeup)) {
+		dev_err(dev, "Failed to get device-wakeup GPIO: %ld\n",
+			PTR_ERR(bdev->device_wakeup));
+		return PTR_ERR(bdev->device_wakeup);
+	}
+
+	bdev->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(bdev->reset_gpio)) {
+		dev_err(dev, "Failed to get reset GPIO: %ld\n",
+			PTR_ERR(bdev->reset_gpio));
+		return PTR_ERR(bdev->reset_gpio);
+	}
+
+	/* Get UART speeds from DT */
+	device_property_read_u32(dev, "init-speed", &bdev->init_speed);
+	device_property_read_u32(dev, "max-speed", &bdev->oper_speed);
+
+	if (!bdev->init_speed)
+		bdev->init_speed = 115200;
+
+	dev_info(dev, "BCM4329 BCSP Bluetooth, init-speed=%u\n", bdev->init_speed);
+
+	/* Power on the chip */
+	err = bcsp_serdev_set_power(bdev, true);
+	if (err) {
+		dev_err(dev, "Failed to power on\n");
+		return err;
+	}
+
+	dev_info(dev, "Registering HCI UART device\n");
+
+	/* Set init_speed so hci_uart_register_device_priv() can configure baud rate */
+	bdev->serdev_hu.init_speed = bdev->init_speed;
+
+	/* Register with HCI UART core */
+	err = hci_uart_register_device(&bdev->serdev_hu, &bcsp);
+	if (err) {
+		dev_err(dev, "Failed to register HCI UART device: %d\n", err);
+		bcsp_serdev_set_power(bdev, false);
+		return err;
+	}
+
+	dev_info(dev, "HCI UART device registered successfully\n");
+
+	/*
+	 * Set up serdev tracking in bcsp_struct.
+	 * This enables WARM_RESET handling with GPIO power cycling.
+	 */
+	if (bdev->serdev_hu.priv) {
+		struct bcsp_struct *bcsp_priv = bdev->serdev_hu.priv;
+		bcsp_priv->is_serdev = true;
+		bcsp_priv->serdev_bdev = bdev;
+		dev_info(dev, "BCSP serdev tracking initialized\n");
+	}
+
+	bdev->init_state = BCSP_SERDEV_INIT_PHASE1;
+
+	return 0;
+}
+
+static void bcsp_serdev_remove(struct serdev_device *serdev)
+{
+	struct bcsp_serdev *bdev = serdev_device_get_drvdata(serdev);
+
+	hci_uart_unregister_device(&bdev->serdev_hu);
+	bcsp_serdev_set_power(bdev, false);
+}
+
+#ifdef CONFIG_OF
+static const struct of_device_id bcsp_bluetooth_of_match[] = {
+	/*
+	 * Use palm-specific compatible to avoid conflict with hci_bcm
+	 * which also matches "brcm,bcm4329-bt" but uses H4 protocol.
+	 * The BCM4329 on HP TouchPad requires BCSP protocol.
+	 */
+	{ .compatible = "palm,bcm4329-bcsp" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, bcsp_bluetooth_of_match);
+#endif
+
+static struct serdev_device_driver bcsp_serdev_driver = {
+	.probe = bcsp_serdev_probe,
+	.remove = bcsp_serdev_remove,
+	.driver = {
+		.name = "hci_uart_bcsp",
+		.of_match_table = of_match_ptr(bcsp_bluetooth_of_match),
+	},
+};
+
+#endif /* CONFIG_SERIAL_DEV_BUS */
+
 int __init bcsp_init(void)
 {
-	return hci_uart_register_proto(&bcsp);
+	int err;
+
+	err = hci_uart_register_proto(&bcsp);
+	if (err)
+		return err;
+
+#ifdef CONFIG_SERIAL_DEV_BUS
+	serdev_device_driver_register(&bcsp_serdev_driver);
+#endif
+
+	return 0;
 }
 
 int __exit bcsp_deinit(void)
 {
+#ifdef CONFIG_SERIAL_DEV_BUS
+	serdev_device_driver_unregister(&bcsp_serdev_driver);
+#endif
+
 	return hci_uart_unregister_proto(&bcsp);
 }
 
@@ -785,3 +3073,12 @@ MODULE_PARM_DESC(txcrc, "Transmit CRC with every BCSP packet");
 
 module_param(hciextn, bool, 0644);
 MODULE_PARM_DESC(hciextn, "Convert HCI Extensions into BCSP packets");
+
+module_param(bdaddr, charp, 0444);
+MODULE_PARM_DESC(bdaddr, "Bluetooth device address (XX:XX:XX:XX:XX:XX)");
+
+module_param(skip_pskeys, bool, 0644);
+MODULE_PARM_DESC(skip_pskeys, "Skip PSKEY configuration (for debugging)");
+
+module_param(tx_preamble, uint, 0644);
+MODULE_PARM_DESC(tx_preamble, "Prepend N 0xFF idle bytes before each TX frame (CSR RX re-lock); 0=off");

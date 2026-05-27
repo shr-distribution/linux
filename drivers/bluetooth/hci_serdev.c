@@ -21,9 +21,38 @@
 
 #include "hci_uart.h"
 
+/* Debug flag - set to 1 to enable verbose TX/RX logging */
+static int serdev_debug;
+module_param(serdev_debug, int, 0644);
+MODULE_PARM_DESC(serdev_debug, "Enable serdev TX/RX debug logging");
+
+/* Hex dump helper for debugging */
+static void hci_serdev_hexdump(const char *prefix, const u8 *data, size_t len)
+{
+	char buf[128];
+	size_t i, offset = 0;
+	size_t max_bytes = min_t(size_t, len, 32); /* Limit to 32 bytes */
+
+	if (!serdev_debug)
+		return;
+
+	for (i = 0; i < max_bytes && offset < sizeof(buf) - 4; i++) {
+		offset += scnprintf(buf + offset, sizeof(buf) - offset,
+				   "%02x ", data[i]);
+	}
+	if (len > max_bytes)
+		scnprintf(buf + offset, sizeof(buf) - offset, "...");
+
+	BT_INFO("%s [%zu bytes]: %s", prefix, len, buf);
+}
+
 static inline void hci_uart_tx_complete(struct hci_uart *hu, int pkt_type)
 {
 	struct hci_dev *hdev = hu->hdev;
+
+	/* hdev may be NULL during protocol init (e.g., BCSP link establishment) */
+	if (!hdev)
+		return;
 
 	/* Update HCI stat counters */
 	switch (pkt_type) {
@@ -46,7 +75,13 @@ static inline struct sk_buff *hci_uart_dequeue(struct hci_uart *hu)
 	struct sk_buff *skb = hu->tx_skb;
 
 	if (!skb) {
-		if (test_bit(HCI_UART_PROTO_READY, &hu->flags))
+		/*
+		 * Check both PROTO_READY and PROTO_INIT flags to allow
+		 * TX during driver initialization (e.g., BCSP link
+		 * establishment during open()).
+		 */
+		if (test_bit(HCI_UART_PROTO_READY, &hu->flags) ||
+		    test_bit(HCI_UART_PROTO_INIT, &hu->flags))
 			skb = hu->proto->dequeue(hu);
 	} else
 		hu->tx_skb = NULL;
@@ -58,7 +93,7 @@ static void hci_uart_write_work(struct work_struct *work)
 {
 	struct hci_uart *hu = container_of(work, struct hci_uart, write_work);
 	struct serdev_device *serdev = hu->serdev;
-	struct hci_dev *hdev = hu->hdev;
+	struct hci_dev *hdev;
 	struct sk_buff *skb;
 
 	/* REVISIT:
@@ -70,9 +105,16 @@ static void hci_uart_write_work(struct work_struct *work)
 		while ((skb = hci_uart_dequeue(hu))) {
 			int len;
 
+			hci_serdev_hexdump("TX", skb->data, skb->len);
+
 			len = serdev_device_write_buf(serdev,
 						      skb->data, skb->len);
-			hdev->stat.byte_tx += len;
+			if (len != skb->len)
+				BT_ERR("serdev partial write: %d/%d bytes", len, skb->len);
+			/* hdev may be NULL during protocol init */
+			hdev = hu->hdev;
+			if (hdev)
+				hdev->stat.byte_tx += len;
 
 			skb_pull(skb, len);
 			if (skb->len) {
@@ -257,7 +299,9 @@ static void hci_uart_write_wakeup(struct serdev_device *serdev)
 		return;
 	}
 
-	if (test_bit(HCI_UART_PROTO_READY, &hu->flags))
+	/* Allow TX wakeup during both init and normal operation */
+	if (test_bit(HCI_UART_PROTO_READY, &hu->flags) ||
+	    test_bit(HCI_UART_PROTO_INIT, &hu->flags))
 		hci_uart_tx_wakeup(hu);
 }
 
@@ -281,12 +325,20 @@ static size_t hci_uart_receive_buf(struct serdev_device *serdev,
 		return 0;
 	}
 
-	if (!test_bit(HCI_UART_PROTO_READY, &hu->flags))
+	/*
+	 * Allow RX during both PROTO_INIT (link establishment) and
+	 * PROTO_READY (normal operation). Protocols like BCSP need to
+	 * receive SYNC packets from the chip during their open() phase.
+	 */
+	if (!test_bit(HCI_UART_PROTO_READY, &hu->flags) &&
+	    !test_bit(HCI_UART_PROTO_INIT, &hu->flags))
 		return 0;
 
 	/* It does not need a lock here as it is already protected by a mutex in
 	 * tty caller
 	 */
+	hci_serdev_hexdump("RX", data, count);
+
 	hu->proto->recv(hu, data, count);
 
 	if (hu->hdev)
@@ -318,12 +370,50 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 	if (err)
 		goto err_rwsem;
 
-	err = p->open(hu);
-	if (err)
-		goto err_open;
+	/*
+	 * Set initial baud rate if specified. Some protocols like BCSP
+	 * need to communicate during open() for link establishment,
+	 * so the baud rate must be configured before p->open() is called.
+	 */
+	if (hu->init_speed) {
+		BT_INFO("serdev: Setting baud rate to %u (from hu->init_speed)", hu->init_speed);
+		serdev_device_set_baudrate(hu->serdev, hu->init_speed);
+	} else if (p->init_speed) {
+		BT_INFO("serdev: Setting baud rate to %u (from proto->init_speed)", p->init_speed);
+		serdev_device_set_baudrate(hu->serdev, p->init_speed);
+	} else {
+		BT_INFO("serdev: No initial baud rate specified");
+	}
 
+	/*
+	 * Disable hardware flow control initially. Some protocols need
+	 * to communicate before flow control is properly established,
+	 * and CTS/RTS pins may not be configured correctly yet.
+	 */
+	BT_INFO("serdev: Disabling hardware flow control");
+	serdev_device_set_flow_control(hu->serdev, false);
+
+	/*
+	 * Initialize write_work and set proto before calling open(),
+	 * as some protocols (e.g., BCSP) need to transmit during their
+	 * open() for link establishment. PROTO_INIT flag allows TX
+	 * during this phase.
+	 */
+	INIT_WORK(&hu->write_work, hci_uart_write_work);
 	hu->proto = p;
+	set_bit(HCI_UART_PROTO_INIT, &hu->flags);
+
+	BT_INFO("serdev: Calling proto->open() for %s (PROTO_INIT set)", p->name);
+	err = p->open(hu);
+	if (err) {
+		BT_ERR("serdev: proto->open() failed with %d", err);
+		goto err_open;
+	}
+	BT_INFO("serdev: proto->open() succeeded");
+
+	clear_bit(HCI_UART_PROTO_INIT, &hu->flags);
 	set_bit(HCI_UART_PROTO_READY, &hu->flags);
+	BT_INFO("serdev: PROTO_INIT cleared, PROTO_READY set");
 
 	/* Initialize and register HCI device */
 	hdev = hci_alloc_dev_priv(sizeof_priv);
@@ -339,7 +429,6 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 	hci_set_drvdata(hdev, hu);
 
 	INIT_WORK(&hu->init_ready, hci_uart_init_work);
-	INIT_WORK(&hu->write_work, hci_uart_write_work);
 
 	/* Only when vendor specific setup callback is provided, consider
 	 * the manufacturer information valid. This avoids filling in the
@@ -385,6 +474,7 @@ err_alloc:
 	clear_bit(HCI_UART_PROTO_READY, &hu->flags);
 	p->close(hu);
 err_open:
+	clear_bit(HCI_UART_PROTO_INIT, &hu->flags);
 	serdev_device_close(hu->serdev);
 err_rwsem:
 	percpu_free_rwsem(&hu->proto_lock);

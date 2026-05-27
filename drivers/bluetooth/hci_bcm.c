@@ -54,6 +54,7 @@
  * @no_early_set_baudrate: Disallow set baudrate before driver setup()
  * @drive_rts_on_open: drive RTS signal on ->open() when platform requires it
  * @no_uart_clock_set: UART clock set command for >3Mbps mode is unavailable
+ * @no_flow_control: device requires no hardware flow control at all
  * @max_autobaud_speed: max baudrate supported by device in autobaud mode
  * @max_speed: max baudrate supported
  */
@@ -61,6 +62,7 @@ struct bcm_device_data {
 	bool	no_early_set_baudrate;
 	bool	drive_rts_on_open;
 	bool	no_uart_clock_set;
+	bool	no_flow_control;
 	u32	max_autobaud_speed;
 	u32	max_speed;
 };
@@ -105,6 +107,7 @@ struct bcm_device_data {
  * @no_early_set_baudrate: don't set_baudrate before setup()
  * @drive_rts_on_open: drive RTS signal on ->open() when platform requires it
  * @no_uart_clock_set: UART clock set command for >3Mbps mode is unavailable
+ * @no_flow_control: device requires no hardware flow control at all
  * @pcm_int_params: keep the initial PCM configuration
  * @use_autobaud_mode: start Bluetooth device in autobaud mode
  * @max_autobaud_speed: max baudrate supported by device in autobaud mode
@@ -146,6 +149,7 @@ struct bcm_device {
 	bool			no_early_set_baudrate;
 	bool			drive_rts_on_open;
 	bool			no_uart_clock_set;
+	bool			no_flow_control;
 	bool			use_autobaud_mode;
 	u8			pcm_int_params[5];
 	u32			max_autobaud_speed;
@@ -502,8 +506,12 @@ out:
 
 		err = bcm_gpio_set_power(bcm->dev, true);
 
-		if (bcm->dev->drive_rts_on_open)
+		if (bcm->dev->drive_rts_on_open && !bcm->dev->no_flow_control)
 			hci_uart_set_flow_control(hu, false);
+
+		/* Explicitly disable HW flow control for chips that require it */
+		if (bcm->dev->no_flow_control)
+			hci_uart_set_flow_control(hu, true);
 
 		if (err)
 			goto err_unset_hu;
@@ -1225,6 +1233,7 @@ static int bcm_of_probe(struct bcm_device *bdev)
 {
 	bdev->use_autobaud_mode = device_property_read_bool(bdev->dev,
 							    "brcm,requires-autobaud-mode");
+	device_property_read_u32(bdev->dev, "init-speed", &bdev->init_speed);
 	device_property_read_u32(bdev->dev, "max-speed", &bdev->oper_speed);
 	device_property_read_u8_array(bdev->dev, "brcm,bt-pcm-int-params",
 				      bdev->pcm_int_params, 5);
@@ -1549,6 +1558,7 @@ static int bcm_serdev_probe(struct serdev_device *serdev)
 		bcmdev->no_early_set_baudrate = data->no_early_set_baudrate;
 		bcmdev->drive_rts_on_open = data->drive_rts_on_open;
 		bcmdev->no_uart_clock_set = data->no_uart_clock_set;
+		bcmdev->no_flow_control = data->no_flow_control;
 		if (data->max_speed && bcmdev->oper_speed > data->max_speed)
 			bcmdev->oper_speed = data->max_speed;
 	}
@@ -1568,6 +1578,12 @@ static struct bcm_device_data bcm4354_device_data = {
 	.no_early_set_baudrate = true,
 };
 
+static struct bcm_device_data bcm4329_device_data = {
+	.drive_rts_on_open = true,
+	.no_early_set_baudrate = true,
+	.no_flow_control = true,
+};
+
 static struct bcm_device_data bcm43438_device_data = {
 	.drive_rts_on_open = true,
 };
@@ -1582,8 +1598,8 @@ static struct bcm_device_data cyw55572_device_data = {
 
 static const struct of_device_id bcm_bluetooth_of_match[] = {
 	{ .compatible = "brcm,bcm20702a1" },
-	{ .compatible = "brcm,bcm4329-bt" },
-	{ .compatible = "brcm,bcm4330-bt" },
+	{ .compatible = "brcm,bcm4329-bt", .data = &bcm4329_device_data },
+	{ .compatible = "brcm,bcm4330-bt", .data = &bcm4329_device_data },
 	{ .compatible = "brcm,bcm4334-bt" },
 	{ .compatible = "brcm,bcm4345c5" },
 	{ .compatible = "brcm,bcm43430a0-bt" },
