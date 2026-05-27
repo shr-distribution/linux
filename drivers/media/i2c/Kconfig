@@ -302,13 +302,25 @@ config VIDEO_MT9M111
 	  This driver supports MT9M111, MT9M112 and MT9M131 cameras from
 	  Micron/Aptina
 
+config VIDEO_MT9M113
+	tristate "Aptina MT9M113 sensor support"
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the Aptina MT9M113
+	  1.3 Megapixel CMOS camera sensor. The MT9M113 has dual context
+	  support: Context A (640x480 preview) and Context B (1280x1024
+	  capture).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called mt9m113.
+
 config VIDEO_MT9M114
 	tristate "onsemi MT9M114 sensor support"
 	select V4L2_CCI_I2C
 	select VIDEO_APTINA_PLL
 	help
-	  This is a Video4Linux2 sensor-level driver for the onsemi MT9M114
-	  camera.
+	  This is a Video4Linux2 sensor driver for the onsemi MT9M114
+	  1/6-inch 720p CMOS camera sensor with embedded image processing.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called mt9m114.
@@ -844,6 +856,19 @@ config VIDEO_VGXY61
 	help
 	  This is a Video4Linux2 sensor driver for the ST VGXY61
 	  camera sensor.
+
+config VIDEO_VX6953
+	tristate "STMicroelectronics VX6953 sensor support"
+	select V4L2_CCI_I2C
+	depends on OF && GPIOLIB
+	help
+	  This is a Video4Linux2 sensor driver for the STMicroelectronics
+	  VX6953 5.1 megapixel EDOF (Extended Depth of Field) camera sensor.
+
+	  This sensor was used in devices like the HP TouchPad Go (Opal).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called vx6953.
 
 source "drivers/media/i2c/ccs/Kconfig"
 source "drivers/media/i2c/et8ek8/Kconfig"
