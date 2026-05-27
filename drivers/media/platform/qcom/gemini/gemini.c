@@ -759,8 +759,6 @@ static const struct vb2_ops gemini_qops = {
 	.buf_queue		= gemini_buf_queue,
 	.start_streaming	= gemini_start_streaming,
 	.stop_streaming		= gemini_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static int gemini_queue_init(void *priv, struct vb2_queue *src_vq,
