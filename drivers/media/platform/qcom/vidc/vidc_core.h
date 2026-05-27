@@ -539,7 +539,7 @@ struct vidc_core {
 	size_t smipool_phys_size;	/* SMIPOOL reserved region size */
 	bool axi_ab_persistent_enabled;	/* axi_a/b enabled once, left on */
 	dma_addr_t fw_dma_addr;		/* 128KB-aligned phys for DRAM_BASE */
-	void *fw_vaddr;			/* ioremap_wc() virtual address */
+	void __iomem *fw_vaddr;		/* ioremap() virtual address */
 	size_t fw_size;			/* firmware blob size */
 	size_t fw_alloc_size;		/* total layout size in SMI */
 	/* Legacy fields — kept for iounmap reference tracking */
@@ -578,7 +578,7 @@ struct vidc_core {
 	 *   shm_offset    - byte offset from fw_dma_addr (== value
 	 *                   written to CH0_SHARED_MEM register)
 	 */
-	void *shm_vaddr;
+	void __iomem *shm_vaddr;
 	u32 shm_offset;
 
 	/* V4L2 */
@@ -834,7 +834,7 @@ struct vidc_inst {
 	 * vidc_open_channel(); zero when the instance has no open channel.
 	 */
 	dma_addr_t ctxt_mem_dma_addr;
-	void *ctxt_mem_vaddr;
+	void __iomem *ctxt_mem_vaddr;
 	u32 ctxt_mem_offset;	/* offset from core->fw_dma_addr */
 	bool ch_open;
 

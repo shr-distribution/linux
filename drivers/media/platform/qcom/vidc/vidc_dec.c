@@ -185,6 +185,32 @@ static int vidc_dec_enum_fmt(struct file *file, void *fh,
 	return 0;
 }
 
+static int vidc_dec_enum_framesizes(struct file *file, void *fh,
+				    struct v4l2_frmsizeenum *fsize)
+{
+	if (fsize->index)
+		return -EINVAL;
+
+	/* Same coded-size range for the compressed input and decoded output. */
+	switch (fsize->pixel_format) {
+	case V4L2_PIX_FMT_H264:
+	case V4L2_PIX_FMT_NV12MT:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
+	fsize->stepwise.min_width = VIDC_MIN_WIDTH;
+	fsize->stepwise.max_width = VIDC_MAX_WIDTH;
+	fsize->stepwise.step_width = 16;	/* H.264 macroblock */
+	fsize->stepwise.min_height = VIDC_MIN_HEIGHT;
+	fsize->stepwise.max_height = VIDC_MAX_HEIGHT;
+	fsize->stepwise.step_height = 16;
+
+	return 0;
+}
+
 static int vidc_dec_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 {
 	struct v4l2_pix_format_mplane *pixmp = &f->fmt.pix_mp;
@@ -493,6 +519,7 @@ static const struct v4l2_ioctl_ops vidc_dec_ioctl_ops = {
 	.vidioc_querycap = vidc_dec_querycap,
 	.vidioc_enum_fmt_vid_cap = vidc_dec_enum_fmt,
 	.vidioc_enum_fmt_vid_out = vidc_dec_enum_fmt,
+	.vidioc_enum_framesizes = vidc_dec_enum_framesizes,
 	.vidioc_try_fmt_vid_cap_mplane = vidc_dec_try_fmt,
 	.vidioc_try_fmt_vid_out_mplane = vidc_dec_try_fmt,
 	.vidioc_s_fmt_vid_cap_mplane = vidc_dec_s_fmt,

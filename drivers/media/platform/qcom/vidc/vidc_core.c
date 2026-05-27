@@ -409,7 +409,7 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 		 * stored in matching byte order, so copy it verbatim.
 		 */
 		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
-		memset(core->fw_vaddr + core->fw_size, 0,
+		memset_io(core->fw_vaddr + core->fw_size, 0,
 		       core->fw_alloc_size - core->fw_size);
 		/* Verify that CPU writes actually land in SMI SRAM (check a non-zero offset) */
 		{
@@ -1072,8 +1072,8 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->desc_offset = ALIGN(core->fw_size, SZ_128K) + core->ctxt_pool_size;
 	core->shm_offset = core->desc_offset + VIDC_DESC_BUF_SIZE;
 	core->shm_vaddr = core->fw_vaddr + core->shm_offset;
-	memset(core->fw_vaddr + core->desc_offset, 0, VIDC_DESC_BUF_SIZE);
-	memset(core->shm_vaddr, 0, VIDC_SHM_SIZE);
+	memset_io(core->fw_vaddr + core->desc_offset, 0, VIDC_DESC_BUF_SIZE);
+	memset_io(core->shm_vaddr, 0, VIDC_SHM_SIZE);
 
 	/*
 	 * Initialise the metadata input buffer at VIDC_META_INPUT_OFF within
@@ -1102,7 +1102,7 @@ int vidc_load_firmware(struct vidc_core *core)
 			0x080, /* VCD_METADATA_PASSTHROUGH */
 			0x002, /* VCD_METADATA_QCOMFILLER  */
 		};
-		void *meta = core->shm_vaddr + VIDC_META_INPUT_OFF;
+		void __iomem *meta = core->shm_vaddr + VIDC_META_INPUT_OFF;
 		int i;
 
 		for (i = 0; i < ARRAY_SIZE(meta_types); i++) {
@@ -1164,7 +1164,7 @@ int vidc_load_firmware(struct vidc_core *core)
 	return 0;
 
 err_free_dma:
-	iounmap((void __iomem *)core->fw_vaddr);
+	iounmap(core->fw_vaddr);
 	core->fw_vaddr = NULL;
 	core->fw_loaded = false;
 err_release_fw:
@@ -1265,7 +1265,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 	 * the old channels, producing a spurious cmd=51 response with the
 	 * stale instance IDs that trips the IRQ storm guard.
 	 */
-	memset(core->fw_vaddr + core->fw_size, 0,
+	memset_io(core->fw_vaddr + core->fw_size, 0,
 	       core->fw_alloc_size - core->fw_size);
 
 	/*
@@ -1422,7 +1422,7 @@ void vidc_unload_firmware(struct vidc_core *core)
 		return;
 
 	if (core->fw_vaddr) {
-		iounmap((void __iomem *)core->fw_vaddr);
+		iounmap(core->fw_vaddr);
 		core->fw_vaddr = NULL;
 	}
 
@@ -1537,7 +1537,7 @@ int vidc_open_channel(struct vidc_inst *inst)
 	inst->ctxt_mem_vaddr = core->fw_vaddr + inst->ctxt_mem_offset;
 	inst->ctxt_mem_dma_addr = core->fw_dma_addr + inst->ctxt_mem_offset;
 
-	memset(inst->ctxt_mem_vaddr, 0, VIDC_CTXT_MEM_SIZE);
+	memset_io(inst->ctxt_mem_vaddr, 0, VIDC_CTXT_MEM_SIZE);
 
 	core->ctxt_pool_used += VIDC_CTXT_MEM_SIZE;
 
