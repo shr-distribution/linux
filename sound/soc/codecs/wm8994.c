@@ -2466,15 +2466,6 @@ out:
 	return 0;
 }
 
-static irqreturn_t wm8994_fll_locked_irq(int irq, void *data)
-{
-	struct completion *completion = data;
-
-	complete(completion);
-
-	return IRQ_HANDLED;
-}
-
 static int opclk_divs[] = { 10, 20, 30, 40, 55, 60, 80, 120, 160 };
 
 static int wm8994_set_fll(struct snd_soc_dai *dai, int id, int src,
@@ -4342,17 +4333,6 @@ static int wm8994_component_probe(struct snd_soc_component *component)
 	 * the driver will just msleep(5) instead of waiting for completion.
 	 */
 	wm8994->fll_locked_irq = false;
-#if 0
-	wm8994->fll_locked_irq = true;
-	for (i = 0; i < ARRAY_SIZE(wm8994->fll_locked); i++) {
-		ret = wm8994_request_irq(wm8994->wm8994,
-					 WM8994_IRQ_FLL1_LOCK + i,
-					 wm8994_fll_locked_irq, "FLL lock",
-					 &wm8994->fll_locked[i]);
-		if (ret != 0)
-			wm8994->fll_locked_irq = false;
-	}
-#endif
 
 	/* Make sure we can read from the GPIOs if they're inputs */
 	pm_runtime_get_sync(component->dev);
