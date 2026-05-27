@@ -23,6 +23,7 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/sd.h>
+#include <linux/mmc/sdio.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/amba/bus.h>
 #include <linux/clk.h>
@@ -31,7 +32,9 @@
 #include <linux/regulator/consumer.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma/qcom_adm.h>
 #include <linux/amba/mmci.h>
+#include <linux/interconnect.h>
 #include <linux/pm_runtime.h>
 #include <linux/types.h>
 #include <linux/pinctrl/consumer.h>
@@ -347,6 +350,12 @@ static struct variant_data variant_qcom = {
 				  MCI_QCOM_CLK_SELECT_IN_FBCLK,
 	.clkreg_8bit_bus_enable = MCI_QCOM_CLK_WIDEBUS_8,
 	.datactrl_mask_ddrmode	= MCI_QCOM_CLK_SELECT_IN_DDR_MODE,
+	/*
+	 * Note: Do NOT set datactrl_mask_sdio for Qualcomm.
+	 * MCI_DPSM_ST_SDIOEN (bit 11) is ST Micro specific and
+	 * causes CRC errors on Qualcomm SDCC. SDIO mode is handled
+	 * automatically by the Qualcomm controller.
+	 */
 	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
 	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
 	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
@@ -360,10 +369,60 @@ static struct variant_data variant_qcom = {
 	.explicit_mclk_control	= true,
 	.qcom_fifo		= true,
 	.qcom_dml		= true,
+	.qcom_datactrl_delay	= true,
+	.qcom_data_timeout_2x	= true,
+	/*
+	 * Use the qcom_adm "exec_func" hook to perform SDCC
+	 * DATACTRL + ARG + CMD register writes atomically with the
+	 * ADM channel's CMD_PTR write. Replicates the legacy
+	 * msm_sdcc/msm_dmov pattern and closes a documented race
+	 * under heavy AHB-fabric contention when two ADM channels
+	 * (e.g. eMMC on sdcc1 + WiFi on sdcc4) are both bursting.
+	 *
+	 * Only kicks in for DMA-eligible WRITE requests on hosts with
+	 * datactrl_first + SDIO_IRQ caps -- the same condition that
+	 * previously triggered the "deferred via cmd_irq" fallback,
+	 * which this replaces with a more robust mechanism.
+	 */
+	.qcom_dml_atomic_submit	= true,
+	.dma_flow_controller	= true,
+	/*
+	 * Route everything above the half-FIFO size (32 B) through ADM
+	 * DMA.  Only genuinely tiny transfers stay on PIO because DMA
+	 * setup overhead dominates at that size and a single FIFO fill
+	 * is enough by construction.
+	 *
+	 * Previous attempts kept this at 256 B to "force PIO for BMI"
+	 * based on the belief that AR6003 BMI required PIO.  This was
+	 * a misdiagnosis: Atheros's own bmi_msg.h defines
+	 * BMI_DATASZ_MAX = 256, webOS legacy msm_sdcc pushes 256-byte
+	 * BMI chunks via DMA, and the AR6003 sees CMD53 traffic at the
+	 * SDIO bus regardless of how the host sources the data.  The
+	 * real failure mode of the earlier DMA-on-BMI experiments was
+	 * shared-controller contention on adm_dma1 — which has since
+	 * been closed by qcom_adm's submit_lock, hardirq-only
+	 * completion (no tasklet), CPU1 IRQ pin, and B+F+G shaving.
+	 *
+	 * Keeping WiFi BMI on PIO has its own cost: every 52-byte
+	 * CMD53 needs an mmci PIO FIFO-refill IRQ on CPU0, and the
+	 * resulting IRQ storm during the AR6003 firmware download
+	 * delays sdcc1's mmci CMD/RESP processing on the same CPU
+	 * enough that eMMC DATACRCFAILs.  Routing BMI through DMA
+	 * eliminates the storm entirely.
+	 */
+	.dma_threshold		= 32,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
-	.start_err		= MCI_STARTBITERR,
+	/*
+	 * Note: Do NOT set start_err for Qualcomm SDCC.
+	 * The legacy msm_sdcc driver does not enable STARTBITERR in the
+	 * interrupt mask (MCI_IRQENABLE). Enabling it causes spurious
+	 * -ECOMM errors on SDIO operations that work fine with the legacy
+	 * driver. The start bit "errors" appear to be false positives on
+	 * this hardware.
+	 */
 	.opendrain		= MCI_ROD,
+	.supports_sdio_irq	= true,
 	.init			= qcom_variant_init,
 };
 
@@ -477,8 +536,23 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 
 		clk |= variant->clkreg_enable;
 		clk |= MCI_CLK_ENABLE;
-		/* This hasn't proven to be worthwhile */
-		/* clk |= MCI_CLK_PWRSAVE; */
+		/*
+		 * MCI_CLK_PWRSAVE auto-gates the SDC bus clock between
+		 * transfers. Legacy webOS enables it on both eMMC (SDCC1
+		 * CLKREG=0x9f00) and WiFi (SDCC4 CLKREG=0x9b00) in steady
+		 * state. We match that here: PWRSAVE on by default once past
+		 * 400 kHz identification.
+		 *
+		 * Earlier attempts to enable PWRSAVE on SDIO regressed BMI
+		 * with DATACRCFAIL because the SDCC's data-path state
+		 * machine does not fully close after a CMD53 WRITE; once
+		 * SCLK gates the next CMD on the bus sees residual state.
+		 * The "qcom,dummy52-required" workaround in this driver
+		 * inserts a CMD52 between CMD53 writes and the next request
+		 * to drain that state, making PWRSAVE-on-SDIO safe again.
+		 */
+		if (variant->qcom_datactrl_delay && desired > 400000)
+			clk |= MCI_CLK_PWRSAVE;
 	}
 
 	/* Set actual clock for debug */
@@ -493,7 +567,49 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 	    host->mmc->ios.timing == MMC_TIMING_MMC_DDR52)
 		clk |= variant->clkreg_neg_edge_enable;
 
+	/*
+	 * Diagnostic: observe what clkreg + state we end up with for each
+	 * controller instance, ratelimited so we don't spam during normal
+	 * operation. Gated on qcom_datactrl_delay so only the qcom variant
+	 * emits this. Useful when chasing eMMC vs SDIO regressions where
+	 * the per-instance PWRSAVE / datactrl_first / card-type combination
+	 * matters.
+	 */
+	if (variant->qcom_datactrl_delay) {
+		static DEFINE_RATELIMIT_STATE(rs, HZ, 3);
+
+		if (__ratelimit(&rs))
+			dev_info(mmc_dev(host->mmc),
+				 "set_clkreg: desired=%u clk_reg=0x%08x datactrl_first=%d card_type=%d pwrsave=%s\n",
+				 desired, clk,
+				 host->datactrl_first,
+				 host->mmc->card ? host->mmc->card->type : -1,
+				 (clk & MCI_CLK_PWRSAVE) ? "on" : "off");
+	}
+
 	mmci_write_clkreg(host, clk);
+
+	/*
+	 * Legacy webOS msm_sdcc waits 50 us after every MMCICLOCK write
+	 * (msm_sdcc.c:1173 udelay(50)) before issuing further register
+	 * writes or starting a data transfer. The generic mmci_reg_delay
+	 * called by other callers only waits ndelay(120) once cclk is
+	 * above 25 MHz — 400x shorter than legacy — which leaves the
+	 * SDCC controller's clock-divider re-lock window straddling the
+	 * subsequent DPSM start. On the Tenderloin SanDisk SEM32G that's
+	 * enough to push the first large multi-block READ at HS rates
+	 * past the data-line setup margin: DATACRCFAIL on the first
+	 * 256 KB transfer after probe, recovery CMD6 SWITCH then times
+	 * out and the bus falls back to 1-bit / 5.4 MB/s for the rest
+	 * of the session.
+	 *
+	 * Match legacy's 50 us settle here so callers don't need to
+	 * remember an extra delay. Gated on qcom_datactrl_delay so other
+	 * mmci variants (PL180, ST, STM32, ux500) keep their lower
+	 * ndelay path.
+	 */
+	if (variant->qcom_datactrl_delay)
+		udelay(50);
 }
 
 static void mmci_dma_release(struct mmci_host *host)
@@ -504,18 +620,22 @@ static void mmci_dma_release(struct mmci_host *host)
 	host->use_dma = false;
 }
 
-static void mmci_dma_setup(struct mmci_host *host)
+static int mmci_dma_setup(struct mmci_host *host)
 {
-	if (!host->ops || !host->ops->dma_setup)
-		return;
+	int ret;
 
-	if (host->ops->dma_setup(host))
-		return;
+	if (!host->ops || !host->ops->dma_setup)
+		return 0;
+
+	ret = host->ops->dma_setup(host);
+	if (ret)
+		return ret;
 
 	/* initialize pre request cookie */
 	host->next_cookie = 1;
 
 	host->use_dma = true;
+	return 0;
 }
 
 /*
@@ -573,6 +693,39 @@ static void mmci_get_next_data(struct mmci_host *host, struct mmc_data *data)
 		host->ops->get_next_data(host, data);
 }
 
+/*
+ * Decide whether a given (data) request qualifies for the
+ * atomic-submission path.
+ *
+ * Legacy msm_sdcc uses TWO distinct structural sequences depending on
+ * direction:
+ *
+ *   READ : DATACTRL + ARG + CMD all written inside msm_dmov exec_func,
+ *          immediately before the channel's CMD_PTR write.  SDCC is
+ *          armed (RX direction) BEFORE the card receives the read
+ *          command, so by the time the card responds with data the
+ *          DPSM is ready and ADM is pulling.
+ *
+ *   WRITE: CMD is written first (mmci_start_command), the card
+ *          processes the command + responds, THEN start_data sets up
+ *          DPSM (TX direction) inside exec_func with NO CMD (data
+ *          arrives only after card is in receive state).  Trying to
+ *          arm the WRITE-direction DPSM before the card has accepted
+ *          the command causes CRC errors on the data the SDCC sends
+ *          (AR6003 reports -84 EILSEQ on WRITE-data CRC check).
+ *
+ * Match that asymmetry: atomic-submit only for READS.  WRITES fall
+ * through to the conventional deferred-DMA path which already mirrors
+ * the legacy CMD-first write sequence.
+ */
+static inline bool mmci_should_atomic_submit(struct mmci_host *host,
+					     struct mmc_data *data)
+{
+	return host->variant->qcom_dml_atomic_submit &&
+	       host->datactrl_first &&
+	       (data->flags & MMC_DATA_READ);
+}
+
 static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 {
 	struct mmc_data *data = host->data;
@@ -597,8 +750,72 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	if (ret)
 		return ret;
 
-	/* Trigger the DMA transfer */
-	mmci_write_datactrlreg(host, datactrl);
+	/*
+	 * Commit to the atomic-submission path only AFTER dma_start
+	 * succeeded AND _mmci_dmae_prep_data confirmed the channel
+	 * actually carries the qcom_adm exec_func wiring (armed). If
+	 * dma_start had failed, the PIO fallback in mmci_start_data +
+	 * mmci_start_command would mis-route their writes into the
+	 * stash. If the channel isn't ADM (e.g. BAM), armed stays
+	 * false and we keep the conventional write path.
+	 */
+	if (host->atomic_submit.armed)
+		host->atomic_submit.active = true;
+
+	if (host->atomic_submit.active) {
+		/*
+		 * Atomic-submission path (variant->qcom_dml_atomic_submit +
+		 * qualifying write). Don't write DATACTRL here; stash it
+		 * for the qcom_adm exec_func, which will write
+		 * DATACTRL + ARG + CMD atomically with the ADM CMD_PTR.
+		 * mmci_request will dma_issue_pending after the matching
+		 * mmci_start_command has stashed its ARG/CMD values too.
+		 */
+		host->atomic_submit.datactrl = datactrl;
+	} else {
+		/* Trigger the DMA transfer */
+		mmci_write_datactrlreg(host, datactrl);
+
+		/*
+		 * Qualcomm SDCC requires a delay after writing DATACTRL to
+		 * allow the Data Path State Machine (DPSM) to initialize
+		 * before DMA starts pushing data into the FIFO. The legacy
+		 * msm_sdcc driver uses writel_delay() with 1us after
+		 * DATACTRL, followed by CMD register writes which add
+		 * additional delay before DMA data flow.
+		 */
+		if (host->variant->qcom_datactrl_delay) {
+			wmb();
+			udelay(1);
+		}
+
+		/*
+		 * For Qualcomm ADM DMA with datactrl_first writes:
+		 * Defer DMA issue_pending to after CMD completes. The
+		 * correct sequence matching legacy msm_sdcc exec_func is:
+		 *   DMA submit → DATACTRL → CMD53 → DMA issue
+		 * This ensures:
+		 *   1. DPSM is initialized (DATACTRL written)
+		 *   2. Card knows data is coming (CMD53 sent)
+		 *   3. ADM fills FIFO (DMA issued after CMD)
+		 * Issuing DMA before CMD causes CRC errors (card not ready).
+		 * Writing DATACTRL after CMD causes hangs (DPSM won't start).
+		 *
+		 * GATED: only SDIO instances need the deferred path.
+		 * For non-datactrl_first writes, eMMC, and all reads,
+		 * issue immediately.
+		 */
+		if (host->ops && host->ops->dma_issue_pending) {
+			if (host->datactrl_first &&
+			    !(data->flags & MMC_DATA_READ) &&
+			    host->variant->qcom_dml &&
+			    (host->mmc->caps & MMC_CAP_SDIO_IRQ)) {
+				host->dma_issue_deferred = true;
+			} else {
+				host->ops->dma_issue_pending(host);
+			}
+		}
+	}
 
 	/*
 	 * Let the MMCI say when the data is ended and it's time
@@ -607,6 +824,12 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	 */
 	writel(readl(host->base + MMCIMASK0) | MCI_DATAENDMASK,
 	       host->base + MMCIMASK0);
+
+	/* Trace mask setup for WiFi SDCC4 debugging */
+	if (host->mmc->index == 1)
+		trace_printk("MMCI-DMA-START: MASK0=0x%08x (enabled DATAENDMASK) blksz=%u blocks=%u\n",
+			     readl(host->base + MMCIMASK0), data->blksz, data->blocks);
+
 	return 0;
 }
 
@@ -628,15 +851,60 @@ static void mmci_dma_error(struct mmci_host *host)
 		host->ops->dma_error(host);
 }
 
+/* Forward declaration: used by mmci_cmd_irq dummy52-completion path. */
+static void __mmci_start_request(struct mmci_host *host,
+				 struct mmc_request *mrq);
+
+/* Forward declaration: used by mmci_qcom_dma_complete() for data->stop. */
+static void mmci_start_command(struct mmci_host *host,
+			       struct mmc_command *cmd, u32 c);
+
 static void
 mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 {
+	/* Trace request end for WiFi SDCC4 debugging */
+	if (host->mmc->index == 1 && mrq && mrq->data)
+		trace_printk("MMCI-REQ-END: cmd=%u blksz=%u blocks=%u\n",
+			     mrq->cmd->opcode, mrq->data->blksz, mrq->data->blocks);
+
 	writel(0, host->base + MMCICOMMAND);
 
 	BUG_ON(host->data);
 
 	host->mrq = NULL;
 	host->cmd = NULL;
+
+	/*
+	 * Qualcomm SDCC dummy CMD52 errata: arm the follow-up if the just
+	 * completed request was a CMD53 with data. The next call to
+	 * mmci_request will insert a CMD52 before the real command so the
+	 * SDCC data-path state machine drains cleanly.
+	 *
+	 * WiFi (mmc1): arm after DMA READ only (>= 128B, which uses DMA via
+	 * validate_dma). The SDCC DPSM retains residual state after ADM DMA
+	 * read completion (via callback) that causes the next CMD53 WRITE to
+	 * CMDTIMEOUT (observed after 6 HTC 128B service-connect reads →
+	 * htc_start write). NOT arming after writes keeps the dummy52 out of
+	 * the BMI firmware upload path (all writes). Small PIO reads (< 128B,
+	 * like BMI register reads) don't need dummy52 — only DMA reads trigger
+	 * the DPSM issue.
+	 * eMMC (mmc0): arm after WRITE only (original behavior).
+	 */
+	if (host->dummy52_required && mrq && mrq->cmd &&
+	    mrq->data && mrq->cmd->opcode == SD_IO_RW_EXTENDED) {
+		unsigned int len = mrq->data->blksz * mrq->data->blocks;
+		bool arm = (host->mmc->index == 1 &&
+			    (mrq->data->flags & MMC_DATA_READ) && len >= 128) ||
+			   (host->mmc->index == 0 &&
+			    (mrq->data->flags & MMC_DATA_WRITE));
+		if (arm) {
+			host->dummy52_needed = true;
+			dev_dbg(mmc_dev(host->mmc),
+				"dummy52: armed after CMD53 %s %u bytes\n",
+				(mrq->data->flags & MMC_DATA_WRITE) ?
+				"WRITE" : "READ", len);
+		}
+	}
 
 	mmc_request_done(host->mmc, mrq);
 }
@@ -688,6 +956,16 @@ static u32 mmci_get_dctrl_cfg(struct mmci_host *host)
 static u32 ux500v2_get_dctrl_cfg(struct mmci_host *host)
 {
 	return MCI_DPSM_ENABLE | (host->data->blksz << 16);
+}
+
+/*
+ * Qualcomm SDCC uses raw block size in bytes (bits 4-15), not log2 exponent.
+ * The legacy msm_sdcc driver uses: datactrl = MCI_DPSM_ENABLE | (data->blksz << 4)
+ * This allows arbitrary block sizes for SDIO byte mode transfers.
+ */
+static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
+{
+	return MCI_DPSM_ENABLE | (host->data->blksz << 4);
 }
 
 static void ux500_busy_clear_mask_done(struct mmci_host *host)
@@ -839,6 +1117,7 @@ struct mmci_dmae_priv {
 	struct dma_chan	*tx_channel;
 	struct dma_async_tx_descriptor	*desc_current;
 	struct mmci_dmae_next next_data;
+	u32 crci;	/* CRCI value for QCOM ADM DMA */
 };
 
 int mmci_dmae_setup(struct mmci_host *host)
@@ -851,6 +1130,10 @@ int mmci_dmae_setup(struct mmci_host *host)
 		return -ENOMEM;
 
 	host->dma_priv = dmae;
+
+	/* Read CRCI value for QCOM ADM DMA flow control */
+	of_property_read_u32(mmc_dev(host->mmc)->of_node, "qcom,sdcc-crci",
+			     &dmae->crci);
 
 	dmae->rx_channel = dma_request_chan(mmc_dev(host->mmc), "rx");
 	if (IS_ERR(dmae->rx_channel)) {
@@ -885,8 +1168,8 @@ int mmci_dmae_setup(struct mmci_host *host)
 	else
 		txname = "none";
 
-	dev_info(mmc_dev(host->mmc), "DMA channels RX %s, TX %s\n",
-		 rxname, txname);
+	dev_info(mmc_dev(host->mmc), "DMA channels RX %s, TX %s, CRCI %u\n",
+		 rxname, txname, dmae->crci);
 
 	/*
 	 * Limit the maximum segment size in any SG entry according to
@@ -947,16 +1230,32 @@ static void mmci_dma_unmap(struct mmci_host *host, struct mmc_data *data)
 void mmci_dmae_error(struct mmci_host *host)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
+	struct mmci_dmae_next *next = &dmae->next_data;
+	struct dma_chan *chan = dmae->cur;
 
 	if (!dma_inprogress(host))
 		return;
 
 	dev_err(mmc_dev(host->mmc), "error during DMA transfer!\n");
-	dmaengine_terminate_all(dmae->cur);
+	dmaengine_terminate_all(chan);
 	host->dma_in_progress = false;
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
 	host->data->host_cookie = 0;
+
+	/*
+	 * Clear next_data if it was prepared on the same channel that we
+	 * just terminated. dmaengine_terminate_all() frees all pending
+	 * descriptors on the channel, so next->desc would be a stale
+	 * pointer if next->chan matches the terminated channel.
+	 *
+	 * If next->chan is a different channel (e.g., RX vs TX), the
+	 * descriptor may still be valid and should not be cleared.
+	 */
+	if (next->chan == chan) {
+		next->desc = NULL;
+		next->chan = NULL;
+	}
 
 	mmci_dma_unmap(host, host->data);
 }
@@ -997,13 +1296,129 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 	 * Give up with DMA and switch back to PIO mode.
 	 */
 	if (status & MCI_RXDATAAVLBLMASK) {
-		dev_err(mmc_dev(host->mmc), "buggy DMA detected. Taking evasive action.\n");
+		dev_err(mmc_dev(host->mmc),
+			"buggy DMA detected: status=0x%08x after %d iters, dir=%s, blksz=%u, blkcnt=%u — disabling DMA\n",
+			status, i,
+			(data->flags & MMC_DATA_READ) ? "read" : "write",
+			data->blksz, data->blocks);
 		mmci_dma_release(host);
 	}
 
 	host->dma_in_progress = false;
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
+}
+
+/*
+ * Qualcomm SDCC ADM-DMA completion callback (reads AND writes).
+ *
+ * On MSM8660/APQ8060 (Tenderloin) the SDCC Data Path State Machine does
+ * NOT reliably raise MCI_DATAEND after a DMA transfer. For reads only
+ * MCI_DATABLOCKEND fires (masked out of MMCIMASK0); mmci_data_irq()
+ * completes a transfer solely on MCI_DATAEND, so a missed DATAEND means
+ * the request never completes. Reads then hang forever in
+ * mmc_wait_for_req_done() (AR6003 HTC 128-byte read, modprobe >600 s);
+ * writes get force-terminated with -ETIMEDOUT by qcom_dma_timeout_work,
+ * which TEARS a write mid-flight and corrupts the eMMC filesystem (the
+ * recurring rootfs/uboot corruption after a clean webOS reflash).
+ *
+ * Legacy webOS msm_sdcc completes EVERY DMA transfer — read and write —
+ * from the msm_dmov complete_func, not from a SDCC DATAEND alone. We
+ * replicate that here: when the ADM signals the descriptor done
+ * (RESULT=success ⇒ all bytes moved), finish the request.
+ *
+ * Safe for writes because these transfers are CRCI flow-controlled
+ * (device_fc=1): the ADM descriptor only completes once CRCI pacing has
+ * drained every byte through the SDCC FIFO to the card, so DMA-done means
+ * the data reached the card. The card's internal programming-busy is then
+ * handled by the mmc core's normal CMD13 ready-poll before the next
+ * request — mmci_stop_data() here does not truncate it.
+ *
+ * The qcom_adm IRQ handler invokes this from hardirq with achan->vc.lock
+ * dropped, so taking host->lock is safe. The MCI_DATAEND path in
+ * mmci_data_irq() still runs for transfers that DO raise it; whichever
+ * path grabs host->lock and finds host->data first wins, the loser sees
+ * host->data == NULL and bails, so there is no double-completion. The
+ * watchdog remains armed as a last resort for a genuine DMA failure where
+ * neither DATAEND nor this callback ever fires.
+ */
+static void mmci_qcom_dma_complete(void *param)
+{
+	struct mmci_host *host = param;
+	unsigned long flags;
+	struct mmc_data *data;
+	u32 status, status_err;
+	bool write;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	data = host->data;
+	if (!data) {
+		/* Already completed (DATAEND raced in, or error path ran) */
+		trace_printk("MMCI-DMA-CB: mmc%u callback LATE (DATAEND already completed)\n",
+			     host->mmc->index);
+		spin_unlock_irqrestore(&host->lock, flags);
+		return;
+	}
+
+	write = !(data->flags & MMC_DATA_READ);
+
+	/*
+	 * The ADM moving all bytes does NOT mean the SDCC considered the
+	 * transfer clean: it can still latch DATACRCFAIL / RXOVERRUN /
+	 * DATATIMEOUT / STARTBITERR. Completing purely on the DMA-done edge
+	 * would bypass that check and could report success with CRC-bad data
+	 * (a real risk on this SoC's FIXED-address mailbox reads). Sample
+	 * MMCISTATUS here and honor any pending data error so the request
+	 * fails cleanly instead of returning corrupt data. (We hold
+	 * host->lock, so this is serialized against mmci_irq's error path;
+	 * whichever runs first completes, the other sees host->data == NULL.)
+	 */
+	status = readl(host->base + MMCISTATUS);
+	status_err = status & (host->variant->start_err |
+			       MCI_DATACRCFAIL | MCI_DATATIMEOUT |
+			       MCI_TXUNDERRUN | MCI_RXOVERRUN);
+
+	trace_printk("MMCI-DMA-CB: mmc%u callback COMPLETES %s (no DATAEND) blksz=%u blocks=%u status=0x%08x err=0x%08x\n",
+		     host->mmc->index, write ? "WRITE" : "read",
+		     data->blksz, data->blocks, status, status_err);
+
+	if (host->variant->qcom_datactrl_delay)
+		cancel_delayed_work(&host->qcom_dma_timeout_work);
+
+	if (status_err && !data->error) {
+		/* Clear the latched error bits we are consuming. */
+		writel(status_err, host->base + MMCICLEAR);
+
+		if (status_err & MCI_DATACRCFAIL)
+			data->error = -EILSEQ;
+		else if (status_err & MCI_DATATIMEOUT)
+			data->error = -ETIMEDOUT;
+		else if (status_err & MCI_STARTBITERR)
+			data->error = -ECOMM;
+		else if (status_err & (MCI_TXUNDERRUN | MCI_RXOVERRUN))
+			data->error = -EIO;
+
+		/* Tear down the DMA cleanly on a hardware data error. */
+		mmci_dma_error(host);
+	}
+
+	/* ADM RESULT=success ⇒ full transfer moved (to memory, or to card) */
+	mmci_dma_finalize(host, data);
+	mmci_stop_data(host);
+
+	if (!data->error)
+		data->bytes_xfered = data->blksz * data->blocks;
+
+	if (!data->stop) {
+		mmci_request_end(host, data->mrq);
+	} else if (host->mrq->sbc && !data->error) {
+		mmci_request_end(host, data->mrq);
+	} else {
+		mmci_start_command(host, data->stop, 0);
+	}
+
+	spin_unlock_irqrestore(&host->lock, flags);
 }
 
 /* prepares DMA channel and DMA descriptor, returns non-zero on failure */
@@ -1013,13 +1428,34 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	struct variant_data *variant = host->variant;
+	struct qcom_adm_peripheral_config periph_conf = {};
+	/*
+	 * For the qcom variant with CRCI flow-control via ADM, the box
+	 * descriptor's "row" must match the full SDC FIFO size (64 bytes
+	 * on MSM8660). The CRCI is asserted only when the FIFO is half-
+	 * empty — and the ADM doesn't start the next row until CRCI
+	 * fires again, so each row transfers an entire FIFO-full of data
+	 * between CRCI assertions. If the row is only half the FIFO
+	 * (the default for non-qcom mmci variants), boundary conditions
+	 * during boot-time CPU/bus transitions intermittently corrupt
+	 * data → DATACRCFAIL ~1/3 of boots.
+	 *
+	 * Legacy webOS msm_sdcc.c uses MCI_FIFOSIZE (= full fifosize)
+	 * as box row size and is reliable. Match that for qcom variant.
+	 *
+	 * Standard mmci variants keep the original behaviour (half-FIFO
+	 * burst, matching the half-empty trigger semantics of generic
+	 * ARM PrimeCell).
+	 */
+	unsigned int burst_words = variant->qcom_fifo ? (variant->fifosize >> 2)
+						      : (variant->fifohalfsize >> 2);
 	struct dma_slave_config conf = {
 		.src_addr = host->phybase + MMCIFIFO,
 		.dst_addr = host->phybase + MMCIFIFO,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
 		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
-		.src_maxburst = variant->fifohalfsize >> 2, /* # of words */
-		.dst_maxburst = variant->fifohalfsize >> 2, /* # of words */
+		.src_maxburst = burst_words,
+		.dst_maxburst = burst_words,
 		.device_fc = variant->dma_flow_controller,
 	};
 	struct dma_chan *chan;
@@ -1027,6 +1463,46 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	struct dma_async_tx_descriptor *desc;
 	int nr_sg;
 	unsigned long flags = DMA_CTRL_ACK;
+
+	/*
+	 * Pass CRCI + (when applicable) atomic-submit exec_func to the
+	 * Qualcomm ADM DMA controller. Both fields live in struct
+	 * qcom_adm_peripheral_config, so the peripheral_config block
+	 * is only valid when the channel is actually an ADM channel.
+	 *
+	 * dmae->crci is set from the "qcom,sdcc-crci" DT property which
+	 * is only present on ADM-DMA hosts (BAM hosts use a different
+	 * peripheral_config layout). Gating on dmae->crci therefore
+	 * implicitly restricts this block to ADM channels.
+	 */
+	if (dmae->crci) {
+		periph_conf.crci = dmae->crci;
+
+		/*
+		 * Atomic-submission opt-in: when the variant supports the
+		 * peripheral exec_func hook and this request qualifies
+		 * (write + datactrl_first + SDIO_IRQ host -- the same
+		 * predicate as the previous "deferred via cmd_irq"
+		 * fallback that this replaces), wire up the callback. The
+		 * exec_func is invoked by qcom_adm from inside its
+		 * per-controller submit_lock right before the channel's
+		 * CMD_PTR write, performing SDCC DATACTRL + ARG + CMD
+		 * writes atomically with the ADM start.
+		 *
+		 * host->atomic_submit.active is set later by mmci_dma_start
+		 * only after ops->dma_start() has succeeded, so a PIO
+		 * fallback keeps the conventional write path even if
+		 * exec_func was configured here.
+		 */
+		if (mmci_should_atomic_submit(host, data)) {
+			periph_conf.exec_func = mmci_qcom_atomic_exec_func;
+			periph_conf.exec_user = host;
+			host->atomic_submit.armed = true;
+		}
+
+		conf.peripheral_config = &periph_conf;
+		conf.peripheral_size = sizeof(periph_conf);
+	}
 
 	if (data->flags & MMC_DATA_READ) {
 		conf.direction = DMA_DEV_TO_MEM;
@@ -1040,9 +1516,38 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	if (!chan)
 		return -EINVAL;
 
-	/* If less than or equal to the fifo size, don't bother with DMA */
-	if (data->blksz * data->blocks <= variant->fifosize)
+	/*
+	 * Qualcomm SDCC + ADM: replicate legacy webOS msm_sdcc validate_dma()
+	 * EXACTLY. The vendor driver only hands a transfer to the ADM when it
+	 * is >= one FIFO (64 B) AND an exact multiple of the FIFO size; every
+	 * other transfer (sub-FIFO, or non-FIFO-aligned) goes through PIO.
+	 *
+	 * This matters because the ADM box/CRCI handshake is built around
+	 * whole-FIFO rows. Feeding it a sub-FIFO transfer (e.g. the 52/44-byte
+	 * AR6003 BMI control transfers) builds a single non-box descriptor
+	 * whose CRCI pacing does not drain the FIFO on a row boundary, leaving
+	 * the SDCC data path in a state that makes the NEXT DMA transfer (e.g.
+	 * the 128-byte HTC mailbox read) latch RXOVERRUN/DATACRCFAIL —
+	 * "error during DMA transfer". The earlier dma_threshold=32 override
+	 * (to "route BMI through DMA") diverged from the vendor driver, which
+	 * in fact PIOs those small transfers. DMA still carries the bulk path
+	 * (large, FIFO-aligned data frames) exactly as webOS does.
+	 */
+	if (host->variant->qcom_dml && host->mmc->index == 1) {
+		/* WiFi (sdcc4) ONLY — see note above. */
+		unsigned int len = data->blksz * data->blocks;
+
+		if (len < variant->fifosize || (len % variant->fifosize))
+			return -EINVAL;
+	} else if (data->blksz * data->blocks <=
+		   (variant->dma_threshold ?: variant->fifosize)) {
+		/*
+		 * eMMC and non-qcom variants: original behaviour — PIO at/below
+		 * the DMA threshold (defaults to fifosize, overridable per
+		 * variant). eMMC is left exactly as it was before the WiFi work.
+		 */
 		return -EINVAL;
+	}
 
 	/*
 	 * This is necessary to get SDIO working on the Ux500. We do not yet
@@ -1071,6 +1576,32 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	if (!desc)
 		goto unmap_exit;
 
+	/*
+	 * WiFi (sdcc4 = mmc1) READS ONLY: the AR6003 SDIO read path misses
+	 * MCI_DATAEND from the SDCC DPSM, so reads cannot depend on
+	 * mmci_data_irq() to complete. Wire a dmaengine completion callback
+	 * (invoked by qcom_adm from its IRQ handler) to finish the request
+	 * when the ADM reports the descriptor done.
+	 *
+	 * Deliberately NOT applied to:
+	 *  - eMMC (mmc0): gets DATAEND reliably; completing on the DMA-done
+	 *    edge raced the SDCC and destabilised the eMMC data path.
+	 *  - WRITES (any controller): for a write, ADM descriptor-done only
+	 *    means the data was pushed to the FIFO/card — the card still owes
+	 *    its CRC status token (PROG_DONE), which is exactly what
+	 *    MCI_DATAEND waits for. Completing on the DMA-done edge calls
+	 *    mmci_stop_data() before PROG_DONE, truncating the write and
+	 *    wedging the SDCC data path, so the NEXT command (e.g. the
+	 *    WMI-CONTROL connect's follow-up reg-table read) fails. WiFi
+	 *    writes DO get DATAEND, so they complete correctly via
+	 *    mmci_data_irq() with no callback needed.
+	 */
+	if (host->variant->qcom_dml && host->mmc->index == 1 &&
+	    (data->flags & MMC_DATA_READ)) {
+		desc->callback = mmci_qcom_dma_complete;
+		desc->callback_param = host;
+	}
+
 	*dma_chan = chan;
 	*dma_desc = desc;
 
@@ -1095,18 +1626,37 @@ int mmci_dmae_prep_data(struct mmci_host *host,
 	if (next)
 		return _mmci_dmae_prep_data(host, data, &nd->chan, &nd->desc);
 	/* Check if next job is already prepared. */
-	if (dmae->cur && dmae->desc_current)
+	if (dmae->cur && dmae->desc_current) {
+		/*
+		 * mmci_pre_request → _mmci_dmae_prep_data already set
+		 * host->atomic_submit.armed = true, but __mmci_start_request
+		 * cleared it on its way in.  Re-arm here when this data
+		 * qualifies, matching what a non-pre-prepared path would do.
+		 */
+		if (mmci_should_atomic_submit(host, data))
+			host->atomic_submit.armed = true;
 		return 0;
+	}
 
 	/* No job were prepared thus do it now. */
 	return _mmci_dmae_prep_data(host, data, &dmae->cur,
 				    &dmae->desc_current);
 }
 
-int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
+/*
+ * Submit DMA descriptor without issuing pending.
+ * Used by Qualcomm ADM DMA where DATACTRL must be written before DMA starts.
+ */
+int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
 	int ret;
+
+	if (!dmae->desc_current || !dmae->cur) {
+		dev_dbg(mmc_dev(host->mmc),
+			"DMA submit without descriptor, falling back to PIO\n");
+		return -EINVAL;
+	}
 
 	host->dma_in_progress = true;
 	ret = dma_submit_error(dmaengine_submit(dmae->desc_current));
@@ -1114,9 +1664,39 @@ int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
 		host->dma_in_progress = false;
 		return ret;
 	}
-	dma_async_issue_pending(dmae->cur);
 
 	*datactrl |= MCI_DPSM_DMAENABLE;
+
+	/*
+	 * One-shot diagnostic: log the first successful DMA submit so we
+	 * can confirm in dmesg that DMA actually engages for eMMC transfers
+	 * (vs. silently falling back to PIO). Subsequent submits are silent.
+	 */
+	if (!host->dma_engaged_once) {
+		host->dma_engaged_once = true;
+		dev_info(mmc_dev(host->mmc),
+			 "DMA submit OK (first transfer) — driver is using DMA path\n");
+	}
+
+	return 0;
+}
+
+void mmci_dmae_issue_pending(struct mmci_host *host)
+{
+	struct mmci_dmae_priv *dmae = host->dma_priv;
+
+	if (dmae && dmae->cur)
+		dma_async_issue_pending(dmae->cur);
+}
+
+int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl)
+{
+	int ret = mmci_dmae_submit(host, datactrl);
+
+	if (ret)
+		return ret;
+
+	mmci_dmae_issue_pending(host);
 
 	return 0;
 }
@@ -1129,12 +1709,34 @@ void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data)
 	if (!host->use_dma)
 		return;
 
-	WARN_ON(!data->host_cookie && (next->desc || next->chan));
-
-	dmae->desc_current = next->desc;
-	dmae->cur = next->chan;
-	next->desc = NULL;
-	next->chan = NULL;
+	/*
+	 * Only use the pre-prepared "next" descriptor if this request
+	 * was actually pre-prepared (has a host_cookie). If host_cookie
+	 * is 0, this request wasn't pre-prepared via mmci_pre_request(),
+	 * so any descriptor in next->desc belongs to a different request.
+	 *
+	 * This can happen during MMC hardware reset recovery, where new
+	 * internal commands (CMD8, CMD13, etc.) come through mmci_request()
+	 * without going through mmci_pre_request() first.
+	 *
+	 * Key fix: We only clear next_data when we actually consume it.
+	 * If we don't use it (host_cookie=0), leave it intact for when
+	 * the actual pre-prepared request is issued later. Setting
+	 * desc_current to NULL will trigger inline DMA preparation via
+	 * mmci_dmae_prep_data().
+	 */
+	if (data->host_cookie) {
+		/* Request was pre-prepared, use and consume the descriptor */
+		dmae->desc_current = next->desc;
+		dmae->cur = next->chan;
+		next->desc = NULL;
+		next->chan = NULL;
+	} else {
+		/* Request not pre-prepared, prepare DMA inline */
+		dmae->desc_current = NULL;
+		dmae->cur = NULL;
+		/* Leave next_data intact for its actual owner */
+	}
 }
 
 void mmci_dmae_unprep_data(struct mmci_host *host,
@@ -1247,8 +1849,26 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	host->size = data->blksz * data->blocks;
 	data->bytes_xfered = 0;
 
+	/*
+	 * WiFi (mmc1): clear any stale PROG_DONE latch before each transfer so
+	 * that, when a WRITE completes, a set PROG_DONE reflects THIS write's
+	 * card programming. The DMA-write completion path polls for it (see
+	 * mmci_data_irq) to avoid issuing the next CMD53 while the AR6003 is
+	 * still programming the just-written mailbox.
+	 */
+	if (host->mmc->index == 1)
+		writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
+
 	clks = (unsigned long long)data->timeout_ns * host->cclk;
 	do_div(clks, NSEC_PER_SEC);
+
+	/*
+	 * Qualcomm SDCC requires doubling the calculated data timeout.
+	 * The legacy msm_sdcc driver uses clks*2 for the data timeout.
+	 * Without this, SDIO operations can timeout prematurely.
+	 */
+	if (variant->qcom_data_timeout_2x)
+		clks *= 2;
 
 	timeout = data->timeout_clks + (unsigned int)clks;
 
@@ -1312,7 +1932,31 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 		irqmask = MCI_TXFIFOHALFEMPTYMASK;
 	}
 
+	/*
+	 * Qualcomm SDCC requires a delay after writing DATATIMER/DATALENGTH
+	 * before writing DATACTRL. Without this delay, SDIO data transfers
+	 * can fail with CRC or start bit errors.
+	 */
+	if (host->variant->qcom_datactrl_delay) {
+		/* Ensure data parameters are applied before DATACTRL */
+		wmb();
+		udelay(5);
+	}
+
+	/* Debug: print DATACTRL value for Qualcomm SDIO PIO fallback debugging */
+	if (host->variant->qcom_datactrl_delay)
+		dev_dbg(mmc_dev(host->mmc),
+			"PIO datactrl=0x%x blksz=%u size=%u\n",
+			datactrl, data->blksz, host->size);
+
 	mmci_write_datactrlreg(host, datactrl);
+
+	/* Another delay after DATACTRL for Qualcomm */
+	if (host->variant->qcom_datactrl_delay) {
+		wmb();
+		udelay(5);
+	}
+
 	writel(readl(base + MMCIMASK0) & ~MCI_DATAENDMASK, base + MMCIMASK0);
 	mmci_set_mask1(host, irqmask);
 }
@@ -1374,7 +2018,34 @@ mmci_start_command(struct mmci_host *host, struct mmc_command *cmd, u32 c)
 
 	host->cmd = cmd;
 
+	if (host->atomic_submit.active) {
+		/*
+		 * Atomic-submission path: stash ARG/CMD for the qcom_adm
+		 * exec_func instead of writing them directly. exec_func
+		 * will perform the DATACTRL + ARG + CMD writes inside the
+		 * ADM submit_lock, atomically with the channel's CMD_PTR
+		 * write. mmci_request will issue the DMA pending right
+		 * after this returns.
+		 */
+		host->atomic_submit.cmd_arg = cmd->arg;
+		host->atomic_submit.cmd_reg = c;
+		return;
+	}
+
 	writel(cmd->arg, base + MMCIARGUMENT);
+
+	/*
+	 * Qualcomm SDCC requires a clock-dependent delay between ARGUMENT and
+	 * COMMAND register writes.  Legacy msm_sdcc uses msmsdcc_delay():
+	 *   1 + 3000000 / clk_rate  (≈1 µs @ 48 MHz, ≈8.5 µs @ 400 kHz)
+	 * The short udelay(1) here was enough for most eMMC firmware, but
+	 * Samsung SEM32G fw-9.0 (PRV=0x90) returns an OTP-only EXT_CSD
+	 * (capacity = 0) with the 1 µs gap at the 400 kHz init clock.
+	 * Using the full formula restores the timing the hardware expects.
+	 */
+	if (host->variant->qcom_datactrl_delay)
+		udelay(1 + 3000000 / (host->cclk ?: 1));
+
 	writel(c, base + MMCICOMMAND);
 }
 
@@ -1382,6 +2053,99 @@ static void mmci_stop_command(struct mmci_host *host)
 {
 	host->stop_abort.error = 0;
 	mmci_start_command(host, &host->stop_abort, 0);
+}
+
+/*
+ * Diagnostic helper to dump SDCC + ADM state at the moment a data
+ * IRQ error fires. Used for investigating the heavy-concurrent-DMA
+ * failure mode (legacy passes the same workload; mainline doesn't).
+ *
+ * Ratelimited so the recovery cascade (cmd12/cmd13 retries each
+ * generating their own CMDTIMEOUTs) doesn't drown the log.
+ */
+static void mmci_diag_dump_state(struct mmci_host *host, const char *reason)
+{
+	static DEFINE_RATELIMIT_STATE(rs, HZ, 4);
+	void __iomem *base = host->base;
+	u32 cmd_reg, arg_reg, resp0, dctrl_reg, dlen_reg, dcnt_reg;
+	u32 mask0_reg, fifocnt_reg, status_reg;
+	struct mmc_data *data = host->data;
+	struct mmc_command *cmd = host->cmd;
+	const char *dma_state;
+
+	if (!__ratelimit(&rs))
+		return;
+
+	cmd_reg     = readl(base + MMCICOMMAND);
+	arg_reg     = readl(base + MMCIARGUMENT);
+	resp0       = readl(base + MMCIRESPONSE0);
+	dctrl_reg   = readl(base + MMCIDATACTRL);
+	dlen_reg    = readl(base + MMCIDATALENGTH);
+	dcnt_reg    = readl(base + MMCIDATACNT);
+	mask0_reg   = readl(base + MMCIMASK0);
+	status_reg  = readl(base + MMCISTATUS);
+	fifocnt_reg = host->variant->qcom_fifo ? readl(base + 0x44) : 0;
+
+	/* Compare against legacy webOS reference (verified via /dev/mem
+	 * dump of running 2.6.35-palm):
+	 *   SDCC1 (eMMC):  CLKREG = 0x00009f00  (PWRSAVE+FLOWENA+FBCLK set)
+	 *   SDCC4 (WiFi):  CLKREG = 0x00009b00  (PWRSAVE+FLOWENA+FBCLK set)
+	 * Difference from mainline = bit 9 (MCI_CLK_PWRSAVE).
+	 */
+	dev_warn(mmc_dev(host->mmc),
+		 "DIAG[%s]: CLKREG=0x%08x (legacy=0x9f00 sdcc1 / 0x9b00 sdcc4)\n",
+		 reason, readl(base + MMCICLOCK));
+
+	if (host->dma_in_progress)
+		dma_state = "DMA_IN_PROGRESS";
+	else if (host->dma_issue_deferred)
+		dma_state = "DMA_DEFERRED";
+	else if (host->atomic_submit.active)
+		dma_state = "ATOMIC_SUBMIT";
+	else
+		dma_state = "PIO_OR_IDLE";
+
+	dev_warn(mmc_dev(host->mmc),
+		 "DIAG[%s]: STATUS=0x%08x DATACTRL=0x%08x DATALEN=%u DATACNT=%u MASK0=0x%08x FIFOCNT=%u\n",
+		 reason, status_reg, dctrl_reg, dlen_reg, dcnt_reg,
+		 mask0_reg, fifocnt_reg);
+	/*
+	 * Decode the latched error bits by name. The disambiguation we care
+	 * about for the eMMC-under-WiFi fabric-starvation hypothesis:
+	 *   RXOVERRUN set  -> the ADM stopped draining the RX FIFO in time
+	 *                     (FIFO overflowed) => ADM/fabric drain starvation.
+	 *   DATACRCFAIL only (no RXOVERRUN) -> trailing CRC16 mismatch from a
+	 *                     byte-shift, also consistent with a transient
+	 *                     overrun the controller swallowed, but check
+	 *                     CRCI pacing / bus error too.
+	 *   DATATIMEOUT/STARTBITERR -> card/link side, not fabric.
+	 * Pair this with the ADM-side ADM_CH_RSLT / FLUSH_STATE0 dump
+	 * (qcom_adm.c logs them for CRCI 1/5 on flush/error) by timestamp.
+	 */
+	dev_warn(mmc_dev(host->mmc),
+		 "DIAG[%s]: errbits:%s%s%s%s%s%s  (RXOVERRUN=fabric/ADM drain starvation)\n",
+		 reason,
+		 (status_reg & MCI_RXOVERRUN)   ? " RXOVERRUN"   : "",
+		 (status_reg & MCI_TXUNDERRUN)  ? " TXUNDERRUN"  : "",
+		 (status_reg & MCI_DATACRCFAIL) ? " DATACRCFAIL" : "",
+		 (status_reg & MCI_DATATIMEOUT) ? " DATATIMEOUT" : "",
+		 (status_reg & MCI_STARTBITERR) ? " STARTBITERR" : "",
+		 (status_reg & (MCI_RXOVERRUN | MCI_TXUNDERRUN | MCI_DATACRCFAIL |
+				MCI_DATATIMEOUT | MCI_STARTBITERR)) ? "" : " (none latched)");
+	dev_warn(mmc_dev(host->mmc),
+		 "DIAG[%s]: cur_cmd=%p CMD_reg=0x%08x ARG=0x%08x RESP0=0x%08x dma=%s\n",
+		 reason, cmd, cmd_reg, arg_reg, resp0, dma_state);
+	if (data) {
+		dev_warn(mmc_dev(host->mmc),
+			 "DIAG[%s]: data: blksz=%u blocks=%u flags=0x%x sg_len=%u host->size=%u bytes_xfered=%u\n",
+			 reason, data->blksz, data->blocks, data->flags,
+			 data->sg_len, host->size, data->bytes_xfered);
+	}
+	if (cmd) {
+		dev_warn(mmc_dev(host->mmc),
+			 "DIAG[%s]: cmd: opcode=%u arg=0x%08x flags=0x%x\n",
+			 reason, cmd->opcode, cmd->arg, cmd->flags);
+	}
 }
 
 static void
@@ -1393,6 +2157,11 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 	/* Make sure we have data to handle */
 	if (!data)
 		return;
+
+	/* Trace data IRQ for WiFi SDCC4 debugging */
+	if (host->mmc->index == 1)
+		trace_printk("MMCI-DATA-IRQ: status=0x%08x blksz=%u blocks=%u\n",
+			     status, data->blksz, data->blocks);
 
 	/* First check for errors */
 	status_err = status & (host->variant->start_err |
@@ -1419,13 +2188,19 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 			success = 0;
 		}
 
-		dev_dbg(mmc_dev(host->mmc), "MCI ERROR IRQ, status 0x%08x at 0x%08x\n",
+		dev_err(mmc_dev(host->mmc), "MCI ERROR IRQ, status 0x%08x at 0x%08x\n",
 			status_err, success);
 		if (status_err & MCI_DATACRCFAIL) {
+			dev_err(mmc_dev(host->mmc), "DATACRCFAIL: blksz=%d blocks=%d flags=0x%x\n",
+				data->blksz, data->blocks, data->flags);
+			mmci_diag_dump_state(host, "DATACRCFAIL");
 			/* Last block was not successful */
 			success -= 1;
 			data->error = -EILSEQ;
 		} else if (status_err & MCI_DATATIMEOUT) {
+			dev_err(mmc_dev(host->mmc), "DATATIMEOUT: blksz=%d blocks=%d flags=0x%x\n",
+				data->blksz, data->blocks, data->flags);
+			mmci_diag_dump_state(host, "DATATIMEOUT");
 			data->error = -ETIMEDOUT;
 		} else if (status_err & MCI_STARTBITERR) {
 			data->error = -ECOMM;
@@ -1445,9 +2220,105 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		dev_err(mmc_dev(host->mmc), "stray MCI_DATABLOCKEND interrupt\n");
 
 	if (status & MCI_DATAEND || data->error) {
+		/*
+		 * WiFi (mmc1) DMA READ: do NOT complete on DATAEND. On this SoC
+		 * the SDCC raises DATAEND while the ADM is still draining the
+		 * CRCI handshake — the dmaengine completion callback fires LATE,
+		 * after DATAEND. Tearing down the DPSM here (mmci_stop_data) while
+		 * the ADM is mid-transfer leaves the SDCC CPSM stuck in the
+		 * data-state response window, so the NEXT command never completes
+		 * (confirmed: the dummy52 CMD52 issued after a 128-byte HTC read
+		 * never raises a completion IRQ → modprobe hangs in D-state).
+		 *
+		 * Defer to mmci_qcom_dma_complete, which runs from the ADM's own
+		 * IRQ when the descriptor is truly done and the data path is
+		 * clean. This matches legacy webOS msm_sdcc, which completes reads
+		 * only from the msm_dmov complete_func, never from a SDCC DATAEND.
+		 * The callback is wired for every mmc1 read (see _mmci_dmae_prep_
+		 * data), so it is guaranteed to fire; the DATAEND bit was already
+		 * cleared by mmci_irq, and qcom_dma_timeout_work is the backstop.
+		 * Errors (DATACRCFAIL/RXOVERRUN/TIMEOUT) still complete here so the
+		 * failure is handled promptly. Writes are unaffected (PROG_DONE
+		 * path below). eMMC (mmc0) is unaffected.
+		 */
+		if (host->mmc->index == 1 && host->dma_in_progress &&
+		    (data->flags & MMC_DATA_READ) && !data->error) {
+			trace_printk("MMCI-DATAEND: mmc1 read DATAEND IGNORED, defer to ADM callback blksz=%u blocks=%u\n",
+				     data->blksz, data->blocks);
+			return;
+		}
+
+		/*
+		 * Tag DATAEND-driven completion of DMA transfers (low volume) so
+		 * we can contrast against the mmci_qcom_dma_complete callback path
+		 * and see, per direction and per controller (mmc0=eMMC,
+		 * mmc1=WiFi), which transfers get a real DATAEND vs rely on the
+		 * DMA-done callback.
+		 */
+		if (host->dma_in_progress)
+			trace_printk("MMCI-DATAEND: mmc%u completes %s via DATAEND status=0x%08x blksz=%u blocks=%u err=%d\n",
+				     host->mmc->index,
+				     (data->flags & MMC_DATA_READ) ? "read" : "WRITE",
+				     status, data->blksz, data->blocks, data->error);
+
+		/*
+		 * WiFi (mmc1) DMA WRITE: wait for the card to finish programming
+		 * (PROG_DONE, bit 23) before completing the request, so the next
+		 * CMD53 is not issued while the AR6003 is still busy. A DMA
+		 * write's DATAEND fires fast enough that the follow-up reg-table
+		 * READ's CMD53 otherwise races ahead of PROG_DONE and CMDTIMEOUTs
+		 * — the WMI-CONTROL connect failure (DIAG[CMD53-TO] showed
+		 * PROG_DONE set only after the read had already been sent). PIO
+		 * writes are slow enough to avoid this, so only the DMA path
+		 * needs the wait. PROG_DONE arrives within microseconds for a
+		 * 128-byte mailbox write; the bound only guards an error case.
+		 */
+		if (host->mmc->index == 1 && host->dma_in_progress &&
+		    !(data->flags & MMC_DATA_READ) && !data->error) {
+			unsigned int pd;
+
+			for (pd = 0; pd < 2000; pd++) {
+				if (readl(host->base + MMCISTATUS) &
+				    MCI_QCOM_PROGDONE)
+					break;
+				udelay(1);
+			}
+			writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
+		}
+
+		if (host->variant->qcom_datactrl_delay)
+			cancel_delayed_work(&host->qcom_dma_timeout_work);
+
 		mmci_dma_finalize(host, data);
 
 		mmci_stop_data(host);
+
+		/*
+		 * Qualcomm SDCC: on data CRC/timeout, mirror legacy
+		 * msm_sdcc's msmsdcc_reset_and_restore() — clk_reset the
+		 * SDCC IP (wipes stale DPSM/CPSM state from the
+		 * half-finished transfer) then restore MMCICLOCK / MMCIPOWER
+		 * / MMCIMASK0 identically (same 8-bit/48 MHz settings).
+		 * Without this, the upcoming CMD12 / data->stop typically
+		 * CMDTIMEOUTs (CPSM is still in DATA-state response window),
+		 * mmc-core cascades through mmc_blk_reset → mmc_power_cycle
+		 * → mmc_init_card → mmc_select_bus_width's verification path
+		 * → second read CRC-fails under fabric contention → card
+		 * falls back to 1-bit irreversibly.
+		 *
+		 * Reset is 2 MMIO writes + udelay(2); cheap inside the data
+		 * IRQ path, and crucial that it happens BEFORE CMD12 below.
+		 */
+		if (data->error && host->variant->qcom_datactrl_delay &&
+		    host->rst) {
+			reset_control_assert(host->rst);
+			udelay(2);
+			reset_control_deassert(host->rst);
+			writel(host->clk_reg, host->base + MMCICLOCK);
+			writel(host->pwr_reg, host->base + MMCIPOWER);
+			writel(MCI_IRQENABLE | host->variant->start_err,
+			       host->base + MMCIMASK0);
+		}
 
 		if (!data->error)
 			/* The error clause is handled above, success! */
@@ -1477,6 +2348,33 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 	if (!cmd)
 		return;
 
+	/*
+	 * Dummy CMD52 completion path: the response content is ignored
+	 * (any of CMDSENT / CMDRESPEND / CMDCRCFAIL / CMDTIMEOUT means
+	 * the CPSM has finished running and the residual SDCC data-path
+	 * state has been drained). Clear in-progress, dispatch the real
+	 * request that was stashed at request entry.
+	 */
+	if (host->dummy52_in_progress && cmd == &host->dummy52_cmd) {
+		if (!(status & (MCI_CMDSENT | MCI_CMDRESPEND |
+				MCI_CMDCRCFAIL | MCI_CMDTIMEOUT)))
+			return;
+
+		trace_printk("dummy52: CMD52 completed, status=0x%08x\n", status);
+		host->cmd = NULL;
+		host->dummy52_in_progress = false;
+
+		if (host->pending_mrq) {
+			struct mmc_request *real_mrq = host->pending_mrq;
+
+			host->pending_mrq = NULL;
+			trace_printk("dummy52: dispatching pending request cmd=%u\n",
+				     real_mrq->cmd->opcode);
+			__mmci_start_request(host, real_mrq);
+		}
+		return;
+	}
+
 	sbc = (cmd == host->mrq->sbc);
 	busy_resp = !!(cmd->flags & MMC_RSP_BUSY);
 
@@ -1501,6 +2399,29 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 
 	if (status & MCI_CMDTIMEOUT) {
 		cmd->error = -ETIMEDOUT;
+		if (host->variant->qcom_datactrl_delay)
+			dev_err(mmc_dev(host->mmc),
+				"CMDTIMEOUT: cmd%d arg=0x%08x status=0x%08x data=%s\n",
+				cmd->opcode, cmd->arg, status,
+				host->data ? "yes" : "no");
+		/*
+		 * WiFi (mmc1) CMD53 timeout diag: dump the CPSM/DPSM state to
+		 * understand why the command after a DMA write gets no response
+		 * (WMI WRITE->READ CMDTIMEOUT). datactrl_first means DATACTRL is
+		 * armed before the command; a stuck DPSM from the prior write
+		 * would show here.
+		 */
+		if (host->mmc->index == 1 && cmd->opcode == SD_IO_RW_EXTENDED)
+			dev_err(mmc_dev(host->mmc),
+				"DIAG[CMD53-TO]: STATUS=0x%08x DATACTRL=0x%08x DATACNT=%u CLK=0x%08x MASK0=0x%08x CMD=0x%08x atomic=%d defer=%d\n",
+				readl(host->base + MMCISTATUS),
+				readl(host->base + MMCIDATACTRL),
+				readl(host->base + MMCIDATACNT),
+				readl(host->base + MMCICLOCK),
+				readl(host->base + MMCIMASK0),
+				readl(host->base + MMCICOMMAND),
+				host->atomic_submit.active,
+				host->dma_issue_deferred);
 	} else if (status & MCI_CMDCRCFAIL && cmd->flags & MMC_RSP_CRC) {
 		cmd->error = -EILSEQ;
 	} else if (host->variant->busy_timeout && busy_resp &&
@@ -1525,19 +2446,53 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 
 			mmci_stop_data(host);
 			if (host->variant->cmdreg_stop && cmd->error) {
+				/*
+				 * Clear deferred DMA flag - the DMA was
+				 * terminated above, don't issue it.
+				 */
+				host->dma_issue_deferred = false;
 				mmci_stop_command(host);
 				return;
 			}
 		}
+
+		/* Clear deferred DMA flag on error/no-data path */
+		host->dma_issue_deferred = false;
 
 		if (host->irq_action != IRQ_WAKE_THREAD)
 			mmci_request_end(host, host->mrq);
 
 	} else if (sbc) {
 		mmci_start_command(host, host->mrq->cmd, 0);
-	} else if (!host->variant->datactrl_first &&
+	} else if (!host->datactrl_first &&
 		   !(cmd->data->flags & MMC_DATA_READ)) {
 		mmci_start_data(host, cmd->data);
+	}
+
+	/*
+	 * Qualcomm ADM DMA with datactrl_first writes: issue deferred
+	 * DMA pending now that CMD has completed. The sequence is:
+	 *   DMA submit → DATACTRL → CMD → DMA issue (here)
+	 * This matches the legacy msm_sdcc exec_func atomic sequence.
+	 */
+	if (host->dma_issue_deferred) {
+		host->dma_issue_deferred = false;
+		if (host->ops && host->ops->dma_issue_pending) {
+			host->ops->dma_issue_pending(host);
+			/*
+			 * 500 ms is enough for any real DMA — typical SDIO
+			 * transfers complete in microseconds. The previous 3 s
+			 * timeout was wide enough to coincide with eMMC's
+			 * natural multi-block-write busy windows, falsely
+			 * triggering a forced terminate that cascaded into
+			 * eMMC journal abort. Only legitimate WiFi-chip hangs
+			 * (waiting on response that never comes) need this
+			 * watchdog now and 500 ms catches those just fine.
+			 */
+			schedule_delayed_work(
+				&host->qcom_dma_timeout_work,
+				msecs_to_jiffies(500));
+		}
 	}
 }
 
@@ -1585,6 +2540,58 @@ static void ux500_busy_timeout_work(struct work_struct *work)
 
 		mmci_cmd_irq(host, host->cmd, status);
 	}
+
+	spin_unlock_irqrestore(&host->lock, flags);
+}
+
+/*
+ * Qualcomm SDCC DMA data timeout worker.
+ *
+ * On Qualcomm SDCC with ADM DMA using deferred DMA issue, the hardware
+ * occasionally fails to generate DATAEND or DATATIMEOUT after a DMA write
+ * transfer completes. The ADM DMA engine reports success but the SDCC
+ * Data Path State Machine (DPSM) gets stuck, causing the request to hang
+ * indefinitely in mmc_wait_for_req_done().
+ *
+ * This watchdog detects the hang by firing a few seconds after deferred
+ * DMA is issued. If the data transfer is still pending, it dumps the
+ * SDCC register state for debugging and force-terminates the transfer
+ * with -ETIMEDOUT so the SDIO layer can retry.
+ */
+static void qcom_dma_data_timeout_work(struct work_struct *work)
+{
+	struct mmci_host *host = container_of(work, struct mmci_host,
+					qcom_dma_timeout_work.work);
+	unsigned long flags;
+	u32 status;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	if (!host->data) {
+		/* Transfer already completed normally */
+		spin_unlock_irqrestore(&host->lock, flags);
+		return;
+	}
+
+	status = readl(host->base + MMCISTATUS);
+	dev_err(mmc_dev(host->mmc),
+		"DMA data timeout! status=0x%08x datactrl=0x%08x "
+		"datalength=0x%08x mask0=0x%08x\n",
+		status,
+		readl(host->base + MMCIDATACTRL),
+		readl(host->base + MMCIDATALENGTH),
+		readl(host->base + MMCIMASK0));
+
+	/* Terminate the DMA transfer */
+	mmci_dma_error(host);
+
+	host->data->error = -ETIMEDOUT;
+	host->data->bytes_xfered = 0;
+
+	mmci_stop_data(host);
+
+	if (host->mrq)
+		mmci_request_end(host, host->mrq);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
@@ -1771,15 +2778,18 @@ static void mmci_write_sdio_irq_bit(struct mmci_host *host, int enable)
 	void __iomem *base = host->base;
 	u32 mask = readl_relaxed(base + MMCIMASK0);
 
-	if (enable)
+	if (enable) {
 		writel_relaxed(mask | MCI_ST_SDIOITMASK, base + MMCIMASK0);
-	else
+	} else {
 		writel_relaxed(mask & ~MCI_ST_SDIOITMASK, base + MMCIMASK0);
+	}
 }
 
 static void mmci_signal_sdio_irq(struct mmci_host *host, u32 status)
 {
 	if (status & MCI_ST_SDIOIT) {
+		dev_dbg(mmc_dev(host->mmc),
+			"SDIO IRQ received, status=0x%08x\n", status);
 		mmci_write_sdio_irq_bit(host, 0);
 		sdio_signal_irq(host->mmc);
 	}
@@ -1797,7 +2807,15 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 	host->irq_action = IRQ_HANDLED;
 
 	do {
+		u32 raw_status;
 		status = readl(host->base + MMCISTATUS);
+		raw_status = status;
+
+		/* Trace IRQ entry for WiFi SDCC4 debugging */
+		if (host->mmc->index == 1 && status)
+			trace_printk("MMCI-IRQ: status=0x%08x mask0=0x%08x\n",
+				     status, readl(host->base + MMCIMASK0));
+
 		if (!status)
 			break;
 
@@ -1813,6 +2831,7 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 		 * clear the corresponding IRQ.
 		 */
 		status &= readl(host->base + MMCIMASK0);
+
 		if (host->variant->busy_detect)
 			writel(status & ~host->variant->busy_detect_mask,
 			       host->base + MMCICLEAR);
@@ -1876,6 +2895,49 @@ static irqreturn_t mmci_irq_thread(int irq, void *dev_id)
 	return host->irq_action;
 }
 
+/*
+ * Locked helper: start a real mmc_request. Assumes host->lock is held
+ * and host->mrq is NULL.
+ *
+ * Factored out so it can be invoked both from mmci_request() (after
+ * lock acquisition) and from the dummy52-completion path in
+ * mmci_cmd_irq() where the lock is already held by the IRQ handler.
+ */
+static void __mmci_start_request(struct mmci_host *host,
+				 struct mmc_request *mrq)
+{
+	host->mrq = mrq;
+	host->atomic_submit.armed = false;
+	host->atomic_submit.active = false;
+
+	if (mrq->data)
+		mmci_get_next_data(host, mrq->data);
+
+	if (mrq->data &&
+	    (host->datactrl_first || mrq->data->flags & MMC_DATA_READ)) {
+		mmci_start_data(host, mrq->data);
+		/*
+		 * Clock-dependent data-to-cmd settle.  Legacy msm_sdcc uses
+		 * msmsdcc_delay() = 1 + 3000000/clk_rate (≈1 µs @ 48 MHz,
+		 * ≈8.5 µs @ 400 kHz init clock).  The previous hardcoded
+		 * udelay(1) was too short at init clock — this is the path
+		 * that issues the EXT_CSD READ on Samsung PRV=0x90.
+		 */
+		if (host->variant->qcom_datactrl_delay)
+			udelay(1 + 3000000 / (host->cclk ?: 1));
+	}
+
+	if (mrq->sbc)
+		mmci_start_command(host, mrq->sbc, 0);
+	else
+		mmci_start_command(host, mrq->cmd, 0);
+
+	if (host->atomic_submit.active && host->ops &&
+	    host->ops->dma_issue_pending) {
+		host->ops->dma_issue_pending(host);
+	}
+}
+
 static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct mmci_host *host = mmc_priv(mmc);
@@ -1891,19 +2953,56 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	spin_lock_irqsave(&host->lock, flags);
 
-	host->mrq = mrq;
+	/*
+	 * Qualcomm SDCC dummy CMD52 errata: after a CMD53 data transfer, the
+	 * SDCC DPSM retains residual state. Drain it by issuing a CMD52
+	 * (read of CCCR reg 0, function 0) before the triggering command,
+	 * then dispatch the real request from mmci_cmd_irq.
+	 *
+	 * Drain direction per controller:
+	 *  - eMMC (mmc0): WRITE->WRITE hits DATACRCFAIL → drain before WRITE.
+	 *  - WiFi (mmc1): drain before WRITE. This covers:
+	 *    (a) WRITE->WRITE (original errata)
+	 *    (b) READ->WRITE (DMA read callback leaves DPSM dirty → next
+	 *        CMD53 WRITE CMDTIMEOUTs; confirmed on HTC START after 6
+	 *        service-connect reads)
+	 *    Never drain before READ: read→read chains work fine, and a
+	 *    drain before a read during BMI/HTC poll causes 800 ms timeout.
+	 */
+	if (host->dummy52_required && host->dummy52_needed) {
+		host->dummy52_needed = false;
 
-	if (mrq->data)
-		mmci_get_next_data(host, mrq->data);
+		if (mrq->cmd->opcode == SD_IO_RW_EXTENDED && mrq->data) {
+			bool is_write = mrq->data->flags & MMC_DATA_WRITE;
 
-	if (mrq->data &&
-	    (host->variant->datactrl_first || mrq->data->flags & MMC_DATA_READ))
-		mmci_start_data(host, mrq->data);
+			if (is_write) {
+				host->dummy52_in_progress = true;
+				host->pending_mrq = mrq;
+				/*
+				 * CRITICAL: clear the atomic-submit state before
+				 * issuing the dummy CMD52. mmci_should_atomic_submit
+				 * sets atomic_submit.active=true for the preceding WiFi
+				 * DMA READ, and it is only cleared at the top of
+				 * __mmci_start_request — which we bypass here. If left
+				 * set, mmci_start_command STASHES the CMD52 (ARG/CMD
+				 * saved for the ADM exec_func) instead of writing
+				 * MMCICOMMAND, so the command is never issued, no
+				 * completion IRQ fires, and modprobe hangs forever in
+				 * D-state. The dummy CMD52 carries no data and must go
+				 * through the conventional command path.
+				 */
+				host->atomic_submit.armed = false;
+				host->atomic_submit.active = false;
+				dev_dbg(mmc_dev(mmc),
+					"dummy52: dispatching before CMD53 WRITE\n");
+				mmci_start_command(host, &host->dummy52_cmd, 0);
+				spin_unlock_irqrestore(&host->lock, flags);
+				return;
+			}
+		}
+	}
 
-	if (mrq->sbc)
-		mmci_start_command(host, mrq->sbc, 0);
-	else
-		mmci_start_command(host, mrq->cmd, 0);
+	__mmci_start_request(host, mrq);
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
@@ -1933,6 +3032,14 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	switch (ios->power_mode) {
 	case MMC_POWER_OFF:
+		/* Set low load on qcom variant before power off */
+		if (variant->qcom_fifo && (mmc->caps & MMC_CAP_SDIO_IRQ)) {
+			if (!IS_ERR(mmc->supply.vqmmc))
+				regulator_set_load(mmc->supply.vqmmc, 0);
+			if (!IS_ERR(mmc->supply.vmmc))
+				regulator_set_load(mmc->supply.vmmc, 0);
+		}
+
 		if (!IS_ERR(mmc->supply.vmmc))
 			mmc_regulator_set_ocr(mmc, mmc->supply.vmmc, 0);
 
@@ -1962,6 +3069,14 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 					"failed to enable vqmmc regulator\n");
 			else
 				host->vqmmc_enabled = true;
+		}
+
+		/* Set high load for SDIO WiFi on qcom variant */
+		if (variant->qcom_fifo && (mmc->caps & MMC_CAP_SDIO_IRQ)) {
+			if (!IS_ERR(mmc->supply.vqmmc))
+				regulator_set_load(mmc->supply.vqmmc, 100000);
+			if (!IS_ERR(mmc->supply.vmmc))
+				regulator_set_load(mmc->supply.vmmc, 100000);
 		}
 
 		pwr |= MCI_PWR_ON;
@@ -2005,16 +3120,50 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	if (!ios->clock && variant->pwrreg_clkgate)
 		pwr &= ~MCI_PWR_ON;
 
-	if (host->variant->explicit_mclk_control &&
-	    ios->clock != host->clock_cache) {
-		ret = clk_set_rate(host->clk, ios->clock);
-		if (ret < 0)
-			dev_err(mmc_dev(host->mmc),
-				"Error setting clock rate (%d)\n", ret);
-		else
-			host->mclk = clk_get_rate(host->clk);
+	/*
+	 * Legacy msm_sdcc snaps any (fmid, fmax) = (24, 48) MHz request down
+	 * to 24 MHz. gcc-msm8660's clk_tbl_sdc[] has only discrete steps
+	 * {400 kHz, 16, 17.07, 20.21, 24, 48} MHz — nothing between 24 and
+	 * 48. If the MMC core asks for, e.g., 26 MHz (legacy MMC HS or the
+	 * intermediate of a DDR50 probe), the clock framework may round UP
+	 * to 48 MHz before the controller is configured for HS mode. Signal
+	 * sampling at the wrong edge then produces DATACRCFAIL on the first
+	 * transfer at that rate. Mirror legacy's defensive clamp.
+	 *
+	 * clock_cache tracks the applied (post-snap) rate so re-requests of
+	 * the same in-between rate hit the cache and skip clk_set_rate.
+	 */
+	{
+		unsigned int set_rate = ios->clock;
+
+		if (host->variant->qcom_datactrl_delay && set_rate &&
+		    set_rate < mmc->f_max && set_rate > 24000000)
+			set_rate = 24000000;
+
+		if (host->variant->explicit_mclk_control &&
+		    set_rate != host->clock_cache) {
+			ret = clk_set_rate(host->clk, set_rate);
+			if (ret < 0)
+				dev_err(mmc_dev(host->mmc),
+					"Error setting clock rate (%d)\n", ret);
+			else
+				host->mclk = clk_get_rate(host->clk);
+		}
+		host->clock_cache = set_rate;
+
+		/*
+		 * Legacy msm_sdcc waits "at least 2 MCLK cycles" after
+		 * clk_set_rate before reprogramming MMCICLOCK, to let the
+		 * SDC core resync to the new RCG rate. Without this,
+		 * MMCICLOCK can be sampled mid-transition and the controller
+		 * lands in an indeterminate state — observed as intermittent
+		 * DATACRCFAIL on the first transfer after a rate change.
+		 * Formula 1 + 3000000/clock matches legacy msmsdcc_delay():
+		 * 1 us at 48 MHz, 8 us at 400 kHz.
+		 */
+		if (host->variant->qcom_datactrl_delay && set_rate)
+			udelay(1 + 3000000 / set_rate);
 	}
-	host->clock_cache = ios->clock;
 
 	spin_lock_irqsave(&host->lock, flags);
 
@@ -2024,6 +3173,17 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		mmci_set_clkreg(host, ios->clock);
 
 	mmci_set_max_busy_timeout(mmc);
+
+	/*
+	 * Legacy msm_sdcc waits 50 us between MMCICLOCK and MMCIPOWER writes.
+	 * This is during the card-init MCI_PWR_OFF -> MCI_PWR_UP -> MCI_PWR_ON
+	 * power-state machine, where the controller needs MMCICLOCK to have
+	 * stabilised before the power register changes. mmci_reg_delay() runs
+	 * *after* both writes, which doesn't guarantee a stable clock when
+	 * MMCIPOWER samples the bus. Add the gap legacy explicitly waits for.
+	 */
+	if (host->variant->qcom_datactrl_delay)
+		udelay(50);
 
 	if (host->ops && host->ops->set_pwrreg)
 		host->ops->set_pwrreg(host, pwr);
@@ -2265,6 +3425,55 @@ static int mmci_probe(struct amba_device *dev,
 	if (ret)
 		return ret;
 
+	/*
+	 * Interconnect path for SD card memory access (optional).
+	 *
+	 * The legacy webOS kernel used dfab_sdc_clk clock voters to keep
+	 * the Daytona Fabric (DFAB) active during SD card operations.
+	 * The interconnect framework provides equivalent functionality.
+	 */
+	host->icc_path = devm_of_icc_get(&dev->dev, "sdc");
+	if (IS_ERR(host->icc_path)) {
+		ret = PTR_ERR(host->icc_path);
+		if (ret != -ENODATA && ret != -ENOENT) {
+			dev_err(&dev->dev, "failed to get interconnect: %d\n", ret);
+			goto clk_disable;
+		}
+		/* No interconnect in DT - optional for backwards compat */
+		host->icc_path = NULL;
+	}
+
+	if (host->icc_path) {
+		/*
+		 * Vote for DFAB bandwidth to keep the fabric active.
+		 *
+		 * Legacy webOS msm_sdcc force-votes dfab_sdc_clk=64MHz on
+		 * every active SDCC with pclk_src_dfab=1 (board-tenderloin sets
+		 * it on both SDC1/eMMC and SDC4/WiFi; msm_sdcc.c does
+		 * clk_set_rate(dfab_pclk, 64000000) + a persistent clk_enable).
+		 * On the 64-bit DFAB that is 64e6 * 8 = 512 MB/s, and it is held
+		 * SUSTAINED (clk_enable), not a transient ceiling. The mainline
+		 * msm8660 ICC provider uses buswidth=8 and rate = bw/8, so
+		 * 512000 kBps maps to exactly 64 MHz DFAB.
+		 *
+		 * IMPORTANT: vote it as avg_bw (sustained), not just peak. The
+		 * earlier (0, 512000) vote put 512 MB/s only in the peak slot;
+		 * while max(avg,peak) yields 64 MHz in the ACTIVE state, avg=0
+		 * lets the floor lapse across RPM active/sleep context changes.
+		 * Under sustained concurrent eMMC+WiFi DMA the ADM must drain
+		 * the SDCC FIFO to EBI continuously; if DFAB drops to the RPM
+		 * minimum the ADM starves mid-transfer and the SDCC latches
+		 * DATACRCFAIL/RXOVERRUN (the recurring eMMC-under-WiFi failure).
+		 * avg=peak=512000 replicates legacy's persistent 64 MHz hold.
+		 */
+		ret = icc_set_bw(host->icc_path, 512000, 512000);
+		if (ret) {
+			dev_err(&dev->dev, "failed to set interconnect bw: %d\n", ret);
+			goto clk_disable;
+		}
+		dev_dbg(&dev->dev, "interconnect bandwidth voting enabled\n");
+	}
+
 	if (variant->qcom_fifo)
 		host->get_rx_fifocnt = mmci_qcom_get_rx_fifocnt;
 	else
@@ -2272,6 +3481,30 @@ static int mmci_probe(struct amba_device *dev,
 
 	host->plat = plat;
 	host->variant = variant;
+	/*
+	 * Initialize datactrl_first from variant default, then allow
+	 * device tree to override. This enables per-controller tuning
+	 * for SDIO vs eMMC which may have different timing requirements.
+	 */
+	host->datactrl_first = variant->datactrl_first;
+	if (np && of_property_read_bool(np, "qcom,datactrl-first"))
+		host->datactrl_first = true;
+
+	/*
+	 * Qualcomm SDCC dummy CMD52 errata. Opt-in per controller via
+	 * "qcom,dummy52-required" so boards can enable it only on SDCC
+	 * instances that actually need the workaround (typically the one
+	 * wired to an SDIO function device like AR6003 WiFi).
+	 */
+	if (np && of_property_read_bool(np, "qcom,dummy52-required")) {
+		host->dummy52_required = true;
+		host->dummy52_cmd.opcode = SD_IO_RW_DIRECT;
+		host->dummy52_cmd.arg = 0;
+		host->dummy52_cmd.flags = MMC_RSP_R5 | MMC_CMD_AC;
+		host->dummy52_cmd.data = NULL;
+		dev_info(mmc_dev(mmc),
+			 "qcom,dummy52-required enabled (CMD52 after CMD53 WRITE)\n");
+	}
 	host->mclk = clk_get_rate(host->clk);
 	/*
 	 * According to the spec, mclk is max 100 MHz,
@@ -2351,6 +3584,16 @@ static int mmci_probe(struct amba_device *dev,
 	mmc->caps |= MMC_CAP_CMD23;
 
 	/*
+	 * Attempted MMC_CAP_BUS_WIDTH_TEST on qcom variants — backed out:
+	 * the Samsung SEM32G fitted to tenderloin doesn't respond to
+	 * CMD19 BUSTEST_R, so enabling the cap caused eMMC re-init to
+	 * DATATIMEOUT on every bus-width verification step.  Fix A (SDCC
+	 * IP clk_reset on data error) is enough on its own — by the time
+	 * the bus-width ladder is reached we've already avoided the
+	 * cascade that re-init was triggering.
+	 */
+
+	/*
 	 * Enable busy detection.
 	 */
 	if (variant->busy_detect) {
@@ -2416,6 +3659,54 @@ static int mmci_probe(struct amba_device *dev,
 	 */
 	mmc->max_blk_count = mmc->max_req_size >> variant->datactrl_blocksz;
 
+	/*
+	 * Optional DT-driven cap on per-request size, used to mitigate
+	 * AHB-fabric contention between two ADM channels on shared bus.
+	 *
+	 * On APQ8060/MSM8660 (Tenderloin) adm_dma1 is shared between sdcc1
+	 * (eMMC) and sdcc4 (WiFi/AR6003). When both channels burst on the
+	 * fabric simultaneously, the AHB bridge arbiter saturates and the
+	 * non-bursting controller's CPU register accesses stall; sdcc1
+	 * sees multi-hundred-block DATACRCFAIL and the rootfs goes RO.
+	 *
+	 * The mitigation (per Gemini diagnostic): clamp the per-request size
+	 * on the bulk-storage controller so the ADM periodically relinquishes
+	 * the fabric, letting the other controller's command path break
+	 * through. 16 KB is the suggested starting value -- small enough to
+	 * give the fabric breathing room every ~340 us at peak SDCC clock,
+	 * still large enough for sustained throughput.
+	 *
+	 * Property is opt-in: absent or zero leaves the defaults alone.
+	 */
+	{
+		u32 max_req_kb = 0;
+		struct device_node *np = mmc_dev(mmc)->of_node;
+
+		if (np && !of_property_read_u32(np, "qcom,max-req-kb",
+						&max_req_kb) &&
+		    max_req_kb > 0) {
+			u32 cap = max_req_kb * 1024;
+
+			if (cap < mmc->max_req_size) {
+				mmc->max_req_size = cap;
+				mmc->max_seg_size = cap;
+				/*
+				 * Do NOT clamp max_blk_count here -- the MMC
+				 * core enforces min(max_req_size,
+				 * blksize * max_blk_count). Capping
+				 * max_blk_count using datactrl_blocksz
+				 * (max block size = 2048) makes the cap
+				 * pessimistic at the typical 512 B block
+				 * size used for eMMC.
+				 */
+				dev_info(mmc_dev(mmc),
+					 "qcom,max-req-kb=%u -> max_req=%u (max_blk_count=%u unchanged)\n",
+					 max_req_kb, mmc->max_req_size,
+					 mmc->max_blk_count);
+			}
+		}
+	}
+
 	spin_lock_init(&host->lock);
 
 	writel(0, host->base + MMCIMASK0);
@@ -2461,6 +3752,10 @@ static int mmci_probe(struct amba_device *dev,
 		INIT_DELAYED_WORK(&host->ux500_busy_timeout_work,
 				  ux500_busy_timeout_work);
 
+	if (host->variant->qcom_dml)
+		INIT_DELAYED_WORK(&host->qcom_dma_timeout_work,
+				  qcom_dma_data_timeout_work);
+
 	writel(MCI_IRQENABLE | variant->start_err, host->base + MMCIMASK0);
 
 	amba_set_drvdata(dev, mmc);
@@ -2470,7 +3765,9 @@ static int mmci_probe(struct amba_device *dev,
 		 amba_rev(dev), (unsigned long long)dev->res.start,
 		 dev->irq[0], dev->irq[1]);
 
-	mmci_dma_setup(host);
+	ret = mmci_dma_setup(host);
+	if (ret == -EPROBE_DEFER)
+		goto clk_disable;
 
 	pm_runtime_set_autosuspend_delay(&dev->dev, 50);
 	pm_runtime_use_autosuspend(&dev->dev);
@@ -2502,6 +3799,9 @@ static void mmci_remove(struct amba_device *dev)
 		pm_runtime_get_sync(&dev->dev);
 
 		mmc_remove_host(mmc);
+
+		if (variant->qcom_dml)
+			cancel_delayed_work_sync(&host->qcom_dma_timeout_work);
 
 		writel(0, host->base + MMCIMASK0);
 

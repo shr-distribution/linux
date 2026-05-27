@@ -162,6 +162,11 @@
 #define MCI_ST_SDIOIT		(1 << 22)
 #define MCI_ST_CEATAEND		(1 << 23)
 #define MCI_ST_CARDBUSY		(1 << 24)
+/*
+ * Qualcomm SDCC: bit 23 in MMCISTATUS is PROG_DONE (card finished
+ * programming a write), not CE-ATA. Same bit position in MMCICLEAR.
+ */
+#define MCI_QCOM_PROGDONE	(1 << 23)
 /* Extended status bits for the STM32 variants */
 #define MCI_STM32_BUSYD0	BIT(20)
 #define MCI_STM32_BUSYD0END	BIT(21)
@@ -262,6 +267,7 @@
 
 struct clk;
 struct dma_chan;
+struct icc_path;
 struct mmci_host;
 
 /**
@@ -323,6 +329,8 @@ enum mmci_busy_state {
  * @explicit_mclk_control: enable explicit mclk control in driver.
  * @qcom_fifo: enables qcom specific fifo pio read logic.
  * @qcom_dml: enables qcom specific dma glue for dma transfers.
+ * @qcom_datactrl_delay: add delays before DATACTRL write and command start.
+ * @qcom_data_timeout_2x: double the data timeout value for Qualcomm SDCC.
  * @reversed_irq_handling: handle data irq before cmd irq.
  * @mmcimask1: true if variant have a MMCIMASK1 register.
  * @irq_pio_mask: bitmask used to manage interrupt pio transfert in mmcimask
@@ -334,6 +342,11 @@ enum mmci_busy_state {
  * @supports_sdio_irq: allow SD I/O card to interrupt the host
  * @stm32_idmabsize_mask: stm32 sdmmc idma buffer size.
  * @dma_flow_controller: use peripheral as flow controller for DMA.
+ * @dma_threshold: minimum transfer size to attempt DMA. If set, transfers
+ *		at or below this size use PIO instead of DMA, overriding
+ *		the default fifosize-based threshold. Useful when DMA has
+ *		issues with certain transfer patterns (e.g. SDIO firmware
+ *		upload) but works fine for larger data transfers.
  */
 struct variant_data {
 	unsigned int		clkreg;
@@ -372,6 +385,9 @@ struct variant_data {
 	u8			explicit_mclk_control:1;
 	u8			qcom_fifo:1;
 	u8			qcom_dml:1;
+	u8			qcom_datactrl_delay:1;
+	u8			qcom_data_timeout_2x:1;
+	u8			qcom_dml_atomic_submit:1;
 	u8			reversed_irq_handling:1;
 	u8			mmcimask1:1;
 	unsigned int		irq_pio_mask;
@@ -382,6 +398,7 @@ struct variant_data {
 	u32			stm32_idmabsize_mask;
 	u32			stm32_idmabsize_align;
 	bool			dma_flow_controller;
+	unsigned int		dma_threshold;
 	void (*init)(struct mmci_host *host);
 };
 
@@ -397,6 +414,7 @@ struct mmci_host_ops {
 	int (*dma_setup)(struct mmci_host *host);
 	void (*dma_release)(struct mmci_host *host);
 	int (*dma_start)(struct mmci_host *host, unsigned int *datactrl);
+	void (*dma_issue_pending)(struct mmci_host *host);
 	void (*dma_finalize)(struct mmci_host *host, struct mmc_data *data);
 	void (*dma_error)(struct mmci_host *host);
 	void (*set_clkreg)(struct mmci_host *host, unsigned int desired);
@@ -415,6 +433,7 @@ struct mmci_host {
 	struct mmc_data		*data;
 	struct mmc_host		*mmc;
 	struct clk		*clk;
+	struct icc_path		*icc_path;
 	u8			singleirq:1;
 
 	struct reset_control	*rst;
@@ -456,10 +475,74 @@ struct mmci_host {
 
 	u8			use_dma:1;
 	u8			dma_in_progress:1;
+	u8			datactrl_first:1;
+	u8			dma_issue_deferred:1;
+	u8			dma_engaged_once:1;	/* diagnostic flag */
 	void			*dma_priv;
+
+	/*
+	 * Atomic-submission staging for variants whose DMA backend
+	 * supports a peripheral-config "exec_func" hook (currently
+	 * qcom_adm). When variant->qcom_dml_atomic_submit is set and
+	 * a request qualifies (DMA-eligible, datactrl_first, write),
+	 * mmci_start_data / mmci_start_command stash the SDCC register
+	 * values here instead of writing them. The DMA backend then
+	 * calls the variant's exec_func from inside its per-controller
+	 * submit lock, immediately before writing the channel's
+	 * CMD_PTR -- so the SDCC DATACTRL/ARG/CMD writes happen
+	 * atomically with the ADM start, replicating the legacy
+	 * msm_sdcc/msm_dmov "exec_func" pattern.
+	 */
+	struct {
+		u32 datactrl;
+		u32 cmd_arg;
+		u32 cmd_reg;
+		/*
+		 * @armed: set by _mmci_dmae_prep_data when the DMA channel
+		 *         actually supports exec_func (i.e. the
+		 *         peripheral_config carries qcom_adm_peripheral_config
+		 *         and we wired up exec_func + exec_user). Acts as
+		 *         the "atomic-submit is wired for this transfer"
+		 *         gate that mmci_dma_start checks before committing.
+		 * @active: committed atomic-submit path; mmci_start_command
+		 *         and mmci_dma_start stash register values here
+		 *         instead of writing them.
+		 */
+		bool armed;
+		bool active;
+	}			atomic_submit;
 
 	s32			next_cookie;
 	struct delayed_work	ux500_busy_timeout_work;
+	struct delayed_work	qcom_dma_timeout_work;
+	/*
+	 * Qualcomm SDCC silicon errata: after every CMD53/CMD54 WRITE,
+	 * the SDCC data-path state machine does not fully close, leaving
+	 * the controller in a state where the next CMD on the bus can
+	 * see DATACRCFAIL / CMDTIMEOUT. The legacy CAF msm_sdcc driver
+	 * works around it with a "dummy CMD52" inserted before the next
+	 * command -- the act of running the CMD52 through the CPSM drains
+	 * the residual state. This is enabled per-host via the DT property
+	 * "qcom,dummy52-required" because different boards wire SDIO to
+	 * different SDCC instances and only the SDIO-bearing instances
+	 * need it.
+	 *
+	 * dummy52_required:    DT-driven, host is subject to the errata.
+	 * dummy52_needed:      a CMD53/CMD54 WRITE just completed; next
+	 *                      request must be preceded by a CMD52.
+	 * dummy52_in_progress: the dummy CMD52 is currently on the bus;
+	 *                     pending_mrq is the real request stashed
+	 *                     until the dummy completes.
+	 * dummy52_cmd:         pre-built CMD52 (SD_IO_RW_DIRECT, read of
+	 *                     CCCR reg 0 on function 0). Response content
+	 *                     is ignored.
+	 * pending_mrq:         the real mmc_request waiting on dummy52.
+	 */
+	bool			dummy52_required;
+	bool			dummy52_needed;
+	bool			dummy52_in_progress;
+	struct mmc_command	dummy52_cmd;
+	struct mmc_request	*pending_mrq;
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)
@@ -481,14 +564,18 @@ void mmci_dmae_get_next_data(struct mmci_host *host, struct mmc_data *data);
 int mmci_dmae_setup(struct mmci_host *host);
 void mmci_dmae_release(struct mmci_host *host);
 int mmci_dmae_start(struct mmci_host *host, unsigned int *datactrl);
+int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl);
+void mmci_dmae_issue_pending(struct mmci_host *host);
 void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data);
 void mmci_dmae_error(struct mmci_host *host);
 #endif
 
 #ifdef CONFIG_MMC_QCOM_DML
 void qcom_variant_init(struct mmci_host *host);
+void mmci_qcom_atomic_exec_func(void *exec_user);
 #else
 static inline void qcom_variant_init(struct mmci_host *host) {}
+static inline void mmci_qcom_atomic_exec_func(void *exec_user) {}
 #endif
 
 #ifdef CONFIG_MMC_STM32_SDMMC

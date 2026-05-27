@@ -3,11 +3,13 @@
  *
  * Copyright (c) 2011, The Linux Foundation. All rights reserved.
  */
+#include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/of_dma.h>
 #include <linux/bitops.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
+#include <linux/dma/qcom_adm.h>
 #include "mmci.h"
 
 /* Registers */
@@ -45,13 +47,109 @@
 
 #define DML_OFFSET			0x800
 
+/*
+ * Check if the DMA controller is ADM (Application Data Mover).
+ * ADM is used on older Qualcomm SoCs (msm8x60 and earlier) and
+ * does not have the DML (Data Mover Layer) block.
+ */
+static bool qcom_dma_is_adm(struct device_node *np)
+{
+	struct of_phandle_args dma_spec;
+	struct device_node *dma_node;
+	bool is_adm = false;
+
+	if (of_parse_phandle_with_args(np, "dmas", "#dma-cells", 0, &dma_spec))
+		return false;
+
+	dma_node = dma_spec.np;
+	if (dma_node) {
+		is_adm = of_device_is_compatible(dma_node, "qcom,adm");
+		of_node_put(dma_node);
+	}
+
+	return is_adm;
+}
+
+/*
+ * exec_func callback invoked by the qcom_adm driver from inside its
+ * per-controller submit_lock, immediately before the channel's CMD_PTR
+ * register is written. Writes the SDCC DATACTRL + CMD ARG + CMD REG
+ * atomically with the ADM start, replicating the legacy msm_sdcc
+ * msmsdcc_dma_exec_func() pattern.
+ *
+ * Constraints (per <linux/dma/qcom_adm.h>):
+ *  - Called in atomic context with submit_lock held + IRQs off.
+ *  - Must not sleep, must complete promptly.
+ *
+ * Closes a documented mainline-vs-legacy gap: without this, mmci writes
+ * DATACTRL/ARG/CMD outside any cross-channel lock, so under AHB-fabric
+ * contention (e.g. eMMC + WiFi DMA both bursting on adm_dma1) the gap
+ * between those writes can be split by another ADM channel's CMD_PTR
+ * write, breaking the SDCC's atomic command+data setup.
+ */
+void mmci_qcom_atomic_exec_func(void *exec_user)
+{
+	struct mmci_host *host = exec_user;
+	void __iomem *base = host->base;
+	unsigned int delay_us;
+
+	/*
+	 * Use the same clock-dependent delay formula as legacy msm_sdcc's
+	 * msmsdcc_delay(): 1 + 3000000 / clk_rate (≈1 µs @ 48 MHz, ≈8.5 µs
+	 * @ 400 kHz init clock).  Commit 32870e59b8ad added this formula to
+	 * mmci_start_command, but mmci_start_command is a no-op stash when
+	 * atomic-submit is active — the actual ARG/CMD writes are HERE.
+	 * For the EXT_CSD READ (which happens at 400 kHz init clock with
+	 * atomic-submit active since reads are gated through this path),
+	 * the previous hardcoded udelay(1) was too short — Samsung PRV=0x90
+	 * occasionally returned an OTP-only EXT_CSD (capacity = 0 B) because
+	 * the SDCC sampled DATACTRL/ARG before the card's internal SRAM mux
+	 * had switched from the OTP block to the dynamic EXT_CSD block.
+	 */
+	delay_us = (host->variant->qcom_datactrl_delay) ?
+		(1 + 3000000 / (host->cclk ?: 1)) : 0;
+
+	writel_relaxed(host->atomic_submit.datactrl, base + MMCIDATACTRL);
+	if (delay_us)
+		udelay(delay_us);
+
+	writel_relaxed(host->atomic_submit.cmd_arg, base + MMCIARGUMENT);
+	if (delay_us)
+		udelay(delay_us);
+
+	writel(host->atomic_submit.cmd_reg, base + MMCICOMMAND);
+}
+
 static int qcom_dma_start(struct mmci_host *host, unsigned int *datactrl)
 {
 	u32 config;
 	void __iomem *base = host->base + DML_OFFSET;
 	struct mmc_data *data = host->data;
-	int ret = mmci_dmae_start(host, datactrl);
+	struct device_node *np = host->mmc->parent->of_node;
+	int ret;
 
+	if (qcom_dma_is_adm(np)) {
+		/*
+		 * For ADM DMA: submit descriptor but don't issue pending.
+		 *
+		 * Two paths from here:
+		 *  - atomic_submit.active = true (variant->qcom_dml_atomic_submit
+		 *    + qualifying write request): mmci_dma_start stashes
+		 *    DATACTRL on host->atomic_submit; mmci_start_command stashes
+		 *    ARG + CMD reg; mmci_request kicks dma_issue_pending after
+		 *    stashing, and the ADM driver fires our exec_func from
+		 *    inside its submit_lock to do all three writes atomically
+		 *    with the ADM CMD_PTR.
+		 *  - otherwise: legacy mainline behaviour — mmci_dma_start
+		 *    writes DATACTRL, mmci_start_command writes ARG+CMD,
+		 *    cmd_irq later fires dma_issue_pending.
+		 */
+		ret = mmci_dmae_submit(host, datactrl);
+		return ret;
+	}
+
+	/* BAM DMA path: submit + issue, then configure DML */
+	ret = mmci_dmae_start(host, datactrl);
 	if (ret)
 		return ret;
 
@@ -121,11 +219,33 @@ static int qcom_dma_setup(struct mmci_host *host)
 {
 	u32 config;
 	void __iomem *base;
-	int consumer_id, producer_id;
+	int consumer_id, producer_id, ret;
 	struct device_node *np = host->mmc->parent->of_node;
+	bool use_adm;
 
-	if (mmci_dmae_setup(host))
-		return -EINVAL;
+	ret = mmci_dmae_setup(host);
+	if (ret) {
+		/*
+		 * Propagate -EPROBE_DEFER to allow deferred probe when
+		 * DMA controller isn't ready yet. Other errors fall back
+		 * to PIO mode.
+		 */
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		/* Fall through to PIO mode for other errors */
+		dev_dbg(host->mmc->parent, "DMA setup failed, using PIO mode\n");
+		return 0;
+	}
+
+	/*
+	 * ADM (Application Data Mover) is used on older Qualcomm SoCs
+	 * like msm8x60. ADM doesn't use DML, so skip DML setup and just
+	 * return success - DMA will work directly via ADM.
+	 */
+	use_adm = qcom_dma_is_adm(np);
+	if (use_adm) {
+		return 0;
+	}
 
 	consumer_id = of_get_dml_pipe_index(np, "tx");
 	producer_id = of_get_dml_pipe_index(np, "rx");
@@ -185,6 +305,19 @@ static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
 	return MCI_DPSM_ENABLE | (host->data->blksz << 4);
 }
 
+/*
+ * Issue DMA pending for ADM. Called after DATACTRL is written.
+ * For BAM DMA, issue_pending was already called in qcom_dma_start(),
+ * so this is only needed for ADM.
+ */
+static void qcom_dma_issue_pending(struct mmci_host *host)
+{
+	struct device_node *np = host->mmc->parent->of_node;
+
+	if (qcom_dma_is_adm(np))
+		mmci_dmae_issue_pending(host);
+}
+
 static struct mmci_host_ops qcom_variant_ops = {
 	.prep_data = mmci_dmae_prep_data,
 	.unprep_data = mmci_dmae_unprep_data,
@@ -193,6 +326,7 @@ static struct mmci_host_ops qcom_variant_ops = {
 	.dma_setup = qcom_dma_setup,
 	.dma_release = mmci_dmae_release,
 	.dma_start = qcom_dma_start,
+	.dma_issue_pending = qcom_dma_issue_pending,
 	.dma_finalize = mmci_dmae_finalize,
 	.dma_error = mmci_dmae_error,
 };
