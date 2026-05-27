@@ -214,18 +214,19 @@ static int configure_aif_clock(struct snd_soc_component *component, int aif)
 
 static int configure_clock(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct wm8994_priv *wm8994 = snd_soc_component_get_drvdata(component);
-	int change, new;
+	int new;
 
 	/* Bring up the AIF clocks first */
 	configure_aif_clock(component, 0);
 	configure_aif_clock(component, 1);
 
-	/* Then switch CLK_SYS over to the higher of them; a change
-	 * can only happen as a result of a clocking change which can
-	 * only be made outside of DAPM so we can safely redo the
-	 * clocking.
+	/*
+	 * Then switch CLK_SYS over to the higher of them. Note: this
+	 * function may be called from clk_sys_event() DAPM callback,
+	 * which means the DAPM mutex is already held. We must NOT call
+	 * snd_soc_dapm_sync() here as it would deadlock. The DAPM core
+	 * will sync automatically after all widget events complete.
 	 */
 
 	/* If they're equal it doesn't matter which is used */
@@ -239,10 +240,8 @@ static int configure_clock(struct snd_soc_component *component)
 	else
 		new = 0;
 
-	change = snd_soc_component_update_bits(component, WM8994_CLOCKING_1,
-				     WM8994_SYSCLK_SRC, new);
-	if (change)
-		snd_soc_dapm_sync(dapm);
+	snd_soc_component_update_bits(component, WM8994_CLOCKING_1,
+				      WM8994_SYSCLK_SRC, new);
 
 	wm8958_micd_set_rate(component);
 
@@ -2467,15 +2466,6 @@ out:
 	return 0;
 }
 
-static irqreturn_t wm8994_fll_locked_irq(int irq, void *data)
-{
-	struct completion *completion = data;
-
-	complete(completion);
-
-	return IRQ_HANDLED;
-}
-
 static int opclk_divs[] = { 10, 20, 30, 40, 55, 60, 80, 120, 160 };
 
 static int wm8994_set_fll(struct snd_soc_dai *dai, int id, int src,
@@ -2867,6 +2857,9 @@ static int wm8994_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	default:
 		break;
 	}
+
+	dev_info(component->dev, "set_dai_fmt: aif1_reg=0x%x, aif1=0x%x, ms=0x%x\n",
+		 aif1_reg, aif1, ms);
 
 	snd_soc_component_update_bits(component, aif1_reg,
 			    WM8994_AIF1_BCLK_INV | WM8994_AIF1_LRCLK_INV |
@@ -4334,15 +4327,14 @@ static int wm8994_component_probe(struct snd_soc_component *component)
 		break;
 	}
 
-	wm8994->fll_locked_irq = true;
-	for (i = 0; i < ARRAY_SIZE(wm8994->fll_locked); i++) {
-		ret = wm8994_request_irq(wm8994->wm8994,
-					 WM8994_IRQ_FLL1_LOCK + i,
-					 wm8994_fll_locked_irq, "FLL lock",
-					 &wm8994->fll_locked[i]);
-		if (ret != 0)
-			wm8994->fll_locked_irq = false;
-	}
+	/*
+	 * Disable FLL lock IRQ wait - the webOS WM8994 driver from 2012
+	 * doesn't wait for FLL lock at all. On HP TouchPad, the FLL lock
+	 * IRQ is not delivered (no main codec IRQ line connected), causing
+	 * a 10ms timeout on every playback. By setting fll_locked_irq=false,
+	 * the driver will just msleep(5) instead of waiting for completion.
+	 */
+	wm8994->fll_locked_irq = false;
 
 	/* Make sure we can read from the GPIOs if they're inputs */
 	pm_runtime_get_sync(component->dev);
