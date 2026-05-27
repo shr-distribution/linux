@@ -40,7 +40,12 @@ static const struct adreno_info a2xx_gpus[] = {
 			[ADRENO_FW_PFP] = "leia_pfp_470.fw",
 		},
 		.gmem  = SZ_512K,
-		.inactive_period = DRM_MSM_INACTIVE_PERIOD,
+		/*
+		 * MSM8660/APQ8060 (Adreno 220): the legacy Qualcomm KGSL
+		 * driver used a 200ms (HZ/5) idle timeout for the 3D core
+		 * before runtime-PM power-down, vs the generic 66ms default.
+		 */
+		.inactive_period = 200,
 		.init  = a2xx_gpu_init,
 	}
 };
