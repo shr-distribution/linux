@@ -474,6 +474,17 @@ static const struct camss_format_info formats_rdi_vfe31[] = {
 	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
 	{ MEDIA_BUS_FMT_YVYU8_1X16, 16, V4L2_PIX_FMT_YVYU, 1,
 	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	/*
+	 * RAW Bayer formats (RAW8/RAW10) - UNTESTED.
+	 *
+	 * These are advertised but have not been made to work on the available
+	 * APQ8060 hardware (HP TouchPad / MT9M113, which only emits YUV). The
+	 * native RDI raw-bypass path is non-functional on this silicon (see
+	 * raw_through_pix in camss-vfe-3-1.c), and the RAW-through-PIX route
+	 * disables the ISP color pipeline, which was never validated end-to-end.
+	 * Kept as scaffolding for a future developer with a Bayer sensor; do not
+	 * assume these produce correct output as-is.
+	 */
 	/* RAW8 Bayer formats - 8 bits per pixel */
 	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8, V4L2_PIX_FMT_SBGGR8, 1,
 	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
