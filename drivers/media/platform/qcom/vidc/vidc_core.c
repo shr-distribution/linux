@@ -49,6 +49,9 @@
 #define VIDC_BW_AVG		(245 * 1024 * 1024)	/* 245 MB/s average */
 #define VIDC_BW_PEAK		(500 * 1024 * 1024)	/* 500 MB/s peak */
 
+/* H.264 encoder rate-control reaction coefficient (webOS-validated default) */
+#define VIDC_ENC_REACTION_COEFF_DEFAULT	0x1f4
+
 /* Clock rates in Hz */
 static const unsigned long vidc_clk_rates[] = {
 	27000000,
@@ -1129,16 +1132,10 @@ int vidc_load_firmware(struct vidc_core *core)
 	 * Split out so vidc_runtime_resume() can re-issue it when the
 	 * GDSC drop has wiped the firmware boot state.
 	 *
-	 * NOTE: previously we zeroed all of SMIPOOL here to test whether
-	 * leftover V4L2 buffer state from a prior session was triggering
-	 * the firmware's cmd=51 recovery boot.  That broke the decoder:
-	 * by the time vidc_load_firmware runs (called from open_channel
-	 * during STREAMON), the user has already QBUF'd the input
-	 * bitstream into a buffer allocated from SMIPOOL.  Zeroing
-	 * SMIPOOL wipes that bitstream and the firmware errors with
-	 * 0x34 (HEADER_NOT_FOUND or similar).  The SMIPOOL-leftover
-	 * hypothesis can't be tested at this hook point — the V4L2
-	 * lifecycle puts QBUF before STREAMON.
+	 * Do NOT zero SMIPOOL here: this runs from open_channel() during
+	 * STREAMON, by which point the user has already QBUF'd the input
+	 * bitstream into an SMIPOOL buffer; wiping it makes the firmware
+	 * error (0x34, header-not-found).
 	 */
 	ret = vidc_boot_firmware(core);
 	if (ret)
@@ -2653,12 +2650,11 @@ int vidc_apply_enc_codec_config(struct vidc_inst *inst)
 	/*
 	 * Rate control, matching the legacy H.264 default: enable both
 	 * frame-level (bit 9) and MB-level (bit 8) RC with initial frame
-	 * QP = 20, and reaction coefficient 0x1f4. We previously left
-	 * MB-RC off, used QP 26 and reaction 0x14, diverging from the
-	 * validated webOS configuration.
+	 * QP = 20, and the webOS-validated reaction coefficient.
 	 */
 	vidc_write(core, VIDC_REG_ENC_RC_CONFIG, (1 << 9) | (1 << 8) | 20);
-	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF, 0x1f4);
+	vidc_write(core, VIDC_REG_ENC_REACTION_COEFF,
+		   VIDC_ENC_REACTION_COEFF_DEFAULT);
 	vidc_write(core, VIDC_REG_ENC_QP_RANGE, qp_range);
 
 	/*
@@ -3024,7 +3020,9 @@ static int vidc_probe(struct platform_device *pdev)
 	}
 
 	/* Set initial clock rate */
-	ret = clk_set_rate(core->core_clk, vidc_clk_rates[5]); /* 228.57 MHz */
+	/* Run the core at the top (HIGH) operating point, 228.57 MHz. */
+	ret = clk_set_rate(core->core_clk,
+			   vidc_clk_rates[ARRAY_SIZE(vidc_clk_rates) - 1]);
 	if (ret) {
 		dev_err(dev, "failed to set core clock rate: %d\n", ret);
 		return ret;
@@ -3252,19 +3250,14 @@ static int vidc_runtime_suspend(struct device *dev)
 		vidc_write(core, VIDC_REG_AXI_CTRL, 0);
 
 		/*
-		 * NOTE: We previously also pulsed VIDC_REG_SW_RESET=ALL here
-		 * to silence the "vcodec_axi_b_clk stuck at on" WARN at
-		 * clk_disable.  That made things worse — on the next session
-		 * boot every MMIO read returned the same value (0x133 across
-		 * AXI_STATUS, SW_RESET, FW_VERSION), and FW_STATUS_RET /
-		 * SYS_INIT / OPEN_CH all timed out.  The pulse needs the
-		 * clock to propagate through the internal blocks; cutting the
-		 * clock immediately after leaves the blocks stuck mid-reset
-		 * and the AHB slave dead.  hw_reset() on the next resume
-		 * re-pulses SW_RESET while clocks are on and works correctly,
-		 * so leave the suspend-side reset to it.  The WARN at
-		 * clk_branch_disable is cosmetic — recovery-mode booting is
-		 * handled by the cmd=0x110909 ACK path.
+		 * Do NOT pulse VIDC_REG_SW_RESET=ALL here to silence the
+		 * "vcodec_axi_b_clk stuck at on" WARN at clk_disable: cutting
+		 * the clock immediately after the pulse leaves the internal
+		 * blocks stuck mid-reset (next-session MMIO reads return a
+		 * constant 0x133 and FW_STATUS/SYS_INIT/OPEN_CH time out).
+		 * hw_reset() on the next resume re-pulses SW_RESET with clocks
+		 * on and works correctly, so leave the reset to it. The
+		 * clk_branch_disable WARN is cosmetic.
 		 */
 	}
 
