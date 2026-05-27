@@ -507,21 +507,25 @@ static void vfe_isr_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
  */
 static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 {
-	struct vfe_line *line = &vfe->line[vfe->wm_output_map[wm]];
+	struct vfe_line *line;
 	struct camss_buffer *ready_buf;
 	struct vfe_output *output;
 	unsigned long flags;
 	u32 index;
 	u64 ts = ktime_get_ns();
 
+	/*
+	 * Some VFE modes route data to secondary WMs that aren't mapped
+	 * to output lines. Silently ignore their IRQs.
+	 */
+	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
+		return;
+
+	line = &vfe->line[vfe->wm_output_map[wm]];
+
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
-	if (vfe->wm_output_map[wm] == VFE_LINE_NONE) {
-		dev_err_ratelimited(vfe->camss->dev,
-				    "Received wm done for unmapped index\n");
-		goto out_unlock;
-	}
-	output = &vfe->line[vfe->wm_output_map[wm]].output;
+	output = &line->output;
 
 	ready_buf = output->buf[0];
 	if (!ready_buf) {

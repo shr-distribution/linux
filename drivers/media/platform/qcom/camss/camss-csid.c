@@ -24,6 +24,7 @@
 
 #include "camss-csid.h"
 #include "camss-csid-gen1.h"
+#include "camss-csiphy.h"
 #include "camss.h"
 
 /* offset of CSID registers in VFE region for VFE 480 */
@@ -559,6 +560,14 @@ static int csid_set_clock_rates(struct csid_device *csid)
 			u64 min_rate = link_freq / 4;
 			long rate;
 
+			/*
+			 * Some platforms (e.g., MSM8660) have fixed-rate CSI
+			 * clocks that don't need rate setting. Skip if no
+			 * frequencies are defined.
+			 */
+			if (!clock->nfreqs)
+				continue;
+
 			camss_add_clock_margin(&min_rate);
 
 			for (j = 0; j < clock->nfreqs; j++)
@@ -721,11 +730,13 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 
 		csid->phy.need_vc_update = true;
 
-		enable_irq(csid->irq);
+		if (csid->irq >= 0)
+			enable_irq(csid->irq);
 
 		ret = csid->res->hw_ops->reset(csid);
 		if (ret < 0) {
-			disable_irq(csid->irq);
+			if (csid->irq >= 0)
+				disable_irq(csid->irq);
 			camss_disable_clocks(csid->nclocks, csid->clock);
 			regulator_bulk_disable(csid->num_supplies,
 					       csid->supplies);
@@ -735,7 +746,8 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 
 		csid->res->hw_ops->hw_version(csid);
 	} else {
-		disable_irq(csid->irq);
+		if (csid->irq >= 0)
+			disable_irq(csid->irq);
 		camss_disable_clocks(csid->nclocks, csid->clock);
 		regulator_bulk_disable(csid->num_supplies,
 				       csid->supplies);
@@ -760,6 +772,9 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 	struct csid_device *csid = v4l2_get_subdevdata(sd);
 	int ret;
 
+	dev_info(csid->camss->dev, "CSID%d: set_stream enable=%d need_vc_update=%d\n",
+		 csid->id, enable, csid->phy.need_vc_update);
+
 	if (enable) {
 		if (csid->testgen.nmodes != CSID_PAYLOAD_MODE_DISABLED) {
 			ret = v4l2_ctrl_handler_setup(&csid->ctrls);
@@ -770,15 +785,51 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 			}
 		}
 
-		if (!csid->testgen.enabled &&
-		    !media_pad_remote_pad_first(&csid->pads[MSM_CSID_PAD_SINK]))
-			return -ENOLINK;
+		if (!csid->testgen.enabled) {
+			struct media_pad *remote;
+			struct v4l2_subdev *sd;
+			struct csiphy_device *csiphy;
+
+			remote = media_pad_remote_pad_first(&csid->pads[MSM_CSID_PAD_SINK]);
+			dev_info(csid->camss->dev,
+				 "CSID%d: testgen disabled, remote_pad=%px sink_pad flags=0x%lx\n",
+				 csid->id, remote, csid->pads[MSM_CSID_PAD_SINK].flags);
+			if (!remote) {
+				dev_err(csid->camss->dev,
+					"CSID%d: No remote pad - link not enabled?\n",
+					csid->id);
+				return -ENOLINK;
+			}
+
+			/*
+			 * MSM8660 fix: Populate phy config from linked CSIPHY.
+			 * The link_setup callback isn't called for links created
+			 * at probe time, so we need to get the config here.
+			 */
+			sd = media_entity_to_v4l2_subdev(remote->entity);
+			csiphy = v4l2_get_subdevdata(sd);
+			if (csiphy && csid->phy.csiphy_id == 0 && csid->phy.lane_cnt == 0) {
+				csid->phy.csiphy_id = csiphy->id;
+				if (csiphy->cfg.csi2) {
+					csid->phy.lane_cnt = csiphy->cfg.csi2->lane_cfg.num_data;
+				} else {
+					csid->phy.lane_cnt = 1; /* Default */
+				}
+				dev_info(csid->camss->dev,
+					 "CSID%d: populated phy config from CSIPHY%d, lanes=%d\n",
+					 csid->id, csid->phy.csiphy_id, csid->phy.lane_cnt);
+			}
+		}
 	}
 
 	if (csid->phy.need_vc_update) {
+		dev_info(csid->camss->dev, "CSID%d: calling configure_stream\n",
+			 csid->id);
 		csid->res->hw_ops->configure_stream(csid, enable);
 		csid->phy.need_vc_update = false;
 	}
+
+	dev_info(csid->camss->dev, "CSID%d: set_stream complete\n", csid->id);
 
 	return 0;
 }
@@ -1023,6 +1074,7 @@ static int csid_set_format(struct v4l2_subdev *sd,
  */
 static int csid_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
+	struct csid_device *csid = v4l2_get_subdevdata(sd);
 	struct v4l2_subdev_format format = {
 		.pad = MSM_CSID_PAD_SINK,
 		.which = fh ? V4L2_SUBDEV_FORMAT_TRY :
@@ -1033,6 +1085,17 @@ static int csid_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 			.height = 1080
 		}
 	};
+
+	/*
+	 * MSM8660 uses parallel camera interface (CAMIF) which requires
+	 * 2X8 media bus formats instead of 1X16. The resolution matches
+	 * MT9M114/MT9M113 IFP output: 1288x968.
+	 */
+	if (csid->camss->res->version == CAMSS_8x60) {
+		format.format.code = MEDIA_BUS_FMT_UYVY8_2X8;
+		format.format.width = 1288;
+		format.format.height = 968;
+	}
 
 	return csid_set_format(sd, fh ? fh->state : NULL, &format);
 }
@@ -1122,6 +1185,13 @@ int msm_csid_subdev_init(struct camss *camss, struct csid_device *csid,
 		else
 			csid->base = csid->res->parent_dev_ops->get_base_address(camss, id)
 				 + VFE_480_CSID_OFFSET;
+	} else if (camss->res->version == CAMSS_8x60) {
+		/*
+		 * On MSM8660/APQ8060, CSID shares register space with CSIPHY.
+		 * The unified CSI controller was already mapped by CSIPHY init,
+		 * so reuse that base address instead of mapping again.
+		 */
+		csid->base = camss->csiphy[id].base;
 	} else {
 		csid->base = devm_platform_ioremap_resource_byname(pdev, res->reg[0]);
 		if (IS_ERR(csid->base))
@@ -1130,19 +1200,27 @@ int msm_csid_subdev_init(struct camss *camss, struct csid_device *csid,
 
 	/* Interrupt */
 
-	ret = platform_get_irq_byname(pdev, res->interrupt[0]);
-	if (ret < 0)
-		return ret;
+	/*
+	 * On MSM8660/APQ8060, CSID shares the interrupt with CSIPHY (unified
+	 * CSI controller). Skip IRQ registration here - CSIPHY handles it.
+	 */
+	if (res->interrupt[0]) {
+		ret = platform_get_irq_byname(pdev, res->interrupt[0]);
+		if (ret < 0)
+			return ret;
 
-	csid->irq = ret;
-	snprintf(csid->irq_name, sizeof(csid->irq_name), "%s_%s%d",
-		 dev_name(dev), MSM_CSID_NAME, csid->id);
-	ret = devm_request_irq(dev, csid->irq, csid->res->hw_ops->isr,
-			       IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN,
-			       csid->irq_name, csid);
-	if (ret < 0) {
-		dev_err(dev, "request_irq failed: %d\n", ret);
-		return ret;
+		csid->irq = ret;
+		snprintf(csid->irq_name, sizeof(csid->irq_name), "%s_%s%d",
+			 dev_name(dev), MSM_CSID_NAME, csid->id);
+		ret = devm_request_irq(dev, csid->irq, csid->res->hw_ops->isr,
+				       IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN,
+				       csid->irq_name, csid);
+		if (ret < 0) {
+			dev_err(dev, "request_irq failed: %d\n", ret);
+			return ret;
+		}
+	} else {
+		csid->irq = -1;
 	}
 
 	/* Clocks */
@@ -1267,16 +1345,38 @@ static int csid_link_setup(struct media_entity *entity,
 		sd = media_entity_to_v4l2_subdev(remote->entity);
 		csiphy = v4l2_get_subdevdata(sd);
 
-		/* If a sensor is not linked to CSIPHY */
-		/* do no allow a link from CSIPHY to CSID */
-		if (!csiphy->cfg.csi2)
-			return -EPERM;
-
+		/*
+		 * Always set the CSIPHY ID from the link partner.
+		 * This is needed for MSM8660 where the CSID is a pass-through
+		 * and the link may be established before a sensor is bound.
+		 */
 		csid->phy.csiphy_id = csiphy->id;
 
-		lane_cfg = &csiphy->cfg.csi2->lane_cfg;
-		csid->phy.lane_cnt = lane_cfg->num_data;
-		csid->phy.lane_assign = csid_get_lane_assign(lane_cfg);
+		/*
+		 * If a sensor is linked to CSIPHY, get lane config.
+		 * On platforms like MSM8660 where CSID is pass-through,
+		 * lane config is not strictly required - set defaults.
+		 */
+		if (csiphy->cfg.csi2) {
+			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
+			csid->phy.lane_cnt = lane_cfg->num_data;
+			csid->phy.lane_assign = csid_get_lane_assign(lane_cfg);
+			dev_info(csid->camss->dev,
+				"CSID%d: link_setup SINK from csiphy=%d, lanes=%d, assign=0x%x (from sensor)\n",
+				csid->id, csiphy->id, csid->phy.lane_cnt, csid->phy.lane_assign);
+		} else {
+			/*
+			 * No sensor bound yet - use defaults.
+			 * This allows link setup to succeed during probe.
+			 * The actual lane config will be set when streaming
+			 * starts (via the CSIPHY which has the config).
+			 */
+			csid->phy.lane_cnt = 1;  /* Most common: 1 data lane */
+			csid->phy.lane_assign = 0;
+			dev_info(csid->camss->dev,
+				"CSID%d: link_setup SINK from csiphy=%d, lanes=%d (default, no sensor cfg)\n",
+				csid->id, csiphy->id, csid->phy.lane_cnt);
+		}
 	}
 	/* Decide which virtual channels to enable based on which source pads are enabled */
 	if (local->flags & MEDIA_PAD_FL_SOURCE) {
@@ -1291,8 +1391,9 @@ static int csid_link_setup(struct media_entity *entity,
 
 		csid->phy.need_vc_update = true;
 
-		dev_dbg(dev, "%s: Enabled CSID virtual channels mask 0x%x\n",
-			__func__, csid->phy.en_vc);
+		dev_info(dev, "CSID%d: link_setup SOURCE pad=%d, en_vc=0x%x, phy=%d lanes=%d\n",
+			csid->id, local->index, csid->phy.en_vc,
+			csid->phy.csiphy_id, csid->phy.lane_cnt);
 	}
 
 	return 0;

@@ -34,6 +34,175 @@
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
 
+/*
+ * MSM8660/APQ8060 - VFE 3.1 with MIPI CSI-2 support
+ *
+ * The CSI controller on MSM8660 has a unified CSIPHY+CSID architecture
+ * with different registers compared to newer Qualcomm chips. CSIPHY and
+ * CSID share the same register space - CSIPHY handles PHY and protocol
+ * decoding, while CSID provides the V4L2 pipeline interface.
+ */
+static const struct camss_subdev_resources csiphy_res_8x60[] = {
+	/* CSIPHY0 */
+	{
+		.regulators = {},
+		/*
+		 * Clock rates from webOS kernel board-tenderloin.c:
+		 * - VFE: 228570000 Hz (board-tenderloin.c:1780)
+		 * - CSI source: 384000000 Hz (msm_io_8x60.c:452)
+		 * - CSIPHY timer: 85330000 Hz (PLL8/9*2, for settle count)
+		 *
+		 * These match the assigned-clock-rates in the device tree.
+		 * Using wrong rates causes CSI register access to hang.
+		 */
+		/*
+		 * Note: csiphy0_timer_clk removed - webOS does NOT use CSIPHY
+		 * timer clocks (registers 0x160-0x168 are all zeros in webOS).
+		 * The clock enable fails with EBUSY, blocking the pipeline.
+		 */
+		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "csi0_ahb",
+			   "csi0_src", "csi0", "csi0_phy" },
+		.clock_rate = { { 228570000 },
+				{ 0 },
+				{ 0 },
+				{ 0 },
+				{ 0 },
+				{ 384000000 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csiphy0" },
+		.interrupt = { "csiphy0" },
+		.csiphy = {
+			.id = 0,
+			.hw_ops = &csiphy_ops_8x60,
+			.formats = &csiphy_formats_8x16
+		}
+	},
+	/* CSIPHY1 */
+	{
+		.regulators = {},
+		/*
+		 * WebOS enables ALL CSI clocks (both CSI0 and CSI1) before
+		 * accessing any CSI registers. Clock rates from webOS kernel:
+		 * - VFE: 228570000 Hz (board-tenderloin.c:1780)
+		 * - CSI source: 384000000 Hz (msm_io_8x60.c:452)
+		 *
+		 * Note: csiphy1_timer_clk removed - webOS does NOT use CSIPHY
+		 * timer clocks (registers 0x160-0x168 are all zeros in webOS).
+		 * The clock enable fails with EBUSY, blocking the pipeline.
+		 */
+		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
+			   "csi0_ahb", "csi1_ahb", "csi0_src", "csi1_src",
+			   "csi0", "csi1", "csi0_phy", "csi1_phy" },
+		.clock_rate = { { 228570000 }, { 0 }, { 0 }, { 0 }, { 0 },
+				{ 0 }, { 0 }, { 384000000 }, { 384000000 },
+				{ 0 }, { 0 }, { 0 }, { 0 } },
+		.reg = { "csiphy1" },
+		.interrupt = { "csiphy1" },
+		.csiphy = {
+			.id = 1,
+			.hw_ops = &csiphy_ops_8x60,
+			.formats = &csiphy_formats_8x16
+		}
+	}
+};
+
+static const struct camss_subdev_resources csid_res_8x60[] = {
+	/* CSID0 - shares register space and interrupt with CSIPHY0 */
+	{
+		.regulators = {},
+		.clock = { "csi0_src", "csi0", "csi0_phy" },
+		/*
+		 * CSI source clock must be 384MHz to match webOS.
+		 * This matches CSIPHY clock rates. Without proper rate,
+		 * decoded MIPI data cannot be clocked out to VFE.
+		 */
+		.clock_rate = { { 384000000 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csiphy0" },  /* Same as CSIPHY - unified block */
+		.interrupt = {},       /* No IRQ - CSIPHY handles interrupts */
+		.csid = {
+			.hw_ops = &csid_ops_8x60,
+			.parent_dev_ops = &vfe_parent_dev_ops,
+			.formats = &csid_formats_8x60
+		}
+	},
+	/* CSID1 - shares register space and interrupt with CSIPHY1 */
+	{
+		.regulators = {},
+		.clock = { "csi1_src", "csi1", "csi1_phy" },
+		/*
+		 * CSI source clock must be 384MHz to match webOS.
+		 * This matches CSIPHY clock rates. Without proper rate,
+		 * decoded MIPI data cannot be clocked out to VFE.
+		 */
+		.clock_rate = { { 384000000 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "csiphy1" },  /* Same as CSIPHY - unified block */
+		.interrupt = {},       /* No IRQ - CSIPHY handles interrupts */
+		.csid = {
+			.hw_ops = &csid_ops_8x60,
+			.parent_dev_ops = &vfe_parent_dev_ops,
+			.formats = &csid_formats_8x60
+		}
+	}
+};
+static const struct camss_subdev_resources vfe_res_8x60[] = {
+	/* VFE0 */
+	{
+		.regulators = {},
+		/*
+		 * MSM8660 VFE clocks - webOS style without csi_pix/csi_rdi.
+		 *
+		 * MSM8660 VFE clocks: Include csi_pix and csi_rdi for data
+		 * routing from CSI to VFE. The MISC_CC_REG mux selects which
+		 * CSI port sources these clocks when enabled.
+		 */
+		.clock = { "vfe", "vfe_axi", "vfe_ahb", "vfe_csi0", "vfe_csi1",
+			   "csi_pix", "csi_rdi" },
+		.clock_rate = { { 122880000, 228570000, 266670000 },
+				{ 0 },
+				{ 0 },
+				{ 0 },
+				{ 0 },
+				{ 0 },
+				{ 0 } },
+		.reg = { "vfe0" },
+		.interrupt = { "vfe0" },
+		.vfe = {
+			/*
+			 * line_num = 6: RDI0-2 + PIX (3) for CAMIF, plus the
+			 * two VFE31-private pixel-processed outputs at line[]
+			 * indices 4 and 5 - VIDEO (a second output path that
+			 * receives the same frame data as PIX but writes
+			 * separate buffers via WM1/WM5) and ZSL (a third path
+			 * for Zero Shutter Lag snapshot via WM2/WM6). Those
+			 * indices are private to the VFE31 backend; the core
+			 * treats them via the per-line pix/secondary flags.
+			 *
+			 * has_pd is NOT set because MSM8660 has a single power
+			 * domain that is attached at platform probe level. The
+			 * runtime PM framework handles power domain management
+			 * automatically through pm_runtime_resume_and_get().
+			 */
+			.line_num = 6,
+			.hw_ops = &vfe_ops_3_1,
+			.formats_rdi = &vfe_formats_rdi_vfe31,
+			.formats_pix = &vfe_formats_pix_vfe31,
+		}
+	}
+};
+
+static const struct resources_icc icc_res_8x60[] = {
+	{
+		.name = "vfe-mem",
+		.icc_bw_tbl.avg = 1521190,	/* ~1.45 GB/s */
+		.icc_bw_tbl.peak = 1521190,
+	},
+};
+
 static const struct camss_subdev_resources csiphy_res_8x16[] = {
 	/* CSIPHY0 */
 	{
@@ -4220,12 +4389,17 @@ int camss_enable_clocks(int nclocks, struct camss_clock *clock,
 	int ret;
 	int i;
 
+	dev_info(dev, "camss_enable_clocks: enabling %d clocks\n", nclocks);
 	for (i = 0; i < nclocks; i++) {
+		dev_info(dev, "  enabling clock[%d] '%s'\n", i, clock[i].name);
 		ret = clk_prepare_enable(clock[i].clk);
 		if (ret) {
-			dev_err(dev, "clock enable failed: %d\n", ret);
+			dev_err(dev, "clock enable failed for '%s': %d\n",
+				clock[i].name, ret);
 			goto error;
 		}
+		dev_info(dev, "  clock '%s' enabled, rate=%lu\n",
+			 clock[i].name, clk_get_rate(clock[i].clk));
 	}
 
 	return 0;
@@ -4246,8 +4420,11 @@ void camss_disable_clocks(int nclocks, struct camss_clock *clock)
 {
 	int i;
 
-	for (i = nclocks - 1; i >= 0; i--)
+	pr_info("camss_disable_clocks: disabling %d clocks\n", nclocks);
+	for (i = nclocks - 1; i >= 0; i--) {
+		pr_info("  disabling clock[%d] '%s'\n", i, clock[i].name);
 		clk_disable_unprepare(clock[i].clk);
+	}
 }
 
 /*
@@ -4349,24 +4526,31 @@ void camss_pm_domain_off(struct camss *camss, int id)
 
 static int vfe_parent_dev_ops_get(struct camss *camss, int id)
 {
-	int ret = -EINVAL;
+	struct vfe_device *vfe;
 
-	if (id < camss->res->vfe_num) {
-		struct vfe_device *vfe = &camss->vfe[id];
+	/*
+	 * On SoCs with fewer VFEs than CSIDs (e.g., MSM8660 has 2 CSIDs
+	 * but only 1 VFE), clamp the VFE index to the last available VFE.
+	 * This allows CSID1 to use VFE0 on single-VFE configurations.
+	 */
+	if (id >= camss->res->vfe_num)
+		id = camss->res->vfe_num - 1;
 
-		ret = vfe_get(vfe);
-	}
+	vfe = &camss->vfe[id];
 
-	return ret;
+	return vfe_get(vfe);
 }
 
 static int vfe_parent_dev_ops_put(struct camss *camss, int id)
 {
-	if (id < camss->res->vfe_num) {
-		struct vfe_device *vfe = &camss->vfe[id];
+	struct vfe_device *vfe;
 
-		vfe_put(vfe);
-	}
+	/* Clamp VFE index for single-VFE configurations (see vfe_parent_dev_ops_get) */
+	if (id >= camss->res->vfe_num)
+		id = camss->res->vfe_num - 1;
+
+	vfe = &camss->vfe[id];
+	vfe_put(vfe);
 
 	return 0;
 }
@@ -4374,13 +4558,15 @@ static int vfe_parent_dev_ops_put(struct camss *camss, int id)
 static void __iomem
 *vfe_parent_dev_ops_get_base_address(struct camss *camss, int id)
 {
-	if (id < camss->res->vfe_num) {
-		struct vfe_device *vfe = &camss->vfe[id];
+	struct vfe_device *vfe;
 
-		return vfe->base;
-	}
+	/* Clamp VFE index for single-VFE configurations (see vfe_parent_dev_ops_get) */
+	if (id >= camss->res->vfe_num)
+		id = camss->res->vfe_num - 1;
 
-	return NULL;
+	vfe = &camss->vfe[id];
+
+	return vfe->base;
 }
 
 static const struct parent_dev_ops vfe_parent_dev_ops = {
@@ -4412,9 +4598,16 @@ static int camss_parse_endpoint_node(struct device *dev,
 		return ret;
 
 	/*
-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
-	 * D-PHY is supported in the driver.
+	 * Support both MIPI CSI-2 D-PHY and parallel camera interfaces.
+	 * Parallel interface (CAMIF) is used on older SoCs like MSM8660.
 	 */
+	if (vep.bus_type == V4L2_MBUS_PARALLEL) {
+		/* Parallel camera - no lane configuration needed */
+		csd->interface.csiphy_id = vep.base.port;
+		lncfg->num_data = 0;
+		return 0;
+	}
+
 	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
 		return -EINVAL;
@@ -4571,14 +4764,21 @@ static int camss_link_entities(struct camss *camss)
 {
 	int i, j, k;
 	int ret;
+	u32 flags;
 
 	for (i = 0; i < camss->res->csiphy_num; i++) {
 		for (j = 0; j < camss->res->csid_num; j++) {
+			/*
+			 * Enable links by default when CSIPHY index matches
+			 * CSID index. This creates a default path for each
+			 * camera port without requiring userspace configuration.
+			 */
+			flags = (i == j) ? MEDIA_LNK_FL_ENABLED : 0;
 			ret = media_create_pad_link(&camss->csiphy[i].subdev.entity,
 						    MSM_CSIPHY_PAD_SRC,
 						    &camss->csid[j].subdev.entity,
 						    MSM_CSID_PAD_SINK,
-						    0);
+						    flags);
 			if (ret < 0) {
 				camss_link_err(camss,
 					       camss->csiphy[i].subdev.entity.name,
@@ -4631,12 +4831,59 @@ static int camss_link_entities(struct camss *camss)
 				for (j = 0; j < camss->vfe[k].res->line_num; j++) {
 					struct v4l2_subdev *csid = &camss->csid[i].subdev;
 					struct v4l2_subdev *vfe = &camss->vfe[k].line[j].subdev;
+					unsigned int csid_pad;
+
+					/*
+					 * Don't enable CSID->VFE links by default.
+					 * For single-line VFE (e.g., MSM8660), the
+					 * correct CSID->VFE link will be enabled in
+					 * camss_subdev_notifier_complete() after we
+					 * know which port has a sensor connected.
+					 *
+					 * For multi-line VFE, userspace must configure
+					 * links explicitly.
+					 */
+					flags = 0;
+
+					/*
+					 * CSID pad assignment for VFE lines:
+					 *
+					 * On MSM8660 (VFE31), there's no hardware RDI path.
+					 * All data flows through a single CAMIF interface.
+					 * RDI "mode" is emulated by using AXI output mode
+					 * 0x60 (raw bypass) instead of 0x01 (PIX/DEMUX).
+					 * Therefore, RDI lines must use the same CSID pad
+					 * as PIX to receive data from CAMIF.
+					 *
+					 * On newer SoCs (VFE32+), RDI lines have dedicated
+					 * hardware paths with separate RDI_CFG registers.
+					 *
+					 * A line flagged shares_pix_csid (VFE31 VIDEO)
+					 * reads the PIX CSID source pad, since it uses the
+					 * same CAMIF/DEMUX path with different XBAR routing
+					 * to write masters.
+					 */
+					if (camss->vfe[k].line[j].shares_pix_csid) {
+						csid_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
+					} else if (camss->res->version == CAMSS_8x60 &&
+						   (j == VFE_LINE_RDI0 ||
+						    j == VFE_LINE_RDI1 ||
+						    j == VFE_LINE_RDI2)) {
+						/*
+						 * MSM8660: Route RDI through PIX pad.
+						 * Raw bypass is achieved via AXI mode,
+						 * not via separate hardware path.
+						 */
+						csid_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
+					} else {
+						csid_pad = MSM_CSID_PAD_FIRST_SRC + j;
+					}
 
 					ret = media_create_pad_link(&csid->entity,
-								    MSM_CSID_PAD_FIRST_SRC + j,
+								    csid_pad,
 								    &vfe->entity,
 								    MSM_VFE_PAD_SINK,
-								    0);
+								    flags);
 					if (ret < 0) {
 						camss_link_err(camss, csid->entity.name,
 							       vfe->entity.name,
@@ -4774,10 +5021,27 @@ static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 	struct camss_async_subdev *csd =
 		container_of(asd, struct camss_async_subdev, asd);
 	u8 id = csd->interface.csiphy_id;
-	struct csiphy_device *csiphy = &camss->csiphy[id];
 
-	csiphy->cfg.csi2 = &csd->interface.csi2;
-	subdev->host_priv = csiphy;
+	/*
+	 * For parallel camera interfaces (e.g., MSM8660), there is no CSIPHY.
+	 * Skip CSIPHY setup in that case - the VFE connects directly to the
+	 * parallel sensor without going through CSIPHY/CSID.
+	 */
+	if (camss->res->csiphy_num > 0 && id < camss->res->csiphy_num) {
+		struct csiphy_device *csiphy = &camss->csiphy[id];
+
+		csiphy->cfg.csi2 = &csd->interface.csi2;
+		subdev->host_priv = csiphy;
+	} else {
+		/*
+		 * For parallel camera interfaces, use a special marker value
+		 * to distinguish async-bound sensors from internal subdevs
+		 * (like mt9m114 pixel array) that are registered later.
+		 * We use the camss pointer as the marker since it's a valid
+		 * non-NULL pointer that we can check in notifier_complete.
+		 */
+		subdev->host_priv = camss;
+	}
 
 	return 0;
 }
@@ -4788,16 +5052,27 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 	struct v4l2_device *v4l2_dev = &camss->v4l2_dev;
 	struct v4l2_subdev *sd;
 
+	dev_info(camss->dev, "notifier_complete: processing subdevs\n");
+
 	list_for_each_entry(sd, &v4l2_dev->subdevs, list) {
-		struct csiphy_device *csiphy = sd->host_priv;
+		void *host_priv = sd->host_priv;
 		struct media_entity *input, *sensor;
 		unsigned int i;
 		int ret;
 
-		if (!csiphy)
+		dev_info(camss->dev, "notifier_complete: subdev %s host_priv=%p camss=%p\n",
+			 sd->name, host_priv, camss);
+
+		/*
+		 * Skip subdevs that weren't registered via our async notifier.
+		 * Internal subdevs (like mt9m114 pixel array) have NULL host_priv.
+		 * Our async-bound sensors have either:
+		 * - A csiphy pointer (for MIPI cameras)
+		 * - The camss pointer as marker (for parallel cameras)
+		 */
+		if (!host_priv)
 			continue;
 
-		input = &csiphy->subdev.entity;
 		sensor = &sd->entity;
 
 		for (i = 0; i < sensor->num_pads; i++) {
@@ -4810,12 +5085,90 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 			return -EINVAL;
 		}
 
-		ret = media_create_pad_link(sensor, i, input,
-					    MSM_CSIPHY_PAD_SINK,
-					    MEDIA_LNK_FL_IMMUTABLE | MEDIA_LNK_FL_ENABLED);
-		if (ret < 0) {
-			camss_link_err(camss, sensor->name, input->name, ret);
-			return ret;
+		if (host_priv != camss) {
+			/* MIPI CSI-2 camera: link sensor to CSIPHY */
+			struct csiphy_device *csiphy = host_priv;
+			u8 csiphy_id = csiphy->id;
+
+			dev_info(camss->dev,
+				 "notifier_complete: MIPI sensor %s on CSIPHY%d, ispif=%p vfe_num=%d line_num=%d\n",
+				 sd->name, csiphy_id, camss->ispif,
+				 camss->res->vfe_num,
+				 camss->vfe[0].res->line_num);
+
+			input = &csiphy->subdev.entity;
+
+			ret = media_create_pad_link(sensor, i, input,
+						    MSM_CSIPHY_PAD_SINK,
+						    MEDIA_LNK_FL_IMMUTABLE | MEDIA_LNK_FL_ENABLED);
+			if (ret < 0) {
+				camss_link_err(camss, sensor->name, input->name, ret);
+				return ret;
+			}
+
+			/*
+			 * For VFE without ISPIF (e.g., MSM8660),
+			 * enable the CSID->VFE link for this sensor's port.
+			 * The CSIPHY ID matches the CSID ID on these platforms.
+			 * We enable the link to VFE PIX line which uses CAMIF
+			 * for raw camera data passthrough via the pixel path.
+			 */
+			if (!camss->ispif && camss->res->vfe_num == 1 &&
+			    csiphy_id < camss->res->csid_num) {
+				struct media_entity *csid_entity =
+					&camss->csid[csiphy_id].subdev.entity;
+				struct media_entity *vfe_entity =
+					&camss->vfe[0].line[VFE_LINE_PIX].subdev.entity;
+				struct media_link *link;
+				unsigned int csid_src_pad = MSM_CSID_PAD_FIRST_SRC + VFE_LINE_PIX;
+
+				dev_info(camss->dev,
+					 "Looking for CSID%d->VFE PIX link: %s pad %d -> %s pad %d\n",
+					 csiphy_id, csid_entity->name, csid_src_pad,
+					 vfe_entity->name, MSM_VFE_PAD_SINK);
+
+				link = media_entity_find_link(
+					&csid_entity->pads[csid_src_pad],
+					&vfe_entity->pads[MSM_VFE_PAD_SINK]);
+				if (link) {
+					dev_info(camss->dev,
+						 "Found link, enabling (flags=0x%lx)\n",
+						 link->flags);
+					ret = media_entity_setup_link(link,
+						MEDIA_LNK_FL_ENABLED);
+					if (ret < 0) {
+						dev_err(camss->dev,
+							"Failed to enable CSID%d->VFE PIX link: %d\n",
+							csiphy_id, ret);
+						return ret;
+					}
+					dev_info(camss->dev,
+						 "Enabled CSID%d->VFE PIX link for sensor %s\n",
+						 csiphy_id, sensor->name);
+				} else {
+					dev_err(camss->dev,
+						"CSID%d->VFE PIX link not found!\n",
+						csiphy_id);
+				}
+			}
+		} else if (camss->res->vfe_num > 0) {
+			/*
+			 * Parallel camera interface (no CSIPHY/CSID):
+			 * Link sensor directly to VFE PIX input (CAMIF).
+			 * VFE_LINE_PIX uses the parallel interface (CAMIF),
+			 * not the RDI (Raw Data Interface) lines.
+			 */
+			struct v4l2_subdev *vfe = &camss->vfe[0].line[VFE_LINE_PIX].subdev;
+
+			input = &vfe->entity;
+
+			ret = media_create_pad_link(sensor, i, input,
+						    MSM_VFE_PAD_SINK,
+						    MEDIA_LNK_FL_IMMUTABLE | MEDIA_LNK_FL_ENABLED);
+			if (ret < 0) {
+				camss_link_err(camss, sensor->name, input->name, ret);
+				return ret;
+			}
 		}
 	}
 
@@ -4843,16 +5196,22 @@ static int camss_configure_pd(struct camss *camss)
 						      "power-domains",
 						      "#power-domain-cells");
 	if (camss->genpd_num < 0) {
-		dev_err(dev, "Power domains are not defined for camss\n");
-		return camss->genpd_num;
+		/*
+		 * Older platforms like MSM8660 don't have GDSC power domains.
+		 * The VFE is always powered when clocks are enabled.
+		 * Treat missing power-domains as "no power domain management".
+		 */
+		dev_dbg(dev, "No power domains defined for camss, continuing without PM\n");
+		camss->genpd_num = 0;
 	}
 
 	/*
-	 * If a platform device has just one power domain, then it is attached
-	 * at platform_probe() level, thus there shall be no need and even no
-	 * option to attach it again, this is the case for CAMSS on MSM8916.
+	 * If genpd_num == 0, no power domain management is needed (e.g. MSM8660).
+	 * If genpd_num == 1, the platform device is attached at platform_probe()
+	 * level, thus there shall be no need and even no option to attach it
+	 * again, this is the case for CAMSS on MSM8916.
 	 */
-	if (camss->genpd_num == 1)
+	if (camss->genpd_num <= 1)
 		return 0;
 
 	/* count the # of VFEs which have flagged power-domain */
@@ -4927,6 +5286,53 @@ static int camss_icc_get(struct camss *camss)
 	return 0;
 }
 
+/**
+ * camss_icc_set_bw - Set interconnect bandwidth for camera streaming
+ * @camss: CAMSS device instance
+ * @enable: true to enable full bandwidth, false to disable
+ *
+ * This function directly sets the ICC bandwidth for VFE DMA operations.
+ * It should be called when starting/stopping video capture to ensure
+ * sufficient memory bandwidth for frame transfers.
+ *
+ * On MSM8660, the VFE shares the MMSS fabric with MDP. Without proper
+ * bandwidth voting, frame capture can be throttled resulting in low FPS.
+ */
+int camss_icc_set_bw(struct camss *camss, bool enable)
+{
+	const struct resources_icc *icc_res = camss->res->icc_res;
+	int i;
+	int ret;
+
+	if (!camss->res->icc_path_num)
+		return 0;
+
+	for (i = 0; i < camss->res->icc_path_num; i++) {
+		if (!camss->icc_path[i])
+			continue;
+
+		if (enable) {
+			ret = icc_set_bw(camss->icc_path[i],
+					 icc_res[i].icc_bw_tbl.avg,
+					 icc_res[i].icc_bw_tbl.peak);
+			dev_info(camss->dev,
+				 "CAMSS ICC: setting bandwidth avg=%u peak=%u kBps\n",
+				 icc_res[i].icc_bw_tbl.avg,
+				 icc_res[i].icc_bw_tbl.peak);
+		} else {
+			ret = icc_set_bw(camss->icc_path[i], 0, 0);
+			dev_info(camss->dev, "CAMSS ICC: disabling bandwidth\n");
+		}
+
+		if (ret) {
+			dev_err(camss->dev, "CAMSS ICC: icc_set_bw failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 static void camss_genpd_subdevice_cleanup(struct camss *camss)
 {
 	int i;
@@ -4937,7 +5343,7 @@ static void camss_genpd_subdevice_cleanup(struct camss *camss)
 
 static void camss_genpd_cleanup(struct camss *camss)
 {
-	if (camss->genpd_num == 1)
+	if (camss->genpd_num <= 1)
 		return;
 
 	camss_genpd_subdevice_cleanup(camss);
@@ -5101,6 +5507,24 @@ static void camss_remove(struct platform_device *pdev)
 
 	camss_genpd_cleanup(camss);
 }
+
+static const struct camss_resources msm8660_resources = {
+	.version = CAMSS_8x60,
+	.icc_res = icc_res_8x60,
+	.icc_path_num = ARRAY_SIZE(icc_res_8x60),
+	/*
+	 * MSM8660/APQ8060 has a unified CSI controller architecture where
+	 * CSIPHY and CSID share the same hardware block. CSIPHY handles
+	 * all interrupts; CSID provides the V4L2 media pipeline interface.
+	 * HP TouchPad uses MIPI CSI-2 for the MT9M113 front camera on CSI1.
+	 */
+	.csiphy_res = csiphy_res_8x60,
+	.csid_res = csid_res_8x60,
+	.vfe_res = vfe_res_8x60,
+	.csiphy_num = ARRAY_SIZE(csiphy_res_8x60),
+	.csid_num = ARRAY_SIZE(csid_res_8x60),
+	.vfe_num = ARRAY_SIZE(vfe_res_8x60),
+};
 
 static const struct camss_resources msm8916_resources = {
 	.version = CAMSS_8x16,
@@ -5316,6 +5740,8 @@ static const struct camss_resources x1e80100_resources = {
 };
 
 static const struct of_device_id camss_dt_match[] = {
+	{ .compatible = "qcom,msm8660-camss", .data = &msm8660_resources },
+	{ .compatible = "qcom,apq8060-camss", .data = &msm8660_resources },
 	{ .compatible = "qcom,msm8916-camss", .data = &msm8916_resources },
 	{ .compatible = "qcom,msm8939-camss", .data = &msm8939_resources },
 	{ .compatible = "qcom,msm8953-camss", .data = &msm8953_resources },
@@ -5360,12 +5786,27 @@ static int __maybe_unused camss_runtime_resume(struct device *dev)
 	int i;
 	int ret;
 
+	/*
+	 * Only vote for interconnect bandwidth when actively streaming.
+	 * Voting during probe (when ref_count is 0) can disrupt other
+	 * devices sharing the same fabric, particularly MDP display output
+	 * on MSM8660 where VFE and MDP share the MMSS fabric.
+	 */
+	if (atomic_read(&camss->ref_count) == 0) {
+		dev_dbg(dev, "camss_runtime_resume: skipping ICC vote (not streaming)\n");
+		return 0;
+	}
+
+	dev_dbg(dev, "camss_runtime_resume: setting interconnect bandwidth\n");
+
 	for (i = 0; i < camss->res->icc_path_num; i++) {
 		ret = icc_set_bw(camss->icc_path[i],
 				 icc_res[i].icc_bw_tbl.avg,
 				 icc_res[i].icc_bw_tbl.peak);
-		if (ret)
+		if (ret) {
+			dev_err(dev, "camss_runtime_resume: icc_set_bw failed: %d\n", ret);
 			return ret;
+		}
 	}
 
 	return 0;

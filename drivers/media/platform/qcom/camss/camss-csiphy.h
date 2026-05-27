@@ -112,6 +112,10 @@ struct csiphy_device {
 	struct v4l2_mbus_framefmt fmt[MSM_CSIPHY_PADS_NUM];
 	const struct csiphy_subdev_resources *res;
 	struct csiphy_device_regs *regs;
+	/* MSM8660: lanes configured during set_power to run before VFE s_stream */
+	bool lanes_enabled;
+	/* MIPI DATA_FORMAT (0=8bit, 1=10bit, 2=12bit) for PROTOCOL_CONTROL */
+	u8 data_format;
 };
 
 struct camss_subdev_resources;
@@ -131,5 +135,6 @@ extern const struct csiphy_formats csiphy_formats_sdm845;
 
 extern const struct csiphy_hw_ops csiphy_ops_2ph_1_0;
 extern const struct csiphy_hw_ops csiphy_ops_3ph_1_0;
+extern const struct csiphy_hw_ops csiphy_ops_8x60;
 
 #endif /* QC_MSM_CAMSS_CSIPHY_H */

@@ -53,7 +53,14 @@ enum vfe_line_id {
 	VFE_LINE_RDI1 = 1,
 	VFE_LINE_RDI2 = 2,
 	VFE_LINE_PIX = 3,
-	VFE_LINE_NUM_MAX = 4
+	/*
+	 * A backend may expose extra output lines beyond PIX (e.g. VFE31's
+	 * VIDEO and ZSL outputs at line[] indices 4 and 5). Those are private
+	 * to the backend and deliberately not named here; the shared core
+	 * treats every line generically via its per-line capability flags
+	 * (pix/secondary/shares_pix_csid). NUM_MAX only sizes vfe_device.line[].
+	 */
+	VFE_LINE_NUM_MAX = 6
 };
 
 struct vfe_output {
@@ -85,6 +92,19 @@ struct vfe_output {
 
 struct vfe_line {
 	enum vfe_line_id id;
+	/*
+	 * Per-line capability flags, set by the core/backend at init so the
+	 * shared code can act on a line's role instead of hardcoding
+	 * backend-specific line IDs:
+	 *  - pix: ISP/pixel-processed (line-based, DEMUX) output vs raw/RDI.
+	 *  - secondary: a secondary output that joins an already-running
+	 *    capture pipeline rather than starting its own (VFE31 VIDEO/ZSL).
+	 *  - shares_pix_csid: reads the PIX CSID source pad rather than its own
+	 *    (VFE31 shares one CAMIF/DEMUX path across outputs).
+	 */
+	bool pix;
+	bool secondary;
+	bool shares_pix_csid;
 	struct v4l2_subdev subdev;
 	struct media_pad pads[MSM_VFE_PADS_NUM];
 	struct v4l2_mbus_framefmt fmt[MSM_VFE_PADS_NUM];
@@ -120,6 +140,15 @@ struct vfe_hw_ops {
 	void (*vfe_buf_done)(struct vfe_device *vfe, int port_id);
 	void (*vfe_wm_update)(struct vfe_device *vfe, u8 wm, u32 addr,
 			      struct vfe_line *line);
+	void (*enable_pending_camif)(struct vfe_device *vfe);
+	void (*vfe_cleanup)(struct vfe_device *vfe);
+	/*
+	 * Optional: set a line's capability flags (pix/secondary/
+	 * shares_pix_csid) at init for backends with non-default line layouts
+	 * (e.g. VFE31's VIDEO/ZSL outputs). If NULL the core applies the
+	 * default (only VFE_LINE_PIX is a pixel output).
+	 */
+	void (*init_line)(struct vfe_line *line, u8 idx);
 };
 
 struct vfe_isr_ops {
@@ -169,6 +198,14 @@ struct vfe_device {
 	struct camss_video_ops video_ops;
 	struct device *genpd;
 	struct device_link *genpd_link;
+	/*
+	 * MSM8660: CAMIF config is deferred until CSIPHY is configured. The
+	 * camss core (camss-vfe.c) and the video layer (camss-video.c) test
+	 * camif_pending across files, so it stays here.
+	 */
+	bool camif_pending;
+	/* Backend-private state (e.g. struct vfe31_device), allocated by the backend */
+	void *priv;
 };
 
 struct camss_subdev_resources;
@@ -205,6 +242,8 @@ void vfe_isr_reset_ack(struct vfe_device *vfe);
 int vfe_put_output(struct vfe_line *line);
 int vfe_release_wm(struct vfe_device *vfe, u8 wm);
 int vfe_reserve_wm(struct vfe_device *vfe, enum vfe_line_id line_id);
+int vfe_reserve_wm_specific(struct vfe_device *vfe, u8 wm,
+			    enum vfe_line_id line_id);
 
 /*
  * vfe_reset - Trigger reset on VFE module and wait to complete
@@ -213,6 +252,15 @@ int vfe_reserve_wm(struct vfe_device *vfe, enum vfe_line_id line_id);
  * Return 0 on success or a negative error code otherwise
  */
 int vfe_reset(struct vfe_device *vfe);
+
+/*
+ * vfe_enable_pending_camif - Enable CAMIF that was deferred during VFE s_stream
+ * @vfe: VFE device
+ *
+ * MSM8660 workaround: CAMIF enable must be deferred until after CSIPHY
+ * is configured. This function enables CAMIF if it was marked pending.
+ */
+void vfe_enable_pending_camif(struct vfe_device *vfe);
 
 /*
  * vfe_disable - Disable streaming on VFE line
@@ -236,11 +284,14 @@ int vfe_pm_domain_on(struct vfe_device *vfe);
 
 extern const struct camss_formats vfe_formats_rdi_8x16;
 extern const struct camss_formats vfe_formats_pix_8x16;
+extern const struct camss_formats vfe_formats_pix_vfe31;
+extern const struct camss_formats vfe_formats_rdi_vfe31;
 extern const struct camss_formats vfe_formats_rdi_8x96;
 extern const struct camss_formats vfe_formats_pix_8x96;
 extern const struct camss_formats vfe_formats_rdi_845;
 extern const struct camss_formats vfe_formats_pix_845;
 
+extern const struct vfe_hw_ops vfe_ops_3_1;
 extern const struct vfe_hw_ops vfe_ops_4_1;
 extern const struct vfe_hw_ops vfe_ops_4_7;
 extern const struct vfe_hw_ops vfe_ops_4_8;

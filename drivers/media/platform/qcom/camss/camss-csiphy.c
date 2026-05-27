@@ -12,6 +12,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -20,15 +21,21 @@
 #include <media/v4l2-subdev.h>
 
 #include "camss-csiphy.h"
+#include "camss-vfe.h"
 #include "camss.h"
 
 #define MSM_CSIPHY_NAME "msm_csiphy"
 
 static const struct csiphy_format_info formats_8x16[] = {
-	{ MEDIA_BUS_FMT_UYVY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_VYUY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YUYV8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YVYU8_1X16, 8 },
+	/*
+	 * YUV 4:2:2 8-bit formats: bpp=16 for link frequency calculation.
+	 * Each pixel is 16 bits (Y=8 + U/V=8) on the MIPI link.
+	 * Formula: link_freq = pixel_rate * bpp / (2 * lanes)
+	 */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 16 },
 	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8 },
@@ -45,10 +52,11 @@ static const struct csiphy_format_info formats_8x16[] = {
 };
 
 static const struct csiphy_format_info formats_8x96[] = {
-	{ MEDIA_BUS_FMT_UYVY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_VYUY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YUYV8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YVYU8_1X16, 8 },
+	/* YUV 4:2:2 8-bit: bpp=16 (Y=8 + U/V=8 per pixel) */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 16 },
 	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8 },
@@ -69,10 +77,11 @@ static const struct csiphy_format_info formats_8x96[] = {
 };
 
 static const struct csiphy_format_info formats_sdm845[] = {
-	{ MEDIA_BUS_FMT_UYVY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_VYUY8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YUYV8_1X16, 8 },
-	{ MEDIA_BUS_FMT_YVYU8_1X16, 8 },
+	/* YUV 4:2:2 8-bit: bpp=16 (Y=8 + U/V=8 per pixel) */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 16 },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 16 },
 	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8 },
 	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8 },
@@ -140,10 +149,24 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 	s64 link_freq;
 	int i, j;
 	int ret;
+	u8 bpp;
+	u8 num_lanes;
 
-	u8 bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
-				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
-	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+	/*
+	 * csi2 config may not be set yet if sensor hasn't been bound.
+	 * In that case, use default values for clock rate calculation.
+	 */
+	if (!csiphy->cfg.csi2) {
+		dev_dbg(dev, "CSIPHY%d: csi2 config not set, using defaults\n",
+			csiphy->id);
+		bpp = 8;
+		num_lanes = 1;
+	} else {
+		bpp = csiphy_get_bpp(csiphy->res->formats->formats,
+				     csiphy->res->formats->nformats,
+				     csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
+		num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+	}
 
 	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
 	if (link_freq < 0)
@@ -187,6 +210,26 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 				dev_err(dev, "clk set rate failed: %d\n", ret);
 				return ret;
 			}
+		} else if (clock->nfreqs > 0 && clock->freq[0] != 0) {
+			/*
+			 * MSM8660 workaround: For clocks with explicit rates
+			 * in the resource definition (like VFE), set the rate
+			 * BEFORE enabling. MSM8660 hangs if you try to change
+			 * clock rate while the clock is enabled. webOS sets
+			 * rates before enable in msm_camio_clk_enable().
+			 */
+			dev_info(dev, "CSIPHY%d: setting %s rate to %u Hz\n",
+				 csiphy->id, clock->name, clock->freq[0]);
+			ret = clk_set_rate(clock->clk, clock->freq[0]);
+			if (ret < 0) {
+				dev_err(dev,
+					"clk %s set rate %u failed: %d\n",
+					clock->name, clock->freq[0], ret);
+				return ret;
+			}
+			dev_info(dev, "CSIPHY%d: %s rate set OK, actual=%lu Hz\n",
+				 csiphy->id, clock->name,
+				 clk_get_rate(clock->clk));
 		}
 	}
 
@@ -205,42 +248,120 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	struct device *dev = csiphy->camss->dev;
 
+	dev_info(dev, "CSIPHY%d: set_power on=%d\n", csiphy->id, on);
+
 	if (on) {
 		int ret;
 
+		pr_emerg("CSIPHY%d: calling pm_runtime_resume_and_get\n", csiphy->id);
 		ret = pm_runtime_resume_and_get(dev);
-		if (ret < 0)
+		pr_emerg("CSIPHY%d: pm_runtime_resume_and_get returned %d\n", csiphy->id, ret);
+		if (ret < 0) {
+			dev_err(dev, "CSIPHY%d: pm_runtime_resume failed: %d\n",
+				csiphy->id, ret);
 			return ret;
+		}
+
+		/*
+		 * MSM8660 workaround: Allow GDSC (power domain) to stabilize
+		 * after enable before proceeding with clock and register access.
+		 */
+		pr_emerg("CSIPHY%d: usleep 10-15ms for GDSC stabilize\n", csiphy->id);
+		usleep_range(10000, 15000);
+		pr_emerg("CSIPHY%d: usleep done, calling regulator_bulk_enable\n", csiphy->id);
 
 		ret = regulator_bulk_enable(csiphy->num_supplies,
 					    csiphy->supplies);
 		if (ret < 0) {
+			dev_err(dev, "CSIPHY%d: regulator_bulk_enable failed: %d\n",
+				csiphy->id, ret);
 			pm_runtime_put_sync(dev);
 			return ret;
 		}
 
 		ret = csiphy_set_clock_rates(csiphy);
 		if (ret < 0) {
+			dev_err(dev, "CSIPHY%d: set_clock_rates failed: %d\n",
+				csiphy->id, ret);
 			regulator_bulk_disable(csiphy->num_supplies,
 					       csiphy->supplies);
 			pm_runtime_put_sync(dev);
 			return ret;
 		}
 
+		dev_info(dev, "CSIPHY%d: enabling %d clocks\n", csiphy->id, csiphy->nclocks);
 		ret = camss_enable_clocks(csiphy->nclocks, csiphy->clock, dev);
 		if (ret < 0) {
+			dev_err(dev, "CSIPHY%d: enable_clocks failed: %d\n",
+				csiphy->id, ret);
 			regulator_bulk_disable(csiphy->num_supplies,
 					       csiphy->supplies);
 			pm_runtime_put_sync(dev);
 			return ret;
 		}
+		dev_info(dev, "CSIPHY%d: clocks enabled successfully\n", csiphy->id);
+
+		/*
+		 * MSM8660 workaround: VFE CGC_OVERRIDE must be set BEFORE any
+		 * CSI register access. The CGC (Clock Gate Control) Override
+		 * register enables internal clocks for various VFE sub-blocks.
+		 * Without this, CSI register writes hang.
+		 */
+		if (csiphy->camss->res->version == CAMSS_8x60 &&
+		    csiphy->camss->vfe) {
+			void __iomem *vfe_base = csiphy->camss->vfe[0].base;
+			if (vfe_base) {
+				dev_info(dev, "CSIPHY%d: Setting VFE CGC_OVERRIDE=0xFFFFF\n",
+					 csiphy->id);
+				writel(0xFFFFF, vfe_base + 0x00C);
+			}
+		}
+
+		/*
+		 * NOTE: webOS does msleep(10) after clock enable, before
+		 * register access. This is done in lanes_enable() to match
+		 * the exact webOS sequence from msm_camio_enable().
+		 */
 
 		enable_irq(csiphy->irq);
 
 		csiphy->res->hw_ops->reset(csiphy);
 
 		csiphy->res->hw_ops->hw_version_read(csiphy, dev);
+
+		/*
+		 * MSM8660 workaround: Configure lanes immediately in set_power,
+		 * BEFORE VFE s_stream runs. This is needed for format negotiation
+		 * to work properly.
+		 */
+		if (csiphy->camss->res->version == CAMSS_8x60 &&
+		    csiphy->cfg.csi2) {
+			struct csiphy_config *cfg = &csiphy->cfg;
+			u8 lane_mask;
+			u8 bpp;
+			u8 num_lanes;
+			s64 link_freq;
+
+			lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
+			bpp = csiphy_get_bpp(csiphy->res->formats->formats,
+					     csiphy->res->formats->nformats,
+					     csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
+			num_lanes = cfg->csi2->lane_cfg.num_data;
+
+			link_freq = camss_get_link_freq(&csiphy->subdev.entity,
+							bpp, num_lanes);
+			if (link_freq < 0)
+				link_freq = 0;
+
+			dev_info(dev,
+				 "CSIPHY%d: set_power - configuring lanes early (MSM8660 workaround)\n",
+				 csiphy->id);
+			csiphy->res->hw_ops->lanes_enable(csiphy, cfg,
+							  link_freq, lane_mask);
+			csiphy->lanes_enabled = true;
+		}
 	} else {
+		csiphy->lanes_enabled = false;
 		disable_irq(csiphy->irq);
 
 		camss_disable_clocks(csiphy->nclocks, csiphy->clock);
@@ -266,11 +387,22 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 {
 	struct csiphy_config *cfg = &csiphy->cfg;
 	s64 link_freq;
-	u8 lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
-	u8 bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
-				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
-	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+	u8 lane_mask;
+	u8 bpp;
+	u8 num_lanes;
 	u8 val;
+
+	if (!cfg->csi2) {
+		dev_err(csiphy->camss->dev,
+			"CSIPHY%d: CSI2 config not set, cannot stream\n",
+			csiphy->id);
+		return -EINVAL;
+	}
+
+	lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
+	bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
+			     csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
+	num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
 
 	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
 
@@ -295,7 +427,75 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 		wmb();
 	}
 
-	csiphy->res->hw_ops->lanes_enable(csiphy, cfg, link_freq, lane_mask);
+	/*
+	 * MSM8660 workaround: lanes may already be enabled in set_power
+	 * to avoid VFE s_stream blocking CSIPHY register access.
+	 */
+	if (csiphy->lanes_enabled) {
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: stream_on - lanes already enabled in set_power\n",
+			 csiphy->id);
+
+		/*
+		 * MSM8660: Issue a protocol SW_RST to refresh the CSIPHY state.
+		 * The lanes were enabled ~1-2 seconds ago during set_power.
+		 * WebOS issues msm_camio_csi_config() (which includes SW_RST)
+		 * right before enabling sensor MIPI output. This ensures the
+		 * CSIPHY is in a fresh state when MIPI data starts flowing.
+		 *
+		 * Without this reset, we get ECC/SOT errors because the CSIPHY
+		 * state may have drifted while waiting for the sensor to start.
+		 */
+		if (csiphy->base) {
+			u32 val;
+
+			dev_info(csiphy->camss->dev,
+				 "CSIPHY%d: stream_on - issuing protocol SW_RST\n",
+				 csiphy->id);
+
+			/* SW_RST to PROTOCOL_CONTROL */
+			writel(BIT(27), csiphy->base + 0x04);
+
+			/*
+			 * Re-configure PROTOCOL_CONTROL after SW_RST.
+			 * Re-apply DATA_FORMAT stored during lanes_enable,
+			 * since SW_RST clears the register.
+			 */
+			val = BIT(21) | BIT(18) | BIT(17); /* LONG_PKT | DECODE_ID | ECC_EN */
+			val |= (u32)csiphy->data_format << 19;
+			dev_dbg(csiphy->camss->dev,
+				"CSIPHY%d: stream_on PROTOCOL_CONTROL=0x%08x (data_fmt=%d)\n",
+				csiphy->id, val, csiphy->data_format);
+			writel(val, csiphy->base + 0x04);
+
+			/* Small delay for reset to take effect */
+			udelay(10);
+		}
+	} else {
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d: stream_on calling lanes_enable lane_mask=0x%x link_freq=%lld\n",
+			 csiphy->id, lane_mask, link_freq);
+
+		csiphy->res->hw_ops->lanes_enable(csiphy, cfg, link_freq, lane_mask);
+
+		dev_info(csiphy->camss->dev, "CSIPHY%d: lanes_enable complete\n",
+			 csiphy->id);
+	}
+
+	/*
+	 * MSM8660 workaround: CAMIF start has been moved to video_start_streaming
+	 * in camss-video.c. This ensures the sensor is streaming BEFORE CAMIF starts.
+	 *
+	 * Previously, enabling CAMIF here (during CSIPHY s_stream) caused CAMIF_ERROR
+	 * because the sensor s_stream hadn't been called yet, so no MIPI data was
+	 * present when CAMIF started looking for frames.
+	 *
+	 * The V4L2 pipeline walk order is: VFE -> CSID -> CSIPHY -> sensor
+	 * So CSIPHY s_stream runs BEFORE sensor s_stream.
+	 *
+	 * Now CAMIF starts after ALL s_stream calls complete, when sensor is
+	 * actually outputting MIPI data.
+	 */
 
 	return 0;
 }
@@ -322,12 +522,30 @@ static void csiphy_stream_off(struct csiphy_device *csiphy)
 static int csiphy_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	ktime_t start_time;
 	int ret = 0;
 
-	if (enable)
+	start_time = ktime_get();
+	dev_info(csiphy->camss->dev,
+		 "[TIMING] CSIPHY%d: set_stream enable=%d START at %lld ns\n",
+		 csiphy->id, enable, ktime_to_ns(start_time));
+
+	if (enable) {
+		/*
+		 * This is where CSIPHY will be enabled and start receiving
+		 * MIPI data from the sensor. VFE must be ready BEFORE this point!
+		 */
+		dev_info(csiphy->camss->dev,
+			 "[TIMING] CSIPHY%d: About to enable - VFE MUST be ready now!\n",
+			 csiphy->id);
 		ret = csiphy_stream_on(csiphy);
-	else
+	} else {
 		csiphy_stream_off(csiphy);
+	}
+
+	dev_info(csiphy->camss->dev,
+		 "[TIMING] CSIPHY%d: set_stream DONE ret=%d elapsed=%lld ns\n",
+		 csiphy->id, ret, ktime_to_ns(ktime_get()) - ktime_to_ns(start_time));
 
 	return ret;
 }
@@ -544,6 +762,7 @@ static int csiphy_set_format(struct v4l2_subdev *sd,
 static int csiphy_init_formats(struct v4l2_subdev *sd,
 			       struct v4l2_subdev_fh *fh)
 {
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	struct v4l2_subdev_format format = {
 		.pad = MSM_CSIPHY_PAD_SINK,
 		.which = fh ? V4L2_SUBDEV_FORMAT_TRY :
@@ -555,13 +774,24 @@ static int csiphy_init_formats(struct v4l2_subdev *sd,
 		}
 	};
 
+	/*
+	 * MSM8660 uses parallel camera interface (CAMIF) which requires
+	 * 2X8 media bus formats instead of 1X16. The resolution matches
+	 * MT9M114/MT9M113 IFP output: 1288x968.
+	 */
+	if (csiphy->camss->res->version == CAMSS_8x60) {
+		format.format.code = MEDIA_BUS_FMT_UYVY8_2X8;
+		format.format.width = 1288;
+		format.format.height = 968;
+	}
+
 	return csiphy_set_format(sd, fh ? fh->state : NULL, &format);
 }
 
 static bool csiphy_match_clock_name(const char *clock_name, const char *format,
 				    int index)
 {
-	char name[16]; /* csiphyXXX_timer\0 */
+	char name[32]; /* csiphy%d_timer_clk needs 18 chars max */
 
 	snprintf(name, sizeof(name), format, index);
 	return !strcmp(clock_name, name);
@@ -677,12 +907,13 @@ int msm_csiphy_subdev_init(struct camss *camss,
 			clock->freq[j] = res->clock_rate[i][j];
 
 		csiphy->rate_set[i] = csiphy_match_clock_name(clock->name,
-							      "csiphy%d_timer",
+							      "csiphy%d_timer_clk",
 							      csiphy->id);
 		if (csiphy->rate_set[i])
 			continue;
 
-		if (camss->res->version == CAMSS_660) {
+		if (camss->res->version == CAMSS_660 ||
+		    camss->res->version == CAMSS_8x60) {
 			csiphy->rate_set[i] = csiphy_match_clock_name(clock->name,
 								      "csi%d_phy",
 								       csiphy->id);

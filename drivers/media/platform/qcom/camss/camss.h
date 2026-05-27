@@ -82,6 +82,7 @@ enum camss_version {
 	CAMSS_2290,
 	CAMSS_6150,
 	CAMSS_7280,
+	CAMSS_8x60,
 	CAMSS_8x16,
 	CAMSS_8x39,
 	CAMSS_8x53,
@@ -173,5 +174,6 @@ void camss_delete(struct camss *camss);
 void camss_buf_done(struct camss *camss, int hw_id, int port_id);
 void camss_reg_update(struct camss *camss, int hw_id,
 		      int port_id, bool is_clear);
+int camss_icc_set_bw(struct camss *camss, bool enable);
 
 #endif /* QC_MSM_CAMSS_H */

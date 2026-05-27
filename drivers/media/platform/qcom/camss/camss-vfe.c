@@ -9,10 +9,14 @@
  */
 #include <linux/clk.h>
 #include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
+#include <linux/iopoll.h>
+#include <linux/ktime.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
@@ -20,10 +24,20 @@
 #include <linux/spinlock.h>
 #include <media/media-entity.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
 #include "camss-vfe.h"
 #include "camss.h"
+
+
+/*
+ * MSM8660 CSI routing is configured via direct register writes to MISC_CC_REG
+ * using the value from webOS (0x06003400). This enables all CSI1 paths:
+ *   - CSI1-to-VFE async bridge
+ *   - csi_pix_sel/csi_rdi_sel mux to CSI1
+ *   - csi_pix_clk/csi_rdi_clk enables
+ */
 
 #define MSM_VFE_NAME "msm_vfe"
 
@@ -207,6 +221,173 @@ static const struct camss_format_info formats_pix_8x16[] = {
 	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
 	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
 	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* 2X8 formats for parallel camera interface (CAMIF) */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* Packed YUV 4:2:2 formats - for raw CAMIF passthrough (MSM8660/VFE31) */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_UYVY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_VYUY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_YUYV, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_YVYU, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_UYVY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_VYUY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_YUYV, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_YVYU, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+};
+
+/*
+ * VFE31-specific PIX formats for MSM8660.
+ *
+ * VFE31 DEMUX takes UYVY input and separates Y and CbCr to separate Write
+ * Masters. Both WMs write with the INPUT stride (UYVY, width*2 bytes/line),
+ * not the NV16 output stride (width bytes/line per plane).
+ *
+ * Buffer requirements:
+ * - WM0 (Y):    writes bytesperline * height = width*2 * height bytes
+ * - WM1 (CbCr): writes bytesperline * height = width*2 * height bytes
+ * - WM1 starts at offset width*height (CbCr plane offset in NV16)
+ * - Total: width*height + width*2*height = 3 * width * height bytes minimum
+ *
+ * Actually, WM1 ends at: cbcr_offset + bytesperline*height
+ *                      = width*height + width*2*height = 3*width*height
+ * But buffer starts at 0, so we need 3*width*height bytes total.
+ *
+ * Using vsub=1/3 gives: sizeimage = bytesperline * height * 3 / 1
+ *                                 = width*2 * height * 3 = 6*width*height
+ * That's too much. Let's use a simpler approach:
+ *
+ * With bpp=16, vsub=2/1: bytesperline = width*2, sizeimage = width*2 * height*2
+ *                      = 4*width*height (enough for 3*width*height needed)
+ */
+static const struct camss_format_info formats_pix_vfe31[] = {
+	/*
+	 * NV12 semi-planar (4:2:0): Y full resolution, CbCr half height.
+	 * This matches VFE31 hardware output behavior observed in webOS.
+	 * vsub=2/3 gives: sizeimage = height/2 * 3 * bpl = 1.5 * height * bpl
+	 */
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	/* NV21 semi-planar: same as NV12 but CrCb order */
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	/*
+	 * NV16 semi-planar (4:2:2): Y and CbCr same height.
+	 * NOTE: VFE31 hardware may not support full-height CbCr output.
+	 * Kept for compatibility but NV12 is recommended.
+	 */
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* NV61 semi-planar: same as NV16 but CbCr order reversed */
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* 2X8 formats for CAMIF - NV12 (4:2:0) */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	/* 2X8 formats for CAMIF - NV21 (4:2:0, CrCb order) */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV21, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	/* 2X8 formats for CAMIF - NV16 (4:2:2) */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* 2X8 formats for CAMIF - NV61 (4:2:2, CrCb order) */
+	{ MEDIA_BUS_FMT_YUYV8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_YVYU8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	{ MEDIA_BUS_FMT_VYUY8_2X8, 8, V4L2_PIX_FMT_NV61, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* Packed YUV 4:2:2 passthrough */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_UYVY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_VYUY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 8, V4L2_PIX_FMT_YUYV, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 8, V4L2_PIX_FMT_YVYU, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	/* RAW Bayer formats for RAW-through-PIX mode */
+	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8, V4L2_PIX_FMT_SBGGR8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8, V4L2_PIX_FMT_SGBRG8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8, V4L2_PIX_FMT_SGRBG8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SRGGB8_1X8, 8, V4L2_PIX_FMT_SRGGB8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SBGGR10_1X10, 10, V4L2_PIX_FMT_SBGGR10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SGBRG10_1X10, 10, V4L2_PIX_FMT_SGBRG10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SGRBG10_1X10, 10, V4L2_PIX_FMT_SGRBG10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SRGGB10_1X10, 10, V4L2_PIX_FMT_SRGGB10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
 };
 
 static const struct camss_format_info formats_pix_8x96[] = {
@@ -262,6 +443,73 @@ const struct camss_formats vfe_formats_pix_8x16 = {
 	.formats = formats_pix_8x16
 };
 
+const struct camss_formats vfe_formats_pix_vfe31 = {
+	.nformats = ARRAY_SIZE(formats_pix_vfe31),
+	.formats = formats_pix_vfe31
+};
+
+/*
+ * VFE31 RDI format table
+ *
+ * IMPORTANT: mbus_bpp here is used by camss_format_get_bpp() which is called
+ * in vfe31_enable_pending_camif() to calculate CAMIF stride (width_bytes).
+ * Unlike other VFE versions, VFE31 needs mbus_bpp to reflect actual memory
+ * bytes-per-pixel for correct CAMIF_WINDOW configuration:
+ *   - YUV 4:2:2: 16 bpp (2 bytes per pixel)
+ *   - RAW8:       8 bpp (1 byte per pixel)
+ *   - RAW10:     10 bpp (packed, 10/8 bytes per pixel)
+ */
+static const struct camss_format_info formats_rdi_vfe31[] = {
+	/* NV12/NV16 semi-planar for RAW-through-PIX mode */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 8, V4L2_PIX_FMT_NV16, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+	/* YUV 4:2:2 formats - 16 bits per pixel */
+	{ MEDIA_BUS_FMT_UYVY8_1X16, 16, V4L2_PIX_FMT_UYVY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_VYUY8_1X16, 16, V4L2_PIX_FMT_VYUY, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YUYV8_1X16, 16, V4L2_PIX_FMT_YUYV, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	{ MEDIA_BUS_FMT_YVYU8_1X16, 16, V4L2_PIX_FMT_YVYU, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 16) },
+	/*
+	 * RAW Bayer formats (RAW8/RAW10) - UNTESTED.
+	 *
+	 * These are advertised but have not been made to work on the available
+	 * APQ8060 hardware (HP TouchPad / MT9M113, which only emits YUV). The
+	 * native RDI raw-bypass path is non-functional on this silicon (see
+	 * raw_through_pix in camss-vfe-3-1.c), and the RAW-through-PIX route
+	 * disables the ISP color pipeline, which was never validated end-to-end.
+	 * Kept as scaffolding for a future developer with a Bayer sensor; do not
+	 * assume these produce correct output as-is.
+	 */
+	/* RAW8 Bayer formats - 8 bits per pixel */
+	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8, V4L2_PIX_FMT_SBGGR8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8, V4L2_PIX_FMT_SGBRG8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8, V4L2_PIX_FMT_SGRBG8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SRGGB8_1X8, 8, V4L2_PIX_FMT_SRGGB8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	/* RAW10 Bayer formats - 10 bits per pixel (packed) */
+	{ MEDIA_BUS_FMT_SBGGR10_1X10, 10, V4L2_PIX_FMT_SBGGR10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SGBRG10_1X10, 10, V4L2_PIX_FMT_SGBRG10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SGRBG10_1X10, 10, V4L2_PIX_FMT_SGRBG10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SRGGB10_1X10, 10, V4L2_PIX_FMT_SRGGB10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+};
+
+const struct camss_formats vfe_formats_rdi_vfe31 = {
+	.nformats = ARRAY_SIZE(formats_rdi_vfe31),
+	.formats = formats_rdi_vfe31
+};
+
 const struct camss_formats vfe_formats_rdi_8x96 = {
 	.nformats = ARRAY_SIZE(formats_rdi_8x96),
 	.formats = formats_rdi_8x96
@@ -292,6 +540,7 @@ static u32 vfe_src_pad_code(struct vfe_line *line, u32 sink_code,
 	case CAMSS_8x16:
 	case CAMSS_8x39:
 	case CAMSS_8x53:
+	case CAMSS_8x60:
 		switch (sink_code) {
 		case MEDIA_BUS_FMT_YUYV8_1X16:
 		{
@@ -448,7 +697,7 @@ u32 vfe_hw_version(struct vfe_device *vfe)
  */
 void vfe_buf_done(struct vfe_device *vfe, int wm)
 {
-	struct vfe_line *line = &vfe->line[vfe->wm_output_map[wm]];
+	struct vfe_line *line;
 	const struct vfe_hw_ops *ops = vfe->res->hw_ops;
 	struct camss_buffer *ready_buf;
 	struct vfe_output *output;
@@ -456,14 +705,19 @@ void vfe_buf_done(struct vfe_device *vfe, int wm)
 	u32 index;
 	u64 ts = ktime_get_ns();
 
+	/*
+	 * VFE31 video mode routes data to WM4/WM5 in parallel with WM0/WM1.
+	 * These secondary WMs generate IRQs but aren't mapped to output lines.
+	 * Silently ignore them - we only track buffer completion via primary WMs.
+	 */
+	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
+		return;
+
+	line = &vfe->line[vfe->wm_output_map[wm]];
+
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
-	if (vfe->wm_output_map[wm] == VFE_LINE_NONE) {
-		dev_err_ratelimited(vfe->camss->dev,
-				    "Received wm done for unmapped index\n");
-		goto out_unlock;
-	}
-	output = &vfe->line[vfe->wm_output_map[wm]].output;
+	output = &line->output;
 
 	ready_buf = output->buf[0];
 	if (!ready_buf) {
@@ -693,6 +947,11 @@ int vfe_reset(struct vfe_device *vfe)
 
 	vfe->res->hw_ops->global_reset(vfe);
 
+	/*
+	 * A backend whose reset is synchronous (e.g. VFE31, which has no
+	 * reset-done IRQ) signals reset_complete from global_reset(), so this
+	 * wait returns immediately.
+	 */
 	time = wait_for_completion_timeout(&vfe->reset_complete,
 		msecs_to_jiffies(VFE_RESET_TIMEOUT_MS));
 	if (!time) {
@@ -701,6 +960,43 @@ int vfe_reset(struct vfe_device *vfe)
 	}
 
 	return 0;
+}
+
+/*
+ * vfe_enable_pending_camif - Configure and enable deferred CAMIF
+ * @vfe: VFE device
+ *
+ * MSM8660 workaround: CAMIF configuration must be deferred until after
+ * CSIPHY is configured. This function is called from CSID when CSI is
+ * fully configured and ready to provide data to VFE.
+ *
+ * Each VFE version should provide an enable_pending_camif callback in
+ * its hw_ops structure. See camss-vfe-3-1.c for the VFE31 implementation.
+ */
+void vfe_enable_pending_camif(struct vfe_device *vfe)
+{
+	if (!vfe->camif_pending) {
+		dev_dbg(vfe->camss->dev, "VFE: no pending CAMIF config\n");
+		return;
+	}
+
+	/*
+	 * Call the VFE version-specific enable_pending_camif callback.
+	 * This allows each VFE version to have its own CAMIF configuration
+	 * logic in its respective file (e.g., camss-vfe-3-1.c for VFE31).
+	 */
+	if (vfe->res->hw_ops->enable_pending_camif) {
+		vfe->res->hw_ops->enable_pending_camif(vfe);
+		return;
+	}
+
+	/*
+	 * No callback provided - this VFE version doesn't need deferred
+	 * CAMIF configuration, or the callback hasn't been implemented yet.
+	 */
+	dev_warn(vfe->camss->dev,
+		 "VFE: No enable_pending_camif callback - clearing pending flag\n");
+	vfe->camif_pending = false;
 }
 
 static void vfe_init_outputs(struct vfe_device *vfe)
@@ -739,6 +1035,30 @@ int vfe_reserve_wm(struct vfe_device *vfe, enum vfe_line_id line_id)
 	}
 
 	return ret;
+}
+
+/*
+ * vfe_reserve_wm_specific - Reserve a specific write master
+ * @vfe: VFE device
+ * @wm: The specific WM index to reserve (0-6)
+ * @line_id: The line ID to map to this WM
+ *
+ * Used by VFE31 for dual-output mode where the VIDEO output line must use
+ * WM4/WM5 specifically (not just any available WM).
+ *
+ * Return: The WM index on success, negative error code otherwise
+ */
+int vfe_reserve_wm_specific(struct vfe_device *vfe, u8 wm,
+			    enum vfe_line_id line_id)
+{
+	if (wm >= ARRAY_SIZE(vfe->wm_output_map))
+		return -EINVAL;
+
+	if (vfe->wm_output_map[wm] != VFE_LINE_NONE)
+		return -EBUSY;
+
+	vfe->wm_output_map[wm] = line_id;
+	return wm;
 }
 
 int vfe_release_wm(struct vfe_device *vfe, u8 wm)
@@ -854,16 +1174,29 @@ error:
  * vfe_isr_comp_done() - Process composite image done interrupt
  * @vfe: VFE Device
  * @comp: Composite image id
+ *
+ * Called when a composite image done IRQ fires. This indicates that all
+ * write masters in a composite group have completed writing their data.
+ *
+ * VFE31 composite group mapping (IRQ_COMPOSITE_MASK):
+ * - Composite 0 (bits 0-7):   PIX mode - WM0 (Y) + WM1 (CbCr)
+ * - Composite 1 (bits 8-15):  RDI raw mode - WM0 (raw bypass)
+ * - Composite 2 (bits 16-23): VIDEO mode - WM4 (Y) + WM5 (CbCr)
+ *
+ * We call wm_done for each WM that belongs to an active line of the
+ * appropriate type for this composite group.
  */
 void vfe_isr_comp_done(struct vfe_device *vfe, u8 comp)
 {
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(vfe->wm_output_map); i++)
-		if (vfe->wm_output_map[i] == VFE_LINE_PIX) {
+	for (i = 0; i < ARRAY_SIZE(vfe->wm_output_map); i++) {
+		enum vfe_line_id line = vfe->wm_output_map[i];
+
+		/* Dispatch completion for any WM mapped to a valid line. */
+		if (line != VFE_LINE_NONE)
 			vfe->isr_ops.wm_done(vfe, i);
-			break;
-		}
+	}
 }
 
 void vfe_isr_reset_ack(struct vfe_device *vfe)
@@ -917,6 +1250,7 @@ static int vfe_match_clock_names(struct vfe_device *vfe,
 	return (!strcmp(clock->name, vfe_name) ||
 		!strcmp(clock->name, vfe_lite_name) ||
 		!strcmp(clock->name, "vfe_lite") ||
+		!strcmp(clock->name, "vfe") ||		/* MSM8660 uses "vfe" not "vfe0" */
 		!strcmp(clock->name, "camnoc_axi") ||
 		!strcmp(clock->name, "camnoc_rt_axi"));
 }
@@ -995,10 +1329,19 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 				return -EINVAL;
 			}
 
-			/* if sensor pixel clock is not available */
-			/* set highest possible VFE clock rate */
-			if (min_rate == 0)
+			/*
+			 * If sensor pixel clock is not available, or for VFE31
+			 * (MSM8660) which requires high clock for raw passthrough,
+			 * use the highest possible VFE clock rate.
+			 *
+			 * VFE31 on MSM8660 always uses 228.57 MHz per webOS kernel.
+			 * The dynamic calculation doesn't work well for raw mode.
+			 */
+			if (min_rate == 0 || vfe->res->hw_ops == &vfe_ops_3_1)
 				j = clock->nfreqs - 1;
+
+			dev_dbg(dev, "VFE clock %s: min_rate=%llu j=%d freq[j]=%u nfreqs=%d\n",
+				 clock->name, min_rate, j, clock->freq[j], clock->nfreqs);
 
 			rate = clk_round_rate(clock->clk, clock->freq[j]);
 			if (rate < 0) {
@@ -1007,10 +1350,28 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 				return -EINVAL;
 			}
 
-			ret = clk_set_rate(clock->clk, rate);
-			if (ret < 0) {
-				dev_err(dev, "clk set rate failed: %d\n", ret);
-				return ret;
+			dev_dbg(dev, "VFE clock %s: requested=%u rounded=%ld\n",
+				 clock->name, clock->freq[j], rate);
+
+			/*
+			 * MSM8660 workaround: Skip clk_set_rate if current
+			 * rate already matches. MSM8660 hangs if you write
+			 * to MMCC registers while the clock is enabled.
+			 * CSIPHY may have already set the rate before enabling.
+			 */
+			if (clk_get_rate(clock->clk) == rate) {
+				dev_dbg(dev,
+					 "VFE clock %s: already at %ld Hz, skipping set_rate\n",
+					 clock->name, rate);
+			} else {
+				ret = clk_set_rate(clock->clk, rate);
+				if (ret < 0) {
+					dev_err(dev, "clk set rate failed: %d\n",
+						ret);
+					return ret;
+				}
+				dev_dbg(dev, "VFE clock %s: set to %ld Hz\n",
+					 clock->name, clk_get_rate(clock->clk));
 			}
 		}
 	}
@@ -1096,24 +1457,183 @@ int vfe_get(struct vfe_device *vfe)
 		if (ret < 0)
 			goto error_domain_off;
 
-		ret = vfe_set_clock_rates(vfe);
-		if (ret < 0)
-			goto error_pm_runtime_get;
-
+		/* Enable clocks before setting rates - QCOM clock framework
+		 * requires clocks to be enabled for rate changes to take effect
+		 */
 		ret = camss_enable_clocks(vfe->nclocks, vfe->clock,
 					  vfe->camss->dev);
 		if (ret < 0)
 			goto error_pm_runtime_get;
 
+		/* Debug: Check MMCC state immediately after clock enable */
+		if (vfe->camss->res->version == CAMSS_8x60) {
+			void __iomem *mmcc_base;
+			struct clk *csi1_clk;
+
+			/*
+			 * MSM8660: CSI clock routing configuration.
+			 *
+			 * The MT9M113 front camera is connected to CSIPHY1/CSI1.
+			 * We configure routing via direct MMCC register writes using
+			 * the values from webOS, as the clock framework mux parents
+			 * don't reliably work on MSM8660.
+			 */
+			csi1_clk = devm_clk_get(vfe->camss->dev, "csi1");
+			if (!IS_ERR(csi1_clk)) {
+				ret = clk_prepare_enable(csi1_clk);
+				if (ret) {
+					dev_warn(vfe->camss->dev,
+						 "VFE: Failed to enable CSI1 clock: %d\n", ret);
+				} else {
+					dev_dbg(vfe->camss->dev,
+						 "VFE: CSI1 clock enabled\n");
+				}
+			}
+
+			mmcc_base = ioremap(0x04000000, 0x1000);
+			if (mmcc_base) {
+				u32 vfe_cc = readl_relaxed(mmcc_base + 0x0104);
+				u32 misc_cc = readl_relaxed(mmcc_base + 0x0058);
+				dev_dbg(vfe->camss->dev,
+					 "VFE: MMCC VFE_CC_REG after clk enable: 0x%08x "
+					 "(CSI0_VFE=%s, CSI1_VFE=%s)\n",
+					 vfe_cc,
+					 (vfe_cc & BIT(12)) ? "ON" : "off",
+					 (vfe_cc & BIT(10)) ? "ON" : "off");
+				dev_dbg(vfe->camss->dev,
+					 "VFE: MMCC MISC_CC_REG: 0x%08x "
+					 "(csi_pix_sel=%s, csi_pix_en=%s, csi_rdi_sel=%s, csi_rdi_en=%s)\n",
+					 misc_cc,
+					 (misc_cc & BIT(25)) ? "CSI1" : "CSI0",
+					 (misc_cc & BIT(26)) ? "ON" : "off",
+					 (misc_cc & BIT(12)) ? "CSI1" : "CSI0",
+					 (misc_cc & BIT(13)) ? "ON" : "off");
+
+				/*
+				 * Verify CSI VFE clocks are enabled.
+				 * WebOS enables BOTH CSI0_VFE_CLK and CSI1_VFE_CLK.
+				 * We need at least CSI1_VFE_CLK for MT9M113 front camera.
+				 *
+				 * VFE_CC_REG (0x0104) bits:
+				 *   BIT(12): VFE_CSI0_CLK enable
+				 *   BIT(10): VFE_CSI1_CLK enable
+				 */
+				if (!(vfe_cc & BIT(10)) || !(vfe_cc & BIT(12))) {
+					u32 orig_vfe_cc = vfe_cc;
+
+					dev_warn(vfe->camss->dev,
+						"VFE: CSI_VFE clocks not fully enabled (0x%08x), forcing\n",
+						vfe_cc);
+
+					/* Enable both CSI0 and CSI1 VFE clocks to match webOS */
+					vfe_cc |= BIT(10) | BIT(12);
+					writel_relaxed(vfe_cc, mmcc_base + 0x0104);
+					wmb();
+
+					/* Verify the write took effect */
+					vfe_cc = readl_relaxed(mmcc_base + 0x0104);
+					dev_dbg(vfe->camss->dev,
+						 "VFE: VFE_CC force-enable: 0x%08x -> 0x%08x "
+						 "(CSI0=%s, CSI1=%s)\n",
+						 orig_vfe_cc, vfe_cc,
+						 (vfe_cc & BIT(12)) ? "ON" : "off",
+						 (vfe_cc & BIT(10)) ? "ON" : "off");
+
+					if (!(vfe_cc & BIT(10))) {
+						dev_err(vfe->camss->dev,
+							"VFE: CRITICAL - CSI1_VFE_CLK force-enable FAILED!\n");
+					}
+				}
+
+				/*
+				 * MSM8660 CSI routing configuration.
+				 *
+				 * Configure CSI routing using the exact values from webOS.
+				 * This enables all CSI1 paths for the MT9M113 front camera.
+				 *
+				 * CSI_CC_REG (0x0040) = 0x285:
+				 *   - Bit 0: CSI digital wrapper 0 enable
+				 *   - Bit 2: CSI digital wrapper 1 enable
+				 *   - Bit 7: Global CSI enable
+				 *   - Bit 9: CSI1_PHY_CLK enable
+				 *
+				 * MISC_CC_REG (0x0058) = 0x06003400:
+				 *   - Bit 10 (0x400): CSI1-to-VFE async bridge enable
+				 *   - Bit 12 (0x1000): csi_rdi_sel = CSI1
+				 *   - Bit 13 (0x2000): csi_rdi_clk enable
+				 *   - Bit 25 (0x2000000): csi_pix_sel = CSI1
+				 *   - Bit 26 (0x4000000): csi_pix_clk enable
+				 */
+				dev_dbg(vfe->camss->dev,
+					 "VFE: MISC_CC before: 0x%08x\n", misc_cc);
+
+				/* Set CSI_CC_REG to enable CSI1 PHY */
+				writel_relaxed(0x00000285, mmcc_base + 0x0040);
+				wmb();
+
+				/* Set MISC_CC_REG to enable all CSI1 paths */
+				writel_relaxed(0x06003400, mmcc_base + 0x0058);
+				wmb();
+
+				/* Verify the writes */
+				misc_cc = readl_relaxed(mmcc_base + 0x0058);
+				dev_dbg(vfe->camss->dev,
+					 "VFE: MISC_CC after: 0x%08x (expect 0x06003400)\n",
+					 misc_cc);
+
+				{
+					u32 csi_cc = readl_relaxed(mmcc_base + 0x0040);
+					dev_dbg(vfe->camss->dev,
+						 "VFE: CSI_CC after: 0x%08x (expect 0x285)\n",
+						 csi_cc);
+				}
+
+				if (misc_cc != 0x06003400) {
+					dev_err(vfe->camss->dev,
+						"VFE: CRITICAL - MISC_CC write failed!\n");
+				}
+
+				/*
+				 * MMSS fabric AXI port unhalting is now handled
+				 * by the MMCC driver (mmcc-msm8660.c) at probe
+				 * time for all 11 ports including VFE.
+				 */
+
+				iounmap(mmcc_base);
+			}
+		}
+
+		ret = vfe_set_clock_rates(vfe);
+		if (ret < 0)
+			goto error_reset;
+
 		ret = vfe_reset(vfe);
 		if (ret < 0)
 			goto error_reset;
 
+		dev_dbg(vfe->camss->dev, "VFE get: reset done, setting camif_pending=false\n");
+
+		/* Ensure clean CAMIF state for MSM8660 deferred enable */
+		vfe->camif_pending = false;
+
+		dev_dbg(vfe->camss->dev, "VFE get: calling vfe_reset_output_maps\n");
 		vfe_reset_output_maps(vfe);
 
+		dev_dbg(vfe->camss->dev, "VFE get: calling vfe_init_outputs\n");
 		vfe_init_outputs(vfe);
 
+		dev_dbg(vfe->camss->dev, "VFE get: calling hw_version\n");
 		vfe->res->hw_ops->hw_version(vfe);
+
+		/* Set ICC bandwidth for VFE DMA operations */
+		ret = camss_icc_set_bw(vfe->camss, true);
+		if (ret < 0) {
+			dev_warn(vfe->camss->dev,
+				 "VFE get: ICC bandwidth failed: %d\n", ret);
+			/* Non-fatal - continue without bandwidth vote */
+		}
+
+		dev_dbg(vfe->camss->dev, "VFE get: all init complete\n");
 	} else {
 		ret = vfe_check_clock_rates(vfe);
 		if (ret < 0)
@@ -1155,6 +1675,23 @@ void vfe_put(struct vfe_device *vfe)
 			vfe->was_streaming = 0;
 			vfe->res->hw_ops->vfe_halt(vfe);
 		}
+
+		/* Version-specific cleanup (e.g., disable CAMIF) */
+		if (vfe->res->hw_ops->vfe_cleanup)
+			vfe->res->hw_ops->vfe_cleanup(vfe);
+
+		/*
+		 * Always perform a global reset before disabling clocks.
+		 * This ensures the VFE hardware is in a clean state even if
+		 * halt timed out or the pipeline failed during startup.
+		 * Without this reset, the vfe_clk may refuse to turn off
+		 * because the hardware is still active.
+		 */
+		vfe_reset(vfe);
+
+		/* Disable ICC bandwidth before clocks */
+		camss_icc_set_bw(vfe->camss, false);
+
 		camss_disable_clocks(vfe->nclocks, vfe->clock);
 		pm_runtime_put_sync(vfe->camss->dev);
 		vfe->res->hw_ops->pm_domain_off(vfe);
@@ -1190,11 +1727,15 @@ int vfe_flush_buffers(struct camss_video *vid,
 
 	vfe_buf_flush_pending(output, state);
 
-	if (output->buf[0])
+	if (output->buf[0]) {
 		vb2_buffer_done(&output->buf[0]->vb.vb2_buf, state);
+		output->buf[0] = NULL;
+	}
 
-	if (output->buf[1])
+	if (output->buf[1]) {
 		vb2_buffer_done(&output->buf[1]->vb.vb2_buf, state);
+		output->buf[1] = NULL;
+	}
 
 	if (output->last_buffer) {
 		vb2_buffer_done(&output->last_buffer->vb.vb2_buf, state);
@@ -1367,7 +1908,8 @@ static void vfe_try_format(struct vfe_line *line,
 
 		fmt->code = vfe_src_pad_code(line, fmt->code, 0, code);
 
-		if (line->id == VFE_LINE_PIX) {
+		if (line->pix) {
+			/* PIX and VIDEO lines use the scaler/crop path */
 			struct v4l2_rect *rect;
 
 			rect = __vfe_get_crop(line, sd_state, which);
@@ -1590,6 +2132,24 @@ static int vfe_set_format(struct v4l2_subdev *sd,
 		struct v4l2_subdev_selection sel = { 0 };
 		int ret;
 
+		if (line->pix) {
+			/*
+			 * Reset compose/crop selection BEFORE propagating
+			 * format to source pad. vfe_try_format for source pad
+			 * uses the crop rectangle dimensions, so crop must be
+			 * updated first to avoid using stale values.
+			 * Applies to PIX and VIDEO lines which use the scaler.
+			 */
+			sel.which = fmt->which;
+			sel.pad = MSM_VFE_PAD_SINK;
+			sel.target = V4L2_SEL_TGT_COMPOSE;
+			sel.r.width = fmt->format.width;
+			sel.r.height = fmt->format.height;
+			ret = vfe_set_selection(sd, sd_state, &sel);
+			if (ret < 0)
+				return ret;
+		}
+
 		/* Propagate the format from sink to source */
 		format = __vfe_get_format(line, sd_state, MSM_VFE_PAD_SRC,
 					  fmt->which);
@@ -1597,19 +2157,6 @@ static int vfe_set_format(struct v4l2_subdev *sd,
 		*format = fmt->format;
 		vfe_try_format(line, sd_state, MSM_VFE_PAD_SRC, format,
 			       fmt->which);
-
-		if (line->id != VFE_LINE_PIX)
-			return 0;
-
-		/* Reset sink pad compose selection */
-		sel.which = fmt->which;
-		sel.pad = MSM_VFE_PAD_SINK;
-		sel.target = V4L2_SEL_TGT_COMPOSE;
-		sel.r.width = fmt->format.width;
-		sel.r.height = fmt->format.height;
-		ret = vfe_set_selection(sd, sd_state, &sel);
-		if (ret < 0)
-			return ret;
 	}
 
 	return 0;
@@ -1632,7 +2179,7 @@ static int vfe_get_selection(struct v4l2_subdev *sd,
 	struct v4l2_rect *rect;
 	int ret;
 
-	if (line->id != VFE_LINE_PIX)
+	if (!line->pix)
 		return -EINVAL;
 
 	if (sel->pad == MSM_VFE_PAD_SINK)
@@ -1701,7 +2248,7 @@ static int vfe_set_selection(struct v4l2_subdev *sd,
 	struct v4l2_rect *rect;
 	int ret;
 
-	if (line->id != VFE_LINE_PIX)
+	if (!line->pix)
 		return -EINVAL;
 
 	if (sel->target == V4L2_SEL_TGT_COMPOSE &&
@@ -1760,6 +2307,8 @@ static int vfe_set_selection(struct v4l2_subdev *sd,
  */
 static int vfe_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
+	struct vfe_line *line = v4l2_get_subdevdata(sd);
+	struct vfe_device *vfe = to_vfe(line);
 	struct v4l2_subdev_format format = {
 		.pad = MSM_VFE_PAD_SINK,
 		.which = fh ? V4L2_SUBDEV_FORMAT_TRY :
@@ -1770,6 +2319,22 @@ static int vfe_init_formats(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 			.height = 1080
 		}
 	};
+
+	/*
+	 * VFE 3.1 uses parallel camera interface (CAMIF) which requires
+	 * 2X8 media bus formats instead of 1X16. Use 1280x1024 to match
+	 * webOS MT9M113 Context B (capture) resolution. MT9M113 has a
+	 * larger pixel array than MT9M114 (rows 4-1035 = 1032 rows).
+	 */
+	if (vfe->res->hw_ops == &vfe_ops_3_1) {
+		format.format.code = MEDIA_BUS_FMT_UYVY8_2X8;
+		format.format.width = 1280;
+		format.format.height = 1024;
+		dev_dbg(vfe->camss->dev,
+			 "VFE 3.1 init format: %ux%u code=0x%04x\n",
+			 format.format.width, format.format.height,
+			 format.format.code);
+	}
 
 	return vfe_set_format(sd, fh ? fh->state : NULL, &format);
 }
@@ -1808,8 +2373,7 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 
 	if (!vfe->genpd && res->vfe.has_pd) {
 		/*
-		 * Legacy magic index.
-		 * Requires
+		 * Power-domain index ordering for this SoC. Requires
 		 * power-domain = <VFE_X>,
 		 *                <VFE_Y>,
 		 *                <TITAN_TOP>
@@ -1914,13 +2478,32 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 		l->video_out.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 		l->video_out.camss = camss;
 		l->id = i;
+		/*
+		 * VFE31 exposes two pixel-processed outputs (PIX and VIDEO); all
+		 * other backends have a single PIX line. Mark pixel-processed
+		 * lines once here so the rest of the core can test l->pix instead
+		 * of comparing against backend-specific line IDs.
+		 */
+		/*
+		 * Default line capabilities: only PIX is a pixel-processed
+		 * output, nothing is secondary or shares the PIX CSID pad. A
+		 * backend with extra outputs (e.g. VFE31 VIDEO/ZSL) overrides
+		 * these through the init_line hw op.
+		 */
+		l->pix = (i == VFE_LINE_PIX);
+		l->secondary = false;
+		l->shares_pix_csid = false;
+		if (vfe->res->hw_ops->init_line)
+			vfe->res->hw_ops->init_line(l, i);
 		init_completion(&l->output.sof);
 		init_completion(&l->output.reg_update);
 
-		if (i == VFE_LINE_PIX) {
+		if (l->pix) {
+			/* PIX and VIDEO lines use the pixel pipeline formats */
 			l->nformats = res->vfe.formats_pix->nformats;
 			l->formats = res->vfe.formats_pix->formats;
 		} else {
+			/* RDI lines use raw formats */
 			l->nformats = res->vfe.formats_rdi->nformats;
 			l->formats = res->vfe.formats_rdi->formats;
 		}
@@ -2056,6 +2639,9 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		if (i == VFE_LINE_PIX)
 			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s",
 				 MSM_VFE_NAME, vfe->id, "pix");
+		else if (vfe->line[i].pix && vfe->line[i].secondary)
+			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s",
+				 MSM_VFE_NAME, vfe->id, "video");
 		else
 			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s%d",
 				 MSM_VFE_NAME, vfe->id, "rdi", i);
@@ -2089,13 +2675,27 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->ops = &vfe->video_ops;
 		video_out->bpl_alignment = vfe_bpl_align(vfe);
 		video_out->line_based = 0;
-		if (i == VFE_LINE_PIX) {
+		video_out->stride_factor = 0;
+		video_out->vsub_override = 0;
+		if (vfe->line[i].pix) {
+			/* PIX and VIDEO lines use line-based pixel pipeline */
 			video_out->bpl_alignment = 16;
 			video_out->line_based = 1;
 		}
 
 		video_out->nformats = vfe->line[i].nformats;
 		video_out->formats = vfe->line[i].formats;
+
+		/*
+		 * Set the video device's default resolution to match the VFE
+		 * subdev source pad format. This ensures the video device
+		 * initializes with a format compatible with the upstream sensor.
+		 */
+		video_out->default_width = vfe->line[i].fmt[MSM_VFE_PAD_SRC].width;
+		video_out->default_height = vfe->line[i].fmt[MSM_VFE_PAD_SRC].height;
+
+		dev_dbg(dev, "VFE line %d: default video format %ux%u\n",
+			 i, video_out->default_width, video_out->default_height);
 
 		snprintf(name, ARRAY_SIZE(name), "%s%d_%s%d",
 			 MSM_VFE_NAME, vfe->id, "video", i);
@@ -2116,6 +2716,8 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 				ret);
 			goto error_link;
 		}
+		dev_dbg(dev, "Created link: %s pad %d -> %s pad 0 (IMMUTABLE|ENABLED)\n",
+			 sd->entity.name, MSM_VFE_PAD_SRC, video_out->vdev.entity.name);
 	}
 
 	return 0;

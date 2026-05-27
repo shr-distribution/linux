@@ -20,7 +20,7 @@
 
 #define MSM_CSID_PAD_SINK 0
 #define MSM_CSID_PAD_FIRST_SRC 1
-#define MSM_CSID_PADS_NUM 5
+#define MSM_CSID_PADS_NUM 7  /* 1 sink + up to 6 VFE lines (RDI0-2, PIX, VIDEO, ZSL) */
 
 #define MSM_CSID_PAD_SRC (MSM_CSID_PAD_FIRST_SRC)
 
@@ -209,10 +209,12 @@ extern const char * const csid_testgen_modes[];
 
 extern const struct csid_formats csid_formats_4_1;
 extern const struct csid_formats csid_formats_4_7;
+extern const struct csid_formats csid_formats_8x60;
 extern const struct csid_formats csid_formats_gen2;
 
 extern const struct csid_hw_ops csid_ops_4_1;
 extern const struct csid_hw_ops csid_ops_4_7;
+extern const struct csid_hw_ops csid_ops_8x60;
 extern const struct csid_hw_ops csid_ops_340;
 extern const struct csid_hw_ops csid_ops_680;
 extern const struct csid_hw_ops csid_ops_gen2;

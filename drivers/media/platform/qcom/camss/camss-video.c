@@ -7,13 +7,14 @@
  * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
+#include <linux/ktime.h>
 #include <linux/slab.h>
 #include <media/media-entity.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mc.h>
-#include <media/videobuf2-dma-sg.h>
+#include <media/videobuf2-dma-contig.h>
 
 #include "camss-video.h"
 #include "camss.h"
@@ -34,6 +35,8 @@
  * @pix: v4l2_pix_format_mplane format (output)
  * @f: a pointer to formats array element to be used for the conversion
  * @alignment: bytesperline alignment value
+ * @stride_factor: multiplier for sizeimage calculation (normally 1; legacy
+ *                 parameter kept for API compatibility)
  *
  * Fill the output pix structure with information from the input mbus format.
  *
@@ -42,23 +45,71 @@
 static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 				struct v4l2_pix_format_mplane *pix,
 				const struct camss_format_info *f,
-				unsigned int alignment)
+				unsigned int alignment,
+				unsigned int stride_factor)
 {
 	unsigned int i;
 	u32 bytesperline;
+
+	if (!stride_factor)
+		stride_factor = 1;
 
 	memset(pix, 0, sizeof(*pix));
 	v4l2_fill_pix_format_mplane(pix, mbus);
 	pix->pixelformat = f->pixelformat;
 	pix->num_planes = f->planes;
 	for (i = 0; i < pix->num_planes; i++) {
+		u32 vsub_num = f->vsub[i].numerator;
+		u32 vsub_den = f->vsub[i].denominator;
+
 		bytesperline = pix->width / f->hsub[i].numerator *
 			f->hsub[i].denominator * f->bpp[i] / 8;
 		bytesperline = ALIGN(bytesperline, alignment);
 		pix->plane_fmt[i].bytesperline = bytesperline;
-		pix->plane_fmt[i].sizeimage = pix->height /
-				f->vsub[i].numerator * f->vsub[i].denominator *
-				bytesperline;
+
+		/*
+		 * VFE31 PIX/VIDEO mode: VFE writes Y and CbCr at INPUT stride
+		 * (width*2 for UYVY), not output stride. stride_factor=2 must
+		 * be applied to allocate sufficient buffer space.
+		 *
+		 * Semi-planar formats (NV12, NV16, etc.) have Y + CbCr in one
+		 * contiguous buffer. Calculate each plane's contribution:
+		 *
+		 * For 640x480 NV12 (4:2:0) with stride_factor=2:
+		 *   Y plane:    1280 * 480 = 614,400 bytes
+		 *   CbCr plane: 1280 * 240 = 307,200 bytes
+		 *   Total:      921,600 bytes
+		 *
+		 * For 640x480 NV16 (4:2:2) with stride_factor=2:
+		 *   Y plane:    1280 * 480 = 614,400 bytes
+		 *   CbCr plane: 1280 * 480 = 614,400 bytes (full height)
+		 *   Total:      1,228,800 bytes
+		 */
+		if (f->planes == 1 && vsub_den > vsub_num) {
+			/*
+			 * Semi-planar: Y + CbCr in single contiguous buffer.
+			 * vsub_den > vsub_num indicates multi-component format:
+			 *   NV12: vsub={2,3} → total = h * 3/2 → CbCr = h/2
+			 *   NV16: vsub={1,2} → total = h * 2/1 → CbCr = h
+			 *
+			 * CbCr height = total - Y = h * vsub_den/vsub_num - h
+			 *             = h * (vsub_den - vsub_num) / vsub_num
+			 */
+			u32 effective_stride = bytesperline * stride_factor;
+			u32 y_size = pix->height * effective_stride;
+			u32 cbcr_height = pix->height * (vsub_den - vsub_num) / vsub_num;
+			u32 cbcr_size = cbcr_height * effective_stride;
+			pix->plane_fmt[i].sizeimage = y_size + cbcr_size;
+			pr_info("camss-video: sizeimage semi-planar: y=%u cbcr=%u (cbcr_h=%u) total=%u (bpl=%u sf=%u vsub=%u/%u)\n",
+				y_size, cbcr_size, cbcr_height, y_size + cbcr_size,
+				bytesperline, stride_factor, vsub_num, vsub_den);
+		} else {
+			pix->plane_fmt[i].sizeimage = pix->height /
+				vsub_num * vsub_den * bytesperline * stride_factor;
+			pr_info("camss-video: sizeimage default path: %u (h=%u vsub=%u/%u bpl=%u sf=%u)\n",
+				pix->plane_fmt[i].sizeimage, pix->height,
+				vsub_num, vsub_den, bytesperline, stride_factor);
+		}
 	}
 
 	return 0;
@@ -68,11 +119,30 @@ static struct v4l2_subdev *video_remote_subdev(struct camss_video *video,
 					       u32 *pad)
 {
 	struct media_pad *remote;
+	struct media_entity *entity = &video->vdev.entity;
+
+	dev_info(video->camss->dev,
+		 "video_remote_subdev: entity=%s num_pads=%d pad_flags=0x%lx\n",
+		 entity->name, entity->num_pads,
+		 entity->num_pads > 0 ? entity->pads[0].flags : 0);
 
 	remote = media_pad_remote_pad_first(&video->pad);
-
-	if (!remote || !is_media_entity_v4l2_subdev(remote->entity))
+	if (!remote) {
+		dev_info(video->camss->dev,
+			 "video_remote_subdev: no remote pad found for %s\n",
+			 entity->name);
 		return NULL;
+	}
+
+	dev_info(video->camss->dev,
+		 "video_remote_subdev: remote pad %d on entity %s\n",
+		 remote->index, remote->entity->name);
+
+	if (!is_media_entity_v4l2_subdev(remote->entity)) {
+		dev_info(video->camss->dev,
+			 "video_remote_subdev: remote entity is not a v4l2_subdev\n");
+		return NULL;
+	}
 
 	if (pad)
 		*pad = remote->index;
@@ -108,7 +178,8 @@ static int video_get_subdev_format(struct camss_video *video,
 	format->type = video->type;
 
 	return video_mbus_to_pix_mp(&fmt.format, &format->fmt.pix_mp,
-				    &video->formats[ret], video->bpl_alignment);
+				    &video->formats[ret], video->bpl_alignment,
+				    video->stride_factor);
 }
 
 /* -----------------------------------------------------------------------------
@@ -137,8 +208,11 @@ static int video_queue_setup(struct vb2_queue *q,
 
 	*num_planes = format->num_planes;
 
-	for (i = 0; i < *num_planes; i++)
+	for (i = 0; i < *num_planes; i++) {
 		sizes[i] = format->plane_fmt[i].sizeimage;
+		pr_info("camss-video: queue_setup plane[%d] size=%u bpl=%u\n",
+			i, sizes[i], format->plane_fmt[i].bytesperline);
+	}
 
 	return 0;
 }
@@ -151,24 +225,42 @@ static int video_buf_init(struct vb2_buffer *vb)
 						   vb);
 	const struct v4l2_pix_format_mplane *format =
 						&video->active_fmt.fmt.pix_mp;
-	struct sg_table *sgt;
 	unsigned int i;
 
 	for (i = 0; i < format->num_planes; i++) {
-		sgt = vb2_dma_sg_plane_desc(vb, i);
-		if (!sgt)
-			return -EFAULT;
+		/*
+		 * vb2_dma_contig_plane_dma_addr returns a contiguous DMA
+		 * address. With CMA, we get physically contiguous memory
+		 * that VFE31 can DMA to directly.
+		 */
+		buffer->addr[i] = vb2_dma_contig_plane_dma_addr(vb, i);
 
-		buffer->addr[i] = sg_dma_address(sgt->sgl);
+		/* Debug: show buffer allocation details */
+		pr_info("camss-video: buf_init vb=%d plane=%d addr=0x%08x sizeimage=%u\n",
+			vb->index, i, (u32)buffer->addr[i],
+			format->plane_fmt[i].sizeimage);
 	}
 
 	if (format->pixelformat == V4L2_PIX_FMT_NV12 ||
 			format->pixelformat == V4L2_PIX_FMT_NV21 ||
 			format->pixelformat == V4L2_PIX_FMT_NV16 ||
-			format->pixelformat == V4L2_PIX_FMT_NV61)
-		buffer->addr[1] = buffer->addr[0] +
-				format->plane_fmt[0].bytesperline *
-				format->height;
+			format->pixelformat == V4L2_PIX_FMT_NV61) {
+		/*
+		 * CbCr offset = Y plane size.
+		 *
+		 * VFE31 writes Y at INPUT stride (width*2 for UYVY), not output
+		 * stride. Must use stride_factor to match buffer allocation.
+		 *
+		 * For 640x480 with stride_factor=2:
+		 *   Y plane = bytesperline * stride_factor * height
+		 *           = 640 * 2 * 480 = 614,400 bytes
+		 *   CbCr starts at offset 614,400
+		 */
+		u32 stride_factor = video->stride_factor ? video->stride_factor : 1;
+		u32 y_plane_size = format->plane_fmt[0].bytesperline *
+				   stride_factor * format->height;
+		buffer->addr[1] = buffer->addr[0] + y_plane_size;
+	}
 
 	return 0;
 }
@@ -212,15 +304,32 @@ static int video_check_format(struct camss_video *video)
 
 	sd_pix->pixelformat = pix->pixelformat;
 	ret = video_get_subdev_format(video, &format);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(video->camss->dev,
+			"video_get_subdev_format failed: %d\n", ret);
 		return ret;
+	}
+
+	dev_dbg(video->camss->dev,
+		"video format: %ux%u pixfmt=0x%x planes=%u field=%u\n",
+		pix->width, pix->height, pix->pixelformat,
+		pix->num_planes, pix->field);
+	dev_dbg(video->camss->dev,
+		"subdev format: %ux%u pixfmt=0x%x planes=%u field=%u\n",
+		sd_pix->width, sd_pix->height, sd_pix->pixelformat,
+		sd_pix->num_planes, sd_pix->field);
 
 	if (pix->pixelformat != sd_pix->pixelformat ||
 	    pix->height != sd_pix->height ||
 	    pix->width != sd_pix->width ||
 	    pix->num_planes != sd_pix->num_planes ||
-	    pix->field != format.fmt.pix_mp.field)
+	    pix->field != format.fmt.pix_mp.field) {
+		dev_err(video->camss->dev,
+			"Format mismatch: video %ux%u/0x%x vs subdev %ux%u/0x%x\n",
+			pix->width, pix->height, pix->pixelformat,
+			sd_pix->width, sd_pix->height, sd_pix->pixelformat);
 		return -EPIPE;
+	}
 
 	return 0;
 }
@@ -249,6 +358,39 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct v4l2_subdev *subdev;
 	int ret;
 
+	dev_dbg(video->camss->dev, "start_streaming: %s count=%d\n",
+		vdev->entity.name, count);
+
+	/*
+	 * VFE31 VIDEO/ZSL joining active PIX stream: bypass pipeline
+	 * validation and upstream s_stream. These lines share PIX's
+	 * CAMIF internally - they don't need their own CSID link or
+	 * sensor configuration. Just enable the VFE output directly.
+	 *
+	 * Samsung's approach: PIX starts the full pipeline (sensor →
+	 * CSIPHY → CSID → VFE CAMIF). VIDEO/ZSL only enable their
+	 * WMs via the recording state machine at frame boundary.
+	 */
+	{
+		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
+		struct vfe_device *vfe = to_vfe(line);
+
+		if (line->secondary &&
+		    vfe->stream_count > 0) {
+			dev_info(video->camss->dev,
+				 "%s: joining active stream (stream_count=%d), bypass pipeline\n",
+				 vdev->entity.name, vfe->stream_count);
+			ret = vfe->res->hw_ops->vfe_enable(line);
+			if (ret < 0) {
+				dev_err(video->camss->dev,
+					"%s: VFE enable failed: %d\n",
+					vdev->entity.name, ret);
+				goto flush_buffers;
+			}
+			return 0;
+		}
+	}
+
 	ret = video_device_pipeline_alloc_start(vdev);
 	if (ret < 0) {
 		dev_err(video->camss->dev, "Failed to start media pipeline: %d\n", ret);
@@ -256,8 +398,10 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	}
 
 	ret = video_check_format(video);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(video->camss->dev, "video_start_streaming: format check failed: %d\n", ret);
 		goto error;
+	}
 
 	entity = &vdev->entity;
 	while (1) {
@@ -273,13 +417,71 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 		subdev = media_entity_to_v4l2_subdev(entity);
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
-		if (ret < 0 && ret != -ENOIOCTLCMD)
+		if (ret < 0 && ret != -ENOIOCTLCMD) {
+			dev_err(video->camss->dev, "s_stream(1) on %s failed: %d\n",
+				entity->name, ret);
 			goto error;
+		}
+
+		/*
+		 * VFE31 CAMIF start timing fix: Enable CAMIF AFTER sensor starts.
+		 *
+		 * The sensor s_stream() blocks until the sensor is actively
+		 * outputting valid frame data. CAMIF must be enabled AFTER
+		 * this point, not before, otherwise it receives garbage data
+		 * during the sensor's initialization phase (which can take
+		 * 300-400ms) and reports CAMIF_ERRORs.
+		 *
+		 * The old approach enabled CAMIF before s_stream, but that
+		 * caused CAMIF to see partial/invalid data while the sensor
+		 * was still configuring, leading to resolution mismatches
+		 * and crashes.
+		 */
+		if (entity->function == MEDIA_ENT_F_CAM_SENSOR) {
+			int i;
+			for (i = 0; i < video->camss->res->vfe_num; i++) {
+				if (video->camss->vfe[i].camif_pending) {
+					dev_dbg(video->camss->dev,
+						"enabling VFE%d CAMIF after sensor streaming\n",
+						i);
+					vfe_enable_pending_camif(&video->camss->vfe[i]);
+				}
+			}
+		}
+	}
+
+	/*
+	 * Fallback: If pipeline walk didn't reach the sensor, enable any
+	 * pending CAMIF configurations now.
+	 */
+	{
+		int i;
+		for (i = 0; i < video->camss->res->vfe_num; i++) {
+			if (video->camss->vfe[i].camif_pending)
+				vfe_enable_pending_camif(&video->camss->vfe[i]);
+		}
 	}
 
 	return 0;
 
 error:
+	/*
+	 * If a subdev s_stream(1) failed (e.g., sensor timeout), the VFE
+	 * was already enabled earlier in the pipeline walk. We must disable
+	 * it to undo the stream_count increment, otherwise stream_count
+	 * leaks and all subsequent tests think a stream is active.
+	 */
+	{
+		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
+		struct vfe_device *vfe = to_vfe(line);
+
+		if (vfe->stream_count > 0) {
+			dev_info(video->camss->dev,
+				 "Pipeline error: cleaning up VFE (stream_count=%d)\n",
+				 vfe->stream_count);
+			vfe->res->hw_ops->vfe_disable(line);
+		}
+	}
 	video_device_pipeline_stop(vdev);
 
 flush_buffers:
@@ -297,6 +499,30 @@ static void video_stop_streaming(struct vb2_queue *q)
 	struct v4l2_subdev *subdev;
 	int ret;
 
+	/*
+	 * VFE31 VIDEO/ZSL that joined an active stream bypassed pipeline
+	 * start, so we must bypass pipeline stop too. Directly call
+	 * vfe_disable and flush buffers without walking the pipeline.
+	 */
+	{
+		struct vfe_line *line = container_of(video, struct vfe_line, video_out);
+		struct vfe_device *vfe = to_vfe(line);
+
+		if (line->secondary &&
+		    !media_entity_pipeline(&vdev->entity)) {
+			dev_info(video->camss->dev,
+				 "%s: stopping (bypassed pipeline)\n",
+				 vdev->entity.name);
+			ret = vfe->res->hw_ops->vfe_disable(line);
+			if (ret)
+				dev_err(video->camss->dev,
+					"%s: VFE disable failed: %d\n",
+					vdev->entity.name, ret);
+			video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
+			return;
+		}
+	}
+
 	entity = &vdev->entity;
 	while (1) {
 		pad = &entity->pads[0];
@@ -312,14 +538,17 @@ static void video_stop_streaming(struct vb2_queue *q)
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 0);
 
-		if (ret) {
+		if (ret < 0 && ret != -ENOIOCTLCMD)
 			dev_err(video->camss->dev, "Video pipeline stop failed: %d\n", ret);
-			return;
-		}
 	}
 
 	video_device_pipeline_stop(vdev);
 
+	/*
+	 * Always flush buffers, even if pipeline stop failed. We must return
+	 * all buffers to vb2 to avoid "stop_streaming leaving buffer in active
+	 * state" warnings.
+	 */
 	video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
 }
 
@@ -490,14 +719,75 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 	pix_mp->pixelformat = fi->pixelformat;
 	pix_mp->width = clamp_t(u32, width, 1, CAMSS_FRAME_MAX_WIDTH);
 	pix_mp->height = clamp_t(u32, height, 1, CAMSS_FRAME_MAX_HEIGHT_RDI);
+
+	/*
+	 * For line-based video devices (PIX path), the VFE write master
+	 * requires width to be a multiple of 16 pixels. Round down to
+	 * match the VFE crop behavior.
+	 */
+	if (video->line_based)
+		pix_mp->width &= ~0xf;
 	pix_mp->num_planes = fi->planes;
 	for (i = 0; i < pix_mp->num_planes; i++) {
+		unsigned int vsub_num, vsub_den;
+
+		pr_info("camss-video: __video_try_fmt: planes=%u\n", fi->planes);
+
 		bpl = pix_mp->width / fi->hsub[i].numerator *
 			fi->hsub[i].denominator * fi->bpp[i] / 8;
 		bpl = ALIGN(bpl, video->bpl_alignment);
 		pix_mp->plane_fmt[i].bytesperline = bpl;
-		pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
-			fi->vsub[i].numerator * fi->vsub[i].denominator * bpl;
+
+		/*
+		 * Use vsub_override if set, otherwise use format's vsub.
+		 * vsub_override format: (numerator << 8) | denominator
+		 * This allows VFE31 to adjust buffer size when force_422
+		 * changes the effective chroma subsampling.
+		 */
+		if (video->vsub_override) {
+			vsub_num = (video->vsub_override >> 8) & 0xFF;
+			vsub_den = video->vsub_override & 0xFF;
+		} else {
+			vsub_num = fi->vsub[i].numerator;
+			vsub_den = fi->vsub[i].denominator;
+		}
+
+		/*
+		 * VFE31 buffer allocation: Must use stride_factor for PIX/VIDEO
+		 * paths because VFE31 writes Y and CbCr at INPUT stride (width*2
+		 * for UYVY), not output stride.
+		 *
+		 * VALIDATED by crash analysis (2026-04-18): Without stride_factor,
+		 * buffers are allocated too small. For 1280x1024 NV16:
+		 *   Compact: 1280 * 1024 * 2 = 2.5MB per frame
+		 *   VFE31:   2560 * 1024 * 2 = 5MB per frame (what VFE actually writes)
+		 * Result: Buffer overflow, memory corruption, kernel crash.
+		 *
+		 * video_buf_init() already uses stride_factor for CbCr offset,
+		 * so sizeimage MUST also use stride_factor for consistency.
+		 */
+		if (video->stride_factor && fi->planes == 1 && vsub_den > vsub_num) {
+			/*
+			 * Semi-planar with stride_factor: VFE31 PIX/VIDEO mode.
+			 * Calculate Y + CbCr size at effective stride.
+			 */
+			u32 stride_factor = video->stride_factor;
+			u32 effective_stride = bpl * stride_factor;
+			u32 y_size = pix_mp->height * effective_stride;
+			u32 cbcr_height = pix_mp->height * (vsub_den - vsub_num) / vsub_num;
+			u32 cbcr_size = cbcr_height * effective_stride;
+			pix_mp->plane_fmt[i].sizeimage = y_size + cbcr_size;
+			pr_info("camss-video: __video_try_fmt sizeimage: y=%u cbcr=%u total=%u (bpl=%u sf=%u vsub=%u/%u)\n",
+				y_size, cbcr_size, y_size + cbcr_size, bpl, stride_factor, vsub_num, vsub_den);
+		} else if (video->stride_factor) {
+			/* Non-semi-planar with stride_factor */
+			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
+				vsub_num * vsub_den * bpl * video->stride_factor;
+		} else {
+			/* No stride_factor (RDI, or other VFE versions) */
+			pix_mp->plane_fmt[i].sizeimage = pix_mp->height /
+				vsub_num * vsub_den * bpl;
+		}
 	}
 
 	pix_mp->field = V4L2_FIELD_NONE;
@@ -543,14 +833,30 @@ static int video_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	struct camss_video *video = video_drvdata(file);
 	int ret;
 
-	if (vb2_is_busy(&video->vb2_q))
+	dev_info(video->camss->dev,
+		 "video_s_fmt: ENTER %ux%u pixfmt=0x%08x\n",
+		 f->fmt.pix_mp.width, f->fmt.pix_mp.height,
+		 f->fmt.pix_mp.pixelformat);
+
+	if (vb2_is_busy(&video->vb2_q)) {
+		dev_err(video->camss->dev, "video_s_fmt: vb2 queue busy\n");
 		return -EBUSY;
+	}
 
 	ret = __video_try_fmt(video, f);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(video->camss->dev,
+			"video_s_fmt: __video_try_fmt failed: %d\n", ret);
 		return ret;
+	}
 
 	video->active_fmt = *f;
+
+	dev_info(video->camss->dev,
+		 "video_s_fmt: SUCCESS active_fmt now %ux%u pixfmt=0x%08x\n",
+		 video->active_fmt.fmt.pix_mp.width,
+		 video->active_fmt.fmt.pix_mp.height,
+		 video->active_fmt.fmt.pix_mp.pixelformat);
 
 	return 0;
 }
@@ -645,8 +951,12 @@ static int msm_video_init_format(struct camss_video *video)
 	struct v4l2_format format = {
 		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
 		.fmt.pix_mp = {
-			.width = 1920,
-			.height = 1080,
+			/*
+			 * Use default size from VFE subdev if set, otherwise
+			 * fall back to 1920x1080 for backward compatibility.
+			 */
+			.width = video->default_width ? video->default_width : 1920,
+			.height = video->default_height ? video->default_height : 1080,
 			.pixelformat = video->formats[0].pixelformat,
 		},
 	};
@@ -686,7 +996,7 @@ int msm_video_register(struct camss_video *video, struct v4l2_device *v4l2_dev,
 
 	q = &video->vb2_q;
 	q->drv_priv = video;
-	q->mem_ops = &vb2_dma_sg_memops;
+	q->mem_ops = &vb2_dma_contig_memops;
 	q->ops = &msm_video_vb2_q_ops;
 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	q->io_modes = VB2_DMABUF | VB2_MMAP | VB2_READ;
