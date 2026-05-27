@@ -756,8 +756,6 @@ static const struct vb2_ops rotator_qops = {
 	.queue_setup	= rotator_queue_setup,
 	.buf_prepare	= rotator_buf_prepare,
 	.buf_queue	= rotator_buf_queue,
-	.wait_prepare	= vb2_ops_wait_prepare,
-	.wait_finish	= vb2_ops_wait_finish,
 };
 
 static int rotator_queue_init(void *priv, struct vb2_queue *src_vq,
