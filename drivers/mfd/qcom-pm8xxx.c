@@ -19,17 +19,22 @@
 #include <linux/of_platform.h>
 #include <linux/mfd/core.h>
 
-#define	SSBI_REG_ADDR_IRQ_BASE		0x1BB
+/* PM8058/PM8921 IRQ register base */
+#define	PM8058_SSBI_REG_ADDR_IRQ_BASE	0x1BB
 
-#define	SSBI_REG_ADDR_IRQ_ROOT		(SSBI_REG_ADDR_IRQ_BASE + 0)
-#define	SSBI_REG_ADDR_IRQ_M_STATUS1	(SSBI_REG_ADDR_IRQ_BASE + 1)
-#define	SSBI_REG_ADDR_IRQ_M_STATUS2	(SSBI_REG_ADDR_IRQ_BASE + 2)
-#define	SSBI_REG_ADDR_IRQ_M_STATUS3	(SSBI_REG_ADDR_IRQ_BASE + 3)
-#define	SSBI_REG_ADDR_IRQ_M_STATUS4	(SSBI_REG_ADDR_IRQ_BASE + 4)
-#define	SSBI_REG_ADDR_IRQ_BLK_SEL	(SSBI_REG_ADDR_IRQ_BASE + 5)
-#define	SSBI_REG_ADDR_IRQ_IT_STATUS	(SSBI_REG_ADDR_IRQ_BASE + 6)
-#define	SSBI_REG_ADDR_IRQ_CONFIG	(SSBI_REG_ADDR_IRQ_BASE + 7)
-#define	SSBI_REG_ADDR_IRQ_RT_STATUS	(SSBI_REG_ADDR_IRQ_BASE + 8)
+/* PM8901 IRQ register base (different from PM8058) */
+#define	PM8901_SSBI_REG_ADDR_IRQ_BASE	0xD5
+
+/* IRQ register offsets from base */
+#define	SSBI_REG_IRQ_ROOT		0
+#define	SSBI_REG_IRQ_M_STATUS1		1
+#define	SSBI_REG_IRQ_M_STATUS2		2
+#define	SSBI_REG_IRQ_M_STATUS3		3
+#define	SSBI_REG_IRQ_M_STATUS4		4
+#define	SSBI_REG_IRQ_BLK_SEL		5
+#define	SSBI_REG_IRQ_IT_STATUS		6
+#define	SSBI_REG_IRQ_CONFIG		7
+#define	SSBI_REG_IRQ_RT_STATUS		8
 
 #define	PM8821_SSBI_REG_ADDR_IRQ_BASE	0x100
 #define	PM8821_SSBI_REG_ADDR_IRQ_MASTER0 (PM8821_SSBI_REG_ADDR_IRQ_BASE + 0x30)
@@ -60,10 +65,12 @@
 #define REG_HWREV_2		0x0E8  /* PMIC4 revision 2 */
 
 #define PM8XXX_NR_IRQS		256
+#define PM8901_NR_IRQS		72
 #define PM8821_NR_IRQS		112
 
 struct pm_irq_data {
 	int num_irqs;
+	u16 irq_base;
 	struct irq_chip *irq_chip;
 	irq_handler_t irq_handler;
 };
@@ -74,6 +81,7 @@ struct pm_irq_chip {
 	struct irq_domain	*irqdomain;
 	unsigned int		num_blocks;
 	unsigned int		num_masters;
+	u16			irq_base;
 	const struct pm_irq_data *pm_irq_data;
 	/* MUST BE AT THE END OF THIS STRUCT */
 	u8			config[];
@@ -85,13 +93,13 @@ static int pm8xxx_read_block_irq(struct pm_irq_chip *chip, unsigned int bp,
 	int	rc;
 
 	spin_lock(&chip->pm_irq_lock);
-	rc = regmap_write(chip->regmap, SSBI_REG_ADDR_IRQ_BLK_SEL, bp);
+	rc = regmap_write(chip->regmap, chip->irq_base + SSBI_REG_IRQ_BLK_SEL, bp);
 	if (rc) {
 		pr_err("Failed Selecting Block %d rc=%d\n", bp, rc);
 		goto bail;
 	}
 
-	rc = regmap_read(chip->regmap, SSBI_REG_ADDR_IRQ_IT_STATUS, ip);
+	rc = regmap_read(chip->regmap, chip->irq_base + SSBI_REG_IRQ_IT_STATUS, ip);
 	if (rc)
 		pr_err("Failed Reading Status rc=%d\n", rc);
 bail:
@@ -106,14 +114,14 @@ pm8xxx_config_irq(struct pm_irq_chip *chip, unsigned int bp, unsigned int cp)
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->pm_irq_lock, flags);
-	rc = regmap_write(chip->regmap, SSBI_REG_ADDR_IRQ_BLK_SEL, bp);
+	rc = regmap_write(chip->regmap, chip->irq_base + SSBI_REG_IRQ_BLK_SEL, bp);
 	if (rc) {
 		pr_err("Failed Selecting Block %d rc=%d\n", bp, rc);
 		goto bail;
 	}
 
 	cp |= PM_IRQF_WRITE;
-	rc = regmap_write(chip->regmap, SSBI_REG_ADDR_IRQ_CONFIG, cp);
+	rc = regmap_write(chip->regmap, chip->irq_base + SSBI_REG_IRQ_CONFIG, cp);
 	if (rc)
 		pr_err("Failed Configuring IRQ rc=%d\n", rc);
 bail:
@@ -151,7 +159,8 @@ static int pm8xxx_irq_master_handler(struct pm_irq_chip *chip, int master)
 	unsigned int blockbits;
 	int block_number, i, ret = 0;
 
-	ret = regmap_read(chip->regmap, SSBI_REG_ADDR_IRQ_M_STATUS1 + master,
+	ret = regmap_read(chip->regmap,
+			  chip->irq_base + SSBI_REG_IRQ_M_STATUS1 + master,
 			  &blockbits);
 	if (ret) {
 		pr_err("Failed to read master %d ret=%d\n", master, ret);
@@ -176,7 +185,7 @@ static irqreturn_t pm8xxx_irq_handler(int irq, void *data)
 	unsigned int root;
 	int	i, ret, masters = 0;
 
-	ret = regmap_read(chip->regmap, SSBI_REG_ADDR_IRQ_ROOT, &root);
+	ret = regmap_read(chip->regmap, chip->irq_base + SSBI_REG_IRQ_ROOT, &root);
 	if (ret) {
 		pr_err("Can't read root status ret=%d\n", ret);
 		return IRQ_NONE;
@@ -334,13 +343,13 @@ static int pm8xxx_irq_get_irqchip_state(struct irq_data *d,
 	irq_bit = pmirq % 8;
 
 	spin_lock_irqsave(&chip->pm_irq_lock, flags);
-	rc = regmap_write(chip->regmap, SSBI_REG_ADDR_IRQ_BLK_SEL, block);
+	rc = regmap_write(chip->regmap, chip->irq_base + SSBI_REG_IRQ_BLK_SEL, block);
 	if (rc) {
 		pr_err("Failed Selecting Block %d rc=%d\n", block, rc);
 		goto bail;
 	}
 
-	rc = regmap_read(chip->regmap, SSBI_REG_ADDR_IRQ_RT_STATUS, &bits);
+	rc = regmap_read(chip->regmap, chip->irq_base + SSBI_REG_IRQ_RT_STATUS, &bits);
 	if (rc) {
 		pr_err("Failed Reading Status rc=%d\n", rc);
 		goto bail;
@@ -488,12 +497,21 @@ static const struct regmap_config ssbi_regmap_config = {
 
 static const struct pm_irq_data pm8xxx_data = {
 	.num_irqs = PM8XXX_NR_IRQS,
+	.irq_base = PM8058_SSBI_REG_ADDR_IRQ_BASE,
+	.irq_chip = &pm8xxx_irq_chip,
+	.irq_handler = pm8xxx_irq_handler,
+};
+
+static const struct pm_irq_data pm8901_data = {
+	.num_irqs = PM8901_NR_IRQS,
+	.irq_base = PM8901_SSBI_REG_ADDR_IRQ_BASE,
 	.irq_chip = &pm8xxx_irq_chip,
 	.irq_handler = pm8xxx_irq_handler,
 };
 
 static const struct pm_irq_data pm8821_data = {
 	.num_irqs = PM8821_NR_IRQS,
+	.irq_base = PM8821_SSBI_REG_ADDR_IRQ_BASE,
 	.irq_chip = &pm8821_irq_chip,
 	.irq_handler = pm8821_irq_handler,
 };
@@ -501,6 +519,7 @@ static const struct pm_irq_data pm8821_data = {
 static const struct of_device_id pm8xxx_id_table[] = {
 	{ .compatible = "qcom,pm8058", .data = &pm8xxx_data},
 	{ .compatible = "qcom,pm8821", .data = &pm8821_data},
+	{ .compatible = "qcom,pm8901", .data = &pm8901_data},
 	{ .compatible = "qcom,pm8921", .data = &pm8xxx_data},
 	{ }
 };
@@ -556,6 +575,7 @@ static int pm8xxx_probe(struct platform_device *pdev)
 	chip->regmap = regmap;
 	chip->num_blocks = DIV_ROUND_UP(data->num_irqs, 8);
 	chip->num_masters = DIV_ROUND_UP(chip->num_blocks, 8);
+	chip->irq_base = data->irq_base;
 	chip->pm_irq_data = data;
 	spin_lock_init(&chip->pm_irq_lock);
 

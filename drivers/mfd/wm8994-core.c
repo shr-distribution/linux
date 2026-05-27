@@ -13,6 +13,7 @@
 #include <linux/i2c.h>
 #include <linux/err.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/mfd/core.h>
 #include <linux/of.h>
 #include <linux/pm_runtime.h>
@@ -138,28 +139,44 @@ static int wm8994_suspend(struct device *dev)
 				WM8994_LDO1ENA_PD | WM8994_LDO2ENA_PD,
 				WM8994_LDO1ENA_PD | WM8994_LDO2ENA_PD);
 
-	/* Explicitly put the device into reset in case regulators
-	 * don't get disabled in order to ensure consistent restart.
+	/*
+	 * If LDOs are externally driven (always on), skip the software reset
+	 * and GPIO/interrupt sync. The reset causes I2C failures on platforms
+	 * where the codec becomes unresponsive after reset. When LDOs stay
+	 * powered, the codec state is preserved and resume will restore it.
 	 */
-	wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
-			 wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
+	if (!wm8994->ldo_ena_always_driven) {
+		/* Explicitly put the device into reset in case regulators
+		 * don't get disabled in order to ensure consistent restart.
+		 */
+		wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
+				 wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
 
-	regcache_mark_dirty(wm8994->regmap);
+		/* Wait for codec to recover from reset before syncing registers.
+		 * The WM8994/WM8958 needs time after software reset to become
+		 * responsive to I2C commands again.
+		 */
+		msleep(5);
 
-	/* Restore GPIO registers to prevent problems with mismatched
-	 * pin configurations.
-	 */
-	ret = regcache_sync_region(wm8994->regmap, WM8994_GPIO_1,
-				   WM8994_GPIO_11);
-	if (ret != 0)
-		dev_err(dev, "Failed to restore GPIO registers: %d\n", ret);
+		regcache_mark_dirty(wm8994->regmap);
 
-	/* In case one of the GPIOs is used as a wake input. */
-	ret = regcache_sync_region(wm8994->regmap,
-				   WM8994_INTERRUPT_STATUS_1_MASK,
-				   WM8994_INTERRUPT_STATUS_1_MASK);
-	if (ret != 0)
-		dev_err(dev, "Failed to restore interrupt mask: %d\n", ret);
+		/* Restore GPIO registers to prevent problems with mismatched
+		 * pin configurations.
+		 */
+		ret = regcache_sync_region(wm8994->regmap, WM8994_GPIO_1,
+					   WM8994_GPIO_11);
+		if (ret != 0)
+			dev_err(dev, "Failed to restore GPIO registers: %d\n", ret);
+
+		/* In case one of the GPIOs is used as a wake input. */
+		ret = regcache_sync_region(wm8994->regmap,
+					   WM8994_INTERRUPT_STATUS_1_MASK,
+					   WM8994_INTERRUPT_STATUS_1_MASK);
+		if (ret != 0)
+			dev_err(dev, "Failed to restore interrupt mask: %d\n", ret);
+	} else {
+		regcache_mark_dirty(wm8994->regmap);
+	}
 
 	regcache_cache_only(wm8994->regmap, true);
 	wm8994->suspended = true;
@@ -189,6 +206,15 @@ static int wm8994_resume(struct device *dev)
 		dev_err(dev, "Failed to enable supplies: %d\n", ret);
 		return ret;
 	}
+
+	/*
+	 * Give the codec time to boot after regulators are enabled.
+	 * Without this delay, I2C access fails with -ENXIO on some
+	 * platforms (e.g., HP TouchPad). The codec needs substantial
+	 * time to initialize its internal state after power-on.
+	 * 50ms is required based on hardware testing.
+	 */
+	msleep(50);
 
 	regcache_cache_only(wm8994->regmap, false);
 	ret = regcache_sync(wm8994->regmap);
@@ -281,8 +307,12 @@ static int wm8994_set_pdata_from_of(struct wm8994 *wm8994)
 	pdata->lineout1_diff = !of_property_read_bool(np, "wlf,lineout1-se");
 	pdata->lineout2_diff = !of_property_read_bool(np, "wlf,lineout2-se");
 	pdata->lineout1fb = of_property_read_bool(np, "wlf,lineout1-feedback");
-	pdata->lineout2fb = of_property_read_bool(np, "wlf,lineout2-feedback") ||
-		of_property_read_bool(np, "wlf,ldoena-always-driven");
+	pdata->lineout2fb = of_property_read_bool(np, "wlf,lineout2-feedback");
+
+	pdata->ldo_ena_always_driven =
+		of_property_read_bool(np, "wlf,ldo-ena-always-driven");
+
+	pdata->disable_irq = of_property_read_bool(np, "wlf,disable-irq");
 
 	pdata->spkmode_pu = of_property_read_bool(np, "wlf,spkmode-pu");
 
@@ -308,6 +338,8 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 	const char *devname;
 	int ret, i, patch_regs = 0;
 	int pulls = 0;
+	struct gpio_desc *ldo1_gpiod = NULL;
+	struct gpio_desc *ldo2_gpiod = NULL;
 
 	if (dev_get_platdata(wm8994->dev)) {
 		pdata = dev_get_platdata(wm8994->dev);
@@ -318,6 +350,40 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 	ret = wm8994_set_pdata_from_of(wm8994);
 	if (ret != 0)
 		return ret;
+
+	/*
+	 * Temporarily enable LDO GPIOs before chip ID read.
+	 * The WM8994 won't respond on I2C until its internal LDOs are
+	 * powered. The LDO regulator driver handles this normally, but
+	 * it probes asynchronously via mfd_add_devices below. We need
+	 * the GPIOs HIGH now, so get them temporarily, enable them,
+	 * then release so the regulator driver can take over.
+	 */
+	ldo1_gpiod = gpiod_get_optional(wm8994->dev, "wlf,ldo1ena",
+					GPIOD_OUT_HIGH);
+	if (IS_ERR(ldo1_gpiod)) {
+		dev_warn(wm8994->dev, "Failed to get LDO1 GPIO: %ld\n",
+			 PTR_ERR(ldo1_gpiod));
+		ldo1_gpiod = NULL;
+	}
+
+	ldo2_gpiod = gpiod_get_optional(wm8994->dev, "wlf,ldo2ena",
+					GPIOD_OUT_HIGH);
+	if (IS_ERR(ldo2_gpiod)) {
+		dev_warn(wm8994->dev, "Failed to get LDO2 GPIO: %ld\n",
+			 PTR_ERR(ldo2_gpiod));
+		ldo2_gpiod = NULL;
+	}
+
+	/* Brief delay to let LDOs stabilize */
+	if (ldo1_gpiod || ldo2_gpiod)
+		usleep_range(5000, 10000);
+
+	/* Release GPIOs so regulator driver can claim them */
+	if (ldo1_gpiod)
+		gpiod_put(ldo1_gpiod);
+	if (ldo2_gpiod)
+		gpiod_put(ldo2_gpiod);
 
 	/* Add the on-chip regulators first for bootstrapping */
 	ret = mfd_add_devices(wm8994->dev, 0,
@@ -390,6 +456,13 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		dev_err(wm8994->dev, "Failed to enable supplies: %d\n", ret);
 		goto err_regulator_free;
 	}
+
+	/*
+	 * Give the codec time to stabilize after supplies are enabled.
+	 * Without this delay, I2C access may fail on some platforms.
+	 * The WM8994/WM8958 needs time to initialize its internal state.
+	 */
+	msleep(50);
 
 	ret = wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET);
 	if (ret < 0) {
@@ -502,15 +575,27 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		goto err_enable;
 	}
 
-	/* Explicitly put the device into reset in case regulators
+	/*
+	 * Explicitly put the device into reset in case regulators
 	 * don't get disabled in order to ensure we know the device
-	 * state.
+	 * state. Skip the reset if LDOs are always driven externally,
+	 * as the codec stays powered and doesn't need re-initialization.
+	 * The reset can cause I2C communication issues on some platforms.
 	 */
-	ret = wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
-			       wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
-	if (ret != 0) {
-		dev_err(wm8994->dev, "Failed to reset device: %d\n", ret);
-		goto err_enable;
+	if (!pdata->ldo_ena_always_driven) {
+		ret = wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET,
+				       wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET));
+		if (ret != 0) {
+			dev_err(wm8994->dev, "Failed to reset device: %d\n", ret);
+			goto err_enable;
+		}
+
+		/*
+		 * Wait for the codec to boot after software reset. Without this
+		 * delay, subsequent I2C operations may fail and IRQ handling will
+		 * get -ENXIO errors when trying to read interrupt status registers.
+		 */
+		msleep(50);
 	}
 
 	if (regmap_patch) {
@@ -562,6 +647,44 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 					WM8994_LDO1_DISCH, 0);
 	}
 
+	/*
+	 * Enable runtime PM before registering IRQs. The IRQ chip has
+	 * runtime_pm=true, so the IRQ handler calls pm_runtime_get_sync().
+	 * If runtime PM isn't enabled yet, this returns -EINVAL and spams
+	 * "IRQ thread failed to resume" errors.
+	 */
+	pm_runtime_set_active(wm8994->dev);
+	pm_runtime_enable(wm8994->dev);
+
+	/*
+	 * If LDOs are always driven externally, keep the device permanently
+	 * active to avoid runtime PM suspend/resume cycles. The codec stays
+	 * powered anyway, so there's no benefit to runtime suspend, and it
+	 * avoids issues with the codec not being ready after resume.
+	 */
+	if (wm8994->ldo_ena_always_driven)
+		pm_runtime_get_noresume(wm8994->dev);
+
+	/*
+	 * Independent codec-IRQ disable for systems where the codec's
+	 * regmap-irq status registers (0x730/0x731/0x738/0x739) aren't
+	 * reliably accessible at runtime — e.g. HP TouchPad, where
+	 * runtime I2C reads of those addresses return -ENXIO. Without
+	 * this, the threaded IRQ handler spins acking an interrupt
+	 * source it can't read, turning irq/N-wm8994 into a CPU hog.
+	 * On boards that need this, jack/mic detect via the codec is
+	 * unavailable anyway (no DSP firmware loaded).
+	 *
+	 * Decoupled from ldo_ena_always_driven so the codec can still
+	 * be soft-reset at probe (which the always_driven flag used to
+	 * skip when bundling these behaviours together).
+	 */
+	if (pdata->disable_irq) {
+		dev_info(wm8994->dev,
+			 "wlf,disable-irq set — skipping codec IRQ chip\n");
+		wm8994->irq = 0;
+	}
+
 	wm8994_irq_init(wm8994);
 
 	ret = mfd_add_devices(wm8994->dev, -1,
@@ -572,14 +695,14 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		goto err_irq;
 	}
 
-	pm_runtime_set_active(wm8994->dev);
-	pm_runtime_enable(wm8994->dev);
-	pm_runtime_idle(wm8994->dev);
+	if (!wm8994->ldo_ena_always_driven)
+		pm_runtime_idle(wm8994->dev);
 
 	return 0;
 
 err_irq:
 	wm8994_irq_exit(wm8994);
+	pm_runtime_disable(wm8994->dev);
 err_enable:
 	regulator_bulk_disable(wm8994->num_supplies,
 			       wm8994->supplies);

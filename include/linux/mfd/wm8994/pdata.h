@@ -209,6 +209,20 @@ struct wm8994_pdata {
 	bool ldo_ena_always_driven;
 
 	/*
+	 * Disable the codec's main IRQ entirely. Useful on systems where the
+	 * codec's regmap-irq status registers (0x730/0x731/0x738/0x739) are
+	 * not reliably accessible at runtime — that causes the codec's
+	 * threaded IRQ handler to spin trying to ack an interrupt source it
+	 * can't read, turning the kernel thread irq/N-wm8994 into a CPU
+	 * hog. Set this when the board has no DSP firmware path active and
+	 * doesn't need codec-driven jack/mic detection.
+	 *
+	 * Independent of ldo_ena_always_driven (which used to bundle this
+	 * behaviour with PM-runtime suppression and SOFTWARE_RESET skip).
+	 */
+	bool disable_irq;
+
+	/*
 	 * SPKMODE must be pulled internally by the device on this
 	 * system.
 	 */
