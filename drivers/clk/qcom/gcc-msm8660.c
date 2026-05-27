@@ -54,6 +54,20 @@ static struct clk_regmap pll8_vote = {
 	},
 };
 
+/* PLL4 is the LPASS PLL, defined in LCC. This is the voting clock. */
+static struct clk_regmap pll4_vote = {
+	.enable_reg = 0x34c0,
+	.enable_mask = BIT(4),
+	.hw.init = &(struct clk_init_data){
+		.name = "pll4_vote",
+		.parent_data = &(const struct clk_parent_data){
+			.fw_name = "pll4", .name = "pll4",
+		},
+		.num_parents = 1,
+		.ops = &clk_pll_vote_ops,
+	},
+};
+
 enum {
 	P_PXO,
 	P_PLL8,
@@ -83,10 +97,21 @@ static const struct clk_parent_data gcc_pxo_pll8_cxo[] = {
 };
 
 static const struct freq_tbl clk_tbl_gsbi_uart[] = {
-	{  1843200, P_PLL8, 2,  6, 625 },
-	{  3686400, P_PLL8, 2, 12, 625 },
-	{  7372800, P_PLL8, 2, 24, 625 },
-	{ 14745600, P_PLL8, 2, 48, 625 },
+	/*
+	 * Match the legacy webOS gsbi_uart ftbl exactly: pre_div=1 (feed the MND
+	 * fractional divider from the full 384 MHz PLL8, not a /2 = 192 MHz
+	 * pre-divided clock) with half the M. Same output rate, but a 384 MHz MND
+	 * input quantizes the divider's output edges to ~2.6 ns instead of
+	 * ~5.2 ns => roughly half the cycle-to-cycle jitter. On the TouchPad the
+	 * CSR BlueCore BT UART RX (>=1% baud tolerance) decodes webOS's lower-
+	 * jitter 7372800 clock (115200 link-est, CSR DIV_4) but rejects mainline's
+	 * pre_div=2 version even with byte/register-identical TX. Mainline default
+	 * was pre_div=2 with 2x M for these four rates.
+	 */
+	{  1843200, P_PLL8, 1,  3, 625 },
+	{  3686400, P_PLL8, 1,  6, 625 },
+	{  7372800, P_PLL8, 1, 12, 625 },
+	{ 14745600, P_PLL8, 1, 24, 625 },
 	{ 16000000, P_PLL8, 4,  1,   6 },
 	{ 24000000, P_PLL8, 4,  1,   4 },
 	{ 32000000, P_PLL8, 4,  1,   3 },
@@ -1518,6 +1543,50 @@ static struct clk_branch pmem_clk = {
 	},
 };
 
+static struct clk_branch ppss_h_clk = {
+	.halt_reg = 0x2fc8,
+	.halt_bit = 19,
+	.clkr = {
+		.enable_reg = 0x2580,
+		.enable_mask = BIT(4),
+		.hw.init = &(struct clk_init_data){
+			.name = "ppss_h_clk",
+			.ops = &clk_branch_ops,
+		},
+	},
+};
+
+static struct clk_branch ce2_h_clk = {
+	.halt_reg = 0x2fd4,
+	.halt_bit = 0,
+	.clkr = {
+		.enable_reg = 0x2740,
+		.enable_mask = BIT(4),
+		.hw.init = &(struct clk_init_data){
+			.name = "ce2_h_clk",
+			.ops = &clk_branch_ops,
+		},
+	},
+};
+
+/*
+ * CE2 core/peripheral clock. On MSM8660, the core functional clock and
+ * AHB interface clock share the same hardware control register and bit.
+ * Vendor kernels map both "core_clk" and "iface_clk" to this same clock.
+ */
+static struct clk_branch ce2_p_clk = {
+	.halt_reg = 0x2fd4,
+	.halt_bit = 0,
+	.clkr = {
+		.enable_reg = 0x2740,
+		.enable_mask = BIT(4),
+		.hw.init = &(struct clk_init_data){
+			.name = "ce2_p_clk",
+			.ops = &clk_branch_ops,
+		},
+	},
+};
+
 static struct clk_rcg prng_src = {
 	.ns_reg = 0x2e80,
 	.p = {
@@ -2511,6 +2580,7 @@ static struct clk_branch rpm_msg_ram_h_clk = {
 static struct clk_regmap *gcc_msm8660_clks[] = {
 	[PLL8] = &pll8.clkr,
 	[PLL8_VOTE] = &pll8_vote,
+	[PLL4_VOTE] = &pll4_vote,
 	[GSBI1_UART_SRC] = &gsbi1_uart_src.clkr,
 	[GSBI1_UART_CLK] = &gsbi1_uart_clk.clkr,
 	[GSBI2_UART_SRC] = &gsbi2_uart_src.clkr,
@@ -2566,6 +2636,9 @@ static struct clk_regmap *gcc_msm8660_clks[] = {
 	[GP2_SRC] = &gp2_src.clkr,
 	[GP2_CLK] = &gp2_clk.clkr,
 	[PMEM_CLK] = &pmem_clk.clkr,
+	[PPSS_H_CLK] = &ppss_h_clk.clkr,
+	[CE2_H_CLK] = &ce2_h_clk.clkr,
+	[CE2_P_CLK] = &ce2_p_clk.clkr,
 	[PRNG_SRC] = &prng_src.clkr,
 	[PRNG_CLK] = &prng_clk.clkr,
 	[SDC1_SRC] = &sdc1_src.clkr,

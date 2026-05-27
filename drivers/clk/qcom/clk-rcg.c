@@ -50,7 +50,7 @@ static u8 clk_rcg_get_parent(struct clk_hw *hw)
 			return i;
 
 err:
-	pr_debug("%s: Clock %s has invalid parent, using default.\n",
+	pr_info("%s: Clock %s has invalid parent, using default.\n",
 		 __func__, clk_hw_get_name(hw));
 	return 0;
 }
@@ -86,7 +86,7 @@ static u8 clk_dyn_rcg_get_parent(struct clk_hw *hw)
 			return i;
 
 err:
-	pr_debug("%s: Clock %s has invalid parent, using default.\n",
+	pr_info("%s: Clock %s has invalid parent, using default.\n",
 		 __func__, clk_hw_get_name(hw));
 	return 0;
 }
@@ -414,6 +414,9 @@ static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
 
 	clk_flags = clk_hw_get_flags(hw);
 	p = clk_hw_get_parent_by_index(hw, index);
+	if (!p)
+		return -ENOENT;
+
 	if (clk_flags & CLK_SET_RATE_PARENT) {
 		rate = rate * f->pre_div;
 		if (f->n) {

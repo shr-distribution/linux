@@ -547,6 +547,15 @@ config MSM_LCC_8960
 	  Say Y if you want to use audio devices such as i2s, pcm,
 	  SLIMBus, etc.
 
+config MSM_LCC_8660
+	tristate "MSM8660/APQ8060 LPASS Clock Controller"
+	depends on ARM || COMPILE_TEST
+	help
+	  Support for the LPASS clock controller on MSM8660/APQ8060/MSM8260
+	  devices (Scorpion-class SoCs, e.g. HP TouchPad). MSM8960 is a newer
+	  Krait-based generation handled separately by MSM_LCC_8960.
+	  Say Y if you want to use audio devices such as i2s, pcm, SLIMBus.
+
 config MDM_GCC_9607
 	tristate "MDM9607 Global Clock Controller"
 	depends on ARM || COMPILE_TEST
@@ -571,6 +580,16 @@ config MSM_MMCC_8960
 	  Support for the multimedia clock controller on msm8960 devices.
 	  Say Y if you want to support multimedia devices such as display,
 	  graphics, video encode/decode, camera, etc.
+
+config MSM_MMCC_8660
+	tristate "MSM8660/APQ8060 Multimedia Clock Controller"
+	depends on ARM || COMPILE_TEST
+	select MSM_GCC_8660
+	select QCOM_GDSC
+	help
+	  Support for the multimedia clock controller on msm8660/apq8060
+	  devices. Say Y if you want to support multimedia devices such as
+	  display, graphics, video encode/decode, camera, etc.
 
 config MSM_GCC_8953
 	tristate "MSM8953 Global Clock Controller"
@@ -1726,6 +1745,14 @@ config QCOM_HFPLL
 	  Support for the high-frequency PLLs present on Qualcomm devices.
 	  Say Y if you want to support CPU frequency scaling on devices
 	  such as MSM8974, APQ8084, etc.
+
+config QCOM_APCS_MSM8660
+	tristate "APQ8060/MSM8660 APCS Clock Controller"
+	help
+	  Support for the Application Processor Clock System on Qualcomm
+	  APQ8060/MSM8660 devices (e.g., HP TouchPad). This provides CPU
+	  clock control including SCPLL and source mux management.
+	  Say Y if you want to support CPU frequency scaling on these devices.
 
 config KPSS_XCC
 	tristate "KPSS Clock Controller"
