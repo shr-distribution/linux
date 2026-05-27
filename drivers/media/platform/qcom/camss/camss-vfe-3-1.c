@@ -22,6 +22,27 @@
 
 #include "camss.h"
 
+/*
+ * MMIO barrier convention in this file
+ * ------------------------------------
+ * Register writes use writel_relaxed(). A wmb() is then used in two roles:
+ *
+ *  1. Before a register write that *starts hardware activity* on the shared
+ *     MMSS bus - BUS_CMD (WM/DMA reload), CAMIF_CMD (start/stop),
+ *     REG_UPDATE_CMD, AXI_CMD (halt) and GLOBAL_RESET_CMD - the wmb() flushes
+ *     the preceding configuration writes so they are in effect before the
+ *     engine begins moving data. These are the barriers that matter and must
+ *     stay.
+ *
+ *  2. After other config writes, as a conservative "settle" flush. On ARM,
+ *     writes to Device memory (these registers) are already ordered with
+ *     respect to each other, so these are strictly redundant for pure
+ *     MMIO-vs-MMIO ordering. They are kept deliberately: APQ8060/MSM8660's
+ *     shared MMSS-AXI fabric is timing-sensitive (a barrier/ordering bug in
+ *     the AXI-halt path could hard-hang the SoC), so they are left in place
+ *     rather than trimmed for a cosmetic win.
+ */
+
 /* Forward declarations for VFE31-specific functions */
 static void vfe31_wm_set_ping_addr(struct vfe_device *vfe, u8 wm, u32 addr);
 static void vfe31_wm_set_pong_addr(struct vfe_device *vfe, u8 wm, u32 addr);
