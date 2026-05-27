@@ -387,22 +387,10 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 	 */
 	if (core->fw_vaddr && core->fw && core->fw->data) {
 		/*
-		 * webOS firmware blob (500140 B, LE-stored) needs swab32
-		 * per word; Yocto blob (605428 B) is already pre-swapped.
-		 * Match what vidc_load_firmware did — see size detection
-		 * there.
+		 * The VIDC RISC reads firmware big-endian and the blob is
+		 * stored in matching byte order, so copy it verbatim.
 		 */
-		if (core->fw_size == 500140) {
-			const u32 *src = (const u32 *)core->fw->data;
-			size_t words = core->fw_size / 4;
-			size_t i;
-
-			for (i = 0; i < words; i++)
-				iowrite32(swab32(src[i]),
-					  (void __iomem *)(core->fw_vaddr + i * 4));
-		} else {
-			memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
-		}
+		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
 		memset(core->fw_vaddr + core->fw_size, 0,
 		       core->fw_alloc_size - core->fw_size);
 		/* Verify that CPU writes actually land in SMI SRAM (check a non-zero offset) */
@@ -421,12 +409,11 @@ int vidc_hw_reset(struct vidc_core *core, u32 dram_base_addr)
 			if (chk_off) {
 				u32 rb  = readl_relaxed(core->fw_vaddr + chk_off);
 				u32 exp = fw32[chk_off / 4];
-				u32 exp_swab = (core->fw_size == 500140) ?
-						swab32(exp) : exp;
+
 				pr_debug(
-				       "VIDC: fw recopy rb[0x%x]=0x%08x exp=0x%08x (raw=0x%08x) %s\n",
-				       chk_off, rb, exp_swab, exp,
-				       rb == exp_swab ? "OK" : "MISMATCH");
+				       "VIDC: fw recopy rb[0x%x]=0x%08x exp=0x%08x %s\n",
+				       chk_off, rb, exp,
+				       rb == exp ? "OK" : "MISMATCH");
 			} else {
 				pr_debug("VIDC: fw recopy: first 1KB all zeros, cannot verify\n");
 			}
@@ -1039,36 +1026,11 @@ int vidc_load_firmware(struct vidc_core *core)
 	core->fw_size = core->fw->size;
 
 	/*
-	 * The VIDC embedded RISC is big-endian.  Two known firmware blobs:
-	 *
-	 *   605428 B : Sony Nozomi / Yocto firmware-hp-tenderloin package.
-	 *              Already byte-swapped to match the RISC's BE read
-	 *              order — copy verbatim.  Firmware ABI 0x00121130.
-	 *              Boots and ACKs every command, but no decoded pixel
-	 *              data ever lands in DPB (firmware engages command
-	 *              stub but not actual decoder — likely wrong silicon).
-	 *
-	 *    500140 B : webOS doctor 3.0.5 untouched-rootfs blob.  Same
-	 *              vintage as the 8060 silicon.  Stored in LE bytes,
-	 *              needs swab32 per 32-bit word before loading
-	 *              (matches webOS ddl_fw_change_endian).
-	 *
-	 * Detect by exact file size and apply the appropriate transform.
+	 * The VIDC embedded RISC reads its firmware big-endian. The canonical
+	 * firmware blob (qcom/vidc_1080p.fw, ABI 0x00121130) is stored in
+	 * matching byte order, so copy it verbatim into the SMI window.
 	 */
-	if (core->fw->size == 500140) {
-		const u32 *src = (const u32 *)core->fw->data;
-		size_t words = core->fw->size / 4;
-		size_t i;
-
-		dev_info(core->dev,
-			 "load_firmware: webOS 500 KB blob detected, swab32 + memcpy\n");
-		for (i = 0; i < words; i++)
-			iowrite32(swab32(src[i]),
-				  (void __iomem *)(core->fw_vaddr + i * 4));
-		/* Tail bytes (none for 500140, evenly divisible by 4) */
-	} else {
-		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw->size);
-	}
+	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw->size);
 
 	/* CPU reads from SMI return 0; readback is not meaningful. */
 	pr_debug("VIDC: SMI fw written: dma_addr=0x%08x alloc_size=%zu fw_size=%zu\n",
@@ -1281,17 +1243,7 @@ int vidc_boot_firmware(struct vidc_core *core)
 	 * the image, identical to what vidc_load_firmware does on first
 	 * load. Desc buffer and SHM are zeroed for the same reason.
 	 */
-	if (core->fw_size == 500140) {
-		const u32 *src = (const u32 *)core->fw->data;
-		size_t words = core->fw_size / 4;
-		size_t i;
-
-		for (i = 0; i < words; i++)
-			iowrite32(swab32(src[i]),
-				  (void __iomem *)(core->fw_vaddr + i * 4));
-	} else {
-		memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
-	}
+	memcpy_toio(core->fw_vaddr, core->fw->data, core->fw_size);
 	/*
 	 * Zero everything after the firmware blob: alignment gap, context
 	 * pool, descriptor buffer, and SHM. The context pool in particular
