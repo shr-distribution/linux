@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/qcom,msm8660-rotator.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm MSM8660 Image Rotator
+
+maintainers:
+  - Herman van Hazendonk <github.com@herrie.org>
+
+description:
+  The rotator is the MDP image-rotation block found on the
+  MSM8260/MSM8660/APQ8060 family. It is exposed as a V4L2 mem2mem device
+  that rotates (0/90/180/270) and flips RGB and pseudo-planar YUV frames.
+  It also detiles the Qualcomm MMSS 64x32 "supertile" NV12 layout the VIDC
+  decoder emits into linear NV12. The same block is present on all three
+  SoCs of this die.
+
+properties:
+  compatible:
+    enum:
+      - qcom,msm8260-rotator
+      - qcom,msm8660-rotator
+      - qcom,apq8060-rotator
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 3
+
+  clock-names:
+    items:
+      - const: core
+      - const: iface
+      - const: axi
+
+  power-domains:
+    maxItems: 1
+
+  iommus:
+    maxItems: 1
+
+  interconnects:
+    maxItems: 1
+
+  interconnect-names:
+    items:
+      - const: rotator-mem
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - iommus
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,mmcc-msm8660.h>
+    #include <dt-bindings/interconnect/qcom,msm8660.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    rotator@4e00000 {
+        compatible = "qcom,msm8660-rotator";
+        reg = <0x04e00000 0x100000>;
+        interrupts = <GIC_SPI 73 IRQ_TYPE_EDGE_RISING>;
+        clocks = <&mmcc ROT_CLK>,
+                 <&mmcc ROT_AHB_CLK>,
+                 <&mmcc ROT_AXI_CLK>;
+        clock-names = "core", "iface", "axi";
+        power-domains = <&mmcc ROT_GDSC>;
+        iommus = <&rot_iommu 0>;
+        interconnects = <&mmss_fabric MMFAB_MAS_ROTATOR
+                         &apps_fabric AFAB_SLV_EBI_CH0>;
+        interconnect-names = "rotator-mem";
+    };

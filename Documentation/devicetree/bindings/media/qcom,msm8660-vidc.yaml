@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/qcom,msm8660-vidc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm MSM8660 VIDC 1080p video codec
+
+maintainers:
+  - Herman van Hazendonk <github.com@herrie.org>
+
+description:
+  The VIDC ("1080p") block found on the MSM8660/APQ8060 family is a
+  firmware-driven hardware video codec. An on-chip RISC core runs firmware
+  fetched from the System Memory Interface (SMI) SRAM window and the driver
+  exposes two V4L2 mem2mem devices, an H.264 decoder and encoder. The RISC
+  addresses memory physically (no IOMMU), so its working buffers live in
+  reserved-memory regions inside the SMI window it can reach. The decoder
+  emits the firmware's native 64x32 macroblock-tiled NV12
+  (V4L2_PIX_FMT_NV12MT), consumed directly by the MDP4 display overlay or
+  detiled in software.
+
+properties:
+  compatible:
+    enum:
+      - qcom,msm8660-vidc
+      - qcom,apq8060-vidc
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 5
+
+  clock-names:
+    items:
+      - const: core
+      - const: iface
+      - const: axi
+      - const: axi_a
+      - const: axi_b
+
+  power-domains:
+    maxItems: 1
+
+  interconnects:
+    maxItems: 2
+
+  interconnect-names:
+    items:
+      - const: video-smi
+      - const: video-ebi
+
+  memory-region:
+    items:
+      - description:
+          Firmware carveout in the SMI window (no-map). The RISC fetches its
+          firmware from this region's physical base.
+      - description:
+          SMI pool (shared-dma-pool) for the bitstream and decoded-picture
+          buffers. The firmware addresses these relative to the firmware
+          base, so the region must lie within the reachable SMI window.
+
+  qcom,icc-bw-avg-kbps:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Average interconnect bandwidth (kilobytes/s) for the codec data path.
+      The driver uses a built-in 1080p default when absent.
+
+  qcom,icc-bw-peak-kbps:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Peak interconnect bandwidth (kilobytes/s) for the codec data path.
+      The driver uses a built-in 1080p default when absent.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - memory-region
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,mmcc-msm8660.h>
+    #include <dt-bindings/interconnect/qcom,msm8660.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    video-codec@4400000 {
+        compatible = "qcom,msm8660-vidc";
+        reg = <0x04400000 0x100000>;
+        interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&mmcc VCODEC_CLK>,
+                 <&mmcc VCODEC_AHB_CLK>,
+                 <&mmcc VCODEC_AXI_CLK>,
+                 <&mmcc VCODEC_AXI_A_CLK>,
+                 <&mmcc VCODEC_AXI_B_CLK>;
+        clock-names = "core", "iface", "axi", "axi_a", "axi_b";
+        power-domains = <&mmcc VED_GDSC>;
+        interconnects = <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
+                         &mmss_fabric MMFAB_SLV_SMI>,
+                        <&mmss_fabric MMFAB_MAS_HD_CODEC_PORT0
+                         &apps_fabric AFAB_SLV_EBI_CH0>;
+        interconnect-names = "video-smi", "video-ebi";
+        memory-region = <&vidc_fw_mem>, <&vidc_smipool_mem>;
+        qcom,icc-bw-avg-kbps = <167936>;
+        qcom,icc-bw-peak-kbps = <1340416>;
+    };

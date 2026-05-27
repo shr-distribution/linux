@@ -1,0 +1,221 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/qcom,msm8660-camss.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm CAMSS ISP (MSM8660 / APQ8060)
+
+maintainers:
+  - Herman van Hazendonk <github.com@herrie.org>
+
+description: |
+  The CAMSS IP is a CSI decoder and ISP present on Qualcomm platforms.
+
+  MSM8660 (and its application-processor variant APQ8060) integrate the
+  first-generation VFE 3.1 front end. Unlike later platforms, the CSIPHY and
+  CSID are a single unified hardware block per CSI port, so each CSID shares
+  the register region and interrupt of the matching CSIPHY; only the CSIPHY
+  exposes an interrupt. There is no ISPIF block.
+
+properties:
+  compatible:
+    enum:
+      - qcom,apq8060-camss
+      - qcom,msm8660-camss
+
+  reg:
+    minItems: 3
+    maxItems: 3
+
+  reg-names:
+    items:
+      - const: vfe0
+      - const: csiphy0
+      - const: csiphy1
+
+  interrupts:
+    minItems: 3
+    maxItems: 3
+
+  interrupt-names:
+    items:
+      - const: vfe0
+      - const: csiphy0
+      - const: csiphy1
+
+  clocks:
+    minItems: 15
+    maxItems: 15
+
+  clock-names:
+    items:
+      - const: vfe
+      - const: vfe_axi
+      - const: vfe_ahb
+      - const: vfe_csi0
+      - const: vfe_csi1
+      - const: csi_rdi
+      - const: csi_pix
+      - const: csi0_ahb
+      - const: csi1_ahb
+      - const: csi0_src
+      - const: csi0
+      - const: csi0_phy
+      - const: csi1_src
+      - const: csi1
+      - const: csi1_phy
+
+  interconnects:
+    maxItems: 1
+
+  interconnect-names:
+    items:
+      - const: vfe-mem
+
+  power-domains:
+    items:
+      - description: VFE GDSC - Video Front End, Global Distributed Switch Controller.
+
+  ports:
+    $ref: /schemas/graph.yaml#/properties/ports
+
+    description:
+      CSI input ports. Port index matches the CSIPHY/CSID index.
+
+    properties:
+      port@0:
+        $ref: /schemas/graph.yaml#/$defs/port-base
+        unevaluatedProperties: false
+        description:
+          Input port for receiving CSI data on CSIPHY0.
+
+        properties:
+          endpoint:
+            $ref: video-interfaces.yaml#
+            unevaluatedProperties: false
+
+            properties:
+              data-lanes:
+                description:
+                  An array of physical data lanes indexes. Position of an entry
+                  determines the logical lane number, while the value of an
+                  entry indicates the physical lane index. Lane swapping is
+                  supported.
+                minItems: 1
+                maxItems: 4
+
+              bus-type:
+                enum:
+                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+
+            required:
+              - data-lanes
+
+      port@1:
+        $ref: /schemas/graph.yaml#/$defs/port-base
+        unevaluatedProperties: false
+        description:
+          Input port for receiving CSI data on CSIPHY1.
+
+        properties:
+          endpoint:
+            $ref: video-interfaces.yaml#
+            unevaluatedProperties: false
+
+            properties:
+              data-lanes:
+                minItems: 1
+                maxItems: 4
+
+              bus-type:
+                enum:
+                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+
+            required:
+              - data-lanes
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+  - interconnects
+  - interconnect-names
+  - power-domains
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/qcom,mmcc-msm8660.h>
+    #include <dt-bindings/interconnect/qcom,msm8660.h>
+
+    camss: camss@4500000 {
+        compatible = "qcom,msm8660-camss";
+
+        reg = <0x04500000 0x1000>,
+              <0x04800000 0x0400>,
+              <0x04900000 0x0400>;
+        reg-names = "vfe0", "csiphy0", "csiphy1";
+
+        interrupts = <GIC_SPI 48 IRQ_TYPE_EDGE_RISING>,
+                     <GIC_SPI 84 IRQ_TYPE_EDGE_RISING>,
+                     <GIC_SPI 83 IRQ_TYPE_EDGE_RISING>;
+        interrupt-names = "vfe0", "csiphy0", "csiphy1";
+
+        clocks = <&mmcc VFE_CLK>,
+                 <&mmcc VFE_AXI_CLK>,
+                 <&mmcc VFE_AHB_CLK>,
+                 <&mmcc VFE_CSI0_CLK>,
+                 <&mmcc VFE_CSI1_CLK>,
+                 <&mmcc CSI_RDI_CLK>,
+                 <&mmcc CSI_PIX_CLK>,
+                 <&mmcc CSI0_AHB_CLK>,
+                 <&mmcc CSI1_AHB_CLK>,
+                 <&mmcc CSI0_SRC>,
+                 <&mmcc CSI0_CLK>,
+                 <&mmcc CSI0_PHY_CLK>,
+                 <&mmcc CSI1_SRC>,
+                 <&mmcc CSI1_CLK>,
+                 <&mmcc CSI1_PHY_CLK>;
+        clock-names = "vfe",
+                      "vfe_axi",
+                      "vfe_ahb",
+                      "vfe_csi0",
+                      "vfe_csi1",
+                      "csi_rdi",
+                      "csi_pix",
+                      "csi0_ahb",
+                      "csi1_ahb",
+                      "csi0_src",
+                      "csi0",
+                      "csi0_phy",
+                      "csi1_src",
+                      "csi1",
+                      "csi1_phy";
+
+        interconnects = <&mmss_fabric MMFAB_MAS_VFE &apps_fabric AFAB_SLV_EBI_CH0>;
+        interconnect-names = "vfe-mem";
+
+        power-domains = <&mmcc VFE_GDSC>;
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@1 {
+                reg = <1>;
+                camss_csi1_ep: endpoint {
+                    bus-type = <4>; /* CSI2_DPHY */
+                    data-lanes = <1>;
+                    clock-lanes = <0>;
+                    remote-endpoint = <&mt9m113_ep>;
+                };
+            };
+        };
+    };
