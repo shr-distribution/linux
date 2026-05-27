@@ -18,6 +18,26 @@ void mdp4_set_irqmask(struct mdp_kms *mdp_kms, uint32_t irqmask,
 	mdp4_write(to_mdp4_kms(mdp_kms), REG_MDP4_INTR_ENABLE, irqmask);
 }
 
+#define MDP4_UNDERRUN_IRQ (MDP4_IRQ_PRIMARY_INTF_UDERRUN | \
+			   MDP4_IRQ_EXTERNAL_INTF_UDERRUN)
+/* >this many underruns within the window below = a storm, not a transient */
+#define MDP4_UNDERRUN_STORM	64
+#define MDP4_UNDERRUN_WINDOW_MS	100
+#define MDP4_UNDERRUN_REARM_MS	500
+
+/* Re-arm the underrun IRQ after a storm-mask cooldown. If the underrun is
+ * still continuous it will storm again and get re-masked, so the IRQ fires
+ * in capped bursts instead of pinning the CPU. */
+static void mdp4_underrun_rearm(struct work_struct *work)
+{
+	struct mdp4_kms *mdp4_kms = container_of(to_delayed_work(work),
+			struct mdp4_kms, underrun_rearm_work);
+
+	mdp4_kms->underrun_count = 0;
+	mdp4_kms->error_handler.irqmask = MDP4_UNDERRUN_IRQ;
+	mdp_irq_update(&mdp4_kms->base);
+}
+
 static void mdp4_irq_error_handler(struct mdp_irq *irq, uint32_t irqstatus)
 {
 	struct mdp4_kms *mdp4_kms = container_of(irq, struct mdp4_kms, error_handler);
@@ -29,6 +49,31 @@ static void mdp4_irq_error_handler(struct mdp_irq *irq, uint32_t irqstatus)
 	if (dumpstate && __ratelimit(&rs)) {
 		struct drm_printer p = drm_info_printer(mdp4_kms->dev->dev);
 		drm_state_dump(mdp4_kms->dev, &p);
+	}
+
+	/*
+	 * Storm guard: a continuous INTF underrun re-asserts this level IRQ
+	 * every scanline and pins the CPU in interrupt (hard-wedging the box).
+	 * If we see too many underruns in a short window, mask the underrun IRQ
+	 * (clearing it from irqmask; mdp_dispatch_irqs()'s trailing update_irq()
+	 * applies the new mask) and schedule a re-arm. This caps the IRQ rate so
+	 * a stuck-underrunning display degrades visibly but can't lock up the OS.
+	 */
+	if (time_after(jiffies,
+		       mdp4_kms->underrun_window_start +
+		       msecs_to_jiffies(MDP4_UNDERRUN_WINDOW_MS))) {
+		mdp4_kms->underrun_window_start = jiffies;
+		mdp4_kms->underrun_count = 0;
+	}
+
+	if (++mdp4_kms->underrun_count > MDP4_UNDERRUN_STORM &&
+	    (irq->irqmask & MDP4_UNDERRUN_IRQ)) {
+		irq->irqmask &= ~MDP4_UNDERRUN_IRQ;
+		DRM_ERROR_RATELIMITED(
+			"INTF underrun storm: masking underrun IRQ %ums to avoid CPU lockup\n",
+			MDP4_UNDERRUN_REARM_MS);
+		schedule_delayed_work(&mdp4_kms->underrun_rearm_work,
+				msecs_to_jiffies(MDP4_UNDERRUN_REARM_MS));
 	}
 }
 
@@ -48,8 +93,9 @@ int mdp4_irq_postinstall(struct msm_kms *kms)
 	struct mdp_irq *error_handler = &mdp4_kms->error_handler;
 
 	error_handler->irq = mdp4_irq_error_handler;
-	error_handler->irqmask = MDP4_IRQ_PRIMARY_INTF_UDERRUN |
-			MDP4_IRQ_EXTERNAL_INTF_UDERRUN;
+	error_handler->irqmask = MDP4_UNDERRUN_IRQ;
+
+	INIT_DELAYED_WORK(&mdp4_kms->underrun_rearm_work, mdp4_underrun_rearm);
 
 	mdp_irq_register(mdp_kms, error_handler);
 
@@ -59,6 +105,7 @@ int mdp4_irq_postinstall(struct msm_kms *kms)
 void mdp4_irq_uninstall(struct msm_kms *kms)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
+	cancel_delayed_work_sync(&mdp4_kms->underrun_rearm_work);
 	mdp4_enable(mdp4_kms);
 	mdp4_write(mdp4_kms, REG_MDP4_INTR_ENABLE, 0x00000000);
 	mdp4_disable(mdp4_kms);

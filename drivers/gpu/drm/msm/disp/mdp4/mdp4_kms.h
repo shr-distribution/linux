@@ -7,6 +7,8 @@
 #ifndef __MDP4_KMS_H__
 #define __MDP4_KMS_H__
 
+#include <linux/workqueue.h>
+
 #include <drm/drm_panel.h>
 
 #include "msm_drv.h"
@@ -15,6 +17,7 @@
 #include "mdp4.xml.h"
 
 struct device_node;
+struct icc_path;
 
 struct mdp4_kms {
 	struct mdp_kms base;
@@ -31,14 +34,53 @@ struct mdp4_kms {
 	struct clk *pclk;
 	struct clk *lut_clk;
 	struct clk *axi_clk;
+	struct clk *vsync_clk;
+
+	/*
+	 * Interconnect paths from the two MDP master ports out to memory.
+	 * MDP framebuffers live in EBI on tenderloin, so the EBI-targeted
+	 * paths carry real bandwidth; SMI paths are kept for completeness
+	 * but only voted at zero (so they keep mapping but don't add to
+	 * fabric clock or arbitration pressure).
+	 */
+	struct icc_path *path_ebi[2];
+	struct icc_path *path_smi[2];
+	u32 icc_avg_bw_kbps;
+	u32 icc_peak_bw_kbps;
 
 	struct mdp_irq error_handler;
+
+	/*
+	 * INTF-underrun IRQ storm mitigation. PRIMARY_INTF_UDERRUN is a level
+	 * condition: a *continuous* underrun (e.g. the DMA_P scanout left
+	 * underflowing after a KMS client-switch modeset) re-asserts the IRQ
+	 * every scanline, so mdp4_irq() runs nonstop and the CPU is pinned in
+	 * interrupt -> the device hard-wedges (netconsole dead-stops, no
+	 * khungtaskd). The IRQ is only used for logging, so when it storms we
+	 * temporarily mask it (clear it from error_handler.irqmask) and re-arm
+	 * after a delay, capping its rate so it can never lock up the CPU.
+	 */
+	unsigned long underrun_window_start;
+	unsigned int underrun_count;
+	struct delayed_work underrun_rearm_work;
 
 	bool rpm_enabled;
 
 	/* empty/blank cursor bo to use when cursor is "disabled" */
 	struct drm_gem_object *blank_cursor_bo;
 	uint64_t blank_cursor_iova;
+
+	/*
+	 * Permanently-mapped black scratch bo that a DISABLED pipe's
+	 * SRCP0_BASE points at instead of 0. If a pipe-disable fails to latch
+	 * (e.g. an underrun stalls the LCDC and DMA_P stops generating vsync,
+	 * so the flush never completes), the still-staged pipe keeps fetching
+	 * its base address. Pointing it at a valid mapped page makes that
+	 * stray fetch read black instead of faulting the display IOMMU at an
+	 * unmapped iova (the FAR=0x780 fault storm that wedged the device).
+	 */
+	struct drm_gem_object *blank_pipe_bo;
+	uint64_t blank_pipe_iova;
 };
 #define to_mdp4_kms(x) container_of(x, struct mdp4_kms, base)
 

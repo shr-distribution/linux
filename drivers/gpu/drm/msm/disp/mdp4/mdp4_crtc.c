@@ -4,6 +4,10 @@
  * Author: Rob Clark <robdclark@gmail.com>
  */
 
+#include <linux/pm_runtime.h>
+
+#include <drm/drm_atomic.h>
+#include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_flip_work.h>
 #include <drm/drm_managed.h>
@@ -73,12 +77,22 @@ static void request_pending(struct drm_crtc *crtc, uint32_t pending)
 	mdp_irq_register(&get_kms(crtc)->base, &mdp4_crtc->vblank);
 }
 
-static void crtc_flush(struct drm_crtc *crtc)
+/*
+ * @extra_flush: OR-ed into the flush mask for pipes that are NOT attached to
+ * the crtc in the current state but still need their double-buffered registers
+ * latched this commit — i.e. pipes being DISABLED. mdp4_plane_atomic_disable
+ * writes PIPE_SRCP0_BASE=0, but that (and the layer-mixer unstage) only takes
+ * effect when the pipe's flush bit is set. Since a disabled plane is no longer
+ * in drm_atomic_crtc_for_each_plane(), without this the OVLP keeps compositing
+ * the pipe at base 0 and the MDP display IOMMU faults forever (FAR=0x780) once
+ * the backing buffer is freed and no later vsync re-flushes it.
+ */
+static void crtc_flush(struct drm_crtc *crtc, uint32_t extra_flush)
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
 	struct drm_plane *plane;
-	uint32_t flush = 0;
+	uint32_t flush = extra_flush;
 
 	drm_atomic_crtc_for_each_plane(plane, crtc) {
 		enum mdp4_pipe pipe_id = mdp4_plane_pipe(plane);
@@ -119,7 +133,8 @@ static void unref_cursor_worker(struct drm_flip_work *work, void *val)
 	struct mdp4_kms *mdp4_kms = get_kms(&mdp4_crtc->base);
 	struct msm_kms *kms = &mdp4_kms->base.base;
 
-	msm_gem_unpin_iova(val, kms->vm);
+	if (kms->vm)
+		msm_gem_unpin_iova(val, kms->vm);
 	drm_gem_object_put(val);
 }
 
@@ -170,7 +185,7 @@ static void blend_setup(struct drm_crtc *crtc)
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
 	struct drm_plane *plane;
 	int i, ovlp = mdp4_crtc->ovlp;
-	bool alpha[4]= { false, false, false, false };
+	bool alpha[4] = { false, false, false, false };
 
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW0(ovlp), 0);
 	mdp4_write(mdp4_kms, REG_MDP4_OVLP_TRANSP_LOW1(ovlp), 0);
@@ -202,7 +217,7 @@ static void blend_setup(struct drm_crtc *crtc)
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_FG_ALPHA(ovlp, i), 0xff);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_BG_ALPHA(ovlp, i), 0x00);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_OP(ovlp, i), op);
-		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_CO3(ovlp, i), 1);
+		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_CO3(ovlp, i), 0);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_LOW0(ovlp, i), 0);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_LOW1(ovlp, i), 0);
 		mdp4_write(mdp4_kms, REG_MDP4_OVLP_STAGE_TRANSP_HIGH0(ovlp, i), 0);
@@ -259,6 +274,7 @@ static void mdp4_crtc_atomic_disable(struct drm_crtc *crtc,
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+	struct drm_device *dev = crtc->dev;
 	unsigned long flags;
 
 	DBG("%s", mdp4_crtc->name);
@@ -280,6 +296,12 @@ static void mdp4_crtc_atomic_disable(struct drm_crtc *crtc,
 		spin_unlock_irqrestore(&mdp4_kms->dev->event_lock, flags);
 	}
 
+	/*
+	 * Release pm_runtime reference to allow MDP_GDSC to be disabled
+	 * when display is off. This balances the get in atomic_enable.
+	 */
+	pm_runtime_put_sync(dev->dev);
+
 	mdp4_crtc->enabled = false;
 }
 
@@ -288,11 +310,20 @@ static void mdp4_crtc_atomic_enable(struct drm_crtc *crtc,
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
+	struct drm_device *dev = crtc->dev;
 
 	DBG("%s", mdp4_crtc->name);
 
 	if (WARN_ON(mdp4_crtc->enabled))
 		return;
+
+	/*
+	 * Acquire pm_runtime reference to keep MDP_GDSC power domain active
+	 * while display is on. Without this, genpd_power_off_unused_sync()
+	 * may disable the MDP power domain as "unused", causing LCDC to stop
+	 * and register writes to fail. This is balanced by put in atomic_disable.
+	 */
+	pm_runtime_get_sync(dev->dev);
 
 	mdp4_enable(mdp4_kms);
 
@@ -301,7 +332,7 @@ static void mdp4_crtc_atomic_enable(struct drm_crtc *crtc,
 
 	mdp_irq_register(&mdp4_kms->base, &mdp4_crtc->err);
 
-	crtc_flush(crtc);
+	crtc_flush(crtc, 0);
 
 	mdp4_crtc->enabled = true;
 }
@@ -327,19 +358,47 @@ static void mdp4_crtc_atomic_flush(struct drm_crtc *crtc,
 {
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
+	struct drm_crtc_state *old_cstate;
+	uint32_t disable_flush = 0;
 	unsigned long flags;
+
+	/*
+	 * Pipes attached in the OLD state but not the new one are being
+	 * disabled this commit. Their flush bits are NOT picked up by
+	 * crtc_flush() (a disabled plane has left drm_atomic_crtc_for_each_plane),
+	 * so latch them explicitly — otherwise mdp4_plane_atomic_disable's
+	 * SRCP0_BASE=0 + the layer-mixer unstage never take effect and the OVLP
+	 * keeps fetching the freed buffer (display IOMMU FAR=0x780 fault storm).
+	 * Flushing a staying pipe again is harmless, so just OR all old-state
+	 * pipes; the new-state ones get added inside crtc_flush().
+	 */
+	old_cstate = drm_atomic_get_old_crtc_state(state, crtc);
+	if (old_cstate) {
+		struct drm_plane *plane;
+
+		drm_atomic_crtc_state_for_each_plane(plane, old_cstate)
+			disable_flush |= pipe2flush(mdp4_plane_pipe(plane));
+	}
 
 	DBG("%s: event: %p", mdp4_crtc->name, crtc->state->event);
 
-	WARN_ON(mdp4_crtc->event);
-
 	spin_lock_irqsave(&dev->event_lock, flags);
+	/*
+	 * Complete any pending event from a previous commit that wasn't
+	 * delivered due to vblank timeout. This prevents event leaks and
+	 * allows the new commit to proceed.
+	 */
+	if (mdp4_crtc->event) {
+		dev_warn_once(dev->dev, "%s: completing stale event %p\n",
+			      mdp4_crtc->name, mdp4_crtc->event);
+		drm_crtc_send_vblank_event(crtc, mdp4_crtc->event);
+	}
 	mdp4_crtc->event = crtc->state->event;
 	crtc->state->event = NULL;
 	spin_unlock_irqrestore(&dev->event_lock, flags);
 
 	blend_setup(crtc);
-	crtc_flush(crtc);
+	crtc_flush(crtc, disable_flush);
 	request_pending(crtc, PENDING_FLIP);
 }
 
@@ -365,7 +424,7 @@ static void update_cursor(struct drm_crtc *crtc)
 		struct drm_gem_object *prev_bo = mdp4_crtc->cursor.scanout_bo;
 		uint64_t iova = mdp4_crtc->cursor.next_iova;
 
-		if (next_bo) {
+		if (next_bo && kms->vm) {
 			/* take a obj ref + iova ref when we start scanning out: */
 			drm_gem_object_get(next_bo);
 			msm_gem_get_and_pin_iova(next_bo, kms->vm, &iova);
@@ -417,6 +476,12 @@ static int mdp4_crtc_cursor_set(struct drm_crtc *crtc,
 		return -EINVAL;
 	}
 
+	/* Cursor requires IOMMU for IOVA mapping */
+	if (!kms->vm) {
+		DRM_DEV_DEBUG(dev->dev, "cursor not supported without IOMMU\n");
+		return -ENODEV;
+	}
+
 	if (handle) {
 		cursor_bo = drm_gem_object_lookup(file_priv, handle);
 		if (!cursor_bo)
@@ -466,7 +531,7 @@ static int mdp4_crtc_cursor_move(struct drm_crtc *crtc, int x, int y)
 	mdp4_crtc->cursor.y = y;
 	spin_unlock_irqrestore(&mdp4_crtc->cursor.lock, flags);
 
-	crtc_flush(crtc);
+	crtc_flush(crtc, 0);
 	request_pending(crtc, PENDING_CURSOR);
 
 	return 0;
@@ -519,7 +584,7 @@ static void mdp4_crtc_err_irq(struct mdp_irq *irq, uint32_t irqstatus)
 	struct mdp4_crtc *mdp4_crtc = container_of(irq, struct mdp4_crtc, err);
 	struct drm_crtc *crtc = &mdp4_crtc->base;
 	DBG("%s: error: %08x", mdp4_crtc->name, irqstatus);
-	crtc_flush(crtc);
+	crtc_flush(crtc, 0);
 }
 
 static void mdp4_crtc_wait_for_flush_done(struct drm_crtc *crtc)
@@ -528,20 +593,53 @@ static void mdp4_crtc_wait_for_flush_done(struct drm_crtc *crtc)
 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
 	struct mdp4_kms *mdp4_kms = get_kms(crtc);
 	wait_queue_head_t *queue = drm_crtc_vblank_waitqueue(crtc);
+	uint32_t flush_reg;
 	int ret;
 
+	dev_dbg(dev->dev, "wait_for_flush_done: %s flushed_mask=%08x\n",
+		mdp4_crtc->name, mdp4_crtc->flushed_mask);
+
 	ret = drm_crtc_vblank_get(crtc);
-	if (ret)
+	if (ret) {
+		dev_dbg(dev->dev, "wait_for_flush_done: %s vblank_get failed ret=%d\n",
+			mdp4_crtc->name, ret);
 		return;
+	}
+
+	flush_reg = mdp4_read(mdp4_kms, REG_MDP4_OVERLAY_FLUSH);
+	dev_dbg(dev->dev, "wait_for_flush_done: %s flush_reg=%08x before wait\n",
+		mdp4_crtc->name, flush_reg);
 
 	ret = wait_event_timeout(*queue,
 		!(mdp4_read(mdp4_kms, REG_MDP4_OVERLAY_FLUSH) &
 			mdp4_crtc->flushed_mask),
 		msecs_to_jiffies(50));
+
+	flush_reg = mdp4_read(mdp4_kms, REG_MDP4_OVERLAY_FLUSH);
 	if (ret <= 0)
-		dev_warn(dev->dev, "vblank time out, crtc=%s\n", mdp4_crtc->base.name);
+		dev_warn(dev->dev, "vblank time out, crtc=%s flush_reg=%08x mask=%08x\n",
+			mdp4_crtc->name, flush_reg, mdp4_crtc->flushed_mask);
+	else
+		dev_dbg(dev->dev, "wait_for_flush_done: %s completed in %d jiffies, flush_reg=%08x\n",
+			mdp4_crtc->name, 50 - ret, flush_reg);
 
 	mdp4_crtc->flushed_mask = 0;
+
+	/*
+	 * Also wait for the pending vblank event to be delivered. The vblank
+	 * IRQ fires after the flush completes and calls complete_flip() which
+	 * clears the event. Without this wait, a subsequent atomic commit
+	 * could start before the event is delivered, causing a WARN_ON in
+	 * mdp4_crtc_atomic_flush().
+	 */
+	if (READ_ONCE(mdp4_crtc->event)) {
+		ret = wait_event_timeout(*queue,
+			!READ_ONCE(mdp4_crtc->event),
+			msecs_to_jiffies(50));
+		if (ret <= 0)
+			dev_warn(dev->dev, "event delivery timeout, crtc=%s\n",
+				mdp4_crtc->name);
+	}
 
 	drm_crtc_vblank_put(crtc);
 }
@@ -593,6 +691,17 @@ void mdp4_crtc_set_intf(struct drm_crtc *crtc, enum mdp4_intf intf, int mixer)
 		intf_sel |= MDP4_DISP_INTF_SEL_DSI_CMD;
 	}
 
+	/*
+	 * For LCDC/DTV interfaces on DMA_P, use PRIMARY_VSYNC instead of
+	 * DMA_P_DONE for vblank. The DMA_P_DONE interrupt doesn't fire
+	 * reliably for LCDC, causing vblank timeouts. This matches the
+	 * behavior of the original Qualcomm driver.
+	 */
+	if (intf == INTF_LCDC_DTV && mdp4_crtc->dma == DMA_P)
+		mdp4_crtc->vblank.irqmask = MDP4_IRQ_PRIMARY_VSYNC;
+	else
+		mdp4_crtc->vblank.irqmask = dma2irq(mdp4_crtc->dma);
+
 	mdp4_crtc->mixer = mixer;
 
 	blend_setup(crtc);
@@ -604,10 +713,7 @@ void mdp4_crtc_set_intf(struct drm_crtc *crtc, enum mdp4_intf intf, int mixer)
 
 void mdp4_crtc_wait_for_commit_done(struct drm_crtc *crtc)
 {
-	/* wait_for_flush_done is the only case for now.
-	 * Later we will have command mode CRTC to wait for
-	 * other event.
-	 */
+	/* Wait for overlay flush to complete before returning */
 	mdp4_crtc_wait_for_flush_done(crtc);
 }
 

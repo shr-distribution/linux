@@ -5,6 +5,7 @@
  */
 
 #include <drm/drm_atomic.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
@@ -79,10 +80,14 @@ static const struct drm_plane_funcs mdp4_plane_funcs = {
 static int mdp4_plane_prepare_fb(struct drm_plane *plane,
 				 struct drm_plane_state *new_state)
 {
+	int ret;
+
 	if (!new_state->fb)
 		return 0;
 
-	drm_gem_plane_helper_prepare_fb(plane, new_state);
+	ret = drm_gem_plane_helper_prepare_fb(plane, new_state);
+	if (ret)
+		return ret;
 
 	return msm_framebuffer_prepare(new_state->fb, false);
 }
@@ -114,6 +119,16 @@ static void mdp4_plane_atomic_update(struct drm_plane *plane,
 									   plane);
 	int ret;
 
+	/*
+	 * Sync the framebuffer cache for display. This must happen AFTER
+	 * GPU fences are waited on (which happens before atomic_update is
+	 * called). On non-coherent platforms like MSM8660, the GPU may have
+	 * rendered data still in cache that the display controller needs
+	 * to see.
+	 */
+	if (new_state->fb)
+		msm_framebuffer_sync_for_display(new_state->fb);
+
 	ret = mdp4_plane_mode_set(plane,
 			new_state->crtc, new_state->fb,
 			new_state->crtc_x, new_state->crtc_y,
@@ -124,11 +139,46 @@ static void mdp4_plane_atomic_update(struct drm_plane *plane,
 	WARN_ON(ret < 0);
 }
 
+/*
+ * Quiesce the pipe when the plane goes inactive. Without this, the
+ * pipe's PIPE_SRCP0_BASE / FETCH_CONFIG / OP_MODE retain their last-
+ * active values from the prior compositor session. setup_mixer
+ * correctly clears the LMIX_IN_CFG bit so the pipe is at STAGE_UNUSED,
+ * but the lingering fetch state can still cause stale-buffer artifacts
+ * across client transitions (e.g. luna-surface-manager → kmscube).
+ *
+ * Mode-set path (mdp4_plane_mode_set) already short-circuits when
+ * !crtc || !fb, so without an explicit atomic_disable nothing ever
+ * resets these registers.
+ */
+static void mdp4_plane_atomic_disable(struct drm_plane *plane,
+				      struct drm_atomic_state *state)
+{
+	struct mdp4_plane *mdp4_plane = to_mdp4_plane(plane);
+	struct mdp4_kms *mdp4_kms = get_kms(plane);
+	enum mdp4_pipe pipe = mdp4_plane->pipe;
+
+	/*
+	 * Point the base at the permanently-mapped black scratch bo rather
+	 * than 0. If this disable fails to latch (an underrun stalls the LCDC
+	 * and DMA_P stops generating vsync, so the OVERLAY_FLUSH never
+	 * completes), the still-staged pipe keeps fetching this base every
+	 * scanout. A valid mapped iova makes that stray fetch read black
+	 * instead of faulting the display IOMMU at an unmapped address
+	 * (the FAR=0x780 fault storm that otherwise wedges the device).
+	 * Falls back to 0 only when there is no IOMMU (no scratch bo).
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_SRCP0_BASE(pipe),
+		   mdp4_kms->blank_pipe_iova);
+	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(pipe), 0);
+}
+
 static const struct drm_plane_helper_funcs mdp4_plane_helper_funcs = {
 		.prepare_fb = mdp4_plane_prepare_fb,
 		.cleanup_fb = mdp4_plane_cleanup_fb,
 		.atomic_check = mdp4_plane_atomic_check,
 		.atomic_update = mdp4_plane_atomic_update,
+		.atomic_disable = mdp4_plane_atomic_disable,
 };
 
 static void mdp4_plane_set_scanout(struct drm_plane *plane,
@@ -320,6 +370,26 @@ static int mdp4_plane_mode_set(struct drm_plane *plane,
 		mdp4_write_csc_config(mdp4_kms, pipe, csc);
 	}
 
+	/*
+	 * Source flip — the VG/RGB pipe can mirror the fetched image
+	 * horizontally and/or vertically during scanout (no rotator block
+	 * needed).  180° rotation is FLIP_LR | FLIP_UD; individual reflects
+	 * map straight to the LR/UD bits.  Used e.g. for panels mounted
+	 * upside-down (TouchPad LVDS) so video can be shown right-way-up
+	 * without a software flip pass.
+	 */
+	if (plane->state) {
+		unsigned int rot = plane->state->rotation;
+
+		if (rot & DRM_MODE_ROTATE_180)
+			op_mode |= MDP4_PIPE_OP_MODE_FLIP_LR |
+				   MDP4_PIPE_OP_MODE_FLIP_UD;
+		if (rot & DRM_MODE_REFLECT_X)
+			op_mode |= MDP4_PIPE_OP_MODE_FLIP_LR;
+		if (rot & DRM_MODE_REFLECT_Y)
+			op_mode |= MDP4_PIPE_OP_MODE_FLIP_UD;
+	}
+
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_OP_MODE(pipe), op_mode);
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_PHASEX_STEP(pipe), phasex_step);
 	mdp4_write(mdp4_kms, REG_MDP4_PIPE_PHASEY_STEP(pipe), phasey_step);
@@ -425,6 +495,18 @@ struct drm_plane *mdp4_plane_init(struct drm_device *dev,
 
 	mdp4_plane->pipe = pipe_id;
 	mdp4_plane->name = pipe_names[pipe_id];
+
+	/*
+	 * Expose hardware source flip (180° / X / Y reflect) — handled by
+	 * the pipe's PIPE_OP_MODE FLIP_LR/FLIP_UD bits in mode_set, no
+	 * rotator block required.  90°/270° would need the standalone MDP
+	 * rotator (not implemented), so they are intentionally not offered.
+	 */
+	drm_plane_create_rotation_property(plane, DRM_MODE_ROTATE_0,
+					   DRM_MODE_ROTATE_0 |
+					   DRM_MODE_ROTATE_180 |
+					   DRM_MODE_REFLECT_X |
+					   DRM_MODE_REFLECT_Y);
 
 	drm_plane_helper_add(plane, &mdp4_plane_helper_funcs);
 

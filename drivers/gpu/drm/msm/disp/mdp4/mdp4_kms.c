@@ -5,6 +5,10 @@
  */
 
 #include <linux/delay.h>
+#include <linux/interconnect.h>
+#include <linux/of_reserved_mem.h>
+#include <linux/pm.h>
+#include <linux/pm_runtime.h>
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
@@ -31,8 +35,14 @@ static int mdp4_hw_init(struct msm_kms *kms)
 
 	mdp4_write(mdp4_kms, REG_MDP4_PORTMAP_MODE, 0x3);
 
-	/* max read pending cmd config, 3 pending requests: */
-	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x02222);
+	/*
+	 * Max read pending cmd config: Use 8 pending requests on APQ8060/MSM8660.
+	 * webOS kernel: "if MDP clock >= AXI clock, use 8 pending". On APQ8060
+	 * both are ~200 MHz, so 8 pending requests are needed to keep the memory
+	 * bus saturated and prevent display underflow during USB activity.
+	 * 0x08888 = 8 pending requests per client (DMA_P, DMA_E, VG pipes)
+	 */
+	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x08888);
 
 	clk = clk_get_rate(mdp4_kms->clk);
 
@@ -74,16 +84,102 @@ static int mdp4_hw_init(struct msm_kms *kms)
 	return 0;
 }
 
+/*
+ * Vote MDP fabric bandwidth. peak_kbps==0 means "no demand" (called on
+ * disable to drop the vote). All four ICC paths (mdp[01]-{ebi,smi}) are
+ * present so the framework keeps them mapped.
+ *
+ * On tenderloin framebuffers can land in either EBI (system CMA) or SMI
+ * (drm_smi_mem custom pool — see msm_smi_alloc), depending on whether
+ * FIX#2 routes a CONTIGUOUS BO into the SMI pool. We don't know per-vote
+ * which pool any given pinned FB is in, so vote the full requested BW
+ * on BOTH EBI and SMI paths. RPM coalesces unused bandwidth at the
+ * fabric level, so over-voting one path is harmless when no traffic
+ * actually flows. Under-voting a path that does carry traffic, however,
+ * starves MDP reads and produces visible stripes / underruns.
+ */
+static void mdp4_icc_vote(struct mdp4_kms *mdp4_kms, u32 avg_kbps,
+			  u32 peak_kbps)
+{
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		if (mdp4_kms->path_ebi[i])
+			icc_set_bw(mdp4_kms->path_ebi[i],
+				   avg_kbps, peak_kbps);
+		if (mdp4_kms->path_smi[i])
+			icc_set_bw(mdp4_kms->path_smi[i],
+				   avg_kbps, peak_kbps);
+	}
+}
+
+/*
+ * DIAGNOSTIC: dump bandwidth-critical MDP4 registers on every enable_commit
+ * so we can see if anything (e.g. a compositor session) leaves them in a
+ * different state than mdp4_hw_init programmed.
+ *
+ * The hypothesis being tested: surface-manager modifies READ_CNFG,
+ * FETCH_CONFIG, etc. and never restores them, so subsequent sessions
+ * inherit the broken values and underflow.
+ */
+static void mdp4_dump_bw_regs(struct mdp4_kms *mdp4_kms, const char *tag)
+{
+	static unsigned int seq;
+
+	pr_debug("mdp4 BW regs [%s seq=%u]: "
+		"PORTMAP=%08x READ_CNFG=%08x "
+		"DMA_FETCH_P=%08x DMA_FETCH_E=%08x "
+		"PIPE_FETCH VG1=%08x VG2=%08x RGB1=%08x RGB2=%08x "
+		"LMIX_IN_CFG=%08x DISP_INTF=%08x LCDC_EN=%08x "
+		"LCDC_UFLOW_CLR=%08x\n",
+		tag, ++seq,
+		mdp4_read(mdp4_kms, REG_MDP4_PORTMAP_MODE),
+		mdp4_read(mdp4_kms, REG_MDP4_READ_CNFG),
+		mdp4_read(mdp4_kms, REG_MDP4_DMA_FETCH_CONFIG(DMA_P)),
+		mdp4_read(mdp4_kms, REG_MDP4_DMA_FETCH_CONFIG(DMA_E)),
+		mdp4_read(mdp4_kms, REG_MDP4_PIPE_FETCH_CONFIG(VG1)),
+		mdp4_read(mdp4_kms, REG_MDP4_PIPE_FETCH_CONFIG(VG2)),
+		mdp4_read(mdp4_kms, REG_MDP4_PIPE_FETCH_CONFIG(RGB1)),
+		mdp4_read(mdp4_kms, REG_MDP4_PIPE_FETCH_CONFIG(RGB2)),
+		mdp4_read(mdp4_kms, REG_MDP4_LAYERMIXER_IN_CFG),
+		mdp4_read(mdp4_kms, REG_MDP4_DISP_INTF_SEL),
+		mdp4_read(mdp4_kms, REG_MDP4_LCDC_ENABLE),
+		mdp4_read(mdp4_kms, REG_MDP4_LCDC_UNDERFLOW_CLR));
+}
+
 static void mdp4_enable_commit(struct msm_kms *kms)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
+
+	mdp4_icc_vote(mdp4_kms, mdp4_kms->icc_avg_bw_kbps,
+		      mdp4_kms->icc_peak_bw_kbps);
 	mdp4_enable(mdp4_kms);
+
+	/* Diagnostic: snapshot BW-critical regs at session start. */
+	mdp4_dump_bw_regs(mdp4_kms, "enable_commit");
 }
 
 static void mdp4_disable_commit(struct msm_kms *kms)
 {
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
+
+	/* Diagnostic: snapshot BW-critical regs at session end. */
+	mdp4_dump_bw_regs(mdp4_kms, "disable_commit");
+
 	mdp4_disable(mdp4_kms);
+
+	/*
+	 * Do NOT drop the fabric bandwidth vote to zero here. enable_commit/
+	 * disable_commit bracket EVERY atomic commit (see msm_atomic.c), but the
+	 * LCDC panel keeps scanning out continuously between commits. Voting 0
+	 * here starved the primary interface and produced PRIMARY_INTF_UDERRUN
+	 * (mdp4_irq_error 0x100) on overlay on/off transitions. Mainline mdp5
+	 * votes a fixed bandwidth once and never drops it; mirror that — the
+	 * active vote stays provisioned (re-asserted idempotently in
+	 * enable_commit) for as long as the display is up. (Releasing the vote
+	 * on genuine display-off / runtime suspend is handled separately, not
+	 * per-commit.)
+	 */
 }
 
 static void mdp4_flush_commit(struct msm_kms *kms, unsigned crtc_mask)
@@ -123,9 +219,17 @@ static void mdp4_destroy(struct msm_kms *kms)
 	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
 	struct device *dev = mdp4_kms->dev->dev;
 
-	if (mdp4_kms->blank_cursor_iova)
-		msm_gem_unpin_iova(mdp4_kms->blank_cursor_bo, kms->vm);
-	drm_gem_object_put(mdp4_kms->blank_cursor_bo);
+	if (mdp4_kms->blank_cursor_bo) {
+		if (mdp4_kms->blank_cursor_iova && kms->vm)
+			msm_gem_unpin_iova(mdp4_kms->blank_cursor_bo, kms->vm);
+		drm_gem_object_put(mdp4_kms->blank_cursor_bo);
+	}
+
+	if (mdp4_kms->blank_pipe_bo) {
+		if (mdp4_kms->blank_pipe_iova && kms->vm)
+			msm_gem_unpin_iova(mdp4_kms->blank_pipe_bo, kms->vm);
+		drm_gem_object_put(mdp4_kms->blank_pipe_bo);
+	}
 
 	if (kms->vm) {
 		struct msm_mmu *mmu = to_msm_vm(kms->vm)->mmu;
@@ -160,26 +264,37 @@ static const struct mdp_kms_funcs kms_funcs = {
 	.set_irqmask         = mdp4_set_irqmask,
 };
 
+/*
+ * Clock enable/disable now goes through proper runtime PM (see
+ * mdp4_runtime_resume/suspend below). The previous implementation
+ * used a static refcount with direct clk_prepare_enable, which
+ * combined with a runtime-PM-callback-less mdp4_pm_ops meant
+ * pm_runtime_get_sync() in mdp4_hw_init was a no-op for power.
+ * That left init writes to BW-critical regs (READ_CNFG, PORTMAP_MODE,
+ * PIPE_FETCH_CONFIG) racing the bootloader-default state.
+ *
+ * Now mdp4_enable/disable wrap pm_runtime_resume_and_get and
+ * pm_runtime_put_sync, the real clock work happens in the runtime
+ * callbacks, and pm_runtime_get_sync in hw_init reliably brings
+ * clocks/power up before register programming.
+ */
 int mdp4_disable(struct mdp4_kms *mdp4_kms)
 {
 	DBG("");
 
-	clk_disable_unprepare(mdp4_kms->clk);
-	clk_disable_unprepare(mdp4_kms->pclk);
-	clk_disable_unprepare(mdp4_kms->lut_clk);
-	clk_disable_unprepare(mdp4_kms->axi_clk);
-
+	pm_runtime_put_sync(mdp4_kms->dev->dev);
 	return 0;
 }
 
 int mdp4_enable(struct mdp4_kms *mdp4_kms)
 {
+	int ret;
+
 	DBG("");
 
-	clk_prepare_enable(mdp4_kms->clk);
-	clk_prepare_enable(mdp4_kms->pclk);
-	clk_prepare_enable(mdp4_kms->lut_clk);
-	clk_prepare_enable(mdp4_kms->axi_clk);
+	ret = pm_runtime_resume_and_get(mdp4_kms->dev->dev);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
@@ -299,6 +414,7 @@ static int modeset_init(struct mdp4_kms *mdp4_kms)
 	struct drm_device *dev = mdp4_kms->dev;
 	struct drm_plane *plane;
 	struct drm_crtc *crtc;
+	struct drm_bridge *lvds_bridge;
 	int i, ret;
 	static const enum mdp4_pipe rgb_planes[] = {
 		RGB1, RGB2,
@@ -317,6 +433,19 @@ static int modeset_init(struct mdp4_kms *mdp4_kms)
 		DRM_MODE_ENCODER_DSI,
 		DRM_MODE_ENCODER_TMDS,
 	};
+
+	/*
+	 * Check if LVDS bridge/panel is available BEFORE creating any DRM
+	 * objects. This avoids creating planes/CRTCs that we can't clean up
+	 * properly if we need to defer probe waiting for the panel driver.
+	 */
+	lvds_bridge = devm_drm_of_get_bridge(dev->dev, dev->dev->of_node, 0, 0);
+	if (IS_ERR(lvds_bridge)) {
+		ret = PTR_ERR(lvds_bridge);
+		if (ret == -EPROBE_DEFER)
+			return ret;  /* Defer before creating any objects */
+		/* -ENODEV means no panel configured - that's OK, continue */
+	}
 
 	/* construct non-private planes: */
 	for (i = 0; i < ARRAY_SIZE(vg_planes); i++) {
@@ -377,7 +506,21 @@ static void read_mdp_hw_revision(struct mdp4_kms *mdp4_kms,
 				 u32 *major, u32 *minor)
 {
 	struct drm_device *dev = mdp4_kms->dev;
+	static int cached_major = -1, cached_minor = -1;
 	u32 version;
+
+	/*
+	 * Cache the HW revision to avoid repeated clock enable/disable cycles
+	 * on deferred probe retries. Each cycle triggers a "mdp_axi_clk status
+	 * stuck at 'on'" warning because the clock branch hardware can't
+	 * transition fast enough. Static variables persist across probe retries
+	 * unlike the devm-allocated mdp4_kms struct which is freed each time.
+	 */
+	if (cached_major >= 0) {
+		*major = cached_major;
+		*minor = cached_minor;
+		return;
+	}
 
 	mdp4_enable(mdp4_kms);
 	version = mdp4_read(mdp4_kms, REG_MDP4_VERSION);
@@ -385,6 +528,9 @@ static void read_mdp_hw_revision(struct mdp4_kms *mdp4_kms,
 
 	*major = FIELD(version, MDP4_VERSION_MAJOR);
 	*minor = FIELD(version, MDP4_VERSION_MINOR);
+
+	cached_major = *major;
+	cached_minor = *minor;
 
 	DRM_DEV_INFO(dev->dev, "MDP4 version v%d.%d", *major, *minor);
 }
@@ -399,8 +545,8 @@ static int mdp4_kms_init(struct drm_device *dev)
 	u32 major, minor;
 	unsigned long max_clk;
 
-	/* TODO: Chips that aren't apq8064 have a 200 Mhz max_clk */
-	max_clk = 266667000;
+	/* APQ8060/MSM8660 - use 200MHz (matching webOS kernel) */
+	max_clk = 200000000;
 
 	ret = mdp_kms_init(&mdp4_kms->base, &kms_funcs);
 	if (ret) {
@@ -445,17 +591,39 @@ static int mdp4_kms_init(struct drm_device *dev)
 	pm_runtime_enable(dev->dev);
 	mdp4_kms->rpm_enabled = true;
 
-	/* make sure things are off before attaching iommu (bootloader could
-	 * have left things on, in which case we'll start getting faults if
-	 * we don't disable):
+	/*
+	 * Call modeset_init() before disabling display outputs. modeset_init()
+	 * checks panel/bridge availability first (returning -EPROBE_DEFER if
+	 * the panel driver hasn't probed yet) before creating any DRM objects.
+	 *
+	 * By doing this check before the LCDC disable below, we preserve the
+	 * bootloader's display state when waiting for deferred probe. Without
+	 * this ordering, the LCDC disable would kill pixel data to the panel
+	 * while the LVDS receiver is still active, causing blue vertical lines
+	 * that persist until the deferred probe retry eventually succeeds.
 	 */
-	mdp4_enable(mdp4_kms);
-	mdp4_write(mdp4_kms, REG_MDP4_DTV_ENABLE, 0);
-	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
-	mdp4_write(mdp4_kms, REG_MDP4_DSI_ENABLE, 0);
-	mdp4_disable(mdp4_kms);
-	mdelay(16);
+	ret = modeset_init(mdp4_kms);
+	if (ret) {
+		DRM_DEV_ERROR(dev->dev, "modeset_init failed: %d\n", ret);
+		goto fail;
+	}
 
+	/*
+	 * Note: Display outputs (LCDC/DTV/DSI) are already disabled in
+	 * mdp4_probe() before we get here. That early disable uses raw
+	 * register writes without enabling clocks, which avoids the
+	 * "mdp_axi_clk status stuck" warnings that occurred when toggling
+	 * clocks just to write zeros to already-zero registers.
+	 *
+	 * The 50ms delay in mdp4_probe() ensures the display pipeline has
+	 * fully drained before IOMMU setup proceeds.
+	 */
+
+	/*
+	 * Initialize VM after modeset_init() succeeds. This avoids creating
+	 * a VM that needs cleanup if modeset_init() returns -EPROBE_DEFER
+	 * (waiting for panel/bridge driver).
+	 */
 	vm = msm_kms_init_vm(mdp4_kms->dev, NULL);
 	if (IS_ERR(vm)) {
 		ret = PTR_ERR(vm);
@@ -464,25 +632,52 @@ static int mdp4_kms_init(struct drm_device *dev)
 
 	kms->vm = vm;
 
-	ret = modeset_init(mdp4_kms);
-	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "modeset_init failed: %d\n", ret);
-		goto fail;
-	}
+	/*
+	 * Blank cursor requires IOMMU for IOVA mapping.
+	 * Skip cursor support when running without IOMMU.
+	 */
+	if (kms->vm) {
+		mdp4_kms->blank_cursor_bo = msm_gem_new(dev, SZ_16K, MSM_BO_WC | MSM_BO_SCANOUT);
+		if (IS_ERR(mdp4_kms->blank_cursor_bo)) {
+			ret = PTR_ERR(mdp4_kms->blank_cursor_bo);
+			DRM_DEV_ERROR(dev->dev, "could not allocate blank-cursor bo: %d\n", ret);
+			mdp4_kms->blank_cursor_bo = NULL;
+			goto fail;
+		}
 
-	mdp4_kms->blank_cursor_bo = msm_gem_new(dev, SZ_16K, MSM_BO_WC | MSM_BO_SCANOUT);
-	if (IS_ERR(mdp4_kms->blank_cursor_bo)) {
-		ret = PTR_ERR(mdp4_kms->blank_cursor_bo);
-		DRM_DEV_ERROR(dev->dev, "could not allocate blank-cursor bo: %d\n", ret);
+		ret = msm_gem_get_and_pin_iova(mdp4_kms->blank_cursor_bo, kms->vm,
+				&mdp4_kms->blank_cursor_iova);
+		if (ret) {
+			DRM_DEV_ERROR(dev->dev, "could not pin blank-cursor bo: %d\n", ret);
+			goto fail;
+		}
+
+		/*
+		 * Black scratch bo that a disabled pipe fetches from instead of
+		 * iova 0 (see mdp4_plane_atomic_disable). Sized to cover a full
+		 * panel-resolution frame so even a stray full-frame fetch by a
+		 * not-yet-quiesced pipe stays in-bounds. Pages are shmem-zeroed
+		 * (= black luma) so no memset is needed.
+		 */
+		mdp4_kms->blank_pipe_bo = msm_gem_new(dev, SZ_2M, MSM_BO_WC);
+		if (IS_ERR(mdp4_kms->blank_pipe_bo)) {
+			ret = PTR_ERR(mdp4_kms->blank_pipe_bo);
+			DRM_DEV_ERROR(dev->dev, "could not allocate blank-pipe bo: %d\n", ret);
+			mdp4_kms->blank_pipe_bo = NULL;
+			goto fail;
+		}
+		ret = msm_gem_get_and_pin_iova(mdp4_kms->blank_pipe_bo, kms->vm,
+				&mdp4_kms->blank_pipe_iova);
+		if (ret) {
+			DRM_DEV_ERROR(dev->dev, "could not pin blank-pipe bo: %d\n", ret);
+			goto fail;
+		}
+	} else {
+		DRM_DEV_INFO(dev->dev, "no IOMMU, cursor support disabled\n");
 		mdp4_kms->blank_cursor_bo = NULL;
-		goto fail;
-	}
-
-	ret = msm_gem_get_and_pin_iova(mdp4_kms->blank_cursor_bo, kms->vm,
-			&mdp4_kms->blank_cursor_iova);
-	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "could not pin blank-cursor bo: %d\n", ret);
-		goto fail;
+		mdp4_kms->blank_cursor_iova = 0;
+		mdp4_kms->blank_pipe_bo = NULL;
+		mdp4_kms->blank_pipe_iova = 0;
 	}
 
 	dev->mode_config.min_width = 0;
@@ -499,24 +694,153 @@ fail:
 	return ret;
 }
 
+static int mdp4_runtime_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct msm_drm_private *priv = platform_get_drvdata(pdev);
+	struct mdp4_kms *mdp4_kms;
+
+	if (!priv || !priv->kms)
+		return 0;
+
+	mdp4_kms = to_mdp4_kms(to_mdp_kms(priv->kms));
+
+	clk_prepare_enable(mdp4_kms->clk);
+	clk_prepare_enable(mdp4_kms->pclk);
+	clk_prepare_enable(mdp4_kms->lut_clk);
+	clk_prepare_enable(mdp4_kms->axi_clk);
+	clk_prepare_enable(mdp4_kms->vsync_clk);
+
+	return 0;
+}
+
+static int mdp4_runtime_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct msm_drm_private *priv = platform_get_drvdata(pdev);
+	struct mdp4_kms *mdp4_kms;
+
+	if (!priv || !priv->kms)
+		return 0;
+
+	mdp4_kms = to_mdp4_kms(to_mdp_kms(priv->kms));
+
+	clk_disable_unprepare(mdp4_kms->vsync_clk);
+	clk_disable_unprepare(mdp4_kms->axi_clk);
+	clk_disable_unprepare(mdp4_kms->lut_clk);
+	clk_disable_unprepare(mdp4_kms->pclk);
+	clk_disable_unprepare(mdp4_kms->clk);
+
+	return 0;
+}
+
 static const struct dev_pm_ops mdp4_pm_ops = {
 	.prepare = msm_kms_pm_prepare,
 	.complete = msm_kms_pm_complete,
+	RUNTIME_PM_OPS(mdp4_runtime_suspend, mdp4_runtime_resume, NULL)
 };
+
+/* Default bandwidth values (in kBps) - used if not specified in DT */
+#define MDP4_DEFAULT_BW_AVG_KBPS	(500 * 1024)	/* 500 MB/s */
+#define MDP4_DEFAULT_BW_PEAK_KBPS	(700 * 1024)	/* 700 MB/s */
+
+/*
+ * Look up MDP interconnect paths and stash them on mdp4_kms. Bandwidth is
+ * voted dynamically from enable_commit/disable_commit (mdp4_icc_vote()) so
+ * we don't hold a fabric reservation while the display is off.
+ *
+ * tenderloin allocates framebuffers in EBI (system RAM); the SMI paths are
+ * tracked so the framework registers them but they're voted at zero —
+ * voting equal bandwidth on both SMI and EBI inflates aggregation and
+ * arbitration without representing real demand.
+ */
+static int mdp4_setup_interconnect(struct platform_device *pdev,
+				   struct mdp4_kms *mdp4_kms)
+{
+	struct device_node *np = pdev->dev.of_node;
+	struct icc_path *path;
+	int i;
+	const char * const ebi_names[2] = { "mdp0-ebi", "mdp1-ebi" };
+	const char * const smi_names[2] = { "mdp0-smi", "mdp1-smi" };
+	const char * const mem_names[2] = { "mdp0-mem", "mdp1-mem" };
+
+	mdp4_kms->icc_avg_bw_kbps = MDP4_DEFAULT_BW_AVG_KBPS;
+	mdp4_kms->icc_peak_bw_kbps = MDP4_DEFAULT_BW_PEAK_KBPS;
+	of_property_read_u32(np, "qcom,icc-bw-avg-kbps",
+			     &mdp4_kms->icc_avg_bw_kbps);
+	of_property_read_u32(np, "qcom,icc-bw-peak-kbps",
+			     &mdp4_kms->icc_peak_bw_kbps);
+
+	for (i = 0; i < 2; i++) {
+		path = msm_icc_get(&pdev->dev, ebi_names[i]);
+		if (IS_ERR(path))
+			return PTR_ERR(path);
+		mdp4_kms->path_ebi[i] = path;
+
+		path = msm_icc_get(&pdev->dev, smi_names[i]);
+		if (IS_ERR(path))
+			return PTR_ERR(path);
+		if (!path)
+			path = msm_icc_get(&pdev->dev, mem_names[i]);
+		if (IS_ERR(path))
+			return PTR_ERR(path);
+		mdp4_kms->path_smi[i] = path;
+	}
+
+	if (!mdp4_kms->path_ebi[0] && !mdp4_kms->path_smi[0]) {
+		dev_warn(&pdev->dev,
+			 "No interconnect support - may cause USB/display conflicts!\n");
+		return 0;
+	}
+
+	dev_dbg(&pdev->dev,
+		"MDP interconnect bandwidth (active): avg=%u kBps, peak=%u kBps\n",
+		mdp4_kms->icc_avg_bw_kbps, mdp4_kms->icc_peak_bw_kbps);
+
+	return 0;
+}
 
 static int mdp4_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mdp4_kms *mdp4_kms;
-	int irq;
+	int irq, ret;
 
 	mdp4_kms = devm_kzalloc(dev, sizeof(*mdp4_kms), GFP_KERNEL);
 	if (!mdp4_kms)
 		return -ENOMEM;
 
+	/*
+	 * Initialize reserved memory region (SMI) if specified in device tree.
+	 * This allows DRM to allocate framebuffers from the dedicated SMI
+	 * memory region instead of system RAM.
+	 */
+	ret = of_reserved_mem_device_init(dev);
+	if (ret && ret != -ENODEV)
+		dev_warn(dev, "Could not get reserved memory: %d\n", ret);
+
 	mdp4_kms->mmio = msm_ioremap(pdev, NULL);
 	if (IS_ERR(mdp4_kms->mmio))
 		return PTR_ERR(mdp4_kms->mmio);
+
+	/*
+	 * Disable display outputs immediately after mapping registers.
+	 * The bootloader may have left LCDC/DTV running, which causes
+	 * IOMMU page faults when the MDP tries to access the bootloader's
+	 * framebuffer through the now-active IOMMU without proper mappings.
+	 * Writing 0 to the enable registers stops the MDP from fetching
+	 * pixel data, preventing the page faults.
+	 *
+	 * Use writel_relaxed for the writes, then a single wmb() to ensure
+	 * all writes reach the hardware. The 50ms delay allows the display
+	 * pipeline to fully drain any in-flight memory read requests before
+	 * proceeding - the MDP prefetches several scanlines ahead.
+	 */
+	writel_relaxed(0, mdp4_kms->mmio + REG_MDP4_LCDC_ENABLE);
+	writel_relaxed(0, mdp4_kms->mmio + REG_MDP4_DTV_ENABLE);
+	writel_relaxed(0, mdp4_kms->mmio + REG_MDP4_DSI_ENABLE);
+	wmb(); /* Ensure disable writes reach hardware */
+	mdelay(50); /* Wait for display pipeline to drain */
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -524,11 +848,11 @@ static int mdp4_probe(struct platform_device *pdev)
 
 	mdp4_kms->base.base.irq = irq;
 
-	/* NOTE: driver for this regulator still missing upstream.. use
-	 * _get_exclusive() and ignore the error if it does not exist
-	 * (and hope that the bootloader left it on for us)
+	/*
+	 * VDD regulator is optional - on some boards the bootloader
+	 * may leave it on.
 	 */
-	mdp4_kms->vdd = devm_regulator_get_exclusive(&pdev->dev, "vdd");
+	mdp4_kms->vdd = devm_regulator_get_optional(&pdev->dev, "vdd");
 	if (IS_ERR(mdp4_kms->vdd))
 		mdp4_kms->vdd = NULL;
 
@@ -544,13 +868,18 @@ static int mdp4_probe(struct platform_device *pdev)
 	if (IS_ERR(mdp4_kms->axi_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->axi_clk), "failed to get axi_clk\n");
 
-	/*
-	 * This is required for revn >= 2. Handle errors here and let the kms
-	 * init bail out if the clock is not provided.
-	 */
 	mdp4_kms->lut_clk = devm_clk_get_optional(&pdev->dev, "lut_clk");
 	if (IS_ERR(mdp4_kms->lut_clk))
 		return dev_err_probe(dev, PTR_ERR(mdp4_kms->lut_clk), "failed to get lut_clk\n");
+
+	mdp4_kms->vsync_clk = devm_clk_get_optional(&pdev->dev, "vsync_clk");
+	if (IS_ERR(mdp4_kms->vsync_clk))
+		return dev_err_probe(dev, PTR_ERR(mdp4_kms->vsync_clk), "failed to get vsync_clk\n");
+
+	/* Look up interconnect paths; bandwidth is voted from enable_commit. */
+	ret = mdp4_setup_interconnect(pdev, mdp4_kms);
+	if (ret)
+		return ret;
 
 	return msm_drv_probe(&pdev->dev, mdp4_kms_init, &mdp4_kms->base.base);
 }

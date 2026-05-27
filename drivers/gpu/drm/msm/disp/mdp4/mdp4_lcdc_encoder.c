@@ -118,15 +118,23 @@ static void setup_phy(struct drm_encoder *encoder)
 		break;
 
 	case 18:
+		/*
+		 * 18-bit LVDS (6 bits per channel) with R/B swapped for
+		 * JEIDA-18 panels. The original upstream code used VESA-style
+		 * ordering which puts B on lane 0 and R on lane 2. JEIDA panels
+		 * expect the opposite: R on lane 0, B on lane 2.
+		 */
+		/* Lane 0: Red channel (was Blue in upstream) */
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_3_TO_0(0),
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x0a) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x07) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT2(0x06) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT3(0x05));
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x1a) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x19) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT2(0x18) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT3(0x17));
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_6_TO_4(0),
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x04) |
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x03) |
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x02));
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x16) |
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x15) |
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x14));
+		/* Lane 1: Green channel (unchanged) */
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_3_TO_0(1),
 				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x13) |
 				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x12) |
@@ -136,15 +144,16 @@ static void setup_phy(struct drm_encoder *encoder)
 				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x0d) |
 				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x0c) |
 				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x0b));
+		/* Lane 2: Blue channel (was Red in upstream) */
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_3_TO_0(2),
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x1a) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x19) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT2(0x18) |
-				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT3(0x17));
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT0(0x0a) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT1(0x07) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT2(0x06) |
+				MDP4_LCDC_LVDS_MUX_CTL_3_TO_0_BIT3(0x05));
 		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL_6_TO_4(2),
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x16) |
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x15) |
-				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x14));
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT4(0x04) |
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT5(0x03) |
+				MDP4_LCDC_LVDS_MUX_CTL_6_TO_4_BIT6(0x02));
 		if (nchan == 2) {
 			lvds_intf |= MDP4_LCDC_LVDS_INTF_CTL_CH2_DATA_LANE2_EN |
 					MDP4_LCDC_LVDS_INTF_CTL_CH2_DATA_LANE1_EN |
@@ -185,16 +194,41 @@ static void setup_phy(struct drm_encoder *encoder)
 	if (swap)
 		lvds_intf |= MDP4_LCDC_LVDS_INTF_CTL_CH_SWAP;
 
-	lvds_intf |= MDP4_LCDC_LVDS_INTF_CTL_ENABLE;
+	/*
+	 * LVDS PHY initialization sequence - must enable serialization
+	 * BEFORE enabling the interface to prevent blue vertical lines.
+	 *
+	 * Sequence:
+	 * 1. Configure PHY channels and interface (without ENABLE)
+	 * 2. Wait for PHY to stabilize
+	 * 3. Enable serialization
+	 * 4. Wait for serializer to lock
+	 * 5. Enable LVDS interface
+	 */
 
+	/* Step 1: Configure PHY and interface WITHOUT enabling yet */
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0, lvds_phy_cfg0);
-	mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_INTF_CTL, lvds_intf);
+	mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_INTF_CTL, lvds_intf);  /* ENABLE not set */
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG2, 0x30);
 
 	mb();
-	udelay(1);
+
+	/* Step 2: Wait for PHY to stabilize */
+	udelay(200);
+
+	/* Step 3: Enable serialization */
 	lvds_phy_cfg0 |= MDP4_LVDS_PHY_CFG0_SERIALIZATION_ENBLE;
 	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0, lvds_phy_cfg0);
+
+	/* Step 4: Wait for serializer to lock */
+	udelay(200);
+
+	/* Step 5: Now enable the LVDS interface */
+	lvds_intf |= MDP4_LCDC_LVDS_INTF_CTL_ENABLE;
+	mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_INTF_CTL, lvds_intf);
+
+	/* Final stabilization delay before LCDC starts */
+	udelay(100);
 }
 
 static void mdp4_lcdc_encoder_mode_set(struct drm_encoder *encoder,
@@ -292,20 +326,39 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 			to_mdp4_lcdc_encoder(encoder);
 	unsigned long pc = mdp4_lcdc_encoder->pixclock;
 	struct mdp4_kms *mdp4_kms = get_kms(encoder);
+	struct drm_connector *connector = get_connector(encoder);
 	uint32_t config;
-	int ret;
+	int bpc, ret;
 
 	if (WARN_ON(mdp4_lcdc_encoder->enabled))
 		return;
 
-	/* TODO: hard-coded for 18bpp: */
-	config =
-		MDP4_DMA_CONFIG_R_BPC(BPC6) |
-		MDP4_DMA_CONFIG_G_BPC(BPC6) |
-		MDP4_DMA_CONFIG_B_BPC(BPC6) |
-		MDP4_DMA_CONFIG_PACK(0x21) |
-		MDP4_DMA_CONFIG_DEFLKR_EN |
-		MDP4_DMA_CONFIG_DITHER_EN;
+	/*
+	 * Configure DMA output format based on panel's bits-per-channel.
+	 * The panel-lvds driver sets display_info.bpc based on data-mapping:
+	 * - "vesa-24" -> bpc=8 (24-bit color, 8 bits per channel)
+	 * - "vesa-18" -> bpc=6 (18-bit color, 6 bits per channel)
+	 */
+	bpc = connector ? connector->display_info.bpc : 0;
+	if (!bpc)
+		bpc = 6; /* Default to 18bpp if not specified */
+
+	if (bpc >= 8) {
+		/* 24bpp: 8 bits per channel, no dithering needed */
+		config =
+			MDP4_DMA_CONFIG_R_BPC(BPC8) |
+			MDP4_DMA_CONFIG_G_BPC(BPC8) |
+			MDP4_DMA_CONFIG_B_BPC(BPC8) |
+			MDP4_DMA_CONFIG_PACK(0x21);
+	} else {
+		/* 18bpp: 6 bits per channel, enable dithering */
+		config =
+			MDP4_DMA_CONFIG_R_BPC(BPC6) |
+			MDP4_DMA_CONFIG_G_BPC(BPC6) |
+			MDP4_DMA_CONFIG_B_BPC(BPC6) |
+			MDP4_DMA_CONFIG_PACK(0x21) |
+			MDP4_DMA_CONFIG_DITHER_EN;
+	}
 
 	if (!of_property_read_bool(dev->dev->of_node, "qcom,lcdc-align-lsb"))
 		config |= MDP4_DMA_CONFIG_PACK_ALIGN_MSB;
@@ -377,7 +430,8 @@ struct drm_encoder *mdp4_lcdc_encoder_init(struct drm_device *dev)
 
 	mdp4_lcdc_encoder->lcdc_clk = mdp4_get_lcdc_clock(dev);
 	if (IS_ERR(mdp4_lcdc_encoder->lcdc_clk)) {
-		DRM_DEV_ERROR(dev->dev, "failed to get lvds_clk\n");
+		DRM_DEV_ERROR(dev->dev, "failed to get lvds_clk: %ld\n",
+			      PTR_ERR(mdp4_lcdc_encoder->lcdc_clk));
 		return ERR_CAST(mdp4_lcdc_encoder->lcdc_clk);
 	}
 
@@ -389,8 +443,10 @@ struct drm_encoder *mdp4_lcdc_encoder_init(struct drm_device *dev)
 	ret = devm_regulator_bulk_get(dev->dev,
 				      ARRAY_SIZE(mdp4_lcdc_encoder->regs),
 				      mdp4_lcdc_encoder->regs);
-	if (ret)
+	if (ret) {
+		DRM_DEV_ERROR(dev->dev, "failed to get regulators: %d\n", ret);
 		return ERR_PTR(ret);
+	}
 
 	return encoder;
 }
