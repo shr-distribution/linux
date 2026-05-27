@@ -806,6 +806,13 @@
 			clock-names = "smmu_pclk", "iommu_clk";
 			#iommu-cells = <1>;
 			qcom,ncb = <2>;
+			/*
+			 * The JPEG (Gemini) engine DMAs with physical
+			 * addresses, not IOVAs. Route its MID to an
+			 * MMU-disabled (passthrough) context instead of
+			 * translating; see msm_iommu_program_bypass().
+			 */
+			qcom,iommu-bypass;
 			status = "disabled";
 		};
 

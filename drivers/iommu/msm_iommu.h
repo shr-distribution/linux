@@ -64,6 +64,16 @@ struct msm_iommu_dev {
 	 * avoid disrupting bootloader display output via this memory path.
 	 */
 	bool reset_done;
+
+	/*
+	 * Hardware-bypass instance (DT "qcom,iommu-bypass"). The single
+	 * master on this SMMU (e.g. the JPEG/Gemini engine) DMAs using raw
+	 * physical addresses rather than IOVAs, matching the legacy design.
+	 * On the IDENTITY default domain we route the master's MIDs to a
+	 * context bank left with the MMU disabled (1:1 passthrough) instead
+	 * of leaving them unconfigured (which faults continuously).
+	 */
+	bool bypass;
 };
 
 /**

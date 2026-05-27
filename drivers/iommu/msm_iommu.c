@@ -466,6 +466,65 @@ fail:
 	return ret;
 }
 
+/*
+ * Program a "bypass" master on a qcom,iommu-bypass SMMU: route its MID(s)
+ * to a context bank but leave the MMU disabled (SCTLR cleared by
+ * __reset_context), i.e. a 1:1 physical-address passthrough. This is the
+ * IDENTITY-domain handling for instances like the IJPEG/Gemini SMMU whose
+ * master DMAs with physical addresses (no IOVA mapping, matching the legacy
+ * webOS design). Without it the master's transactions hit an unconfigured
+ * context and fault continuously, returning garbage to the engine.
+ */
+static int msm_iommu_program_bypass(struct device *dev)
+{
+	struct msm_iommu_dev *iommu;
+	struct msm_iommu_ctx_dev *master;
+	unsigned long flags;
+	int ret = 0, ctx;
+
+	spin_lock_irqsave(&msm_iommu_lock, flags);
+	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
+		if (!iommu->bypass)
+			continue;
+		master = find_master_for_dev(iommu, dev);
+		if (!master)
+			continue;
+		/* Single-master bypass SMMU: program the context bank once. */
+		if (!bitmap_empty(iommu->context_map, iommu->ncb))
+			continue;
+
+		ret = __enable_clocks(iommu);
+		if (ret)
+			break;
+
+		/*
+		 * Deferred reset is safe here: a bypass engine (JPEG) performs
+		 * no in-flight DMA at boot, unlike the display memory path.
+		 */
+		if (!iommu->reset_done) {
+			msm_iommu_reset(iommu->base, iommu->ncb);
+			iommu->reset_done = true;
+		}
+
+		ctx = msm_iommu_alloc_ctx(iommu->context_map, 0, iommu->ncb);
+		if (ctx < 0) {
+			__disable_clocks(iommu);
+			ret = ctx;
+			break;
+		}
+		master->num = ctx;
+
+		/* Route MIDs to the context, then leave the MMU disabled. */
+		config_mids(iommu, master);
+		__reset_context(iommu->base, master->num);
+
+		__disable_clocks(iommu);
+	}
+	spin_unlock_irqrestore(&msm_iommu_lock, flags);
+
+	return ret;
+}
+
 static int msm_iommu_identity_attach(struct iommu_domain *identity_domain,
 				     struct device *dev)
 {
@@ -477,7 +536,7 @@ static int msm_iommu_identity_attach(struct iommu_domain *identity_domain,
 	int ret = 0;
 
 	if (domain == identity_domain || !domain)
-		return 0;
+		return msm_iommu_program_bypass(dev);
 
 	priv = to_msm_priv(domain);
 	free_io_pgtable_ops(priv->iop);
@@ -714,23 +773,25 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 		fsr = GET_FSR(iommu->base, i);
 		if (fsr) {
 			/*
-			 * Rate-limit BOTH the dev_err header line AND the
-			 * print_ctx_regs() multi-line dump together. On
-			 * Tenderloin/APQ8060 with Gemini using the IDENTITY
-			 * (passthrough) default domain — necessary because
-			 * IOMMU_DOMAIN_DMA with msm_iommu deadlocks the
-			 * system — every JPEG encode generates thousands of
-			 * these prints. The engine reads raw CMA physical
-			 * addresses, the SMMU has no mapping for them, but
-			 * the read still completes through the passthrough
-			 * so the encode produces correct output. The "fault"
-			 * is purely a logging event, not a data error. At
-			 * full rate the prints saturate netconsole and hide
-			 * everything else.
+			 * A context fault here means a master is issuing
+			 * transactions against an unconfigured context bank.
+			 * For a qcom,iommu-bypass instance (e.g. IJPEG/Gemini)
+			 * this used to happen on every encode because the
+			 * IDENTITY domain left the master's MIDs unrouted: the
+			 * engine read raw physical addresses, the SMMU faulted,
+			 * the read returned garbage (NOT, as previously
+			 * believed, correct passthrough data — verified on
+			 * Tenderloin: encoded output was input-independent), and
+			 * at full fault rate the prints saturated netconsole
+			 * until the device locked up. msm_iommu_program_bypass()
+			 * now routes those MIDs to an MMU-disabled context, so
+			 * these faults should no longer fire during normal use;
+			 * if they do, the master is mis-programmed.
 			 *
-			 * Keep the FSR clear and IRQ_HANDLED accounting
-			 * outside the ratelimit gate — those are functional,
-			 * not logging.
+			 * Rate-limit BOTH the dev_err header line AND the
+			 * print_ctx_regs() dump together. Keep the FSR clear and
+			 * IRQ_HANDLED accounting outside the ratelimit gate —
+			 * those are functional, not logging.
 			 */
 			static DEFINE_RATELIMIT_STATE(rs,
 				DEFAULT_RATELIMIT_INTERVAL,
@@ -831,6 +892,14 @@ static int msm_iommu_probe(struct platform_device *pdev)
 		return ret;
 	}
 	iommu->ncb = val;
+
+	/*
+	 * Bypass instance: the (single) master DMAs with physical addresses,
+	 * so the IDENTITY domain must route its MIDs to an MMU-disabled
+	 * (passthrough) context rather than leave them unconfigured.
+	 */
+	iommu->bypass = of_property_read_bool(iommu->dev->of_node,
+					      "qcom,iommu-bypass");
 
 	/*
 	 * Defer IOMMU reset to first device attach. This prevents disruption
