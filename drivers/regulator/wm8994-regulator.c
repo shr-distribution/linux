@@ -139,8 +139,17 @@ static const struct regulator_init_data wm8994_ldo_default[] = {
 		.num_consumer_supplies = 1,
 	},
 	{
+		/*
+		 * LDO2 default: Set always_on to prevent the regulator
+		 * framework from disabling it when there are no consumers.
+		 * This is needed when DCVDD is supplied externally and LDO2
+		 * has no explicit consumers, but we still need LDO2 enabled
+		 * for proper codec operation (e.g., HP TouchPad where LDO2
+		 * GPIO is shared with I2S LRCLK).
+		 */
 		.constraints = {
 			.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+			.always_on = 1,
 		},
 		.num_consumer_supplies = 1,
 	},
@@ -173,11 +182,16 @@ static int wm8994_ldo_probe(struct platform_device *pdev)
 
 	/*
 	 * Look up LDO enable GPIO from the parent device node, we don't
-	 * use devm because the regulator core will free the GPIO
+	 * use devm because the regulator core will free the GPIO.
+	 *
+	 * Use GPIOD_ASIS to preserve the current GPIO state. The
+	 * wm8994-core driver enables LDO GPIOs early during probe so
+	 * the codec responds on I2C. We don't want to reset them to LOW
+	 * here before the regulator is properly enabled.
 	 */
 	gpiod = gpiod_get_optional(pdev->dev.parent,
 				   id ? "wlf,ldo2ena" : "wlf,ldo1ena",
-				   GPIOD_OUT_LOW |
+				   GPIOD_ASIS |
 				   GPIOD_FLAGS_BIT_NONEXCLUSIVE);
 	if (IS_ERR(gpiod))
 		return PTR_ERR(gpiod);
