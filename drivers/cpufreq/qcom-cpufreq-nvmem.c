@@ -627,6 +627,16 @@ static const struct of_device_id qcom_cpufreq_match_list[] __initconst __maybe_u
 	{ .compatible = "qcom,ipq9574", .data = &match_data_kryo },
 	{ .compatible = "qcom,msm8974", .data = &match_data_krait },
 	{ .compatible = "qcom,msm8960", .data = &match_data_krait },
+	/*
+	 * Scorpion-MP (MSM8660 / APQ8060) uses the same QFPROM PTE_EFUSE
+	 * speed_bin / pvs layout as Krait-class chips. Reuse the krait
+	 * match_data so qcom_cpufreq_krait_name_version() ->
+	 * get_krait_bin_format_a() reads it. The OPP table must be marked
+	 * `compatible = "operating-points-v2-krait-cpu"` for the driver to
+	 * consume it. Tested on HP TouchPad / TouchPad 4G (topaz / topaz-3g).
+	 */
+	{ .compatible = "qcom,msm8660", .data = &match_data_krait },
+	{ .compatible = "qcom,apq8060", .data = &match_data_krait },
 	{},
 };
 MODULE_DEVICE_TABLE(of, qcom_cpufreq_match_list);
