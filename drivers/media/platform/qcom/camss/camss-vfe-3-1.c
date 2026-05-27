@@ -6413,11 +6413,39 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
 }
 
 /*
- * Gen1 ops struct removed - VFE31 is fully decoupled from gen1 framework.
- * All streaming, buffer management, and ISR handling is in vfe31_enable,
- * vfe31_disable, vfe31_isr, and vfe31_wm_done. The gen1 callbacks
- * (set_camif_cfg, wm_line_based, etc.) were dead code never called
- * from our code path.
+ * Why VFE31 does not use the gen1 data path (ops_gen1 is NULL).
+ *
+ * camss-vfe-gen1.c provides a shared streaming/buffer model
+ * (vfe_enable_output / vfe_disable_output / vfe_isr_comp_done /
+ * vfe_queue_buffer) driven by the vfe_hw_ops_gen1 vtable, and the VFE4.x /
+ * gen1 backends plug into it. VFE31 (MSM8660/APQ8060) cannot, because that
+ * model's assumptions do not hold on this hardware:
+ *
+ *  - Deferred CAMIF. On MSM8660 the CAMIF must not be started until the
+ *    CSIPHY/CSID are fully configured and the sensor is streaming, otherwise
+ *    CAMIF latches partial/garbage timing and the capture is corrupt or
+ *    hangs. vfe_enable_output() starts capture immediately at VFE s_stream;
+ *    VFE31 instead arms the pipeline and defers CAMIF start to
+ *    vfe_enable_pending_camif() (called from CSID once CSI is up). There is
+ *    no hook for this in the gen1 flow.
+ *
+ *  - Coordinated multi-output. VFE31 drives up to three pixel outputs
+ *    (PIX + VIDEO + ZSL) that share one CAMIF/DEMUX path with XBAR routing
+ *    and a recording state machine that joins/leaves WMs at frame
+ *    boundaries. vfe_enable_output() configures one line at a time and has
+ *    no cross-line coordination.
+ *
+ *  - Fixed register sequence/timing. The MT9M113 + VFE31 bring-up follows a
+ *    specific ordered register sequence (verified against the webOS driver
+ *    and downstream dumps) that does not decompose into the gen1 vtable
+ *    primitives.
+ *
+ * So VFE31 implements its own enable/disable/halt/ISR/buffer handling
+ * (vfe31_enable, vfe31_disable, vfe31_halt, vfe31_isr, vfe31_wm_done,
+ * vfe31_queue_buffer) and leaves ops_gen1 NULL by design. Adopting the gen1
+ * data path would require either dropping the deferred-CAMIF/multi-output
+ * behaviour this hardware needs, or extending the shared gen1 framework with
+ * those concepts.
  */
 
 /*
