@@ -552,53 +552,71 @@ static void gemini_buf_queue(struct vb2_buffer *vb)
 	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, to_vb2_v4l2_buffer(vb));
 }
 
+/* Per-table pair buffer size: AC main loop indexes up to 175 (nibble-swapped
+ * huffval 0xFA -> 0xAF); 256 matches OPAL's allocation and leaves headroom. */
+#define GEMINI_HUFF_PAIRS	256
+
 static void gemini_load_tables(struct gemini_ctx *ctx)
 {
 	void __iomem *base = ctx->gemini->base;
-	struct gemini_huff_pair luma_pairs[256] = {0};
-	struct gemini_huff_pair chroma_pairs[256] = {0};
+	struct gemini_huff_pair *pairs;
+	struct gemini_huff_pair *luma_dc, *luma_ac, *chroma_dc, *chroma_ac;
 
 	pr_info("gemini tables: T0 enter (will load huffman then quant)\n");
 
 	/*
-	 * OPAL libgemini's gemini_lib_hw_config loads HUFFMAN BEFORE QUANT.
-	 * We previously did quant first; swap to match.
+	 * FOUR single-purpose, zero-initialised pair buffers: DC luma, AC
+	 * luma, DC chroma, AC chroma. OPAL keeps DC and AC separate
+	 * (gemini_lib_hw_set_huffman_tables(dc_luma, dc_chroma, ac_luma,
+	 * ac_chroma)) — the prologue is loaded from the DC tables, the main
+	 * per-symbol LUT from the AC tables. Merging them lets the AC EOB
+	 * symbol (huffval 0x00) clobber DC category-0 at pair index 0, which
+	 * breaks every DC-difference-of-zero coding (every block of a flat
+	 * region) and produces DC-drift noise after the first MCU.
 	 *
-	 *   gemini_huff_tables[0] = DC luma
-	 *   gemini_huff_tables[1] = DC chroma
-	 *   gemini_huff_tables[2] = AC luma
-	 *   gemini_huff_tables[3] = AC chroma
+	 * Heap-allocated (4 x 256 entries) to keep this off the stack.
 	 *
-	 * Build the per-pair-table buffers. For AC tables, the huffval
-	 * is nibble-swapped before indexing — OPAL's
-	 * gemini_lib_hw_create_huffman_table does this and our HW LUT
-	 * expects the same convention. Without the swap, AC codes land
-	 * at the wrong pair-buffer indices and the encoder produces
-	 * wrong Huffman codes for AC coefficients.
+	 *   gemini_huff_tables[0] = DC luma   [2] = AC luma
+	 *   gemini_huff_tables[1] = DC chroma [3] = AC chroma
+	 *
+	 * For AC tables the huffval is nibble-swapped before indexing (OPAL's
+	 * gemini_lib_hw_create_huffman_table convention); see
+	 * gemini_build_huff_pairs().
 	 */
-	gemini_build_huff_pairs(luma_pairs,
+	pairs = kcalloc(4 * GEMINI_HUFF_PAIRS, sizeof(*pairs), GFP_KERNEL);
+	if (!pairs) {
+		pr_err("gemini tables: pair buffer alloc failed\n");
+		return;
+	}
+	luma_dc   = pairs + 0 * GEMINI_HUFF_PAIRS;
+	luma_ac   = pairs + 1 * GEMINI_HUFF_PAIRS;
+	chroma_dc = pairs + 2 * GEMINI_HUFF_PAIRS;
+	chroma_ac = pairs + 3 * GEMINI_HUFF_PAIRS;
+
+	gemini_build_huff_pairs(luma_dc,
 				gemini_huff_tables[0].bits,
 				gemini_huff_tables[0].vals,
 				gemini_huff_tables[0].n_vals,
 				false);   /* DC luma */
-	gemini_build_huff_pairs(luma_pairs,
+	gemini_build_huff_pairs(luma_ac,
 				gemini_huff_tables[2].bits,
 				gemini_huff_tables[2].vals,
 				gemini_huff_tables[2].n_vals,
 				true);    /* AC luma */
-	gemini_build_huff_pairs(chroma_pairs,
+	gemini_build_huff_pairs(chroma_dc,
 				gemini_huff_tables[1].bits,
 				gemini_huff_tables[1].vals,
 				gemini_huff_tables[1].n_vals,
 				false);   /* DC chroma */
-	gemini_build_huff_pairs(chroma_pairs,
+	gemini_build_huff_pairs(chroma_ac,
 				gemini_huff_tables[3].bits,
 				gemini_huff_tables[3].vals,
 				gemini_huff_tables[3].n_vals,
 				true);    /* AC chroma */
 
 	pr_info("gemini tables: T1 huff pairs built, loading hw\n");
-	gemini_hw_load_huffman_tables(base, luma_pairs, chroma_pairs);
+	gemini_hw_load_huffman_tables(base, luma_dc, luma_ac,
+				      chroma_dc, chroma_ac);
 	pr_info("gemini tables: T2 huffman load done\n");
 
 	gemini_hw_load_quant_table(base, false, ctx->q_luma);
@@ -615,6 +633,8 @@ static void gemini_load_tables(struct gemini_ctx *ctx)
 	 */
 	gemini_hw_readback_quant_tables(base);
 	pr_info("gemini tables: T5 quant readback done — exiting load_tables\n");
+
+	kfree(pairs);
 }
 
 /*

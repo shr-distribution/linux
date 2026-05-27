@@ -482,7 +482,8 @@ void gemini_build_huff_pairs(struct gemini_huff_pair *pairs,
 	unsigned int p, l, i;
 	u32 code;
 
-	/* Note: caller may chain DC after AC, so do not memset here */
+	/* Single-purpose buffer (DC or AC): caller zeroes it; we only write
+	 * the symbols listed in vals[]. Do NOT merge DC and AC tables. */
 
 	/* Build (size) sequence per symbol in vals[] order */
 	p = 0;
@@ -544,10 +545,19 @@ void gemini_build_huff_pairs(struct gemini_huff_pair *pairs,
  * the load; SEL is released to 0 at the end.
  */
 void gemini_hw_load_huffman_tables(void __iomem *base,
-				   const struct gemini_huff_pair *luma,
-				   const struct gemini_huff_pair *chroma)
+				   const struct gemini_huff_pair *luma_dc,
+				   const struct gemini_huff_pair *luma_ac,
+				   const struct gemini_huff_pair *chroma_dc,
+				   const struct gemini_huff_pair *chroma_ac)
 {
-	const struct gemini_huff_pair *tbls[2] = { luma, chroma };
+	/*
+	 * Prologue (per-length seed slots) is fed from the DC tables; the
+	 * main per-symbol LUT loop is fed from the AC tables. Matches OPAL's
+	 * gemini_lib_hw_set_huffman_tables(dc_luma, dc_chroma, ac_luma,
+	 * ac_chroma) — DC and AC are kept in separate buffers.
+	 */
+	const struct gemini_huff_pair *dc_tbls[2] = { luma_dc, chroma_dc };
+	const struct gemini_huff_pair *ac_tbls[2] = { luma_ac, chroma_ac };
 	u32 dri;
 	int table, n, i;
 
@@ -558,12 +568,12 @@ void gemini_hw_load_huffman_tables(void __iomem *base,
 	gemini_table_select(base, GEMINI_TABLE_SEL_HUFFMAN);
 	writel(0, base + GEMINI_TABLE_INDEX);
 
-	/* Prologue: per-length seed slots */
+	/* Prologue: per-length seed slots (DC tables) */
 	for (table = 0; table < 2; table++) {
 		u32 base_id = (table == 0) ? 2u : 3u;
 
 		for (n = 0; n < 12; n++) {
-			const struct gemini_huff_pair *p = &tbls[table][n];
+			const struct gemini_huff_pair *p = &dc_tbls[table][n];
 			u32 hi, lo, idx;
 
 			idx = ((n << 6) | base_id) & 0x3FF;
@@ -578,12 +588,12 @@ void gemini_hw_load_huffman_tables(void __iomem *base,
 		}
 	}
 
-	/* Main: per-symbol LUT slots, 176 per table */
+	/* Main: per-symbol LUT slots, 176 per table (AC tables) */
 	for (table = 0; table < 2; table++) {
 		u32 lsb = (u32)table;
 
 		for (i = 0; i < 176; i++) {
-			const struct gemini_huff_pair *p = &tbls[table][i];
+			const struct gemini_huff_pair *p = &ac_tbls[table][i];
 			u32 hi, lo, idx;
 
 			idx = ((i << 2) | lsb) & 0x3FF;

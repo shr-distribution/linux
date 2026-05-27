@@ -194,13 +194,27 @@ struct gemini_huff_pair {
 	u16 size;
 };
 
+/*
+ * The Gemini Huffman load consumes FOUR separate per-huffval pair buffers:
+ * the prologue (per-length seed slots) is fed from the DC tables, and the
+ * main per-symbol LUT loop is fed from the AC tables. OPAL's
+ * gemini_lib_hw_config keeps DC and AC in four distinct buffers
+ * (gemini_lib_hw_set_huffman_tables(dc_luma, dc_chroma, ac_luma, ac_chroma));
+ * they must NOT be merged into one buffer per component, or the AC EOB
+ * symbol (huffval 0x00) overwrites the DC category-0 entry at pair index 0
+ * and every DC-difference-of-zero (i.e. every block of a flat region) is
+ * mis-coded.
+ */
 void gemini_hw_load_huffman_tables(void __iomem *base,
-				   const struct gemini_huff_pair *luma,
-				   const struct gemini_huff_pair *chroma);
+				   const struct gemini_huff_pair *luma_dc,
+				   const struct gemini_huff_pair *luma_ac,
+				   const struct gemini_huff_pair *chroma_dc,
+				   const struct gemini_huff_pair *chroma_ac);
 
 /*
- * Build a per-huffval pair buffer from JPEG BITS[16] + HUFFVAL[].
- * Pass it twice to merge a DC + AC table into a single pair buffer.
+ * Build a per-huffval pair buffer from JPEG BITS[16] + HUFFVAL[]. Each call
+ * targets ONE single-purpose buffer (DC or AC); the buffer must be zeroed by
+ * the caller beforehand (unused huffvals stay zero).
  *
  * For AC tables, set is_ac = true: OPAL's gemini_lib_hw_create_huffman_table
  * nibble-swaps the AC huffval before indexing into the pair buffer
