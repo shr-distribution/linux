@@ -480,7 +480,7 @@ static int msm_iommu_program_bypass(struct device *dev)
 	struct msm_iommu_dev *iommu;
 	struct msm_iommu_ctx_dev *master;
 	unsigned long flags;
-	int ret = 0, ctx;
+	int ret = 0, ctx, i;
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
 	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
@@ -514,9 +514,24 @@ static int msm_iommu_program_bypass(struct device *dev)
 		}
 		master->num = ctx;
 
-		/* Route MIDs to the context, then leave the MMU disabled. */
+		/*
+		 * Route the master's MIDs to the context, leave the MMU
+		 * disabled (SCTLR=0 via __reset_context), AND set BYPASSD=1 on
+		 * each MID's M2VCBR entry. Without BYPASSD the SMMU still
+		 * routes the transaction to the context bank, which absorbs it
+		 * silently (no fault, but the data never reaches RAM in either
+		 * direction). With BYPASSD=1 the per-MID routing tells the
+		 * SMMU to skip translation entirely and let the transaction
+		 * pass 1:1 to physical memory -- a true hardware bypass.
+		 *
+		 * On the JPEG/Gemini path this is what makes the FE actually
+		 * read the buffer contents instead of consistently seeing
+		 * neutral 0x80 data.
+		 */
 		config_mids(iommu, master);
 		__reset_context(iommu->base, master->num);
+		for (i = 0; i < master->num_mids; i++)
+			SET_BYPASSD(iommu->base, master->mids[i], 1);
 
 		__disable_clocks(iommu);
 	}
