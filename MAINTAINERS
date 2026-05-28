@@ -27588,6 +27588,15 @@ L:	linux-usb@vger.kernel.org
 S:	Odd Fixes
 F:	drivers/net/usb/
 
+USB NOVACOM GADGET DRIVER
+M:	Herman van Hazendonk <github.com@herrie.org>
+L:	linux-usb@vger.kernel.org
+S:	Maintained
+F:	Documentation/usb/gadget_novacom.rst
+F:	drivers/usb/gadget/function/f_novacom.c
+F:	drivers/usb/gadget/function/u_novacom.h
+F:	drivers/usb/gadget/legacy/novacom.c
+
 USB OHCI DRIVER
 M:	Alan Stern <stern@rowland.harvard.edu>
 L:	linux-usb@vger.kernel.org
