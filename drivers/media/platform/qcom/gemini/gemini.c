@@ -380,6 +380,22 @@ static void gemini_device_run(void *priv)
 	dma_sync_single_for_device(gemini->dev, dst_addr,
 				   ctx->dst.sizeimage, DMA_BIDIRECTIONAL);
 
+	/*
+	 * Debug: kernel-side readback of the source Y plane after the device
+	 * sync. If userspace memset'd Y to 0x00/0x80/0xFF, those bytes should
+	 * appear here. If they don't, the userspace mmap writes never made it
+	 * to the kernel/RAM view of this buffer (cache-alias / mmap-coherency
+	 * bug). If they do but the encoder still produces mid-gray output,
+	 * the disconnect is between the kernel buffer and the device DMA.
+	 */
+	{
+		u8 *src_v = vb2_plane_vaddr(&src_buf->vb2_buf, 0);
+
+		if (src_v)
+			pr_info("gemini run: src Y[0..15]=%*phC  Y[16k..16k+15]=%*phC\n",
+				16, src_v, 16, src_v + 16384);
+	}
+
 	pr_info("gemini run: src_y=%pad src_cbcr=%pad dst=%pad src_sz=%u dst_sz=%u hdr=%zu\n",
 		&src_y, &src_cbcr, &dst_addr,
 		ctx->src.sizeimage, ctx->dst.sizeimage, hdr_aligned);
