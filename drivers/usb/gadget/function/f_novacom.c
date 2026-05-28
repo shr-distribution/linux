@@ -283,16 +283,20 @@ static int novacom_get_ready_ep(unsigned int f_flags, struct novacom_ep *nep)
 	return val;
 }
 
-static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
-			     unsigned int len, int dir)
+/*
+ * Issue a single bulk transfer of at most one MPS worth of data
+ * (a 0-length transfer is a ZLP on IN). Caller must hold nep->lock.
+ *
+ * Returns bytes transferred (>= 0) or a negative errno.
+ */
+static ssize_t novacom_ep_io_one(struct novacom_ep *nep, void *buf,
+				 unsigned int len)
 {
 	DECLARE_COMPLETION_ONSTACK(done);
 	struct f_novacom *novacom = nep->novacom;
 	struct usb_composite_dev *cdev = novacom->function.config->cdev;
 	unsigned long flags;
 	int value;
-
-	dev_dbg(&cdev->gadget->dev, "novacom: %s: len=%d\n", __func__, len);
 
 	spin_lock_irqsave(&novacom->lock, flags);
 	if (likely(nep->ep != NULL)) {
@@ -302,6 +306,7 @@ static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 		req->complete = novacom_epio_complete;
 		req->buf = buf;
 		req->length = len;
+		req->zero = 0;
 		value = usb_ep_queue(nep->ep, req, GFP_ATOMIC);
 	} else {
 		value = -ENODEV;
@@ -336,6 +341,57 @@ static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 		return nep->status;
 	}
 	return value;
+}
+
+/*
+ * Loop sub-MPS transfers until the user request is satisfied. Splitting
+ * the request keeps each on-the-wire URB <= MPS so the chipidea (and any
+ * other) UDC always sees short-packet termination cleanly. Without this,
+ * a single large OUT URB sits ACTIVE in the dTD chain when the host
+ * sends a short packet partway in.
+ *
+ * OUT (read): stop on the first short packet -- that signals end of
+ * transfer from the host's point of view.
+ * IN  (write): send all bytes, and append a ZLP if the total is an exact
+ * multiple of MPS so the host's BULK IN URB terminates.
+ */
+static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
+			     unsigned int len, int dir)
+{
+	struct f_novacom *novacom = nep->novacom;
+	struct usb_composite_dev *cdev = novacom->function.config->cdev;
+	unsigned int mps;
+	ssize_t total = 0;
+	ssize_t n;
+
+	dev_dbg(&cdev->gadget->dev, "novacom: %s: len=%u dir=%s\n", __func__,
+		len, dir == USB_DIR_IN ? "IN" : "OUT");
+
+	if (!nep->ep || !nep->ep->desc)
+		return -ENODEV;
+	mps = usb_endpoint_maxp(nep->ep->desc);
+	if (!mps)
+		return -EIO;
+
+	while (total < len) {
+		unsigned int chunk = min_t(unsigned int, len - total, mps);
+
+		n = novacom_ep_io_one(nep, buf + total, chunk);
+		if (n < 0)
+			return total > 0 ? total : n;
+		total += n;
+
+		/* OUT: a short packet ends the transfer. */
+		if (dir == USB_DIR_OUT && n < chunk)
+			break;
+	}
+
+	/* IN: terminate an exact-MPS-multiple stream with a ZLP so the
+	 * host's BULK IN URB sees end-of-transfer. */
+	if (dir == USB_DIR_IN && total > 0 && (total % mps) == 0)
+		(void)novacom_ep_io_one(nep, buf, 0);
+
+	return total;
 }
 
 /*-------------------------------------------------------------------------*/
