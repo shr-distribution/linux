@@ -145,6 +145,29 @@ devices are registered in `novacom_alloc()` (= `usb_get_function()`,
 fires on `ln -s`) and deregistered in `novacom_free()` (= when refcount
 goes to zero on rmdir).
 
+### T8 — End-to-end with real novacomd ✅ PASS
+
+Re-built the gadget with the proper HP/TouchPad USB identifiers
+(0x0830:0x8002, iManufacturer="Hewlett-Packard", iProduct="HP TouchPad",
+bcdDevice=0x0316), still composite with ECM so SSH stays up.
+
+Host-side `palm-novacom 1.0.76` discovers the device:
+```
+$ novacom -l
+40783 936ac8815d2dbb50ab7d56438d3d7812e309c72c usb tenderloin-linux
+```
+
+All three novacom features round-trip cleanly through the gadget:
+- `run`: remote process exec + stdout capture
+  `novacom -d tenderloin-linux run file:///bin/echo hello` -> `hello`
+- `put`: file transfer host -> device
+- `get`: file transfer device -> host
+
+Full capture in `t8-novacom-e2e.log`. This validates the entire stack:
+host novacomd -> USB bulk -> kernel driver -> /dev/novacom_* ->
+device novacomd -> command exec / file I/O. Closes the loop between
+the in-tree f_novacom and the production userspace daemon.
+
 ## Artifacts captured here
 
 - `lsusb-v.txt` — full lsusb -v from host

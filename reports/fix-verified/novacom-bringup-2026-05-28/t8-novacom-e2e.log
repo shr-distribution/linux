@@ -1,0 +1,33 @@
+=== Gadget IDs (lsusb on host) ===
+Bus 003 Device 053: ID 0830:8002 Palm, Inc. HP TouchPad
+  iManufacturer 1 Hewlett-Packard
+  iProduct      2 HP TouchPad
+  iSerial       3 touchpad-novacom-01
+  iConfiguration 4 ECM + Novacom
+
+=== novacom -l ===
+40783 936ac8815d2dbb50ab7d56438d3d7812e309c72c usb tenderloin-linux
+
+=== novacom run /bin/echo hello ===
+$ novacom -d tenderloin-linux run file:///bin/echo hello
+hello
+
+=== novacom run uname -a ===
+Linux tenderloin 6.18.0-luneos-gb5d4c2b80845 #1 SMP PREEMPT Thu May 28 16:28:16 UTC 2026 armv7l GNU/Linux
+
+=== novacom run cat /etc/os-release ===
+ID=luneos
+NAME="LuneOS"
+VERSION="1.0"
+VERSION_ID=1.0
+PRETTY_NAME="LuneOS 1.0"
+CPE_NAME="cpe:/o:openembedded:luneos:1.0"
+
+=== novacom put (host -> device) ===
+$ echo "novacom-roundtrip-test-data" | novacom -d tenderloin-linux put file:///tmp/novacom-test.txt
+$ ssh root@172.16.42.2 'cat /tmp/novacom-test.txt'
+novacom-roundtrip-test-data
+
+=== novacom get (device -> host) ===
+$ novacom -d tenderloin-linux get file:///tmp/novacom-test.txt
+novacom-roundtrip-test-data

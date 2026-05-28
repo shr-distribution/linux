@@ -73,15 +73,17 @@ log "creating $GADGET"
 mkdir "$CFG/$GADGET"
 cd "$CFG/$GADGET"
 
-# Use Linux Foundation multifunction PID since this is ECM+novacom
-echo 0x1d6b > idVendor
-echo 0x0104 > idProduct
-echo 0x0100 > bcdDevice
+# Use HP/TouchPad vendor+product so the host-side novacomd recognises
+# this device. novacomd hardcodes the 0x0830 / 0x8002 pair (and other
+# Palm/HP webOS IDs) and won't enumerate Linux Foundation defaults.
+echo 0x0830 > idVendor
+echo 0x8002 > idProduct
+echo 0x0316 > bcdDevice
 echo 0x0200 > bcdUSB
 
 mkdir -p strings/0x409
-echo "HP"                          > strings/0x409/manufacturer
-echo "webOS Device (novacom-test)" > strings/0x409/product
+echo "Hewlett-Packard"             > strings/0x409/manufacturer
+echo "HP TouchPad"                 > strings/0x409/product
 echo "touchpad-novacom-01"         > strings/0x409/serialnumber
 
 mkdir -p configs/c.1
