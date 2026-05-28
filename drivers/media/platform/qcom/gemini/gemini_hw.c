@@ -29,15 +29,24 @@ module_param_named(fe_input_format, fe_input_format, uint, 0644);
 MODULE_PARM_DESC(fe_input_format,
 	"FE_INPUT_FORMAT register value (default 0x10 matches OPAL trace; try 0x00..0x07 for 8-bit NV12 enum sweep)");
 
+/*
+ * WE_Y/CBCR_THRESHOLD: the OPAL live register-write trace (offline JPEG path
+ * on this exact device) shows BOTH thresholds written as 0x016A0190. Mako's
+ * [mode][2] table that we initially mined for the layout uses {0x190, 0x1ff}
+ * (realtime mode) / {0x16a, 0x1ff} (other mode), which led us to "correct"
+ * 0x016A0190 to 0x01FF0190. But OPAL's working offline encode on this very
+ * device writes 0x016A0190 directly, so trust the live trace over the mako
+ * lookup-table reverse-engineering.
+ */
 static unsigned int we_y_threshold = 0x016A0190;
 module_param_named(we_y_threshold, we_y_threshold, uint, 0644);
 MODULE_PARM_DESC(we_y_threshold,
-	"WE_Y_THRESHOLD register value (default 0x016A0190 from OPAL; try 0x01FF01FF to disable)");
+	"WE_Y_THRESHOLD register value (default 0x016A0190 matches OPAL live offline-encode trace)");
 
 static unsigned int we_cbcr_threshold = 0x016A0190;
 module_param_named(we_cbcr_threshold, we_cbcr_threshold, uint, 0644);
 MODULE_PARM_DESC(we_cbcr_threshold,
-	"WE_CBCR_THRESHOLD register value (default 0x016A0190 from OPAL)");
+	"WE_CBCR_THRESHOLD register value (default 0x016A0190 matches OPAL live offline-encode trace)");
 
 static unsigned int we_y_ub_cfg = 0x01FF0000;
 module_param_named(we_y_ub_cfg, we_y_ub_cfg, uint, 0644);
@@ -138,14 +147,20 @@ void gemini_hw_set_we_ping(void __iomem *base, dma_addr_t addr, u32 len)
 	pr_info("gemini we_ping: C0 enter addr=0x%llx len=%u\n",
 		(u64)addr, len);
 
-	writel(addr, base + GEMINI_WE_Y_PING_ADDR);
-	pr_info("gemini we_ping: C1 WE_Y_PING_ADDR done\n");
-
+	/*
+	 * Write CFG (which carries the buffer length) BEFORE ADDR. Legacy
+	 * msm_gemini_hw_we_buffer_update (hw_cmd_we_ping_update[]) emits the
+	 * CFG write first, then the ADDR write -- the IP latches the address
+	 * on CFG-write so writing them in the reverse order can discard the
+	 * just-written ADDR.
+	 */
 	writel(len & GEMINI_WE_BUFFER_LEN_MASK, base + GEMINI_WE_Y_PING_CFG);
+	writel(addr, base + GEMINI_WE_Y_PING_ADDR);
+	pr_info("gemini we_ping: C1 WE_Y_PING CFG+ADDR done\n");
 
 	/* Mirror to PONG (see set_fe_ping for rationale). */
-	writel(addr, base + GEMINI_WE_Y_PONG_ADDR);
 	writel(len & GEMINI_WE_BUFFER_LEN_MASK, base + GEMINI_WE_Y_PONG_CFG);
+	writel(addr, base + GEMINI_WE_Y_PONG_ADDR);
 	pr_info("gemini we_ping: C2 WE_Y_PING+PONG done — exiting we_ping\n");
 }
 
@@ -356,8 +371,17 @@ void gemini_hw_configure_encode_h2v2(void __iomem *base, u32 w, u32 h)
 		u32 base_geom = Hm * (Wm - 1);
 
 		writel(3, base + GEMINI_OP_ENCODE_MODE);
-		writel((base_geom * 128)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
-		writel((base_geom * 256)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
+		/*
+		 * Live webOS delta-log (1024x1280, base_geom=80*63=5040):
+		 *   OP_GEOM[0]=0x13b000=*256  [1]=0x9d800=*128
+		 *   OP_GEOM[2]=0x13b010=*256+16  [3]=0x9d810=*128+16
+		 * i.e. {256,128,256,128}. The code previously had [0] and [1]
+		 * swapped (128 and 256 exchanged), which gave the encoder an
+		 * inconsistent output geometry so it read the frame but produced
+		 * no entropy output (ENCODE_OUTPUT_SIZE stuck at 0, no FRAMEDONE).
+		 */
+		writel((base_geom * 256)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(0));
+		writel((base_geom * 128)      & 0x03FFFFFF, base + GEMINI_OP_GEOM(1));
 		writel((base_geom * 256 + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(2));
 		writel((base_geom * 128 + 16) & 0x03FFFFFF, base + GEMINI_OP_GEOM(3));
 		writel(GEMINI_OP_MAGIC_H2V2, base + GEMINI_OP_FORMAT_MAGIC);
@@ -473,7 +497,8 @@ void gemini_build_huff_pairs(struct gemini_huff_pair *pairs,
 	unsigned int p, l, i;
 	u32 code;
 
-	/* Note: caller may chain DC after AC, so do not memset here */
+	/* Single-purpose buffer (DC or AC): caller zeroes it; we only write
+	 * the symbols listed in vals[]. Do NOT merge DC and AC tables. */
 
 	/* Build (size) sequence per symbol in vals[] order */
 	p = 0;
@@ -535,10 +560,19 @@ void gemini_build_huff_pairs(struct gemini_huff_pair *pairs,
  * the load; SEL is released to 0 at the end.
  */
 void gemini_hw_load_huffman_tables(void __iomem *base,
-				   const struct gemini_huff_pair *luma,
-				   const struct gemini_huff_pair *chroma)
+				   const struct gemini_huff_pair *luma_dc,
+				   const struct gemini_huff_pair *luma_ac,
+				   const struct gemini_huff_pair *chroma_dc,
+				   const struct gemini_huff_pair *chroma_ac)
 {
-	const struct gemini_huff_pair *tbls[2] = { luma, chroma };
+	/*
+	 * Prologue (per-length seed slots) is fed from the DC tables; the
+	 * main per-symbol LUT loop is fed from the AC tables. Matches OPAL's
+	 * gemini_lib_hw_set_huffman_tables(dc_luma, dc_chroma, ac_luma,
+	 * ac_chroma) — DC and AC are kept in separate buffers.
+	 */
+	const struct gemini_huff_pair *dc_tbls[2] = { luma_dc, chroma_dc };
+	const struct gemini_huff_pair *ac_tbls[2] = { luma_ac, chroma_ac };
 	u32 dri;
 	int table, n, i;
 
@@ -549,12 +583,12 @@ void gemini_hw_load_huffman_tables(void __iomem *base,
 	gemini_table_select(base, GEMINI_TABLE_SEL_HUFFMAN);
 	writel(0, base + GEMINI_TABLE_INDEX);
 
-	/* Prologue: per-length seed slots */
+	/* Prologue: per-length seed slots (DC tables) */
 	for (table = 0; table < 2; table++) {
 		u32 base_id = (table == 0) ? 2u : 3u;
 
 		for (n = 0; n < 12; n++) {
-			const struct gemini_huff_pair *p = &tbls[table][n];
+			const struct gemini_huff_pair *p = &dc_tbls[table][n];
 			u32 hi, lo, idx;
 
 			idx = ((n << 6) | base_id) & 0x3FF;
@@ -569,12 +603,12 @@ void gemini_hw_load_huffman_tables(void __iomem *base,
 		}
 	}
 
-	/* Main: per-symbol LUT slots, 176 per table */
+	/* Main: per-symbol LUT slots, 176 per table (AC tables) */
 	for (table = 0; table < 2; table++) {
 		u32 lsb = (u32)table;
 
 		for (i = 0; i < 176; i++) {
-			const struct gemini_huff_pair *p = &tbls[table][i];
+			const struct gemini_huff_pair *p = &ac_tbls[table][i];
 			u32 hi, lo, idx;
 
 			idx = ((i << 2) | lsb) & 0x3FF;

@@ -337,11 +337,18 @@ static void gemini_device_run(void *priv)
 		  ctx->dst.sizeimage - hdr_aligned - 2 : 0;
 
 	/*
-	 * H2V2 NV12 uses 16×16 MCUs, so the per-row count is height/16, not
-	 * height/8. The cross-vendor libgemini wire format (Wm = (W+15)>>4,
-	 * Hm = (H+15)>>4) confirms this for all four vendor binaries.
+	 * FE_BUFFER_CFG's "MCU_ROWS" fields actually carry the number of MCUs
+	 * per row (the horizontal MCU count Wm), which the fetch engine uses
+	 * to compute the row stride when walking the source frame. The live
+	 * webOS delta-log confirms this: for a 1024x1280 (Wm=64, Hm=80) frame
+	 * FE_BUFFER_CFG = 0x003f003f, i.e. Wm-1 = 63 in both fields (== the
+	 * high half of FE_DIMS), NOT Hm-1 = 79. Feeding Hm here gave the FE
+	 * the wrong stride, so only the first MCU row read correctly and the
+	 * rest was misaligned garbage / the encode produced no output.
+	 *
+	 * H2V2 NV12 uses 16x16 MCUs: Wm = (W+15)>>4.
 	 */
-	num_mcu_rows = (ctx->src.height + 15) / 16;
+	num_mcu_rows = (ctx->src.width + 15) / 16;
 
 	/*
 	 * Cache coherency for the offline DMA path.
@@ -384,11 +391,17 @@ static void gemini_device_run(void *priv)
 	gemini_hw_set_we_ping(gemini->base, dst_addr + hdr_aligned, we_room);
 	pr_info("gemini run: R2 set_we_ping returned\n");
 
-	gemini_hw_enable_irq(gemini->base, GEMINI_IRQ_FRAMEDONE |
-					   GEMINI_IRQ_BUS_ERROR |
-					   GEMINI_IRQ_VIOLATION);
-	pr_info("gemini run: R3 enable_irq returned, calling start_offline\n");
-
+	/*
+	 * Do NOT write a narrow intermediate IRQ_MASK here. Legacy
+	 * msm_gemini_start goes straight from a freshly reset state (where
+	 * IRQ_MASK is already 0xFFFFFFFF from msm_gemini_hw_reset's table) to
+	 * the OPAL start sequence, which re-writes IRQ_MASK=0xFFFFFFFF as
+	 * part of gemini_hw_start_offline. Writing an intermediate narrow
+	 * mask (FRAMEDONE | BUS_ERROR | VIOLATION) opens a 1-2 cycle window
+	 * where IRQ_MASK transitions wide -> narrow -> wide, and OPAL doesn't
+	 * do this. Let start_offline handle the IRQ_MASK widening alone.
+	 */
+	pr_info("gemini run: R3 calling start_offline (no intermediate IRQ_MASK)\n");
 	gemini_hw_start_offline(gemini->base);
 	pr_info("gemini run: R4 start_offline returned\n");
 }
@@ -425,29 +438,26 @@ static irqreturn_t gemini_irq_handler(int irq, void *dev_id)
 	}
 
 	/*
-	 * Transient IRQs (FE_RD_DONE, WE_*_PINGPONG, etc.) mean progress
-	 * but no user-visible completion yet. Re-arm IRQ_MASK (the IP
-	 * appears to auto-mask after firing) and ack. For FE_RD_DONE,
-	 * also re-issue FE_CMD = OFFLINE_CMD_START — legacy webOS does
-	 * this on every FE pingpong IRQ to advance the encoder. In our
-	 * single-buffer M2M case the same buffer gets re-read, but the
-	 * encoder needs the kick to progress past the read stage to
-	 * entropy + WE.
+	 * Transient IRQs (FE_RD_DONE, WE_*_PINGPONG) mean progress but no
+	 * user-visible completion yet. The legacy webOS driver
+	 * (msm_gemini_fe_pingpong_irq) only re-arms the FE on an FE pingpong
+	 * IRQ when ANOTHER input buffer is queued, i.e. for multi-chunk input
+	 * it feeds the next chunk's addresses; when the input queue is empty
+	 * it does nothing and lets the encoder drain what it already read
+	 * through entropy + WE to FRAMEDONE.
+	 *
+	 * Our M2M path hands the whole frame to the FE as a single buffer
+	 * (num_mcu_rows = full height), so there is never a next chunk. Do
+	 * NOT re-issue FE_CMD here: re-reading the frame mid-encode corrupts
+	 * every MCU past the first and can wedge the engine (the encoder then
+	 * never returns RESET_ACK on the next job). Just re-arm for the
+	 * terminal IRQs and wait for FRAMEDONE.
 	 */
 	if (!(status & (GEMINI_IRQ_FRAMEDONE | GEMINI_IRQ_BUS_ERROR |
 			GEMINI_IRQ_VIOLATION))) {
 		gemini_hw_enable_irq(gemini->base, GEMINI_IRQ_FRAMEDONE |
 						   GEMINI_IRQ_BUS_ERROR |
-						   GEMINI_IRQ_VIOLATION |
-						   GEMINI_IRQ_FE_RD_DONE |
-						   GEMINI_IRQ_WE_Y_PINGPONG |
-						   GEMINI_IRQ_WE_CBCR_PINGPONG);
-		if (status & GEMINI_IRQ_FE_RD_DONE) {
-			pr_info("gemini IRQ: FE_RD_DONE — re-issuing FE_CMD=START\n");
-			gemini_hw_fe_reload(gemini->base);
-			writel(GEMINI_OFFLINE_CMD_START,
-			       gemini->base + GEMINI_FE_CMD);
-		}
+						   GEMINI_IRQ_VIOLATION);
 		return IRQ_HANDLED;
 	}
 
@@ -552,53 +562,71 @@ static void gemini_buf_queue(struct vb2_buffer *vb)
 	v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, to_vb2_v4l2_buffer(vb));
 }
 
+/* Per-table pair buffer size: AC main loop indexes up to 175 (nibble-swapped
+ * huffval 0xFA -> 0xAF); 256 matches OPAL's allocation and leaves headroom. */
+#define GEMINI_HUFF_PAIRS	256
+
 static void gemini_load_tables(struct gemini_ctx *ctx)
 {
 	void __iomem *base = ctx->gemini->base;
-	struct gemini_huff_pair luma_pairs[256] = {0};
-	struct gemini_huff_pair chroma_pairs[256] = {0};
+	struct gemini_huff_pair *pairs;
+	struct gemini_huff_pair *luma_dc, *luma_ac, *chroma_dc, *chroma_ac;
 
 	pr_info("gemini tables: T0 enter (will load huffman then quant)\n");
 
 	/*
-	 * OPAL libgemini's gemini_lib_hw_config loads HUFFMAN BEFORE QUANT.
-	 * We previously did quant first; swap to match.
+	 * FOUR single-purpose, zero-initialised pair buffers: DC luma, AC
+	 * luma, DC chroma, AC chroma. OPAL keeps DC and AC separate
+	 * (gemini_lib_hw_set_huffman_tables(dc_luma, dc_chroma, ac_luma,
+	 * ac_chroma)) — the prologue is loaded from the DC tables, the main
+	 * per-symbol LUT from the AC tables. Merging them lets the AC EOB
+	 * symbol (huffval 0x00) clobber DC category-0 at pair index 0, which
+	 * breaks every DC-difference-of-zero coding (every block of a flat
+	 * region) and produces DC-drift noise after the first MCU.
 	 *
-	 *   gemini_huff_tables[0] = DC luma
-	 *   gemini_huff_tables[1] = DC chroma
-	 *   gemini_huff_tables[2] = AC luma
-	 *   gemini_huff_tables[3] = AC chroma
+	 * Heap-allocated (4 x 256 entries) to keep this off the stack.
 	 *
-	 * Build the per-pair-table buffers. For AC tables, the huffval
-	 * is nibble-swapped before indexing — OPAL's
-	 * gemini_lib_hw_create_huffman_table does this and our HW LUT
-	 * expects the same convention. Without the swap, AC codes land
-	 * at the wrong pair-buffer indices and the encoder produces
-	 * wrong Huffman codes for AC coefficients.
+	 *   gemini_huff_tables[0] = DC luma   [2] = AC luma
+	 *   gemini_huff_tables[1] = DC chroma [3] = AC chroma
+	 *
+	 * For AC tables the huffval is nibble-swapped before indexing (OPAL's
+	 * gemini_lib_hw_create_huffman_table convention); see
+	 * gemini_build_huff_pairs().
 	 */
-	gemini_build_huff_pairs(luma_pairs,
+	pairs = kcalloc(4 * GEMINI_HUFF_PAIRS, sizeof(*pairs), GFP_KERNEL);
+	if (!pairs) {
+		pr_err("gemini tables: pair buffer alloc failed\n");
+		return;
+	}
+	luma_dc   = pairs + 0 * GEMINI_HUFF_PAIRS;
+	luma_ac   = pairs + 1 * GEMINI_HUFF_PAIRS;
+	chroma_dc = pairs + 2 * GEMINI_HUFF_PAIRS;
+	chroma_ac = pairs + 3 * GEMINI_HUFF_PAIRS;
+
+	gemini_build_huff_pairs(luma_dc,
 				gemini_huff_tables[0].bits,
 				gemini_huff_tables[0].vals,
 				gemini_huff_tables[0].n_vals,
 				false);   /* DC luma */
-	gemini_build_huff_pairs(luma_pairs,
+	gemini_build_huff_pairs(luma_ac,
 				gemini_huff_tables[2].bits,
 				gemini_huff_tables[2].vals,
 				gemini_huff_tables[2].n_vals,
 				true);    /* AC luma */
-	gemini_build_huff_pairs(chroma_pairs,
+	gemini_build_huff_pairs(chroma_dc,
 				gemini_huff_tables[1].bits,
 				gemini_huff_tables[1].vals,
 				gemini_huff_tables[1].n_vals,
 				false);   /* DC chroma */
-	gemini_build_huff_pairs(chroma_pairs,
+	gemini_build_huff_pairs(chroma_ac,
 				gemini_huff_tables[3].bits,
 				gemini_huff_tables[3].vals,
 				gemini_huff_tables[3].n_vals,
 				true);    /* AC chroma */
 
 	pr_info("gemini tables: T1 huff pairs built, loading hw\n");
-	gemini_hw_load_huffman_tables(base, luma_pairs, chroma_pairs);
+	gemini_hw_load_huffman_tables(base, luma_dc, luma_ac,
+				      chroma_dc, chroma_ac);
 	pr_info("gemini tables: T2 huffman load done\n");
 
 	gemini_hw_load_quant_table(base, false, ctx->q_luma);
@@ -615,6 +643,8 @@ static void gemini_load_tables(struct gemini_ctx *ctx)
 	 */
 	gemini_hw_readback_quant_tables(base);
 	pr_info("gemini tables: T5 quant readback done — exiting load_tables\n");
+
+	kfree(pairs);
 }
 
 /*
@@ -641,8 +671,18 @@ static int gemini_reset(struct gemini_dev *gemini)
 	timeout = wait_for_completion_timeout(&gemini->reset_done,
 					      msecs_to_jiffies(500));
 
-	gemini_hw_disable_irq(gemini->base);
-	gemini_hw_clear_irq(gemini->base, GEMINI_IRQ_ALL);
+	/*
+	 * Do NOT disable IRQ_MASK here. Legacy msm_gemini_core_reset leaves
+	 * IRQ_MASK = 0xFFFFFFFF after the reset wait (that's what the reset
+	 * table wrote, step 3 of 4: IRQ_MASK = 0xFFFFFFFF). Disabling all
+	 * IRQs here gates internal state-machine bits the IP wants to assert
+	 * during the post-reset config sequence; once the next code path
+	 * (configure_encode_h2v2, then start_offline) widens IRQ_MASK back to
+	 * 0xFFFFFFFF, those latched bits may fire spuriously OR the state
+	 * machine may have already wedged. Just clear any stale RESET_ACK
+	 * status and leave IRQ_MASK widened.
+	 */
+	gemini_hw_clear_irq(gemini->base, GEMINI_IRQ_RESET_ACK);
 
 	if (!timeout) {
 		dev_err(gemini->dev, "Timed out waiting for RESET_ACK\n");
@@ -895,9 +935,10 @@ static int gemini_runtime_suspend(struct device *dev)
 
 	icc_set_bw(gemini->icc_path, 0, 0);
 
+	/* Reverse of resume order: CORE -> AHB -> AXI. */
+	clk_disable_unprepare(gemini->core_clk);
 	clk_disable_unprepare(gemini->ahb_clk);
 	clk_disable_unprepare(gemini->axi_clk);
-	clk_disable_unprepare(gemini->core_clk);
 
 	return 0;
 }
@@ -908,35 +949,46 @@ static int gemini_runtime_resume(struct device *dev)
 	int ret;
 
 	/*
+	 * Enable AXI and AHB BEFORE the core clock. Legacy webOS implicitly
+	 * had this ordering via clock parentage: ijpeg_clk's parent was
+	 * ijpeg_axi_clk, so enabling the core walked up and turned AXI on
+	 * first. In mainline (mmcc-msm8660.c) ijpeg_clk's parent is
+	 * ijpeg_src (PLL8) instead, so AXI is a *sibling* branch -- if we
+	 * enable core first, the IP is clocked-compute with no bus clock
+	 * for a window. The FE's AR address generator can latch into a
+	 * wedged "waiting for ARREADY" state during that gap and FE reads
+	 * then return idle 0x80 forever. The WE doesn't drive AR until kick
+	 * time so it survives.
+	 *
 	 * The hardware does not respond to register writes (including the
-	 * reset command) at the 27 MHz default. Legacy webOS set 144 MHz
-	 * via clk_set_min_rate(); the closest mainline freq_tbl entry is
-	 * 153.6 MHz, which the RCG will round up to.
+	 * reset command) at the 27 MHz core default. Legacy webOS set
+	 * 144 MHz via clk_set_min_rate(); the closest mainline freq_tbl
+	 * entry is 153.6 MHz, which the RCG will round up to.
 	 */
-	ret = clk_set_rate(gemini->core_clk, 153600000);
-	if (ret)
-		return ret;
-
-	ret = clk_prepare_enable(gemini->core_clk);
-	if (ret)
-		return ret;
-
 	ret = clk_prepare_enable(gemini->axi_clk);
 	if (ret)
-		goto err_core;
+		return ret;
 
 	ret = clk_prepare_enable(gemini->ahb_clk);
 	if (ret)
 		goto err_axi;
 
+	ret = clk_set_rate(gemini->core_clk, 153600000);
+	if (ret)
+		goto err_ahb;
+
+	ret = clk_prepare_enable(gemini->core_clk);
+	if (ret)
+		goto err_ahb;
+
 	icc_set_bw(gemini->icc_path, GEMINI_ICC_AVG_BW, GEMINI_ICC_PEAK_BW);
 
 	return 0;
 
+err_ahb:
+	clk_disable_unprepare(gemini->ahb_clk);
 err_axi:
 	clk_disable_unprepare(gemini->axi_clk);
-err_core:
-	clk_disable_unprepare(gemini->core_clk);
 	return ret;
 }
 
