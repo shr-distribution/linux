@@ -20,6 +20,8 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <asm/cacheflush.h>
+#include <asm/outercache.h>
 
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
@@ -379,6 +381,21 @@ static void gemini_device_run(void *priv)
 				   ctx->src.sizeimage, DMA_TO_DEVICE);
 	dma_sync_single_for_device(gemini->dev, dst_addr,
 				   ctx->dst.sizeimage, DMA_BIDIRECTIONAL);
+
+	/*
+	 * Debug experiment: brute-force flush every CPU cache (L1 + L2) and
+	 * drain the write buffer before kicking the engine. If the decoded
+	 * image starts tracking userspace's writes after this, the bug was
+	 * that dma_sync_single_for_device() wasn't actually flushing the
+	 * dirty cache lines for this buffer's physical range (a known gotcha
+	 * with highmem CMA on ARMv7 -- arch_sync_dma_for_device may need a
+	 * kmap_atomic-based walk that the implementation skips). If it
+	 * doesn't help, the FE's DMA is hitting a different physical region
+	 * than the buffer (SMMU bypass mis-routing).
+	 */
+	flush_cache_all();
+	outer_flush_all();
+	wmb();
 
 	/*
 	 * Debug: kernel-side readback of the source Y plane after the device
