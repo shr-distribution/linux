@@ -418,10 +418,26 @@ static void msm_devfreq_idle_work(struct kthread_work *work)
 void msm_devfreq_idle(struct msm_gpu *gpu)
 {
 	struct msm_gpu_devfreq *df = &gpu->devfreq;
+	unsigned int idle_ms;
 
 	if (!has_devfreq(gpu))
 		return;
 
-	msm_hrtimer_queue_work(&df->idle_work, ms_to_ktime(1),
+	/*
+	 * KGSL-style boost needs a longer idle debounce: legacy KGSL uses an
+	 * idle_timeout_3d of ~80ms (board-tenderloin). The default 1ms is too
+	 * tight for workloads with brief between-submit gaps (e.g. binner_test's
+	 * per-phase glFinish, or any app doing fence-waits between draws): the
+	 * idle_work fires during the gap, clears the boost, and the next submit
+	 * has to re-ramp the clock from min. Result is a 27<->266MHz oscillation
+	 * that loses most of the boost's benefit.
+	 *
+	 * 80ms matches the legacy KGSL idle_timeout_3d and keeps the clock high
+	 * across any reasonable inter-submit gap while still dropping promptly
+	 * once the app truly stops. Default 1ms preserved for newer adreno gens.
+	 */
+	idle_ms = gpu->kgsl_style_boost ? 80 : 1;
+
+	msm_hrtimer_queue_work(&df->idle_work, ms_to_ktime(idle_ms),
 			       HRTIMER_MODE_REL);
 }
