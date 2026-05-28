@@ -23,9 +23,6 @@
 
 #include <libusb-1.0/libusb.h>
 
-#define NOVACOM_VID		0x0830
-#define NOVACOM_PID		0x8002
-#define NOVACOM_IFACE		0
 #define NOVACOM_SUBCLASS	0x47
 #define NOVACOM_PROTOCOL	0x11
 
@@ -39,7 +36,8 @@ static const size_t test_sizes[] = {
 	256 * 1024 - 1, 256 * 1024, 256 * 1024 + 1,
 };
 
-static int find_endpoints(libusb_device *dev, uint8_t *ep_in, uint8_t *ep_out)
+static int find_endpoints(libusb_device *dev, int *iface_num,
+			  uint8_t *ep_in, uint8_t *ep_out)
 {
 	struct libusb_config_descriptor *cfg;
 	int r;
@@ -48,6 +46,7 @@ static int find_endpoints(libusb_device *dev, uint8_t *ep_in, uint8_t *ep_out)
 	if (r != 0)
 		return r;
 
+	*iface_num = -1;
 	*ep_in = 0;
 	*ep_out = 0;
 
@@ -59,6 +58,7 @@ static int find_endpoints(libusb_device *dev, uint8_t *ep_in, uint8_t *ep_out)
 			if (id->bInterfaceSubClass != NOVACOM_SUBCLASS ||
 			    id->bInterfaceProtocol != NOVACOM_PROTOCOL)
 				continue;
+			*iface_num = id->bInterfaceNumber;
 			for (int e = 0; e < id->bNumEndpoints; e++) {
 				uint8_t addr = id->endpoint[e].bEndpointAddress;
 				if (addr & LIBUSB_ENDPOINT_DIR_MASK)
@@ -70,7 +70,35 @@ static int find_endpoints(libusb_device *dev, uint8_t *ep_in, uint8_t *ep_out)
 	}
 
 	libusb_free_config_descriptor(cfg);
-	return (*ep_in && *ep_out) ? 0 : -ENOENT;
+	return (*iface_num >= 0 && *ep_in && *ep_out) ? 0 : -ENOENT;
+}
+
+/*
+ * Scan every USB device for one carrying a novacom interface (matched by
+ * subclass/protocol). Returns a handle ready to claim_interface(), with
+ * the matched interface number written into *iface_num.
+ */
+static libusb_device_handle *find_novacom(libusb_context *ctx, int *iface_num,
+					  uint8_t *ep_in, uint8_t *ep_out)
+{
+	libusb_device **list;
+	libusb_device_handle *h = NULL;
+	ssize_t n;
+
+	n = libusb_get_device_list(ctx, &list);
+	if (n < 0)
+		return NULL;
+
+	for (ssize_t i = 0; i < n; i++) {
+		if (find_endpoints(list[i], iface_num, ep_in, ep_out) != 0)
+			continue;
+		if (libusb_open(list[i], &h) == 0)
+			break;
+		h = NULL;
+	}
+
+	libusb_free_device_list(list, 1);
+	return h;
 }
 
 static void fill_random(uint8_t *buf, size_t n)
@@ -150,7 +178,7 @@ int main(int argc, char **argv)
 {
 	libusb_context *ctx = NULL;
 	libusb_device_handle *h;
-	libusb_device *dev;
+	int iface_num = -1;
 	uint8_t ep_in = 0, ep_out = 0;
 	int r, fails = 0;
 	unsigned int seed = argc > 1 ? (unsigned int)atoi(argv[1]) : 1;
@@ -164,27 +192,22 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	h = libusb_open_device_with_vid_pid(ctx, NOVACOM_VID, NOVACOM_PID);
+	h = find_novacom(ctx, &iface_num, &ep_in, &ep_out);
 	if (!h) {
-		fprintf(stderr, "no %04x:%04x device — is the gadget bound?\n",
-			NOVACOM_VID, NOVACOM_PID);
+		fprintf(stderr,
+			"no device with subclass=0x%02x protocol=0x%02x — "
+			"is the novacom gadget bound?\n",
+			NOVACOM_SUBCLASS, NOVACOM_PROTOCOL);
 		libusb_exit(ctx);
 		return 2;
 	}
 
-	dev = libusb_get_device(h);
-	r = find_endpoints(dev, &ep_in, &ep_out);
-	if (r != 0) {
-		fprintf(stderr, "could not locate novacom endpoints (%d)\n", r);
-		libusb_close(h);
-		libusb_exit(ctx);
-		return 3;
-	}
-	printf("ep_in=0x%02x ep_out=0x%02x\n", ep_in, ep_out);
+	printf("iface=%d ep_in=0x%02x ep_out=0x%02x\n",
+	       iface_num, ep_in, ep_out);
 
 	libusb_set_auto_detach_kernel_driver(h, 1);
 
-	r = libusb_claim_interface(h, NOVACOM_IFACE);
+	r = libusb_claim_interface(h, iface_num);
 	if (r != 0) {
 		fprintf(stderr, "claim_interface: %s\n", libusb_error_name(r));
 		libusb_close(h);
@@ -200,7 +223,7 @@ int main(int argc, char **argv)
 	if (test_wrong_dir_stall(h, ep_out) != 0)
 		fails++;
 
-	libusb_release_interface(h, NOVACOM_IFACE);
+	libusb_release_interface(h, iface_num);
 	libusb_close(h);
 	libusb_exit(ctx);
 

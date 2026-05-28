@@ -1,0 +1,15 @@
+[  537.926155] configfs-gadget.g_nova gadget.0: adding 'novacom'/eb4bd07d to config 'c'/4e1ce74a
+[  537.942984] configfs-gadget.g_nova gadget.0: novacom: IN/ep3in OUT/ep2out
+[  538.465006] configfs-gadget.g_nova gadget.0: novacom: activate
+[  538.471762] configfs-gadget.g_nova gadget.0: novacom: ep_in: NOVACOM_EP_ENABLED
+[  538.478181] configfs-gadget.g_nova gadget.0: novacom: ep_out: NOVACOM_EP_ENABLED
+[  801.738035] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[  801.738142] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[  801.744337] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536 dir=OUT
+[  985.883617] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=48 dir=IN
+[  985.883889] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536 dir=OUT
+[  985.891101] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=64 dir=IN
+[  985.899604] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536 dir=OUT
+[  985.907761] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=128 dir=IN
+[  985.916477] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536 dir=OUT
+[  990.926334] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=1025 dir=IN

@@ -1,0 +1,11 @@
+ep0-reader pid=11378
+ep0-reader: opened /dev/novacom_ep0
+event type=SETUP      setup bmRT=0x00 bReq=0x09 wVal=0x0001 wIdx=0x0000 wLen=0
+06:35:14 >>> SOFT DISCONNECT
+event type=DISCONNECT 
+06:35:17 >>> SOFT CONNECT
+event type=SETUP      setup bmRT=0x00 bReq=0x09 wVal=0x0001 wIdx=0x0000 wLen=0
+06:35:22 >>> stop reader
+read: Bad file descriptor
+ep0-reader: stop
+06:35:23 >>> done

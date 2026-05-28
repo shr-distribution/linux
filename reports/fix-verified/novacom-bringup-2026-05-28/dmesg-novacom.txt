@@ -1,0 +1,93 @@
+[ 2724.412938] configfs-gadget.g_nova gadget.0: adding 'novacom'/781e3538 to config 'c'/2e33759e
+[ 2724.429341] configfs-gadget.g_nova gadget.0: novacom: IN/ep3in OUT/ep2out
+[ 2724.942217] configfs-gadget.g_nova gadget.0: novacom: activate
+[ 2724.948981] configfs-gadget.g_nova gadget.0: novacom: ep_in: NOVACOM_EP_ENABLED
+[ 2724.955401] configfs-gadget.g_nova gadget.0: novacom: ep_out: NOVACOM_EP_ENABLED
+[ 2780.500906] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 2780.501015] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 2780.508063] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 3841.953125] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=20640
+[ 4152.119576] configfs-gadget.g_nova gadget.0: novacom: ep_in i/o interrupted
+[ 4153.502838] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4153.503069] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4153.508862] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4183.431508] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4183.433852] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4282.000198] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4282.328425] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4282.328660] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4282.334660] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4293.577142] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4293.896628] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4293.896735] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4293.902707] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4305.209393] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4305.526848] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4305.526958] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4305.532897] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4316.818045] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4317.136851] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4317.136962] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4317.142919] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4328.410669] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4328.727219] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4328.727328] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4328.733271] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4340.160440] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4340.473876] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4340.473982] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4340.479789] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4351.948765] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4352.278732] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4352.278965] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4352.284982] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4363.518629] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4363.836613] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4363.836719] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4363.842668] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4375.087622] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4375.416548] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4375.416776] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4375.422797] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4386.917813] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4387.230961] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4387.231067] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4387.237025] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4398.723061] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4399.036276] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4399.036382] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4399.042204] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4410.289300] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4410.606866] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4410.606975] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4410.612915] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4456.898540] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4457.212013] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4457.212122] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4457.219376] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4517.028467] configfs-gadget.g_nova gadget.0: novacom: ep_out i/o interrupted
+[ 4517.342006] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4517.342111] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4517.349259] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4523.039320] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=48
+[ 4523.039655] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4523.054399] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4523.054812] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4546.960510] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=48
+[ 4546.960852] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4546.967575] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=64
+[ 4546.975563] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4546.982767] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=128
+[ 4546.990665] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4546.998487] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4547.006313] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4547.013983] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=512
+[ 4617.558182] configfs-gadget.g_nova gadget.0: novacom: ep_in i/o interrupted
+[ 4742.089310] configfs-gadget.g_nova gadget.0: novacom: ep_out opened
+[ 4742.089419] configfs-gadget.g_nova gadget.0: novacom: ep_in opened
+[ 4742.098568] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4749.266530] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4749.268601] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4749.284163] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65535
+[ 4749.286210] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=65536
+[ 4789.095020] configfs-gadget.g_nova gadget.0: novacom: novacom_ep_io: len=41152

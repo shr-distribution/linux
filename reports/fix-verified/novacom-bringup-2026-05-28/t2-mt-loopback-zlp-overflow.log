@@ -1,0 +1,15 @@
+[513] IN  failed: LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED actual=0
+[1024] IN  failed: LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED actual=512
+[4096] IN  failed: LIBUSB_SUCCESS / LIBUSB_TRANSFER_COMPLETED actual=1
+[65536] OUT failed: LIBUSB_ERROR_TIMEOUT actual=3072
+[262143] OUT failed: LIBUSB_ERROR_TIMEOUT actual=0
+[262144] OUT failed: LIBUSB_ERROR_TIMEOUT actual=0
+[262145] OUT failed: LIBUSB_ERROR_TIMEOUT actual=0
+[wrong-dir] expected STALL, got: LIBUSB_ERROR_IO actual=0
+8 failure(s)
+seed=1
+iface=2 ep_in=0x83 ep_out=0x02
+[    48] OK
+[    64] OK
+[   128] OK
+[   512] OK
