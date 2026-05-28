@@ -72,6 +72,7 @@ enum {
 	P_PXO,
 	P_PLL8,
 	P_CXO,
+	P_PXO_XO,	/* PXO selected on the XO mux (selector 1 vs 0 on BB mux) */
 };
 
 static const struct parent_map gcc_pxo_pll8_map[] = {
@@ -94,6 +95,20 @@ static const struct clk_parent_data gcc_pxo_pll8_cxo[] = {
 	{ .fw_name = "pxo", .name = "pxo_board" },
 	{ .hw = &pll8_vote.hw },
 	{ .fw_name = "cxo", .name = "cxo_board" },
+};
+
+/*
+ * XO mux: PDM and TSSC source from the cross-controller (XO) mux instead of
+ * the BB mux that the rest of the GCC peripherals use. On the XO mux the
+ * parent-select values are CXO=0, PXO=1, MXO=2, GND=3 (see vendor MSM8660
+ * clock-8x60.c SRC_SEL_XO_*) — only PXO is plumbed into the upstream binding.
+ */
+static const struct parent_map gcc_pxo_xo_map[] = {
+	{ P_PXO_XO, 1 },
+};
+
+static const struct clk_parent_data gcc_pxo_xo[] = {
+	{ .fw_name = "pxo", .name = "pxo_board" },
 };
 
 static const struct freq_tbl clk_tbl_gsbi_uart[] = {
@@ -1587,6 +1602,102 @@ static struct clk_branch ce2_p_clk = {
 	},
 };
 
+/*
+ * PDM (Pulse Density Modulation). Vendor clock-8x60.c lines 702-732:
+ *   ns_reg/cc_reg/reset_reg = PDM_CLK_NS_REG (0x2cc0)
+ *   br_en BIT(9), root_en BIT(11), reset BIT(12)
+ *   halt CLK_HALT_CFPB_STATEC bit 3, src_sel BM(1,0) via XO mux, no MND
+ *   single rate 27 MHz off PXO. Reset already in gcc_msm8660_resets[].
+ */
+static const struct freq_tbl clk_tbl_pdm[] = {
+	{ 27000000, P_PXO_XO, 1, 0, 0 },
+	{ }
+};
+
+static struct clk_rcg pdm_src = {
+	.ns_reg = 0x2cc0,
+	.s = {
+		.src_sel_shift = 0,
+		.parent_map = gcc_pxo_xo_map,
+	},
+	.freq_tbl = clk_tbl_pdm,
+	.clkr = {
+		.enable_reg = 0x2cc0,
+		.enable_mask = BIT(11),
+		.hw.init = &(struct clk_init_data){
+			.name = "pdm_src",
+			.parent_data = gcc_pxo_xo,
+			.num_parents = ARRAY_SIZE(gcc_pxo_xo),
+			.ops = &clk_rcg_ops,
+		},
+	},
+};
+
+static struct clk_branch pdm_clk = {
+	.halt_reg = 0x2fd4,
+	.halt_bit = 3,
+	.clkr = {
+		.enable_reg = 0x2cc0,
+		.enable_mask = BIT(9),
+		.hw.init = &(struct clk_init_data){
+			.name = "pdm_clk",
+			.parent_hws = (const struct clk_hw*[]){
+				&pdm_src.clkr.hw
+			},
+			.num_parents = 1,
+			.ops = &clk_branch_ops,
+			.flags = CLK_SET_RATE_PARENT,
+		},
+	},
+};
+
+/*
+ * TSSC (Touch Screen Sample Controller). Vendor clock-8x60.c lines 842-872:
+ *   ns_reg/cc_reg = TSSC_CLK_CTL_REG (0x2ca0)
+ *   br_en BIT(4), NO root_en mask, reset BIT(7)
+ *   halt CLK_HALT_CFPB_STATEC bit 4, src_sel BM(1,0) via XO mux, no MND
+ *   single rate 27 MHz off PXO. Reset already in gcc_msm8660_resets[].
+ */
+static const struct freq_tbl clk_tbl_tssc[] = {
+	{ 27000000, P_PXO_XO, 1, 0, 0 },
+	{ }
+};
+
+static struct clk_rcg tssc_src = {
+	.ns_reg = 0x2ca0,
+	.s = {
+		.src_sel_shift = 0,
+		.parent_map = gcc_pxo_xo_map,
+	},
+	.freq_tbl = clk_tbl_tssc,
+	.clkr.hw = {
+		.init = &(struct clk_init_data){
+			.name = "tssc_src",
+			.parent_data = gcc_pxo_xo,
+			.num_parents = ARRAY_SIZE(gcc_pxo_xo),
+			.ops = &clk_rcg_ops,
+		},
+	},
+};
+
+static struct clk_branch tssc_clk = {
+	.halt_reg = 0x2fd4,
+	.halt_bit = 4,
+	.clkr = {
+		.enable_reg = 0x2ca0,
+		.enable_mask = BIT(4),
+		.hw.init = &(struct clk_init_data){
+			.name = "tssc_clk",
+			.parent_hws = (const struct clk_hw*[]){
+				&tssc_src.clkr.hw
+			},
+			.num_parents = 1,
+			.ops = &clk_branch_ops,
+			.flags = CLK_SET_RATE_PARENT,
+		},
+	},
+};
+
 static struct clk_rcg prng_src = {
 	.ns_reg = 0x2e80,
 	.p = {
@@ -2639,6 +2750,10 @@ static struct clk_regmap *gcc_msm8660_clks[] = {
 	[PPSS_H_CLK] = &ppss_h_clk.clkr,
 	[CE2_H_CLK] = &ce2_h_clk.clkr,
 	[CE2_P_CLK] = &ce2_p_clk.clkr,
+	[PDM_SRC] = &pdm_src.clkr,
+	[PDM_CLK] = &pdm_clk.clkr,
+	[TSSC_CLK_SRC] = &tssc_src.clkr,
+	[TSSC_CLK] = &tssc_clk.clkr,
 	[PRNG_SRC] = &prng_src.clkr,
 	[PRNG_CLK] = &prng_clk.clkr,
 	[SDC1_SRC] = &sdc1_src.clkr,
