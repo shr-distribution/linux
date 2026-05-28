@@ -547,9 +547,18 @@ static int msm_iommu_program_bypass(struct device *dev)
 			SET_BYPASSD(iommu->base, mid, 1);
 			SET_BPSHCFG(iommu->base, mid, 2);    /* outer shareable */
 			SET_BPMTCFG(iommu->base, mid, 1);    /* normal memory  */
-			SET_BPRCOSH(iommu->base, mid, 1);    /* cacheable OSH  */
-			SET_BPRCISH(iommu->base, mid, 1);    /* cacheable ISH  */
-			SET_BPRCNSH(iommu->base, mid, 1);    /* cacheable NSH  */
+			/*
+			 * BPRC*=0 (non-cacheable reads). With BPRC*=1 the bypass
+			 * read goes via an upstream cache that is never populated
+			 * for our buffer and returns a 0x80 idle/default; the WE
+			 * write side has no BPWC equivalent and worked with
+			 * BPSHCFG/BPMTCFG alone, isolating the bug to the read
+			 * cacheability. With BPRC*=0 the read drops straight to
+			 * DRAM through the interconnect.
+			 */
+			SET_BPRCOSH(iommu->base, mid, 0);
+			SET_BPRCISH(iommu->base, mid, 0);
+			SET_BPRCNSH(iommu->base, mid, 0);
 		}
 
 		__disable_clocks(iommu);
