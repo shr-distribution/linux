@@ -4240,12 +4240,20 @@
 		 * 2. vb2-dma-sg allocates scattered pages
 		 * 3. VFE hardware writes to contiguous addresses
 		 *
-		 * 32MB at 0x7C000000 allows ~6 buffers at 1280x1024 NV16 (5MB each).
-		 * Located in upper System RAM region (0x48000000-0x7F5FFFFF).
+		 * 32MB at 0x42000000 -- in the LOWER System RAM bank
+		 * (0x40200000-0x466FFFFF), matching where the legacy webOS PMEM
+		 * for camera/JPEG lived. Moved from 0x7C000000 in the upper bank
+		 * as an experiment: the ijpeg JPEG-engine read path through the
+		 * MMSS interconnect did not deliver data from the upper bank to
+		 * the encoder (FE reads consistently returned a 0x80 idle value
+		 * even with the SMMU in bypass and physical RAM verified to hold
+		 * the correct userspace bytes via devmem). webOS PMEM in this
+		 * lower-bank range worked, so this tests whether the bus
+		 * silently filters bypass traffic by physical address range.
 		 */
-		linux,cma@7c000000 {
+		linux,cma@42000000 {
 			compatible = "shared-dma-pool";
-			reg = <0x7c000000 0x2000000>; /* 32MB at fixed address */
+			reg = <0x42000000 0x2000000>; /* 32MB at fixed address */
 			reusable;
 			linux,cma-default;
 		};
