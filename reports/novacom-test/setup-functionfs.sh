@@ -51,7 +51,7 @@ fi
 
 # 1. Mount FunctionFS
 mkdir -p "$FFS_DIR"
-if ! mountpoint -q "$FFS_DIR"; then
+if ! grep -q " $FFS_DIR " /proc/mounts 2>/dev/null; then
     log "mounting functionfs at $FFS_DIR (source=novacom)"
     mount -t functionfs novacom "$FFS_DIR"
 fi
