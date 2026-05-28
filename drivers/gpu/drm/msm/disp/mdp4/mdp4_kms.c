@@ -36,13 +36,33 @@ static int mdp4_hw_init(struct msm_kms *kms)
 	mdp4_write(mdp4_kms, REG_MDP4_PORTMAP_MODE, 0x3);
 
 	/*
-	 * Max read pending cmd config: Use 8 pending requests on APQ8060/MSM8660.
-	 * webOS kernel: "if MDP clock >= AXI clock, use 8 pending". On APQ8060
-	 * both are ~200 MHz, so 8 pending requests are needed to keep the memory
-	 * bus saturated and prevent display underflow during USB activity.
-	 * 0x08888 = 8 pending requests per client (DMA_P, DMA_E, VG pipes)
+	 * Max read pending cmd config: match the legacy webOS kernel value.
+	 *
+	 * mdp_hw40.c (legacy) wrote 0x02222 = 2 pending per pipe, with comment
+	 * "3 pending requests" (the comment was off-by-one). An earlier mainline
+	 * comment here claimed 8-pending matched legacy webOS, but that was
+	 * wrong: legacy webOS used 2.
+	 *
+	 * Investigation 2026-05-28: under heavy GPU contention (e.g. glmark2
+	 * desktop:blur w=4 where GPU writes/reads ping-pong FBOs continuously),
+	 * 0x08888 (8 per pipe) over-allocated MDP's fabric queue depth ->
+	 * scanline-latency-critical reads queued behind older pending MDP reads
+	 * and behind GPU traffic -> PRIMARY_INTF_UDERRUN (0x100) IRQ storm ->
+	 * cascade into a GPU MMU/AXI hang (see
+	 * project_a220_clientswitch_coldstart_wedge: "the 0x100 underrun is
+	 * survivable, the real wedge is a GPU cold-start AXI bus hang after it").
+	 * The hang reduced glmark2 desktop:blur to 1 hangcheck recover/sec
+	 * (rendered as "1 fps") and left the GPU in a degraded state where
+	 * EVERY subsequent glmark2 scene ran 12-37x slower than standalone.
+	 *
+	 * Drop to 0x02222 (legacy webOS value). With fewer outstanding requests
+	 * per pipe, each fetch retires faster -> lower per-scanline latency ->
+	 * MDP gets its data within the scanline budget even when GPU pings the
+	 * fabric at full rate.
+	 *
+	 * 0x02222 = 2 pending requests per pipe (DMA_P, DMA_E, VG, RGB nibbles)
 	 */
-	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x08888);
+	mdp4_write(mdp4_kms, REG_MDP4_READ_CNFG, 0x02222);
 
 	clk = clk_get_rate(mdp4_kms->clk);
 
