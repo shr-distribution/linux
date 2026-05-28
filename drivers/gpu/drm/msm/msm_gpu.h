@@ -252,6 +252,18 @@ struct msm_gpu {
 	bool suspend_to_system;
 
 	/*
+	 * If set, msm_devfreq_active() boosts min_freq directly to the MAX OPP
+	 * (gpu->fast_rate) on idle->active transitions and msm_devfreq_idle_work()
+	 * clears it on the next idle, mirroring legacy KGSL's binary
+	 * CLK_ON->KGSL_MAX_FREQ / CLK_OFF->KGSL_MIN_FREQ behavior. Bypasses
+	 * simple_ondemand's polling-threshold model which UNDERSHOOTS on workloads
+	 * where the per-tile WFI drain (a22x recipe patch 0016, CACHE_FLUSH_TS+WFI
+	 * before each EDRAM_COPY resolve) makes the 3D pipe look idle to NRT_BUSY
+	 * even though the GPU is actively waiting. a2xx-specific; default false.
+	 */
+	bool kgsl_style_boost;
+
+	/*
 	 * Max hangcheck "progress" retries before a GPU that is still fetching
 	 * but not retiring is declared hung. Defaults to
 	 * DRM_MSM_HANGCHECK_PROGRESS_RETRIES; slow GPUs (a2xx) raise it so a

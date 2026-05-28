@@ -990,6 +990,21 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	gpu->retain_power_runtime = true;
 
 	/*
+	 * Enable KGSL-style binary boost: on idle->active transitions, clamp
+	 * GPU min_freq directly to the MAX OPP for the duration of GPU work,
+	 * mirroring legacy KGSL's CLK_ON->KGSL_MAX_FREQ behavior. Cleared on
+	 * the next idle transition by msm_devfreq_idle_work().
+	 *
+	 * Required because simple_ondemand UNDERSHOOTS on a2xx: 0016's per-tile
+	 * CACHE_FLUSH_TS+WFI drain makes the 3D pipe look idle to RBBM1_NRT_BUSY
+	 * for most of the wall-time at low clock; the busy ratio never crosses
+	 * the upthreshold to ramp up. Validated 2026-05-28: binner_test heavy
+	 * stuck at 27MHz (0.94 fps); userspace pinning to 266MHz gave 5.5x
+	 * speedup matching legacy KGSL (5.19 vs 5.45 fps).
+	 */
+	gpu->kgsl_style_boost = true;
+
+	/*
 	 * Optional GFX3D core reset used by a2xx_recover() (see there). Optional
 	 * so platforms without it in DT (e.g. imageon) still probe; -EPROBE_DEFER
 	 * and real errors propagate.

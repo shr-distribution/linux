@@ -349,12 +349,31 @@ void msm_devfreq_active(struct msm_gpu *gpu)
 
 	mutex_unlock(&df->devfreq->lock);
 
-	/*
-	 * If we've been idle for a significant fraction of a polling
-	 * interval, then we won't meet the threshold of busyness for
-	 * the governor to ramp up the freq.. so give some boost
-	 */
-	if (idle_time > msm_devfreq_profile.polling_ms) {
+	if (gpu->kgsl_style_boost) {
+		/*
+		 * KGSL-style binary boost: clamp min_freq directly to the MAX
+		 * OPP for the duration of GPU activity, mirroring legacy KGSL's
+		 * CLK_ON->KGSL_MAX_FREQ behavior. Cleared by
+		 * msm_devfreq_idle_work() on the next idle transition. No
+		 * boost_work timer; the boost is sustained until idle.
+		 *
+		 * Used for a2xx where the simple_ondemand polling model
+		 * UNDERSHOOTS because 0016's per-tile CACHE_FLUSH_TS+WFI drain
+		 * makes the 3D pipe look idle to NRT_BUSY for most of the
+		 * wall-time at low clock. simple_ondemand parks the GPU at the
+		 * minimum OPP and the same workload that runs in ~190ms at
+		 * 266MHz stretches to ~1000ms at 27MHz -- the busy ratio never
+		 * exceeds the upthreshold to escape.
+		 */
+		uint64_t freq = gpu->fast_rate;
+		do_div(freq, HZ_PER_KHZ);
+		dev_pm_qos_update_request(&df->boost_freq, freq);
+	} else if (idle_time > msm_devfreq_profile.polling_ms) {
+		/*
+		 * If we've been idle for a significant fraction of a polling
+		 * interval, then we won't meet the threshold of busyness for
+		 * the governor to ramp up the freq.. so give some boost
+		 */
 		msm_devfreq_boost(gpu, 2);
 	}
 }
@@ -383,6 +402,17 @@ static void msm_devfreq_idle_work(struct kthread_work *work)
 	df->idle_freq = idle_freq;
 
 	mutex_unlock(&df->devfreq->lock);
+
+	if (gpu->kgsl_style_boost) {
+		/*
+		 * Pair with the KGSL-style boost in msm_devfreq_active(): clear
+		 * the min_freq floor so the GPU can drop to the minimum OPP on
+		 * sustained idle. simple_ondemand otherwise sees the boosted
+		 * floor and never lets the clock drop, defeating the power
+		 * savings on idle.
+		 */
+		dev_pm_qos_update_request(&df->boost_freq, 0);
+	}
 }
 
 void msm_devfreq_idle(struct msm_gpu *gpu)
