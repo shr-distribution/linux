@@ -530,8 +530,27 @@ static int msm_iommu_program_bypass(struct device *dev)
 		 */
 		config_mids(iommu, master);
 		__reset_context(iommu->base, master->num);
-		for (i = 0; i < master->num_mids; i++)
-			SET_BYPASSD(iommu->base, master->mids[i], 1);
+		/*
+		 * Program the per-MID bypass attribute fields so bypass
+		 * transactions go out as {outer-shareable, normal-cacheable,
+		 * cached} -- matching DRAM access semantics. With these left
+		 * at the default 0 the AFAB interconnect treats the bypass
+		 * traffic as device-memory non-shareable and never routes it
+		 * to DRAM, so the engine reads back a 0x80 idle/neutral value
+		 * regardless of what userspace and the kernel wrote (verified
+		 * on Tenderloin via devmem: physical RAM held the correct
+		 * userspace bytes but the FE got 0x80).
+		 */
+		for (i = 0; i < master->num_mids; i++) {
+			int mid = master->mids[i];
+
+			SET_BYPASSD(iommu->base, mid, 1);
+			SET_BPSHCFG(iommu->base, mid, 2);    /* outer shareable */
+			SET_BPMTCFG(iommu->base, mid, 1);    /* normal memory  */
+			SET_BPRCOSH(iommu->base, mid, 1);    /* cacheable OSH  */
+			SET_BPRCISH(iommu->base, mid, 1);    /* cacheable ISH  */
+			SET_BPRCNSH(iommu->base, mid, 1);    /* cacheable NSH  */
+		}
 
 		__disable_clocks(iommu);
 	}
