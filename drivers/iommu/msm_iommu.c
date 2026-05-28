@@ -307,7 +307,7 @@ static struct iommu_domain *msm_iommu_domain_alloc_paging(struct device *dev)
 {
 	struct msm_priv *priv;
 
-	priv = kzalloc_obj(*priv);
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		goto fail_nomem;
 
@@ -404,8 +404,7 @@ static struct iommu_device *msm_iommu_probe_device(struct device *dev)
 	return &iommu->iommu;
 }
 
-static int msm_iommu_attach_dev(struct iommu_domain *domain, struct device *dev,
-				struct iommu_domain *old)
+static int msm_iommu_attach_dev(struct iommu_domain *domain, struct device *dev, struct iommu_domain *prev_domain)
 {
 	int ret = 0;
 	unsigned long flags;
@@ -467,20 +466,97 @@ fail:
 	return ret;
 }
 
+/*
+ * Program a "bypass" master on a qcom,iommu-bypass SMMU: route its MID(s)
+ * to a context bank but leave the MMU disabled (SCTLR cleared by
+ * __reset_context), i.e. a 1:1 physical-address passthrough. This is the
+ * IDENTITY-domain handling for instances like the IJPEG/Gemini SMMU whose
+ * master DMAs with physical addresses (no IOVA mapping, matching the legacy
+ * webOS design). Without it the master's transactions hit an unconfigured
+ * context and fault continuously, returning garbage to the engine.
+ */
+static int msm_iommu_program_bypass(struct device *dev)
+{
+	struct msm_iommu_dev *iommu;
+	struct msm_iommu_ctx_dev *master;
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&msm_iommu_lock, flags);
+	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
+		if (!iommu->bypass)
+			continue;
+		master = find_master_for_dev(iommu, dev);
+		if (!master)
+			continue;
+		/* Single-master bypass SMMU: program the context bank once. */
+		if (!bitmap_empty(iommu->context_map, iommu->ncb))
+			continue;
+
+		ret = __enable_clocks(iommu);
+		if (ret)
+			break;
+
+		/*
+		 * Replicate the legacy 2.6.35 msm_iommu boot-time state for the
+		 * IJPEG SMMU exactly. Legacy did:
+		 *
+		 *   - msm_iommu_reset(base, ncb)   at controller probe
+		 *   - for each ctx_dev (ijpeg_src_ctx MID 0, ijpeg_dst_ctx MID 1):
+		 *       config_mids(): M2VCBR=0 (clears BYPASSD!), CBACR=0,
+		 *                      VMID=0, CBNDX=ctx, CBVMID=0,
+		 *                      CONTEXTIDR_ASID=ctx, NSCFG=3
+		 *       __reset_context(): BPRC*=0, BPSHCFG=0, BPMTCFG=0,
+		 *                          ACTLR=0, SCTLR=0 (M=0),
+		 *                          TTBR{0,1}=0, ...
+		 *
+		 * It did NOT call __program_context() (so SCTLR.M stays 0) and
+		 * it did NOT set BYPASSD. That is a *different* SMMU passthrough
+		 * mode from our previous attempts: transactions route via CBNDX
+		 * to a context bank whose SCTLR.M=0 (MMU off) -- implicit
+		 * passthrough -- rather than the per-MID global BYPASSD bit.
+		 *
+		 * Every BYPASSD-based combination we tried gave broken FE reads;
+		 * legacy's CBNDX+M=0 mode worked. Do exactly that.
+		 */
+		if (!iommu->reset_done) {
+			msm_iommu_reset(iommu->base, iommu->ncb);
+			iommu->reset_done = true;
+		}
+
+		ret = msm_iommu_alloc_ctx(iommu->context_map, 0, iommu->ncb);
+		if (ret < 0) {
+			__disable_clocks(iommu);
+			break;
+		}
+		master->num = ret;
+		ret = 0;
+
+		config_mids(iommu, master);
+		__reset_context(iommu->base, master->num);
+
+		__disable_clocks(iommu);
+	}
+	spin_unlock_irqrestore(&msm_iommu_lock, flags);
+
+	return ret;
+}
+
 static int msm_iommu_identity_attach(struct iommu_domain *identity_domain,
 				     struct device *dev,
 				     struct iommu_domain *old)
 {
+	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
 	struct msm_priv *priv;
 	unsigned long flags;
 	struct msm_iommu_dev *iommu;
 	struct msm_iommu_ctx_dev *master;
 	int ret = 0;
 
-	if (old == identity_domain || !old)
-		return 0;
+	if (domain == identity_domain || !domain)
+		return msm_iommu_program_bypass(dev);
 
-	priv = to_msm_priv(old);
+	priv = to_msm_priv(domain);
 	free_io_pgtable_ops(priv->iop);
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
@@ -715,23 +791,25 @@ irqreturn_t msm_iommu_fault_handler(int irq, void *dev_id)
 		fsr = GET_FSR(iommu->base, i);
 		if (fsr) {
 			/*
-			 * Rate-limit BOTH the dev_err header line AND the
-			 * print_ctx_regs() multi-line dump together. On
-			 * Tenderloin/APQ8060 with Gemini using the IDENTITY
-			 * (passthrough) default domain — necessary because
-			 * IOMMU_DOMAIN_DMA with msm_iommu deadlocks the
-			 * system — every JPEG encode generates thousands of
-			 * these prints. The engine reads raw CMA physical
-			 * addresses, the SMMU has no mapping for them, but
-			 * the read still completes through the passthrough
-			 * so the encode produces correct output. The "fault"
-			 * is purely a logging event, not a data error. At
-			 * full rate the prints saturate netconsole and hide
-			 * everything else.
+			 * A context fault here means a master is issuing
+			 * transactions against an unconfigured context bank.
+			 * For a qcom,iommu-bypass instance (e.g. IJPEG/Gemini)
+			 * this used to happen on every encode because the
+			 * IDENTITY domain left the master's MIDs unrouted: the
+			 * engine read raw physical addresses, the SMMU faulted,
+			 * the read returned garbage (NOT, as previously
+			 * believed, correct passthrough data — verified on
+			 * Tenderloin: encoded output was input-independent), and
+			 * at full fault rate the prints saturated netconsole
+			 * until the device locked up. msm_iommu_program_bypass()
+			 * now routes those MIDs to an MMU-disabled context, so
+			 * these faults should no longer fire during normal use;
+			 * if they do, the master is mis-programmed.
 			 *
-			 * Keep the FSR clear and IRQ_HANDLED accounting
-			 * outside the ratelimit gate — those are functional,
-			 * not logging.
+			 * Rate-limit BOTH the dev_err header line AND the
+			 * print_ctx_regs() dump together. Keep the FSR clear and
+			 * IRQ_HANDLED accounting outside the ratelimit gate —
+			 * those are functional, not logging.
 			 */
 			static DEFINE_RATELIMIT_STATE(rs,
 				DEFAULT_RATELIMIT_INTERVAL,
@@ -832,6 +910,14 @@ static int msm_iommu_probe(struct platform_device *pdev)
 		return ret;
 	}
 	iommu->ncb = val;
+
+	/*
+	 * Bypass instance: the (single) master DMAs with physical addresses,
+	 * so the IDENTITY domain must route its MIDs to an MMU-disabled
+	 * (passthrough) context rather than leave them unconfigured.
+	 */
+	iommu->bypass = of_property_read_bool(iommu->dev->of_node,
+					      "qcom,iommu-bypass");
 
 	/*
 	 * Defer IOMMU reset to first device attach. This prevents disruption
