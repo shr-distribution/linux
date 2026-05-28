@@ -1018,15 +1018,28 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 
 	/*
 	 * The a220 is slow: heavy fragment-bound frames (e.g. glmark2's
-	 * multi-pass desktop blur) legitimately run ~1fps. With a2xx_progress()
-	 * the hangcheck only fires when the CP stops advancing, so it is safe to
-	 * tolerate such a still-rendering frame for much longer than the default
-	 * before declaring a hang -- a genuinely stuck GPU makes no progress and
-	 * is still caught in a single hangcheck period. Allow ~4s (the 250ms
-	 * progress-halved hangcheck period x 16) so these frames complete instead
-	 * of being needlessly recovered (which would drop the in-flight submit).
+	 * multi-pass desktop blur w=4) legitimately run multi-seconds. With
+	 * a2xx_progress() the hangcheck only fires when the CP stops advancing,
+	 * so it is safe to tolerate such a still-rendering frame for much longer
+	 * than the default before declaring a hang -- a genuinely stuck GPU makes
+	 * no progress and is still caught in a single hangcheck period.
+	 *
+	 * 2026-05-28: raised from 16 (~4s) to 64 (~16s) after the captured RD of
+	 * glmark2 desktop:blur w=4 showed 321 DRAW_INDX + 150 EDRAM_COPY in a
+	 * SINGLE submit -- the entire frame (4 windows x scene + blur + composite)
+	 * packed into one submit. At MAX clock this batch legitimately takes >4s,
+	 * tripping the previous threshold and getting "recovered" -- which DROPS
+	 * the in-flight submit, causing 1 fps + wrong rendering + cascading
+	 * impairment of subsequent scenes. With 64 progress retries this real
+	 * workload completes; a genuinely wedged GPU is still caught in <500ms by
+	 * the no-progress check.
+	 *
+	 * The proper fix is bounded submission in Mesa (split big batches into
+	 * many small submits), but that's a bigger architectural change. This is
+	 * a 1-line workaround that lets a real workload complete and reveals
+	 * whether bounded submission would actually unlock blur perf.
 	 */
-	gpu->hangcheck_progress_retries = 16;
+	gpu->hangcheck_progress_retries = 64;
 
 	/* Get interconnect path for memory bandwidth voting */
 	a2xx_gpu->icc_path = devm_of_icc_get(&pdev->dev, "gfx-mem");
