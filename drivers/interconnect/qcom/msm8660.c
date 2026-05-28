@@ -2,7 +2,7 @@
 /*
  * Qualcomm MSM8660/APQ8060 interconnect driver
  *
- * Copyright (c) 2026 LuneOS Project
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on msm8974.c by Brian Masney <masneyb@onstation.org>
  * and webOS kernel msm_bus_board_8660.c / msm_bus_fabric.c

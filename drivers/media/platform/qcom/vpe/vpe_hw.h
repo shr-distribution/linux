@@ -3,7 +3,7 @@
  * Qualcomm MSM8660 Video Processing Engine (VPE) driver
  *
  * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024-2026 Herrie (herrie.org)
+ * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on legacy msm_vpe1 driver from webOS kernel.
  */

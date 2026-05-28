@@ -41,7 +41,7 @@
  *      msm8660_mpm_set_pin_wake() etc. to twiddle the MPM enable
  *      register for these "raw" pins.
  *
- * Copyright (c) 2026, Herman van Hazendonk
+ * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
  * Copyright (c) 2010-2012, The Linux Foundation (legacy mpm.c reference)
  */
 

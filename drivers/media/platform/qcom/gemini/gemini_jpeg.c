@@ -2,7 +2,7 @@
 /*
  * Qualcomm MSM8660 JPEG Encoder/Decoder (Gemini) - JPEG header generation
  *
- * Copyright (c) 2024-2026 Herrie (herrie.org)
+ * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * The Gemini hardware writes only the entropy-coded segment of the JPEG
  * stream. The driver builds the SOI/JFIF/DQT/DHT/SOF0/SOS marker preamble

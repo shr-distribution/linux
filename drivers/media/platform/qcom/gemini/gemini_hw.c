@@ -3,7 +3,7 @@
  * Qualcomm MSM8660 JPEG Encoder/Decoder (Gemini) - Hardware abstraction
  *
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024-2026 Herrie (herrie.org)
+ * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on legacy msm_gemini driver from webOS kernel.
  */

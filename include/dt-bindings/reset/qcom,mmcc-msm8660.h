@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
- * Copyright (c) 2026, LuneOS Project.
+ * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
  *
  * Reset bindings for the MSM8660/APQ8060/MSM8260 Multimedia Clock
  * Controller (MMCC).

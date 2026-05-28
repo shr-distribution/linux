@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2026, Herrie <pherrie@gmail.com>
+ * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
  *
  * Register definitions for Qualcomm Crypto Engine 2 (CE2)
  * Found on MSM8660/APQ8060 and similar SoCs

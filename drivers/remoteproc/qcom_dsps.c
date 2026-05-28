@@ -4,7 +4,7 @@
  * Peripheral Image Loader
  *
  * Copyright (c) 2011, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024, Herrie <pingu@pingudev.org>
+ * Copyright (c) 2024, Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on legacy msm_dsps.c and peripheral-reset.c from downstream MSM kernel.
  */

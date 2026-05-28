@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
- * Copyright (c) 2026, LuneOS Project. MSM8660/APQ8060 specific clocks.
+ * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
  *
  * MSM8660/APQ8060 Multimedia Clock Controller driver
  *
