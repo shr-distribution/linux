@@ -112,10 +112,7 @@ static bool a2xx_me_init(struct msm_gpu *gpu)
 
 	/* Vertex and Pixel Shader Start Addresses in instructions
 	 * (3 DWORDS per instruction) */
-	if (adreno_is_a225(adreno_gpu))
-		OUT_RING(ring, 0x80000300);
-	else
-		OUT_RING(ring, 0x80000180);
+	OUT_RING(ring, 0x80000180);
 	/* Maximum Contexts */
 	OUT_RING(ring, 0x00000001);
 	/* Write Confirm Interval and The CP will wait the
@@ -342,7 +339,7 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	 * word (0x20xxxx for A200, 0x220xxx for A220, 0x225xxx for A225).
 	 * Older firmware files, which lack protection support, have 0 instead.
 	 */
-	if (ptr[1] == 0 && !a2xx_gpu->protection_disabled) {
+	if (ptr[1] == 0) {
 		dev_warn(gpu->dev->dev,
 			 "Legacy firmware detected, disabling protection support\n");
 		a2xx_gpu->protection_disabled = true;
@@ -684,7 +681,7 @@ static void a2xx_dump(struct msm_gpu *gpu)
 
 static struct msm_gpu_state *a2xx_gpu_state_get(struct msm_gpu *gpu)
 {
-	struct msm_gpu_state *state = kzalloc_obj(*state);
+	struct msm_gpu_state *state = kzalloc(sizeof(*state), GFP_KERNEL);
 
 	if (!state)
 		return ERR_PTR(-ENOMEM);
@@ -918,18 +915,42 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 	}
 }
 
+static const struct adreno_gpu_funcs funcs = {
+	.base = {
+		.get_param = adreno_get_param,
+		.set_param = adreno_set_param,
+		.hw_init = a2xx_hw_init,
+		.pm_suspend = a2xx_pm_suspend,
+		.pm_resume = a2xx_pm_resume,
+		.recover = a2xx_recover,
+		.submit = a2xx_submit,
+		.active_ring = adreno_active_ring,
+		.irq = a2xx_irq,
+		.destroy = a2xx_destroy,
+#if defined(CONFIG_DEBUG_FS) || defined(CONFIG_DEV_COREDUMP)
+		.show = adreno_show,
+#endif
+		.gpu_busy = a2xx_gpu_busy,
+		.gpu_state_get = a2xx_gpu_state_get,
+		.gpu_state_put = adreno_gpu_state_put,
+		.create_vm = a2xx_create_vm,
+		.get_rptr = a2xx_get_rptr,
+		.gpu_set_freq = a2xx_gpu_set_freq,
+		.progress = a2xx_progress,
+	},
+};
+
 static const struct msm_gpu_perfcntr perfcntrs[] = {
 /* TODO */
 };
 
-static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
+struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 {
 	struct a2xx_gpu *a2xx_gpu = NULL;
 	struct adreno_gpu *adreno_gpu;
 	struct msm_gpu *gpu;
 	struct msm_drm_private *priv = dev->dev_private;
 	struct platform_device *pdev = priv->gpu_pdev;
-	struct adreno_platform_config *config = pdev->dev.platform_data;
 	int ret;
 
 	if (!pdev) {
@@ -938,7 +959,7 @@ static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 		goto fail;
 	}
 
-	a2xx_gpu = kzalloc_obj(*a2xx_gpu);
+	a2xx_gpu = kzalloc(sizeof(*a2xx_gpu), GFP_KERNEL);
 	if (!a2xx_gpu) {
 		ret = -ENOMEM;
 		goto fail;
@@ -950,7 +971,7 @@ static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	gpu->perfcntrs = perfcntrs;
 	gpu->num_perfcntrs = ARRAY_SIZE(perfcntrs);
 
-	ret = adreno_gpu_init(dev, pdev, adreno_gpu, config->info->funcs, 1);
+	ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs, 1);
 	if (ret)
 		goto fail;
 
@@ -967,6 +988,21 @@ static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	 * just the same, so skipping hw_init stays correct.
 	 */
 	gpu->retain_power_runtime = true;
+
+	/*
+	 * Enable KGSL-style binary boost: on idle->active transitions, clamp
+	 * GPU min_freq directly to the MAX OPP for the duration of GPU work,
+	 * mirroring legacy KGSL's CLK_ON->KGSL_MAX_FREQ behavior. Cleared on
+	 * the next idle transition by msm_devfreq_idle_work().
+	 *
+	 * Required because simple_ondemand UNDERSHOOTS on a2xx: 0016's per-tile
+	 * CACHE_FLUSH_TS+WFI drain makes the 3D pipe look idle to RBBM1_NRT_BUSY
+	 * for most of the wall-time at low clock; the busy ratio never crosses
+	 * the upthreshold to ramp up. Validated 2026-05-28: binner_test heavy
+	 * stuck at 27MHz (0.94 fps); userspace pinning to 266MHz gave 5.5x
+	 * speedup matching legacy KGSL (5.19 vs 5.45 fps).
+	 */
+	gpu->kgsl_style_boost = true;
 
 	/*
 	 * Optional GFX3D core reset used by a2xx_recover() (see there). Optional
@@ -1030,29 +1066,3 @@ fail:
 
 	return ERR_PTR(ret);
 }
-
-const struct adreno_gpu_funcs a2xx_gpu_funcs = {
-	.base = {
-		.get_param = adreno_get_param,
-		.set_param = adreno_set_param,
-		.hw_init = a2xx_hw_init,
-		.pm_suspend = a2xx_pm_suspend,
-		.pm_resume = a2xx_pm_resume,
-		.recover = a2xx_recover,
-		.submit = a2xx_submit,
-		.active_ring = adreno_active_ring,
-		.irq = a2xx_irq,
-		.destroy = a2xx_destroy,
-#if defined(CONFIG_DEBUG_FS) || defined(CONFIG_DEV_COREDUMP)
-		.show = adreno_show,
-#endif
-		.gpu_busy = a2xx_gpu_busy,
-		.gpu_state_get = a2xx_gpu_state_get,
-		.gpu_state_put = adreno_gpu_state_put,
-		.create_vm = a2xx_create_vm,
-		.get_rptr = a2xx_get_rptr,
-		.gpu_set_freq = a2xx_gpu_set_freq,
-		.progress = a2xx_progress,
-	},
-	.init = a2xx_gpu_init,
-};
