@@ -480,7 +480,7 @@ static int msm_iommu_program_bypass(struct device *dev)
 	struct msm_iommu_dev *iommu;
 	struct msm_iommu_ctx_dev *master;
 	unsigned long flags;
-	int ret = 0, ctx, i;
+	int ret = 0, i;
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
 	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
@@ -498,68 +498,19 @@ static int msm_iommu_program_bypass(struct device *dev)
 			break;
 
 		/*
-		 * Deferred reset is safe here: a bypass engine (JPEG) performs
-		 * no in-flight DMA at boot, unlike the display memory path.
+		 * Preserve boot-firmware M2VCBR / context state: the legacy
+		 * webOS kernel never touched the SMMU for JPEG and it worked,
+		 * so the QSBL/boot loader leaves the JPEG MID routing in a
+		 * usable state. msm_iommu_reset() clobbers SCTLR for every
+		 * context bank, and config_mids() / __reset_context() further
+		 * clobber the M2VCBR routing -- after which read transactions
+		 * stop reaching DRAM even with BYPASSD/BPSHCFG/BPMTCFG/BPRC*
+		 * tried in every combination. Skip the reset and routing
+		 * setup entirely; only set BYPASSD=1 on top of whatever boot
+		 * left, RMW-style.
 		 */
-		if (!iommu->reset_done) {
-			msm_iommu_reset(iommu->base, iommu->ncb);
-			iommu->reset_done = true;
-		}
-
-		ctx = msm_iommu_alloc_ctx(iommu->context_map, 0, iommu->ncb);
-		if (ctx < 0) {
-			__disable_clocks(iommu);
-			ret = ctx;
-			break;
-		}
-		master->num = ctx;
-
-		/*
-		 * Route the master's MIDs to the context, leave the MMU
-		 * disabled (SCTLR=0 via __reset_context), AND set BYPASSD=1 on
-		 * each MID's M2VCBR entry. Without BYPASSD the SMMU still
-		 * routes the transaction to the context bank, which absorbs it
-		 * silently (no fault, but the data never reaches RAM in either
-		 * direction). With BYPASSD=1 the per-MID routing tells the
-		 * SMMU to skip translation entirely and let the transaction
-		 * pass 1:1 to physical memory -- a true hardware bypass.
-		 *
-		 * On the JPEG/Gemini path this is what makes the FE actually
-		 * read the buffer contents instead of consistently seeing
-		 * neutral 0x80 data.
-		 */
-		config_mids(iommu, master);
-		__reset_context(iommu->base, master->num);
-		/*
-		 * Program the per-MID bypass attribute fields so bypass
-		 * transactions go out as {outer-shareable, normal-cacheable,
-		 * cached} -- matching DRAM access semantics. With these left
-		 * at the default 0 the AFAB interconnect treats the bypass
-		 * traffic as device-memory non-shareable and never routes it
-		 * to DRAM, so the engine reads back a 0x80 idle/neutral value
-		 * regardless of what userspace and the kernel wrote (verified
-		 * on Tenderloin via devmem: physical RAM held the correct
-		 * userspace bytes but the FE got 0x80).
-		 */
-		for (i = 0; i < master->num_mids; i++) {
-			int mid = master->mids[i];
-
-			SET_BYPASSD(iommu->base, mid, 1);
-			SET_BPSHCFG(iommu->base, mid, 2);    /* outer shareable */
-			SET_BPMTCFG(iommu->base, mid, 1);    /* normal memory  */
-			/*
-			 * BPRC*=0 (non-cacheable reads). With BPRC*=1 the bypass
-			 * read goes via an upstream cache that is never populated
-			 * for our buffer and returns a 0x80 idle/default; the WE
-			 * write side has no BPWC equivalent and worked with
-			 * BPSHCFG/BPMTCFG alone, isolating the bug to the read
-			 * cacheability. With BPRC*=0 the read drops straight to
-			 * DRAM through the interconnect.
-			 */
-			SET_BPRCOSH(iommu->base, mid, 0);
-			SET_BPRCISH(iommu->base, mid, 0);
-			SET_BPRCNSH(iommu->base, mid, 0);
-		}
+		for (i = 0; i < master->num_mids; i++)
+			SET_BYPASSD(iommu->base, master->mids[i], 1);
 
 		__disable_clocks(iommu);
 	}
