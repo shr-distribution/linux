@@ -3,14 +3,17 @@
  * f_novacom.c -- novacom USB gadget function driver
  *
  * Copyright (C) 2008-2009 Palm, Inc.
- * Copyright (C) 2024 Modernized for Linux 6.x
+ * Copyright (C) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  *
- * This driver provides a vendor-specific USB interface for binary data
- * transfer between a host computer and webOS devices. It exposes three
- * character devices for userspace communication:
- *   - /dev/novacom_ep0    : Control/event endpoint
- *   - /dev/novacom_ep_in  : Bulk IN endpoint (device to host)
- *   - /dev/novacom_ep_out : Bulk OUT endpoint (host to device)
+ * Vendor-specific USB interface for the host-side novacomd daemon used by
+ * webOS devices (Palm Pre family, HP TouchPad). The kernel side is a thin
+ * pipe; all framing lives in userspace. Three character devices are
+ * exposed:
+ *   - /dev/novacom_ep0    : Control/event endpoint (gadgetfs-style events)
+ *   - /dev/novacom_ep_in  : Bulk IN  (device -> host)
+ *   - /dev/novacom_ep_out : Bulk OUT (host   -> device)
+ *
+ * See Documentation/usb/gadget_novacom.rst for the userspace ABI.
  */
 
 #include <linux/kernel.h>
@@ -40,22 +43,30 @@
 #define NOVACOM_INTERFACE_SUBCLASS	0x47
 #define NOVACOM_INTERFACE_PROTOCOL	0x11
 
+/*
+ * Maximum single-shot transfer size. Userspace requests larger than this are
+ * silently truncated to this value and must be re-issued for the remainder.
+ * Caps a single kmalloc; chosen to keep allocations within the kmalloc-safe
+ * region while still letting novacomd push large frames in one syscall.
+ */
+#define NOVACOM_MAX_XFER	(256 * 1024)
+
 /*-------------------------------------------------------------------------*/
 
-enum connect_state {
-	STATE_DISCONNECTED,
-	STATE_CONNECTED,
+enum novacom_conn_state {
+	NOVACOM_DISCONNECTED,
+	NOVACOM_CONNECTED,
 };
 
-enum novacom_state {
-	STATE_DEV_UNBOUND = 0,
-	STATE_DEV_CLOSED,
-	STATE_DEV_OPENED,
+enum novacom_dev_state {
+	NOVACOM_DEV_UNBOUND = 0,
+	NOVACOM_DEV_CLOSED,
+	NOVACOM_DEV_OPENED,
 };
 
 enum novacom_ep_state {
-	STATE_EP_DISABLED = 0,
-	STATE_EP_ENABLED,
+	NOVACOM_EP_DISABLED = 0,
+	NOVACOM_EP_ENABLED,
 };
 
 #define N_EVENT		5
@@ -82,8 +93,8 @@ struct f_novacom {
 
 	/* ep0 control */
 	spinlock_t			lock;
-	enum novacom_state		state;
-	enum connect_state		connect_state;
+	enum novacom_dev_state		state;
+	enum novacom_conn_state		connect_state;
 	struct usb_gadgetfs_event	event[N_EVENT];
 	unsigned			ev_next;
 	struct fasync_struct		*fasync;
@@ -95,7 +106,13 @@ static inline struct f_novacom *func_to_novacom(struct usb_function *f)
 	return container_of(f, struct f_novacom, function);
 }
 
-/* Global reference for misc device operations */
+/*
+ * The misc devices are static (NOVACOM_DEVNAME_*) so only one function
+ * instance can be live at a time. ConfigFS will return -EBUSY on a second
+ * mkdir; @the_novacom is the back-pointer used by the misc fops. Reads of
+ * @the_novacom from fops must be serialized with bind/unbind via
+ * @novacom_lock.
+ */
 static struct f_novacom *the_novacom;
 static DEFINE_MUTEX(novacom_lock);
 
@@ -162,37 +179,11 @@ static struct usb_descriptor_header *novacom_hs_function[] = {
 	NULL,
 };
 
-/* SuperSpeed descriptors */
-static struct usb_endpoint_descriptor novacom_ss_in_desc = {
-	.bLength =		USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-	.bEndpointAddress =	USB_DIR_IN,
-	.bmAttributes =		USB_ENDPOINT_XFER_BULK,
-	.wMaxPacketSize =	cpu_to_le16(1024),
-};
-
-static struct usb_endpoint_descriptor novacom_ss_out_desc = {
-	.bLength =		USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-	.bEndpointAddress =	USB_DIR_OUT,
-	.bmAttributes =		USB_ENDPOINT_XFER_BULK,
-	.wMaxPacketSize =	cpu_to_le16(1024),
-};
-
-static struct usb_ss_ep_comp_descriptor novacom_ss_bulk_comp_desc = {
-	.bLength =		sizeof(novacom_ss_bulk_comp_desc),
-	.bDescriptorType =	USB_DT_SS_ENDPOINT_COMP,
-	/* bMaxBurst default 0 */
-};
-
-static struct usb_descriptor_header *novacom_ss_function[] = {
-	(struct usb_descriptor_header *) &novacom_interface_desc,
-	(struct usb_descriptor_header *) &novacom_ss_in_desc,
-	(struct usb_descriptor_header *) &novacom_ss_bulk_comp_desc,
-	(struct usb_descriptor_header *) &novacom_ss_out_desc,
-	(struct usb_descriptor_header *) &novacom_ss_bulk_comp_desc,
-	NULL,
-};
+/*
+ * SuperSpeed is intentionally not advertised: the only known consumer of this
+ * function (TI/Qualcomm-based webOS hardware) is high-speed, and SS bulk
+ * needs proper bMaxBurst tuning + on-hardware testing before being claimed.
+ */
 
 /* String descriptors */
 static struct usb_string novacom_string_defs[] = {
@@ -216,20 +207,20 @@ static struct usb_gadget_strings *novacom_strings[] = {
 
 static int novacom_enable_ep(struct novacom_ep *nep)
 {
-	if (nep->state == STATE_EP_DISABLED) {
+	if (nep->state == NOVACOM_EP_DISABLED) {
 		dev_dbg(&nep->novacom->function.config->cdev->gadget->dev,
-			"novacom: %s: STATE_EP_ENABLED\n", nep->name);
-		nep->state = STATE_EP_ENABLED;
+			"novacom: %s: NOVACOM_EP_ENABLED\n", nep->name);
+		nep->state = NOVACOM_EP_ENABLED;
 	}
 	return 0;
 }
 
 static void novacom_disable_ep(struct novacom_ep *nep)
 {
-	if (nep->state == STATE_EP_ENABLED) {
+	if (nep->state == NOVACOM_EP_ENABLED) {
 		dev_dbg(&nep->novacom->function.config->cdev->gadget->dev,
-			"novacom: %s: STATE_EP_DISABLED\n", nep->name);
-		nep->state = STATE_EP_DISABLED;
+			"novacom: %s: NOVACOM_EP_DISABLED\n", nep->name);
+		nep->state = NOVACOM_EP_DISABLED;
 	}
 }
 
@@ -267,7 +258,7 @@ static int novacom_get_ready_ep(unsigned int f_flags, struct novacom_ep *nep)
 	if (f_flags & O_NONBLOCK) {
 		if (!mutex_trylock(&nep->lock))
 			return -EAGAIN;
-		if (nep->state != STATE_EP_ENABLED) {
+		if (nep->state != NOVACOM_EP_ENABLED) {
 			mutex_unlock(&nep->lock);
 			return -EAGAIN;
 		}
@@ -278,10 +269,10 @@ static int novacom_get_ready_ep(unsigned int f_flags, struct novacom_ep *nep)
 		return -EINTR;
 
 	switch (nep->state) {
-	case STATE_EP_ENABLED:
+	case NOVACOM_EP_ENABLED:
 		val = 0;
 		break;
-	case STATE_EP_DISABLED:
+	case NOVACOM_EP_DISABLED:
 	default:
 		dev_dbg(&nep->novacom->function.config->cdev->gadget->dev,
 			"novacom: ep %p not available, state %d\n",
@@ -298,11 +289,12 @@ static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 	DECLARE_COMPLETION_ONSTACK(done);
 	struct f_novacom *novacom = nep->novacom;
 	struct usb_composite_dev *cdev = novacom->function.config->cdev;
+	unsigned long flags;
 	int value;
 
 	dev_dbg(&cdev->gadget->dev, "novacom: %s: len=%d\n", __func__, len);
 
-	spin_lock_irq(&novacom->lock);
+	spin_lock_irqsave(&novacom->lock, flags);
 	if (likely(nep->ep != NULL)) {
 		struct usb_request *req = nep->req;
 
@@ -314,18 +306,18 @@ static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 	} else {
 		value = -ENODEV;
 	}
-	spin_unlock_irq(&novacom->lock);
+	spin_unlock_irqrestore(&novacom->lock, flags);
 
 	if (likely(value == 0)) {
 		value = wait_for_completion_interruptible(&done);
 		if (value != 0) {
-			spin_lock_irq(&novacom->lock);
+			spin_lock_irqsave(&novacom->lock, flags);
 			if (likely(nep->ep != NULL)) {
 				dev_warn(&cdev->gadget->dev,
 					 "novacom: %s i/o interrupted\n",
 					 nep->name);
 				usb_ep_dequeue(nep->ep, nep->req);
-				spin_unlock_irq(&novacom->lock);
+				spin_unlock_irqrestore(&novacom->lock, flags);
 
 				/* Wait for dequeue completion with timeout */
 				if (!wait_for_completion_timeout(&done,
@@ -335,7 +327,7 @@ static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 				if (nep->status == -ECONNRESET)
 					nep->status = -EINTR;
 			} else {
-				spin_unlock_irq(&novacom->lock);
+				spin_unlock_irqrestore(&novacom->lock, flags);
 				dev_err(&cdev->gadget->dev,
 					"novacom: endpoint gone\n");
 				nep->status = -ENODEV;
@@ -356,11 +348,13 @@ static ssize_t novacom_ep_read(struct file *fd, char __user *buf,
 	struct novacom_ep *nep = fd->private_data;
 	struct f_novacom *novacom = nep->novacom;
 	struct usb_composite_dev *cdev = novacom->function.config->cdev;
+	unsigned long flags;
 	void *kbuf;
 	ssize_t value;
 
 	if (len == 0)
 		return 0;
+	len = min_t(size_t, len, NOVACOM_MAX_XFER);
 
 	value = novacom_get_ready_ep(fd->f_flags, nep);
 	if (value < 0)
@@ -370,10 +364,10 @@ static ssize_t novacom_ep_read(struct file *fd, char __user *buf,
 	if (nep == &novacom->ep_in) {
 		dev_info(&cdev->gadget->dev, "novacom: %s halt (wrong dir)\n",
 			 nep->name);
-		spin_lock_irq(&novacom->lock);
+		spin_lock_irqsave(&novacom->lock, flags);
 		if (likely(nep->ep != NULL))
 			usb_ep_set_halt(nep->ep);
-		spin_unlock_irq(&novacom->lock);
+		spin_unlock_irqrestore(&novacom->lock, flags);
 		mutex_unlock(&nep->lock);
 		return -EBADMSG;
 	}
@@ -399,11 +393,13 @@ static ssize_t novacom_ep_write(struct file *fd, const char __user *buf,
 	struct novacom_ep *nep = fd->private_data;
 	struct f_novacom *novacom = nep->novacom;
 	struct usb_composite_dev *cdev = novacom->function.config->cdev;
+	unsigned long flags;
 	void *kbuf;
 	ssize_t value;
 
 	if (len == 0)
 		return 0;
+	len = min_t(size_t, len, NOVACOM_MAX_XFER);
 
 	value = novacom_get_ready_ep(fd->f_flags, nep);
 	if (value < 0)
@@ -413,10 +409,10 @@ static ssize_t novacom_ep_write(struct file *fd, const char __user *buf,
 	if (nep == &novacom->ep_out) {
 		dev_info(&cdev->gadget->dev, "novacom: %s halt (wrong dir)\n",
 			 nep->name);
-		spin_lock_irq(&novacom->lock);
+		spin_lock_irqsave(&novacom->lock, flags);
 		if (likely(nep->ep != NULL))
 			usb_ep_set_halt(nep->ep);
-		spin_unlock_irq(&novacom->lock);
+		spin_unlock_irqrestore(&novacom->lock, flags);
 		mutex_unlock(&nep->lock);
 		return -EBADMSG;
 	}
@@ -449,6 +445,7 @@ static int novacom_ep_open(struct inode *inode, struct file *fd,
 			   struct novacom_ep *nep)
 {
 	struct f_novacom *novacom;
+	unsigned long flags;
 	int value = -EBUSY;
 
 	mutex_lock(&novacom_lock);
@@ -463,8 +460,8 @@ static int novacom_ep_open(struct inode *inode, struct file *fd,
 		return -EINTR;
 	}
 
-	spin_lock_irq(&novacom->lock);
-	if (nep->state == STATE_EP_ENABLED) {
+	spin_lock_irqsave(&novacom->lock, flags);
+	if (nep->state == NOVACOM_EP_ENABLED) {
 		value = 0;
 		fd->private_data = nep;
 		dev_dbg(&novacom->function.config->cdev->gadget->dev,
@@ -473,7 +470,7 @@ static int novacom_ep_open(struct inode *inode, struct file *fd,
 		dev_warn(&novacom->function.config->cdev->gadget->dev,
 			 "novacom: %s busy (state=%d)\n", nep->name, nep->state);
 	}
-	spin_unlock_irq(&novacom->lock);
+	spin_unlock_irqrestore(&novacom->lock, flags);
 	mutex_unlock(&nep->lock);
 	mutex_unlock(&novacom_lock);
 
@@ -559,11 +556,14 @@ novacom_next_event(struct f_novacom *novacom, enum usb_gadgetfs_event_type type)
 		}
 		break;
 	default:
-		BUG();
+		WARN_ONCE(1, "novacom: unsupported event type %d\n", type);
+		return NULL;
 	}
 
+	if (WARN_ON_ONCE(novacom->ev_next >= N_EVENT))
+		return NULL;
+
 	event = &novacom->event[novacom->ev_next++];
-	BUG_ON(novacom->ev_next > N_EVENT);
 	memset(event, 0, sizeof(*event));
 	event->type = type;
 	return event;
@@ -576,8 +576,10 @@ static inline void novacom_ep0_send_event(struct f_novacom *novacom, int value)
 	if (value > 0) {
 		/* Configuration set */
 		event = novacom_next_event(novacom, GADGETFS_SETUP);
-		event->u.setup.bRequest = USB_REQ_SET_CONFIGURATION;
-		event->u.setup.wValue = cpu_to_le16(value);
+		if (event) {
+			event->u.setup.bRequest = USB_REQ_SET_CONFIGURATION;
+			event->u.setup.wValue = cpu_to_le16(value);
+		}
 	} else {
 		/* Disconnection */
 		novacom_next_event(novacom, GADGETFS_DISCONNECT);
@@ -590,8 +592,9 @@ static ssize_t novacom_ep0_read(struct file *fd, char __user *buf,
 				size_t len, loff_t *ptr)
 {
 	struct f_novacom *novacom;
+	enum novacom_conn_state connect_state;
+	unsigned long flags;
 	ssize_t retval;
-	enum connect_state connect_state;
 
 	mutex_lock(&novacom_lock);
 	novacom = the_novacom;
@@ -601,7 +604,7 @@ static ssize_t novacom_ep0_read(struct file *fd, char __user *buf,
 	}
 	mutex_unlock(&novacom_lock);
 
-	spin_lock_irq(&novacom->lock);
+	spin_lock_irqsave(&novacom->lock, flags);
 	connect_state = novacom->connect_state;
 
 	if (len < sizeof(novacom->event[0])) {
@@ -619,7 +622,7 @@ scan:
 		if (novacom->ev_next < n)
 			n = novacom->ev_next;
 
-		spin_unlock_irq(&novacom->lock);
+		spin_unlock_irqrestore(&novacom->lock, flags);
 		len = n * sizeof(struct usb_gadgetfs_event);
 		if (copy_to_user(buf, &novacom->event, len))
 			retval = -EFAULT;
@@ -627,14 +630,14 @@ scan:
 			retval = len;
 
 		if (len > 0) {
-			spin_lock_irq(&novacom->lock);
+			spin_lock_irqsave(&novacom->lock, flags);
 			if (novacom->ev_next > n) {
 				memmove(&novacom->event[0], &novacom->event[n],
 					sizeof(struct usb_gadgetfs_event) *
 					(novacom->ev_next - n));
 			}
 			novacom->ev_next -= n;
-			spin_unlock_irq(&novacom->lock);
+			spin_unlock_irqrestore(&novacom->lock, flags);
 		}
 		return retval;
 	}
@@ -645,15 +648,15 @@ scan:
 	}
 
 	switch (connect_state) {
-	case STATE_DISCONNECTED:
-	case STATE_CONNECTED:
-		spin_unlock_irq(&novacom->lock);
+	case NOVACOM_DISCONNECTED:
+	case NOVACOM_CONNECTED:
+		spin_unlock_irqrestore(&novacom->lock, flags);
 		/* Wait for events */
 		retval = wait_event_interruptible(novacom->ep0_wait,
 						  novacom->ev_next != 0);
 		if (retval < 0)
 			return retval;
-		spin_lock_irq(&novacom->lock);
+		spin_lock_irqsave(&novacom->lock, flags);
 		goto scan;
 	default:
 		retval = -ESRCH;
@@ -661,7 +664,7 @@ scan:
 	}
 
 done:
-	spin_unlock_irq(&novacom->lock);
+	spin_unlock_irqrestore(&novacom->lock, flags);
 	return retval;
 }
 
@@ -682,6 +685,7 @@ static int novacom_ep0_fasync(int f, struct file *fd, int on)
 static int novacom_ep0_open(struct inode *inode, struct file *fd)
 {
 	struct f_novacom *novacom;
+	unsigned long flags;
 	int value = -EBUSY;
 
 	mutex_lock(&novacom_lock);
@@ -691,18 +695,18 @@ static int novacom_ep0_open(struct inode *inode, struct file *fd)
 		return -ENOENT;
 	}
 
-	spin_lock_irq(&novacom->lock);
-	if (novacom->state == STATE_DEV_CLOSED) {
-		novacom->state = STATE_DEV_OPENED;
+	spin_lock_irqsave(&novacom->lock, flags);
+	if (novacom->state == NOVACOM_DEV_CLOSED) {
+		novacom->state = NOVACOM_DEV_OPENED;
 		value = 0;
 
-		if (novacom->connect_state == STATE_CONNECTED) {
+		if (novacom->connect_state == NOVACOM_CONNECTED) {
 			novacom_enable_ep(&novacom->ep_in);
 			novacom_enable_ep(&novacom->ep_out);
 			novacom_ep0_send_event(novacom, 1);
 		}
 	}
-	spin_unlock_irq(&novacom->lock);
+	spin_unlock_irqrestore(&novacom->lock, flags);
 	mutex_unlock(&novacom_lock);
 
 	return value;
@@ -711,6 +715,7 @@ static int novacom_ep0_open(struct inode *inode, struct file *fd)
 static int novacom_ep0_release(struct inode *inode, struct file *fd)
 {
 	struct f_novacom *novacom;
+	unsigned long flags;
 
 	mutex_lock(&novacom_lock);
 	novacom = the_novacom;
@@ -724,9 +729,9 @@ static int novacom_ep0_release(struct inode *inode, struct file *fd)
 
 	fasync_helper(-1, fd, 0, &novacom->fasync);
 
-	spin_lock_irq(&novacom->lock);
-	novacom->state = STATE_DEV_CLOSED;
-	spin_unlock_irq(&novacom->lock);
+	spin_lock_irqsave(&novacom->lock, flags);
+	novacom->state = NOVACOM_DEV_CLOSED;
+	spin_unlock_irqrestore(&novacom->lock, flags);
 	mutex_unlock(&novacom_lock);
 
 	return 0;
@@ -735,6 +740,7 @@ static int novacom_ep0_release(struct inode *inode, struct file *fd)
 static __poll_t novacom_ep0_poll(struct file *fd, poll_table *wait)
 {
 	struct f_novacom *novacom;
+	unsigned long flags;
 	__poll_t mask = 0;
 
 	mutex_lock(&novacom_lock);
@@ -746,10 +752,10 @@ static __poll_t novacom_ep0_poll(struct file *fd, poll_table *wait)
 
 	poll_wait(fd, &novacom->ep0_wait, wait);
 
-	spin_lock_irq(&novacom->lock);
+	spin_lock_irqsave(&novacom->lock, flags);
 	if (novacom->ev_next != 0)
 		mask = EPOLLIN | EPOLLRDNORM;
-	spin_unlock_irq(&novacom->lock);
+	spin_unlock_irqrestore(&novacom->lock, flags);
 
 	return mask;
 }
@@ -776,6 +782,7 @@ static struct miscdevice novacom_ep0_device = {
 
 static int novacom_connect(struct f_novacom *novacom)
 {
+	unsigned long flags;
 	int status;
 
 	status = novacom_enable_ep(&novacom->ep_in);
@@ -786,23 +793,25 @@ static int novacom_connect(struct f_novacom *novacom)
 	if (status)
 		return status;
 
-	spin_lock(&novacom->lock);
-	novacom->connect_state = STATE_CONNECTED;
-	if (novacom->state == STATE_DEV_OPENED)
+	spin_lock_irqsave(&novacom->lock, flags);
+	novacom->connect_state = NOVACOM_CONNECTED;
+	if (novacom->state == NOVACOM_DEV_OPENED)
 		novacom_ep0_send_event(novacom, 1);
-	spin_unlock(&novacom->lock);
+	spin_unlock_irqrestore(&novacom->lock, flags);
 
 	return 0;
 }
 
 static void novacom_disconnect(struct f_novacom *novacom)
 {
-	spin_lock(&novacom->lock);
-	if (novacom->connect_state != STATE_DISCONNECTED) {
-		novacom->connect_state = STATE_DISCONNECTED;
+	unsigned long flags;
+
+	spin_lock_irqsave(&novacom->lock, flags);
+	if (novacom->connect_state != NOVACOM_DISCONNECTED) {
+		novacom->connect_state = NOVACOM_DISCONNECTED;
 		novacom_ep0_send_event(novacom, 0);
 	}
-	spin_unlock(&novacom->lock);
+	spin_unlock_irqrestore(&novacom->lock, flags);
 
 	novacom_disable_ep(&novacom->ep_out);
 	novacom_disable_ep(&novacom->ep_in);
@@ -816,9 +825,17 @@ static int novacom_bind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct usb_composite_dev *cdev = c->cdev;
 	struct f_novacom *novacom = func_to_novacom(f);
-	int id;
-	int status;
+	struct usb_string *us;
 	struct usb_ep *ep;
+	int status;
+	int id;
+
+	/* Allocate device-global string IDs and patch iInterface. */
+	us = usb_gstrings_attach(cdev, novacom_strings,
+				 ARRAY_SIZE(novacom_string_defs));
+	if (IS_ERR(us))
+		return PTR_ERR(us);
+	novacom_interface_desc.iInterface = us[0].id;
 
 	/* Allocate interface ID */
 	id = usb_interface_id(c, f);
@@ -844,21 +861,15 @@ static int novacom_bind(struct usb_configuration *c, struct usb_function *f)
 	}
 	novacom->ep_out.ep = ep;
 
-	/* Copy endpoint addresses to high-speed and super-speed descriptors */
+	/* Copy endpoint addresses to high-speed descriptors */
 	novacom_hs_in_desc.bEndpointAddress =
 		novacom_fs_in_desc.bEndpointAddress;
 	novacom_hs_out_desc.bEndpointAddress =
 		novacom_fs_out_desc.bEndpointAddress;
-	novacom_ss_in_desc.bEndpointAddress =
-		novacom_fs_in_desc.bEndpointAddress;
-	novacom_ss_out_desc.bEndpointAddress =
-		novacom_fs_out_desc.bEndpointAddress;
 
-	/* Assign descriptors for all speeds */
 	status = usb_assign_descriptors(f, novacom_fs_function,
 					novacom_hs_function,
-					novacom_ss_function,
-					novacom_ss_function);
+					NULL, NULL);
 	if (status)
 		return status;
 
@@ -879,7 +890,7 @@ static int novacom_bind(struct usb_configuration *c, struct usb_function *f)
 		goto fail;
 	}
 
-	novacom->state = STATE_DEV_CLOSED;
+	novacom->state = NOVACOM_DEV_CLOSED;
 
 	dev_info(&cdev->gadget->dev,
 		 "novacom: IN/%s OUT/%s\n",
@@ -903,8 +914,9 @@ fail:
 static void novacom_unbind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct f_novacom *novacom = func_to_novacom(f);
+	unsigned long flags;
 
-	spin_lock_irq(&novacom->lock);
+	spin_lock_irqsave(&novacom->lock, flags);
 
 	if (novacom->ep_out.req) {
 		usb_ep_free_request(novacom->ep_out.ep, novacom->ep_out.req);
@@ -915,9 +927,18 @@ static void novacom_unbind(struct usb_configuration *c, struct usb_function *f)
 		novacom->ep_in.req = NULL;
 	}
 
-	novacom->state = STATE_DEV_UNBOUND;
+	/*
+	 * NULL the ep pointers so any racing fop sees a dead function.
+	 * misc_deregister() in novacom_free() is the real barrier, but this
+	 * keeps the nep->ep != NULL checks honest if the function is left
+	 * unbound in ConfigFS with the misc devices still open.
+	 */
+	novacom->ep_out.ep = NULL;
+	novacom->ep_in.ep = NULL;
 
-	spin_unlock_irq(&novacom->lock);
+	novacom->state = NOVACOM_DEV_UNBOUND;
+
+	spin_unlock_irqrestore(&novacom->lock, flags);
 
 	usb_free_all_descriptors(f);
 }
@@ -928,6 +949,10 @@ static int novacom_set_alt(struct usb_function *f, unsigned int intf,
 	struct f_novacom *novacom = func_to_novacom(f);
 	struct usb_composite_dev *cdev = f->config->cdev;
 	int value;
+
+	/* The novacom interface has no alternate settings. */
+	if (alt != 0)
+		return -EINVAL;
 
 	/* Activation or reset */
 	if (novacom->ep_in.ep->enabled) {
@@ -1029,7 +1054,6 @@ static struct usb_function_instance *novacom_alloc_inst(void)
 	if (!opts)
 		return ERR_PTR(-ENOMEM);
 
-	mutex_init(&opts->lock);
 	opts->func_inst.free_func_inst = novacom_free_inst;
 
 	config_group_init_type_name(&opts->func_inst.group, "",
@@ -1065,20 +1089,20 @@ static struct usb_function *novacom_alloc(struct usb_function_instance *fi)
 
 	/* Initialize endpoints */
 	strscpy(novacom->ep_in.name, "ep_in", sizeof(novacom->ep_in.name));
-	novacom->ep_in.state = STATE_EP_DISABLED;
+	novacom->ep_in.state = NOVACOM_EP_DISABLED;
 	novacom->ep_in.novacom = novacom;
 	mutex_init(&novacom->ep_in.lock);
 	init_waitqueue_head(&novacom->ep_in.wait);
 
 	strscpy(novacom->ep_out.name, "ep_out", sizeof(novacom->ep_out.name));
-	novacom->ep_out.state = STATE_EP_DISABLED;
+	novacom->ep_out.state = NOVACOM_EP_DISABLED;
 	novacom->ep_out.novacom = novacom;
 	mutex_init(&novacom->ep_out.lock);
 	init_waitqueue_head(&novacom->ep_out.wait);
 
 	/* Initialize control state */
-	novacom->state = STATE_DEV_UNBOUND;
-	novacom->connect_state = STATE_DISCONNECTED;
+	novacom->state = NOVACOM_DEV_UNBOUND;
+	novacom->connect_state = NOVACOM_DISCONNECTED;
 	spin_lock_init(&novacom->lock);
 	init_waitqueue_head(&novacom->ep0_wait);
 
@@ -1132,5 +1156,5 @@ static struct usb_function *novacom_alloc(struct usb_function_instance *fi)
 DECLARE_USB_FUNCTION_INIT(novacom, novacom_alloc_inst, novacom_alloc);
 
 MODULE_DESCRIPTION("Novacom USB Gadget Function Driver");
-MODULE_AUTHOR("Palm, Inc.");
+MODULE_AUTHOR("Herman van Hazendonk <github.com@herrie.org>");
 MODULE_LICENSE("GPL");

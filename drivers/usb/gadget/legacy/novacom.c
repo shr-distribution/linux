@@ -3,10 +3,10 @@
  * novacom.c -- Novacom USB Gadget Driver
  *
  * Copyright (C) 2008-2009 Palm, Inc.
- * Copyright (C) 2024 Modernized for Linux 6.x
+ * Copyright (C) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  *
- * This is a legacy composite gadget driver that provides the novacom
- * USB function for webOS device communication with host computers.
+ * Legacy composite-style gadget that wraps the novacom function for hosts
+ * that do not run ConfigFS-based gadget bring-up.
  */
 
 #include <linux/kernel.h>
@@ -175,7 +175,7 @@ static struct usb_composite_driver novacom_driver = {
 	.name		= "g_novacom",
 	.dev		= &device_desc,
 	.strings	= dev_strings,
-	.max_speed	= USB_SPEED_SUPER,
+	.max_speed	= USB_SPEED_HIGH,
 	.bind		= novacom_bind,
 	.unbind		= novacom_unbind,
 };
@@ -183,5 +183,5 @@ static struct usb_composite_driver novacom_driver = {
 module_usb_composite_driver(novacom_driver);
 
 MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_AUTHOR("Palm, Inc.");
+MODULE_AUTHOR("Herman van Hazendonk <github.com@herrie.org>");
 MODULE_LICENSE("GPL");

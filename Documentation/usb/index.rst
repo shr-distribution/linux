@@ -15,6 +15,7 @@ USB support
     gadget_configfs
     gadget_hid
     gadget_multi
+    gadget_novacom
     gadget_printer
     gadget_serial
     gadget_uvc
