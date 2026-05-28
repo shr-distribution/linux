@@ -740,27 +740,9 @@ static const struct dev_pm_ops mdp4_pm_ops = {
 	RUNTIME_PM_OPS(mdp4_runtime_suspend, mdp4_runtime_resume, NULL)
 };
 
-/* Default bandwidth values (in kBps) - used if not specified in DT.
- *
- * 2026-05-28: raised from 500/700 MB/s to 2000/2800 MB/s to give MDP enough
- * fabric headroom under heavy GPU contention (e.g. glmark2 desktop:blur w=4,
- * which has the GPU voting ~2.13 GB/s continuously). With the previous values
- * MDP voted just slightly above its raw scanout need (~180 MB/s for 1024x768
- * @60fps RGBA8), leaving no fabric-clock headroom; under GPU contention this
- * produced PRIMARY_INTF_UDERRUN (mdp4_irq_error 0x100) IRQ storms that
- * cascaded into a GPU MMU/AXI hang (see
- * project_a220_clientswitch_coldstart_wedge: "the 0x100 underrun is
- * survivable, the real wedge is a GPU cold-start AXI bus hang after it").
- * The hang then made glmark2 desktop:blur measure 1 fps (= 1 hangcheck
- * recover per second, not real rendering) and left the GPU in a degraded
- * state where every subsequent test ran 12-37x slower than standalone.
- *
- * Quad the avg so MDP gets fabric-clock allocation comparable to a 4-window
- * blur's actual fetch demand; quad the peak so MDP scanout has guaranteed
- * burst capacity even when GPU pings the fabric at full rate.
- */
-#define MDP4_DEFAULT_BW_AVG_KBPS	(2000 * 1024)	/* 2000 MB/s */
-#define MDP4_DEFAULT_BW_PEAK_KBPS	(2800 * 1024)	/* 2800 MB/s */
+/* Default bandwidth values (in kBps) - used if not specified in DT */
+#define MDP4_DEFAULT_BW_AVG_KBPS	(500 * 1024)	/* 500 MB/s */
+#define MDP4_DEFAULT_BW_PEAK_KBPS	(700 * 1024)	/* 700 MB/s */
 
 /*
  * Look up MDP interconnect paths and stash them on mdp4_kms. Bandwidth is
