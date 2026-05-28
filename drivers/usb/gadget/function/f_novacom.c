@@ -348,19 +348,23 @@ static ssize_t novacom_ep_io_one(struct novacom_ep *nep, void *buf,
 }
 
 /*
- * Loop sub-MPS transfers until the user request is satisfied. Splitting
- * the request keeps each on-the-wire URB <= MPS so the chipidea (and any
- * other) UDC always sees short-packet termination cleanly. Without this,
- * a single large OUT URB sits ACTIVE in the dTD chain when the host
- * sends a short packet partway in.
+ * Bulk I/O glue. Each USB request is at most one MPS so the chipidea
+ * (and other) UDCs always see short-packet termination cleanly.
  *
- * OUT (read): stop on the first short packet -- that signals end of
- * transfer from the host's point of view.
- * IN  (write): send all bytes; mark the final chunk req->zero so the
- * framework appends a ZLP atomically if the chunk is exact MPS. That
- * tells the host's BULK IN URB the transfer ended without us having to
- * race a separate 0-length request past a host that has already moved
- * on.
+ * OUT (read): a bulk OUT transfer is a stream of packets, and we have
+ * no way to know how much data the host will send without an explicit
+ * length up front (it isn't). So we queue exactly one MPS-sized URB
+ * per syscall and return whatever the host delivers. Userspace loops
+ * if it wants more -- this matches the streaming semantics of f_serial
+ * / f_loopback and avoids the trap where a multi-chunk read sits
+ * waiting on a chunk the host has no intention of filling.
+ *
+ * IN  (write): we know exactly how many bytes the user gave us, so we
+ * send them all, splitting on MPS boundaries. The final chunk gets
+ * req->zero set when its length is an exact multiple of MPS, so the
+ * framework appends a ZLP atomically inside the same request and the
+ * host's BULK IN URB terminates on the short packet without us having
+ * to race a separate 0-length submission.
  */
 static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 			     unsigned int len, int dir)
@@ -380,19 +384,21 @@ static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 	if (!mps)
 		return -EIO;
 
+	if (dir == USB_DIR_OUT) {
+		unsigned int chunk = min_t(unsigned int, len, mps);
+
+		return novacom_ep_io_one(nep, buf, chunk, false);
+	}
+
 	while (total < len) {
 		unsigned int chunk = min_t(unsigned int, len - total, mps);
 		bool last = (total + chunk == len);
-		bool zlp = (dir == USB_DIR_IN) && last && (chunk == mps);
+		bool zlp = last && (chunk == mps);
 
 		n = novacom_ep_io_one(nep, buf + total, chunk, zlp);
 		if (n < 0)
 			return total > 0 ? total : n;
 		total += n;
-
-		/* OUT: a short packet ends the transfer. */
-		if (dir == USB_DIR_OUT && n < chunk)
-			break;
 	}
 
 	return total;
