@@ -289,36 +289,17 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_RB_EDRAM_INFO, i);
 
 	/*
-	 * Devfreq busy-cycle source -- RBBM perfcounter 1 selecting
-	 * RBBM1_CP_NRT_BUSY (CP busy) instead of RBBM1_NRT_BUSY (3D-pipe busy).
-	 *
-	 * Rationale (validated 2026-05-28): legacy KGSL uses NRT_BUSY and works
-	 * fine for KGSL's many-small-submits workload pattern. Freedreno on a2xx
-	 * uses one-big-tiled-IB per batch where 0016's per-tile CACHE_FLUSH_TS+
-	 * WFI drains the 3D pipe before each EDRAM_COPY resolve. During the
-	 * WFI/drain (which dominates wall-time at 27MHz), NRT_BUSY freezes -- the
-	 * 3D pipe IS idle -- yet the CP is actively waiting for the drain. So
-	 * NRT_BUSY UNDERESTIMATES the busy ratio on the freedreno pattern and
-	 * simple_ondemand parks the clock at 27MHz: binner_test heavy ran 5.5x
-	 * slower vs pinned-266MHz.
-	 *
-	 * CP_NRT_BUSY (value 13 in the a2xx_rbbm_perfcount1_sel enum) ticks
-	 * during BOTH CP packet fetch/decode AND CP_WAIT_FOR_IDLE/CACHE_FLUSH_TS
-	 * stalls. It naturally captures the time NRT_BUSY misses.
-	 *
+	 * Select RBBM perfcounter 1 as the devfreq busy-cycle source.
+	 * RBBM1_NRT_BUSY (general non-real-time 3D-pipe busy) is what legacy
+	 * KGSL a2xx_busy_cycles() selects -- broader than RB_BUSY, so it also
+	 * tracks vertex/shader-bound work, giving devfreq a truer load signal.
 	 * NOTE: the counter only advances while the perfmon is ENABLED via
 	 * CP_PERFMON_CNTL, which Mesa owns per-batch (freedreno fd2_emit_restore
 	 * writes it every batch); stock Mesa writes CP_PERFMON_CNTL=0 (perfmon
 	 * frozen) so this never counted and devfreq parked the GPU at min. The
 	 * paired Mesa change makes fd2_emit_restore emit CP_PERFMON_CNTL=1.
-	 *
-	 * DO NOT touch RBBM_PERFCOUNTER0_SELECT: there is no documented
-	 * "a2xx_rbbm_perfcount0_sel" enum, so PERFCOUNTER0's available SELECT
-	 * values are unknown. Writing RBBM1_* values to it is undefined and
-	 * an earlier dual-counter attempt at this caused intermittent GPU
-	 * wedges.
 	 */
-	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER1_SELECT, RBBM1_CP_NRT_BUSY);
+	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER1_SELECT, RBBM1_NRT_BUSY);
 
 	/*
 	 * Select RB perfcounter 0 as a "retired rendering work" signal for the
@@ -716,12 +697,6 @@ static u64 a2xx_gpu_busy(struct msm_gpu *gpu, unsigned long *out_sample_rate)
 {
 	u64 busy_cycles;
 
-	/*
-	 * RBBM perfcounter 1 is configured in a2xx_hw_init to count
-	 * RBBM1_CP_NRT_BUSY (CP busy cycles -- includes WFI drain time, which
-	 * NRT_BUSY misses on freedreno's per-tile-drain workload pattern).
-	 * See a2xx_hw_init for full rationale.
-	 */
 	busy_cycles = gpu_read64(gpu, REG_A2XX_RBBM_PERFCOUNTER1_LO);
 	*out_sample_rate = clk_get_rate(gpu->core_clk);
 
