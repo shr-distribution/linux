@@ -30,23 +30,23 @@ MODULE_PARM_DESC(fe_input_format,
 	"FE_INPUT_FORMAT register value (default 0x10 matches OPAL trace; try 0x00..0x07 for 8-bit NV12 enum sweep)");
 
 /*
- * WE_Y/CBCR_THRESHOLD layout is { ceiling[31:16], watermark[15:0] }. The mako
- * (MSM8960, same gemini IP gen) kernel carries this in-kernel as a [mode][2]
- * table that pairs each watermark (0x190 or 0x16a) with a fixed 0x1ff ceiling
- * -> register 0x01FF0190. Our previous 0x016A0190 default mis-packed mako's two
- * mode-variants (0x16a, 0x190) into one register, leaving ceiling (0x16a=362)
- * BELOW watermark (0x190=400) -- inverted, which stalls the write engine so it
- * never emits output / never fires FRAMEDONE. Use the mako-correct packing.
+ * WE_Y/CBCR_THRESHOLD: the OPAL live register-write trace (offline JPEG path
+ * on this exact device) shows BOTH thresholds written as 0x016A0190. Mako's
+ * [mode][2] table that we initially mined for the layout uses {0x190, 0x1ff}
+ * (realtime mode) / {0x16a, 0x1ff} (other mode), which led us to "correct"
+ * 0x016A0190 to 0x01FF0190. But OPAL's working offline encode on this very
+ * device writes 0x016A0190 directly, so trust the live trace over the mako
+ * lookup-table reverse-engineering.
  */
-static unsigned int we_y_threshold = 0x01FF0190;
+static unsigned int we_y_threshold = 0x016A0190;
 module_param_named(we_y_threshold, we_y_threshold, uint, 0644);
 MODULE_PARM_DESC(we_y_threshold,
-	"WE_Y_THRESHOLD register value (default 0x01FF0190 = {ceiling 0x1ff, watermark 0x190}, mako-correct; try 0x01FF016A or 0x01FF01FF)");
+	"WE_Y_THRESHOLD register value (default 0x016A0190 matches OPAL live offline-encode trace)");
 
-static unsigned int we_cbcr_threshold = 0x01FF0190;
+static unsigned int we_cbcr_threshold = 0x016A0190;
 module_param_named(we_cbcr_threshold, we_cbcr_threshold, uint, 0644);
 MODULE_PARM_DESC(we_cbcr_threshold,
-	"WE_CBCR_THRESHOLD register value (default 0x01FF0190 = {ceiling 0x1ff, watermark 0x190}, mako-correct)");
+	"WE_CBCR_THRESHOLD register value (default 0x016A0190 matches OPAL live offline-encode trace)");
 
 static unsigned int we_y_ub_cfg = 0x01FF0000;
 module_param_named(we_y_ub_cfg, we_y_ub_cfg, uint, 0644);
@@ -147,14 +147,20 @@ void gemini_hw_set_we_ping(void __iomem *base, dma_addr_t addr, u32 len)
 	pr_info("gemini we_ping: C0 enter addr=0x%llx len=%u\n",
 		(u64)addr, len);
 
-	writel(addr, base + GEMINI_WE_Y_PING_ADDR);
-	pr_info("gemini we_ping: C1 WE_Y_PING_ADDR done\n");
-
+	/*
+	 * Write CFG (which carries the buffer length) BEFORE ADDR. Legacy
+	 * msm_gemini_hw_we_buffer_update (hw_cmd_we_ping_update[]) emits the
+	 * CFG write first, then the ADDR write -- the IP latches the address
+	 * on CFG-write so writing them in the reverse order can discard the
+	 * just-written ADDR.
+	 */
 	writel(len & GEMINI_WE_BUFFER_LEN_MASK, base + GEMINI_WE_Y_PING_CFG);
+	writel(addr, base + GEMINI_WE_Y_PING_ADDR);
+	pr_info("gemini we_ping: C1 WE_Y_PING CFG+ADDR done\n");
 
 	/* Mirror to PONG (see set_fe_ping for rationale). */
-	writel(addr, base + GEMINI_WE_Y_PONG_ADDR);
 	writel(len & GEMINI_WE_BUFFER_LEN_MASK, base + GEMINI_WE_Y_PONG_CFG);
+	writel(addr, base + GEMINI_WE_Y_PONG_ADDR);
 	pr_info("gemini we_ping: C2 WE_Y_PING+PONG done — exiting we_ping\n");
 }
 

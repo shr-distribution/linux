@@ -424,11 +424,17 @@ static void gemini_device_run(void *priv)
 	gemini_hw_set_we_ping(gemini->base, dst_addr + hdr_aligned, we_room);
 	pr_info("gemini run: R2 set_we_ping returned\n");
 
-	gemini_hw_enable_irq(gemini->base, GEMINI_IRQ_FRAMEDONE |
-					   GEMINI_IRQ_BUS_ERROR |
-					   GEMINI_IRQ_VIOLATION);
-	pr_info("gemini run: R3 enable_irq returned, calling start_offline\n");
-
+	/*
+	 * Do NOT write a narrow intermediate IRQ_MASK here. Legacy
+	 * msm_gemini_start goes straight from a freshly reset state (where
+	 * IRQ_MASK is already 0xFFFFFFFF from msm_gemini_hw_reset's table) to
+	 * the OPAL start sequence, which re-writes IRQ_MASK=0xFFFFFFFF as
+	 * part of gemini_hw_start_offline. Writing an intermediate narrow
+	 * mask (FRAMEDONE | BUS_ERROR | VIOLATION) opens a 1-2 cycle window
+	 * where IRQ_MASK transitions wide -> narrow -> wide, and OPAL doesn't
+	 * do this. Let start_offline handle the IRQ_MASK widening alone.
+	 */
+	pr_info("gemini run: R3 calling start_offline (no intermediate IRQ_MASK)\n");
 	gemini_hw_start_offline(gemini->base);
 	pr_info("gemini run: R4 start_offline returned\n");
 }
@@ -712,8 +718,18 @@ static int gemini_reset(struct gemini_dev *gemini)
 	timeout = wait_for_completion_timeout(&gemini->reset_done,
 					      msecs_to_jiffies(500));
 
-	gemini_hw_disable_irq(gemini->base);
-	gemini_hw_clear_irq(gemini->base, GEMINI_IRQ_ALL);
+	/*
+	 * Do NOT disable IRQ_MASK here. Legacy msm_gemini_core_reset leaves
+	 * IRQ_MASK = 0xFFFFFFFF after the reset wait (that's what the reset
+	 * table wrote, step 3 of 4: IRQ_MASK = 0xFFFFFFFF). Disabling all
+	 * IRQs here gates internal state-machine bits the IP wants to assert
+	 * during the post-reset config sequence; once the next code path
+	 * (configure_encode_h2v2, then start_offline) widens IRQ_MASK back to
+	 * 0xFFFFFFFF, those latched bits may fire spuriously OR the state
+	 * machine may have already wedged. Just clear any stale RESET_ACK
+	 * status and leave IRQ_MASK widened.
+	 */
+	gemini_hw_clear_irq(gemini->base, GEMINI_IRQ_RESET_ACK);
 
 	if (!timeout) {
 		dev_err(gemini->dev, "Timed out waiting for RESET_ACK\n");
