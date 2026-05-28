@@ -509,8 +509,23 @@ static int msm_iommu_program_bypass(struct device *dev)
 		 * setup entirely; only set BYPASSD=1 on top of whatever boot
 		 * left, RMW-style.
 		 */
-		for (i = 0; i < master->num_mids; i++)
-			SET_BYPASSD(iommu->base, master->mids[i], 1);
+		/*
+		 * Set NSCFG=3 on each MID before BYPASSD: legacy iommu_dev.c's
+		 * msm_iommu_ctx_probe wrote NSCFG=3 for every MID at boot, and
+		 * that is the only per-MID write our previous bypass paths
+		 * also skipped (in addition to BYPASSD). Boot firmware
+		 * frequently leaves NSCFG=0 (secure), which on the IJPEG SMMU
+		 * mismatches the engine's non-secure transactions and causes
+		 * the SMMU to silently absorb reads (returning a 0x80 idle
+		 * value); WE writes are not NS-checked the same way, which
+		 * matches the read/write asymmetry observed.
+		 */
+		for (i = 0; i < master->num_mids; i++) {
+			int mid = master->mids[i];
+
+			SET_NSCFG(iommu->base, mid, 3);
+			SET_BYPASSD(iommu->base, mid, 1);
+		}
 
 		__disable_clocks(iommu);
 	}

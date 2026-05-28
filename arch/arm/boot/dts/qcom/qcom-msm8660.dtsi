@@ -1646,7 +1646,18 @@
 				 <&mmcc IJPEG_AHB_CLK>;
 			clock-names = "core", "axi", "ahb";
 			power-domains = <&mmcc IJPEG_GDSC>;
-			iommus = <&ijpeg_iommu 0>;
+			/*
+			 * The IJPEG engine uses two SMMU master IDs: MID 0 for
+			 * the FE source-read path and MID 1 for the WE
+			 * destination-write path, matching the legacy webOS
+			 * kernel's ijpeg_src_ctx (MID 0) + ijpeg_dst_ctx (MID 1)
+			 * declarations in arch/arm/mach-msm/devices-msm8x60-iommu.c.
+			 * Declaring only MID 0 leaves MID 1 unrouted in the SMMU
+			 * so transactions on it are silently absorbed -- which
+			 * matches the observed asymmetric "WE writes work, FE
+			 * reads return 0x80" bug.
+			 */
+			iommus = <&ijpeg_iommu 0>, <&ijpeg_iommu 1>;
 			interconnects = <&mmss_fabric MMFAB_MAS_JPEG_ENC
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "jpeg-mem";
