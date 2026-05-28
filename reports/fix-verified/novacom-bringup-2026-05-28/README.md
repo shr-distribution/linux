@@ -77,17 +77,73 @@ host transfer before posting any IN data. Ring sized at 768×512 =
 This confirms `novacom_next_event()`, `novacom_ep0_send_event()`, the
 `ep0_open`/`ep0_release` lifecycle, and the `connect_state` machine.
 
-### T4 — wrong-direction STALL — pending
+### T4 — wrong-direction STALL ✅ PASS
+On-device tester `wrong-dir.c` opens both data nodes and tries the
+opposite direction. See `t4-t5-t6-t7.log`:
 
-The host-tester attempted this by issuing a libusb bulk IN on the
-OUT endpoint's address (`ep_out | LIBUSB_ENDPOINT_IN`). That hits a
-different physical endpoint (ECM notify interrupt) in this composite
-gadget, not "wrong direction on novacom OUT". The novacom driver's
-wrong-direction STALL is a *device-side* guard (`read()` on
-`/dev/novacom_ep_in` returns `-EBADMSG` after issuing `usb_ep_set_halt`)
-and needs an on-device tester to exercise.
+```
+/dev/novacom_ep_in        read  -> -1 errno=74 (Bad message)  [PASS]
+/dev/novacom_ep_out       write -> -1 errno=74 (Bad message)  [PASS]
+```
 
-### T5..T7 — not yet run
+dmesg confirms `usb_ep_set_halt()` fired on both endpoints:
+
+```
+novacom: ep_in  halt (wrong dir)
+novacom: ep_out halt (wrong dir)
+```
+
+### T5 — interrupted read ✅ PASS
+`interrupt-read.c` forks a child that sends SIGINT to the parent after
+1 s while the parent is blocked in `read(/dev/novacom_ep_out, ...)`.
+The read returned `-1 errno=EINTR` and dmesg confirmed the URB was
+dequeued cleanly:
+
+```
+read -> -1 errno=4 (Interrupted system call)  [PASS]
+novacom: ep_out i/o interrupted
+```
+
+### T6 — UDC soft-disconnect/reconnect ✅ PASS
+`t6-soft-cycle.sh` writes `disconnect` then `connect` to
+`/sys/class/udc/ci_hdrc.0/soft_connect`. dmesg shows the clean lifecycle:
+
+```
+novacom: deactivated
+novacom: ep_out: NOVACOM_EP_DISABLED
+novacom: ep_in:  NOVACOM_EP_DISABLED
+novacom: activate
+novacom: ep_in:  NOVACOM_EP_ENABLED
+novacom: ep_out: NOVACOM_EP_ENABLED
+```
+
+After the cycle, `/tmp/probe` round-trips at 4 KiB and 65535 bytes
+byte-perfect: data plane survives the cycle.
+
+### T7 — ConfigFS unlink + rebuild ✅ PASS
+`t7-cfgfs-cycle.sh` clears the UDC, unlinks the function from the
+config, rmdirs the function dir, recreates it, re-links, and rebinds
+the UDC. dmesg shows the full lifecycle:
+
+```
+novacom: deactivated
+unbind function 'novacom'/f4725a99
+adding 'novacom'/d67d0155 to config 'c'/6fbbabbc   <-- fresh ptr
+novacom: activate
+novacom: ep_in:  NOVACOM_EP_ENABLED
+novacom: ep_out: NOVACOM_EP_ENABLED
+```
+
+After the cycle, `/tmp/probe` round-trips at 4 KiB / 65536 / 262143
+byte-perfect.
+
+Note: the /dev/novacom_* nodes persist throughout the unlink/rmdir
+window because the function instance keeps the misc devices live until
+all references drop. They get recreated implicitly on `mkdir
+functions/novacom.0`. This matches the driver's lifecycle: misc
+devices are registered in `novacom_alloc()` (= `usb_get_function()`,
+fires on `ln -s`) and deregistered in `novacom_free()` (= when refcount
+goes to zero on rmdir).
 
 ## Artifacts captured here
 
