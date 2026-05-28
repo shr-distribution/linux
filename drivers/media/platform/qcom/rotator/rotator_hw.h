@@ -3,7 +3,7 @@
  * Qualcomm MSM8660 Rotator driver - Hardware definitions
  *
  * Copyright (c) 2009-2010, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024-2026 Herrie (herrie.org)
+ * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on legacy msm_rotator driver from webOS kernel.
  */

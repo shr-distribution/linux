@@ -4,7 +4,7 @@
  *
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  * Copyright (c) 2024, Christophe Chabanois <christophe.chabanois@gmail.com>
- * Copyright (c) 2024, Herrie <pingu@pingudev.org>
+ * Copyright (c) 2024, Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on legacy peripheral-reset.c from downstream MSM kernel.
  */

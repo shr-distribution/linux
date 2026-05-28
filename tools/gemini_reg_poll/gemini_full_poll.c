@@ -28,7 +28,7 @@
  * LuneOS-mainline runs. Any line that appears in OPAL but not in
  * mainline is a register OPAL writes that we don't.
  *
- * Copyright (c) 2026 Herrie (herrie.org)
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  * SPDX-License-Identifier: GPL-2.0-only
  */
 

@@ -14,7 +14,7 @@
  * Based on webOS kernel msm_io_8x60.c implementation.
  *
  * Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
- * Copyright (C) 2025 Herrie (based on Code Aurora Forum VFE31 driver)
+ * Copyright (C) 2025 Herman van Hazendonk <github.com@herrie.org>
  */
 
 #include <linux/completion.h>

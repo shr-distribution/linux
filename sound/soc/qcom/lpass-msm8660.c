@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024, Herrie <pingu@pingudev.org>
+ * Copyright (c) 2024, Herman van Hazendonk <github.com@herrie.org>
  *
  * lpass-msm8660.c -- ALSA SoC CPU DAI driver for MSM8660/APQ8060 LPASS
  *

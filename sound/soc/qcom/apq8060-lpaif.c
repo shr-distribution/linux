@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2024, Herrie <pingu@pingudev.org>
+ * Copyright (c) 2024, Herman van Hazendonk <github.com@herrie.org>
  *
  * APQ8060/MSM8660 ASoC Machine driver using direct LPAIF hardware
  *

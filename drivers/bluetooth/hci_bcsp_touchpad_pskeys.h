@@ -5,7 +5,7 @@
  * Extracted from webOS 3.0.5 libPmBtBsaif.so
  * These PSKEYs are sent when LMP subversion == 0x12E9 (TouchPad)
  *
- * Copyright (c) 2025 The LuneOS Project
+ * Copyright (c) 2025 Herman van Hazendonk <github.com@herrie.org>
  */
 
 #ifndef __HCI_BCSP_TOUCHPAD_PSKEYS_H

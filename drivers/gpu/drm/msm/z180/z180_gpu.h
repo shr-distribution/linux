@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2008-2010, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024 Herrie <herrie@herrie.org>
+ * Copyright (c) 2024 Herman van Hazendonk <github.com@herrie.org>
  *
  * Z180 2D Graphics Engine driver for Qualcomm MSM8660/APQ8060
  *

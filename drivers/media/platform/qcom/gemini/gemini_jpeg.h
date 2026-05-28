@@ -2,7 +2,7 @@
 /*
  * Qualcomm MSM8660 JPEG (Gemini) - JPEG marker preamble + standard tables
  *
- * Copyright (c) 2024-2026 Herrie (herrie.org)
+ * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  */
 
 #ifndef _GEMINI_JPEG_H_

@@ -22,7 +22,7 @@
  *
  * Build:  arm-linux-gnueabihf-gcc -O2 -static gemini_oneshot.c -o gemini_oneshot
  *
- * Copyright (c) 2026 Herrie (herrie.org)
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  * SPDX-License-Identifier: GPL-2.0-only
  */
 

@@ -33,7 +33,7 @@
  *   # … take a photo with the Camera app …
  *   # poller exits automatically once it has captured before/during/after
  *
- * Copyright (c) 2026 Herrie (herrie.org)
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
