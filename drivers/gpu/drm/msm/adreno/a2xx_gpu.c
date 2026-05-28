@@ -289,16 +289,35 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_RB_EDRAM_INFO, i);
 
 	/*
-	 * Select RBBM perfcounter 1 as the devfreq busy-cycle source.
-	 * RBBM1_NRT_BUSY (general non-real-time 3D-pipe busy) is what legacy
-	 * KGSL a2xx_busy_cycles() selects -- broader than RB_BUSY, so it also
-	 * tracks vertex/shader-bound work, giving devfreq a truer load signal.
-	 * NOTE: the counter only advances while the perfmon is ENABLED via
+	 * Devfreq busy-cycle sources -- TWO RBBM perfcounters, MAX-ed in
+	 * a2xx_gpu_busy() so DVFS sees "any GPU subsystem busy", not just the
+	 * 3D pipe. Validated 2026-05-28 vs single-NRT_BUSY:
+	 *
+	 *   - RBBM_PERFCOUNTER1 = RBBM1_NRT_BUSY: 3D-pipe (VGT/SQ/SX/RB) busy.
+	 *     Legacy KGSL a2xx_busy_cycles() uses this single counter. Works
+	 *     fine for KGSL's many-small-submits pattern but UNDERSHOOTS for
+	 *     freedreno's one-big-tiled-IB pattern: 0016's per-tile
+	 *     CACHE_FLUSH_TS+WFI drains the 3D pipe before each EDRAM_COPY
+	 *     resolve, so during those drains (which dominate wall-time at
+	 *     27MHz) the 3D pipe is idle and NRT_BUSY freezes, even though
+	 *     the CP is actively waiting for the drain. Result: simple_ondemand
+	 *     parks the clock at 27MHz; binner_test heavy ran 5.5x slower than
+	 *     pinned-266MHz.
+	 *
+	 *   - RBBM_PERFCOUNTER0 = RBBM1_CP_NRT_BUSY (NEW): CP busy. Ticks
+	 *     during WFI/CACHE_FLUSH_TS waits + cmdstream processing. Captures
+	 *     the time NRT_BUSY misses on the freedreno workload pattern.
+	 *
+	 * a2xx_gpu_busy() returns MAX of both (not sum -- they overlap during
+	 * regular draws). Union signal = whenever ANY GPU subsystem is busy.
+	 *
+	 * NOTE: both counters only advance while the perfmon is ENABLED via
 	 * CP_PERFMON_CNTL, which Mesa owns per-batch (freedreno fd2_emit_restore
 	 * writes it every batch); stock Mesa writes CP_PERFMON_CNTL=0 (perfmon
 	 * frozen) so this never counted and devfreq parked the GPU at min. The
 	 * paired Mesa change makes fd2_emit_restore emit CP_PERFMON_CNTL=1.
 	 */
+	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER0_SELECT, RBBM1_CP_NRT_BUSY);
 	gpu_write(gpu, REG_A2XX_RBBM_PERFCOUNTER1_SELECT, RBBM1_NRT_BUSY);
 
 	/*
@@ -695,12 +714,21 @@ static struct msm_gpu_state *a2xx_gpu_state_get(struct msm_gpu *gpu)
 
 static u64 a2xx_gpu_busy(struct msm_gpu *gpu, unsigned long *out_sample_rate)
 {
-	u64 busy_cycles;
+	u64 nrt_busy, cp_busy;
 
-	busy_cycles = gpu_read64(gpu, REG_A2XX_RBBM_PERFCOUNTER1_LO);
+	/*
+	 * Read BOTH RBBM perfcounters and return the MAX. RBBM_PERFCOUNTER1
+	 * tracks 3D-pipe busy (NRT_BUSY) and RBBM_PERFCOUNTER0 tracks CP busy
+	 * (CP_NRT_BUSY). Their union via max() = "any GPU subsystem busy",
+	 * giving devfreq a workload-invariant load signal. See a2xx_hw_init
+	 * for full rationale (3D-only counter undershoots on freedreno's
+	 * per-tile-drain pattern).
+	 */
+	nrt_busy = gpu_read64(gpu, REG_A2XX_RBBM_PERFCOUNTER1_LO);
+	cp_busy  = gpu_read64(gpu, REG_A2XX_RBBM_PERFCOUNTER0_LO);
 	*out_sample_rate = clk_get_rate(gpu->core_clk);
 
-	return busy_cycles;
+	return max(nrt_busy, cp_busy);
 }
 
 static struct drm_gpuvm *
