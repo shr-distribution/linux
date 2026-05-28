@@ -480,7 +480,7 @@ static int msm_iommu_program_bypass(struct device *dev)
 	struct msm_iommu_dev *iommu;
 	struct msm_iommu_ctx_dev *master;
 	unsigned long flags;
-	int ret = 0, i;
+	int ret = 0;
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
 	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
@@ -498,34 +498,42 @@ static int msm_iommu_program_bypass(struct device *dev)
 			break;
 
 		/*
-		 * Preserve boot-firmware M2VCBR / context state: the legacy
-		 * webOS kernel never touched the SMMU for JPEG and it worked,
-		 * so the QSBL/boot loader leaves the JPEG MID routing in a
-		 * usable state. msm_iommu_reset() clobbers SCTLR for every
-		 * context bank, and config_mids() / __reset_context() further
-		 * clobber the M2VCBR routing -- after which read transactions
-		 * stop reaching DRAM even with BYPASSD/BPSHCFG/BPMTCFG/BPRC*
-		 * tried in every combination. Skip the reset and routing
-		 * setup entirely; only set BYPASSD=1 on top of whatever boot
-		 * left, RMW-style.
+		 * Replicate the legacy 2.6.35 msm_iommu boot-time state for the
+		 * IJPEG SMMU exactly. Legacy did:
+		 *
+		 *   - msm_iommu_reset(base, ncb)   at controller probe
+		 *   - for each ctx_dev (ijpeg_src_ctx MID 0, ijpeg_dst_ctx MID 1):
+		 *       config_mids(): M2VCBR=0 (clears BYPASSD!), CBACR=0,
+		 *                      VMID=0, CBNDX=ctx, CBVMID=0,
+		 *                      CONTEXTIDR_ASID=ctx, NSCFG=3
+		 *       __reset_context(): BPRC*=0, BPSHCFG=0, BPMTCFG=0,
+		 *                          ACTLR=0, SCTLR=0 (M=0),
+		 *                          TTBR{0,1}=0, ...
+		 *
+		 * It did NOT call __program_context() (so SCTLR.M stays 0) and
+		 * it did NOT set BYPASSD. That is a *different* SMMU passthrough
+		 * mode from our previous attempts: transactions route via CBNDX
+		 * to a context bank whose SCTLR.M=0 (MMU off) -- implicit
+		 * passthrough -- rather than the per-MID global BYPASSD bit.
+		 *
+		 * Every BYPASSD-based combination we tried gave broken FE reads;
+		 * legacy's CBNDX+M=0 mode worked. Do exactly that.
 		 */
-		/*
-		 * Set NSCFG=3 on each MID before BYPASSD: legacy iommu_dev.c's
-		 * msm_iommu_ctx_probe wrote NSCFG=3 for every MID at boot, and
-		 * that is the only per-MID write our previous bypass paths
-		 * also skipped (in addition to BYPASSD). Boot firmware
-		 * frequently leaves NSCFG=0 (secure), which on the IJPEG SMMU
-		 * mismatches the engine's non-secure transactions and causes
-		 * the SMMU to silently absorb reads (returning a 0x80 idle
-		 * value); WE writes are not NS-checked the same way, which
-		 * matches the read/write asymmetry observed.
-		 */
-		for (i = 0; i < master->num_mids; i++) {
-			int mid = master->mids[i];
-
-			SET_NSCFG(iommu->base, mid, 3);
-			SET_BYPASSD(iommu->base, mid, 1);
+		if (!iommu->reset_done) {
+			msm_iommu_reset(iommu->base, iommu->ncb);
+			iommu->reset_done = true;
 		}
+
+		ret = msm_iommu_alloc_ctx(iommu->context_map, 0, iommu->ncb);
+		if (ret < 0) {
+			__disable_clocks(iommu);
+			break;
+		}
+		master->num = ret;
+		ret = 0;
+
+		config_mids(iommu, master);
+		__reset_context(iommu->base, master->num);
 
 		__disable_clocks(iommu);
 	}
