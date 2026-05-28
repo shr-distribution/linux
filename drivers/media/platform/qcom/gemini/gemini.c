@@ -966,9 +966,10 @@ static int gemini_runtime_suspend(struct device *dev)
 
 	icc_set_bw(gemini->icc_path, 0, 0);
 
+	/* Reverse of resume order: CORE -> AHB -> AXI. */
+	clk_disable_unprepare(gemini->core_clk);
 	clk_disable_unprepare(gemini->ahb_clk);
 	clk_disable_unprepare(gemini->axi_clk);
-	clk_disable_unprepare(gemini->core_clk);
 
 	return 0;
 }
@@ -979,35 +980,46 @@ static int gemini_runtime_resume(struct device *dev)
 	int ret;
 
 	/*
+	 * Enable AXI and AHB BEFORE the core clock. Legacy webOS implicitly
+	 * had this ordering via clock parentage: ijpeg_clk's parent was
+	 * ijpeg_axi_clk, so enabling the core walked up and turned AXI on
+	 * first. In mainline (mmcc-msm8660.c) ijpeg_clk's parent is
+	 * ijpeg_src (PLL8) instead, so AXI is a *sibling* branch -- if we
+	 * enable core first, the IP is clocked-compute with no bus clock
+	 * for a window. The FE's AR address generator can latch into a
+	 * wedged "waiting for ARREADY" state during that gap and FE reads
+	 * then return idle 0x80 forever. The WE doesn't drive AR until kick
+	 * time so it survives.
+	 *
 	 * The hardware does not respond to register writes (including the
-	 * reset command) at the 27 MHz default. Legacy webOS set 144 MHz
-	 * via clk_set_min_rate(); the closest mainline freq_tbl entry is
-	 * 153.6 MHz, which the RCG will round up to.
+	 * reset command) at the 27 MHz core default. Legacy webOS set
+	 * 144 MHz via clk_set_min_rate(); the closest mainline freq_tbl
+	 * entry is 153.6 MHz, which the RCG will round up to.
 	 */
-	ret = clk_set_rate(gemini->core_clk, 153600000);
-	if (ret)
-		return ret;
-
-	ret = clk_prepare_enable(gemini->core_clk);
-	if (ret)
-		return ret;
-
 	ret = clk_prepare_enable(gemini->axi_clk);
 	if (ret)
-		goto err_core;
+		return ret;
 
 	ret = clk_prepare_enable(gemini->ahb_clk);
 	if (ret)
 		goto err_axi;
 
+	ret = clk_set_rate(gemini->core_clk, 153600000);
+	if (ret)
+		goto err_ahb;
+
+	ret = clk_prepare_enable(gemini->core_clk);
+	if (ret)
+		goto err_ahb;
+
 	icc_set_bw(gemini->icc_path, GEMINI_ICC_AVG_BW, GEMINI_ICC_PEAK_BW);
 
 	return 0;
 
+err_ahb:
+	clk_disable_unprepare(gemini->ahb_clk);
 err_axi:
 	clk_disable_unprepare(gemini->axi_clk);
-err_core:
-	clk_disable_unprepare(gemini->core_clk);
 	return ret;
 }
 

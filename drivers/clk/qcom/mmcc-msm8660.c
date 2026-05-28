@@ -2509,8 +2509,31 @@ static struct gdsc gfx3d_gdsc = {
 
 static struct gdsc ijpeg_gdsc = {
 	.gdscr = 0x01a0,
-	.resets = (unsigned int []){ IJPEG_AHB_RESET },
-	.reset_count = 1,
+	/*
+	 * IJPEG (Gemini) requires the AXI and CORE resets to be toggled on
+	 * every power-on, in addition to the AHB reset. The legacy
+	 * mach-msm/footswitch-8x60.c does exactly this: setup_clocks ->
+	 * clk_reset(axi, ASSERT) + clk_reset(ahb, ASSERT) + clk_reset(core,
+	 * ASSERT) -> udelay -> rail charge -> deassert in reverse -> extra
+	 * core ASSERT/DEASSERT toggle. HTC and Samsung MSM8660 trees use the
+	 * same sequence. With only the AHB reset toggled the JPEG register
+	 * file comes up healthy (CPU reads/writes look fine) but the FE's
+	 * AXI-side address generator and burst sequencer stay in whatever
+	 * sub-state QSBL left them -- typically wedged waiting for an
+	 * AR-channel ready that never comes. The WE survives because writes
+	 * are post-and-forget and don't drive AR. Symptom: FE reads return
+	 * idle 0x80 regardless of buffer contents while WE writes succeed.
+	 * Listing AXI + CORE here lets the GDSC framework assert/deassert
+	 * them around rail charge (gdsc_enable LEGACY_FOOTSWITCH | SW_RESET
+	 * path), matching the legacy/HTC/Samsung convergent recipe and
+	 * mirroring the gfx3d_gdsc precedent above.
+	 */
+	.resets = (unsigned int []){
+		IJPEG_AXI_RESET,
+		IJPEG_AHB_RESET,
+		IJPEG_RESET,
+	},
+	.reset_count = 3,
 	.pd = {
 		.name = "ijpeg",
 	},
