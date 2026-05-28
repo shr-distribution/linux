@@ -284,13 +284,17 @@ static int novacom_get_ready_ep(unsigned int f_flags, struct novacom_ep *nep)
 }
 
 /*
- * Issue a single bulk transfer of at most one MPS worth of data
- * (a 0-length transfer is a ZLP on IN). Caller must hold nep->lock.
+ * Issue a single bulk transfer of at most one MPS worth of data.
+ * Caller must hold nep->lock.
+ *
+ * @zlp: only meaningful on IN. If set and @len is an exact multiple of
+ *       MPS, the framework appends a ZLP within the same USB request so
+ *       the host's BULK IN URB terminates on a short packet.
  *
  * Returns bytes transferred (>= 0) or a negative errno.
  */
 static ssize_t novacom_ep_io_one(struct novacom_ep *nep, void *buf,
-				 unsigned int len)
+				 unsigned int len, bool zlp)
 {
 	DECLARE_COMPLETION_ONSTACK(done);
 	struct f_novacom *novacom = nep->novacom;
@@ -306,7 +310,7 @@ static ssize_t novacom_ep_io_one(struct novacom_ep *nep, void *buf,
 		req->complete = novacom_epio_complete;
 		req->buf = buf;
 		req->length = len;
-		req->zero = 0;
+		req->zero = zlp ? 1 : 0;
 		value = usb_ep_queue(nep->ep, req, GFP_ATOMIC);
 	} else {
 		value = -ENODEV;
@@ -352,8 +356,11 @@ static ssize_t novacom_ep_io_one(struct novacom_ep *nep, void *buf,
  *
  * OUT (read): stop on the first short packet -- that signals end of
  * transfer from the host's point of view.
- * IN  (write): send all bytes, and append a ZLP if the total is an exact
- * multiple of MPS so the host's BULK IN URB terminates.
+ * IN  (write): send all bytes; mark the final chunk req->zero so the
+ * framework appends a ZLP atomically if the chunk is exact MPS. That
+ * tells the host's BULK IN URB the transfer ended without us having to
+ * race a separate 0-length request past a host that has already moved
+ * on.
  */
 static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 			     unsigned int len, int dir)
@@ -375,8 +382,10 @@ static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 
 	while (total < len) {
 		unsigned int chunk = min_t(unsigned int, len - total, mps);
+		bool last = (total + chunk == len);
+		bool zlp = (dir == USB_DIR_IN) && last && (chunk == mps);
 
-		n = novacom_ep_io_one(nep, buf + total, chunk);
+		n = novacom_ep_io_one(nep, buf + total, chunk, zlp);
 		if (n < 0)
 			return total > 0 ? total : n;
 		total += n;
@@ -385,11 +394,6 @@ static ssize_t novacom_ep_io(struct novacom_ep *nep, void *buf,
 		if (dir == USB_DIR_OUT && n < chunk)
 			break;
 	}
-
-	/* IN: terminate an exact-MPS-multiple stream with a ZLP so the
-	 * host's BULK IN URB sees end-of-transfer. */
-	if (dir == USB_DIR_IN && total > 0 && (total % mps) == 0)
-		(void)novacom_ep_io_one(nep, buf, 0);
 
 	return total;
 }
