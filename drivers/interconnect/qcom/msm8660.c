@@ -972,16 +972,31 @@ static struct platform_driver msm8660_noc_driver = {
 	},
 };
 /*
- * Register the interconnect driver early at subsys_initcall_sync so that
- * fabric providers are available when consumers probe during device_initcall.
- * This prevents unnecessary deferred probes and speeds up boot.
- * Note: icc_init runs at subsys_initcall, so this runs after.
+ * Register the NOC provider at core_initcall, matching the mainline pattern
+ * used by newer Qualcomm SoCs (sm8450, glymur, qdu1000, sc8280xp, sm8750).
+ *
+ * Why not module_platform_driver (device_initcall)?  drivers/Makefile lists
+ * drivers/interconnect/ at position 189, *after* every ICC-consumer subdir
+ * (clk/ @40, soc/ @46, gpu/ @68, base/mfd/ @76, spmi/ @89, usb/ @106,
+ * i2c/ @116, mmc/ @133, remoteproc/ @158).  Within a single initcall level
+ * execution order = link order, so a device_initcall registration here runs
+ * *after* every consumer has already tried to probe.  Mainline relies on
+ * deferred-probe retry to recover from that, but in this tree some consumer
+ * (apcs-msm8660 + cpufreq cascade suspected) fails to recover within
+ * deferred_probe_timeout=5 and boot dies at the Tux splash with no rootfs.
+ * Empirically confirmed 2026-05-29 with module_platform_driver (commits
+ * 99275d8a8ae9 + ca35c591854c, reverted).
+ *
+ * icc_provider_register does not require icc_init to have run first --
+ * the framework's locks are statically DEFINE_MUTEX'd -- so registering
+ * the provider at core_initcall (before icc_init at subsys_initcall) is
+ * safe, same as mainline sm8450 etc.
  */
 static int __init msm8660_noc_driver_init(void)
 {
 	return platform_driver_register(&msm8660_noc_driver);
 }
-subsys_initcall_sync(msm8660_noc_driver_init);
+core_initcall(msm8660_noc_driver_init);
 
 static void __exit msm8660_noc_driver_exit(void)
 {
