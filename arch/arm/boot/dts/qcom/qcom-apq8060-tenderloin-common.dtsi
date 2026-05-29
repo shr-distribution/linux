@@ -556,147 +556,6 @@
 			 * PM8901 supplies "preliminary regulators" whatever
 			 * that means
 			 */
-			pm8901-regulators {
-				compatible = "qcom,rpm-pm8901-regulators";
-
-				vdd_l0-supply = <&pm8901_s4>;
-				vdd_l1-supply = <&vph>;
-				vdd_l2-supply = <&vph>;
-				vdd_l3-supply = <&vph>;
-				vdd_l4-supply = <&vph>;
-				vdd_l5-supply = <&vph>;
-				vdd_l6-supply = <&vph>;
-				/* vdd_s0-supply, vdd_s1-supply: SAW regulators */
-				vdd_s2-supply = <&vph>;
-				vdd_s3-supply = <&vph>;
-				vdd_s4-supply = <&vph>;
-				lvs0_in-supply = <&pm8058_s3>;
-				lvs1_in-supply = <&pm8901_s4>;
-				lvs2_in-supply = <&pm8058_l0>;
-				lvs3_in-supply = <&pm8058_s2>;
-				/*
-				 * pm8901_mvs is a 5 V switch (USB OTG VBUS gate,
-				 * also HDMI 5 V hot-plug detect supply).  Its input
-				 * MUST be 5 V -- the previous mvs_in-supply =
-				 * <&pm8058_s3> (1.8 V) was a long-standing
-				 * miswiring that prevented MVS from ever asserting a
-				 * usable voltage on the switched output.
-				 *
-				 * vdd50_boost is the always-on external 5 V boost
-				 * regulator (enabled by TLMM GPIO 102, defined in
-				 * the regulators section at the top of this DTSI).
-				 * Routing it here lets pm8901_mvs gate 5 V to the
-				 * micro-USB VBUS pin for OTG host mode.
-				 */
-				mvs_in-supply = <&vdd50_boost>;
-
-				pm8901_l0: l0 {
-					regulator-min-microvolt = <1200000>;
-					regulator-max-microvolt = <1200000>;
-					bias-pull-down;
-				};
-				/* WiFi main 3.3V supply (VDD_WLAN_3V3) */
-				pm8901_l1: l1 {
-					regulator-min-microvolt = <3300000>;
-					regulator-max-microvolt = <3300000>;
-					bias-pull-down;
-					regulator-always-on;
-					regulator-allow-set-load;
-				};
-				pm8901_l2: l2 {
-					regulator-min-microvolt = <2850000>;
-					regulator-max-microvolt = <3300000>;
-					bias-pull-down;
-				};
-				/* WiFi power amplifier 3.3V supply (WLAN_PA_3V3) */
-				pm8901_l3: l3 {
-					regulator-min-microvolt = <3300000>;
-					regulator-max-microvolt = <3300000>;
-					bias-pull-down;
-					regulator-always-on;
-				};
-				/*
-				 * L4 (2.6V), L5 (2.85V), L6 (2.2V).
-				 *
-				 * The prior comment here claimed legacy webOS
-				 * board-tenderloin.c forced these always-on via
-				 * RPM_VREG_INIT_LDO default_use=1 — this was a
-				 * misread. The legacy macro's second argument is
-				 * _always_on (0 for all three at lines 3029-3031);
-				 * default_use=1 is an unrelated rpm_vreg_pdata
-				 * field for regulator-framework binding, not a
-				 * runtime always-on flag.
-				 *
-				 * Hardware-verified on running legacy webOS
-				 * 2.6.35 via novacom (sysfs regulator):
-				 *   8901_l4: state=disabled, num_users=0
-				 *   8901_l5: state=enabled,  num_users=1 (sdcc1 vmmc)
-				 *   8901_l6: state=disabled, num_users=0
-				 *
-				 * So L4 and L6 are never enabled by legacy — drop
-				 * the spurious always-on. L5 stays always-on
-				 * because sdcc1 already pulls it up via vmmc-supply
-				 * and legacy keeps it enabled, but the AO is now
-				 * defensive (sdcc1 binding would enable it on its
-				 * own).
-				 */
-				pm8901_l4: l4 {
-					regulator-min-microvolt = <2600000>;
-					regulator-max-microvolt = <2600000>;
-					bias-pull-down;
-				};
-				pm8901_l5: l5 {
-					regulator-min-microvolt = <2850000>;
-					regulator-max-microvolt = <2850000>;
-					bias-pull-down;
-					regulator-always-on;
-				};
-				pm8901_l6: l6 {
-					regulator-min-microvolt = <2200000>;
-					regulator-max-microvolt = <2200000>;
-					bias-pull-down;
-				};
-
-				/* s0 and s1 are SAW regulators controlled over SPM */
-				pm8901_s2: s2 {
-					regulator-min-microvolt = <1300000>;
-					regulator-max-microvolt = <1300000>;
-					qcom,switch-mode-frequency = <1600000>;
-					bias-pull-down;
-				};
-				pm8901_s3: s3 {
-					regulator-min-microvolt = <1100000>;
-					regulator-max-microvolt = <1100000>;
-					qcom,switch-mode-frequency = <1600000>;
-					bias-pull-down;
-				};
-				pm8901_s4: s4 {
-					regulator-min-microvolt = <1225000>;
-					regulator-max-microvolt = <1225000>;
-					qcom,switch-mode-frequency = <1600000>;
-					bias-pull-down;
-				};
-
-				/* LVS0 thru 3 and mvs0 are just switches */
-				pm8901_lvs0: lvs0 {
-					regulator-always-on;
-					bias-pull-down;
-				};
-				pm8901_lvs1: lvs1 {
-					bias-pull-down;
-				};
-				pm8901_lvs2: lvs2 {
-					bias-pull-down;
-				};
-				pm8901_lvs3: lvs3 {
-					bias-pull-down;
-				};
-
-				pm8901_mvs: mvs {
-					bias-pull-down;
-				};
-			};
-
 			pm8058-regulators {
 				compatible = "qcom,rpm-pm8058-regulators";
 
@@ -1018,6 +877,147 @@
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
 					qcom,switch-mode-frequency = <1600000>;
+				};
+			};
+
+			pm8901-regulators {
+				compatible = "qcom,rpm-pm8901-regulators";
+
+				vdd_l0-supply = <&pm8901_s4>;
+				vdd_l1-supply = <&vph>;
+				vdd_l2-supply = <&vph>;
+				vdd_l3-supply = <&vph>;
+				vdd_l4-supply = <&vph>;
+				vdd_l5-supply = <&vph>;
+				vdd_l6-supply = <&vph>;
+				/* vdd_s0-supply, vdd_s1-supply: SAW regulators */
+				vdd_s2-supply = <&vph>;
+				vdd_s3-supply = <&vph>;
+				vdd_s4-supply = <&vph>;
+				lvs0_in-supply = <&pm8058_s3>;
+				lvs1_in-supply = <&pm8901_s4>;
+				lvs2_in-supply = <&pm8058_l0>;
+				lvs3_in-supply = <&pm8058_s2>;
+				/*
+				 * pm8901_mvs is a 5 V switch (USB OTG VBUS gate,
+				 * also HDMI 5 V hot-plug detect supply).  Its input
+				 * MUST be 5 V -- the previous mvs_in-supply =
+				 * <&pm8058_s3> (1.8 V) was a long-standing
+				 * miswiring that prevented MVS from ever asserting a
+				 * usable voltage on the switched output.
+				 *
+				 * vdd50_boost is the always-on external 5 V boost
+				 * regulator (enabled by TLMM GPIO 102, defined in
+				 * the regulators section at the top of this DTSI).
+				 * Routing it here lets pm8901_mvs gate 5 V to the
+				 * micro-USB VBUS pin for OTG host mode.
+				 */
+				mvs_in-supply = <&vdd50_boost>;
+
+				pm8901_l0: l0 {
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
+					bias-pull-down;
+				};
+				/* WiFi main 3.3V supply (VDD_WLAN_3V3) */
+				pm8901_l1: l1 {
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+					bias-pull-down;
+					regulator-always-on;
+					regulator-allow-set-load;
+				};
+				pm8901_l2: l2 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <3300000>;
+					bias-pull-down;
+				};
+				/* WiFi power amplifier 3.3V supply (WLAN_PA_3V3) */
+				pm8901_l3: l3 {
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+					bias-pull-down;
+					regulator-always-on;
+				};
+				/*
+				 * L4 (2.6V), L5 (2.85V), L6 (2.2V).
+				 *
+				 * The prior comment here claimed legacy webOS
+				 * board-tenderloin.c forced these always-on via
+				 * RPM_VREG_INIT_LDO default_use=1 — this was a
+				 * misread. The legacy macro's second argument is
+				 * _always_on (0 for all three at lines 3029-3031);
+				 * default_use=1 is an unrelated rpm_vreg_pdata
+				 * field for regulator-framework binding, not a
+				 * runtime always-on flag.
+				 *
+				 * Hardware-verified on running legacy webOS
+				 * 2.6.35 via novacom (sysfs regulator):
+				 *   8901_l4: state=disabled, num_users=0
+				 *   8901_l5: state=enabled,  num_users=1 (sdcc1 vmmc)
+				 *   8901_l6: state=disabled, num_users=0
+				 *
+				 * So L4 and L6 are never enabled by legacy — drop
+				 * the spurious always-on. L5 stays always-on
+				 * because sdcc1 already pulls it up via vmmc-supply
+				 * and legacy keeps it enabled, but the AO is now
+				 * defensive (sdcc1 binding would enable it on its
+				 * own).
+				 */
+				pm8901_l4: l4 {
+					regulator-min-microvolt = <2600000>;
+					regulator-max-microvolt = <2600000>;
+					bias-pull-down;
+				};
+				pm8901_l5: l5 {
+					regulator-min-microvolt = <2850000>;
+					regulator-max-microvolt = <2850000>;
+					bias-pull-down;
+					regulator-always-on;
+				};
+				pm8901_l6: l6 {
+					regulator-min-microvolt = <2200000>;
+					regulator-max-microvolt = <2200000>;
+					bias-pull-down;
+				};
+
+				/* s0 and s1 are SAW regulators controlled over SPM */
+				pm8901_s2: s2 {
+					regulator-min-microvolt = <1300000>;
+					regulator-max-microvolt = <1300000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+				};
+				pm8901_s3: s3 {
+					regulator-min-microvolt = <1100000>;
+					regulator-max-microvolt = <1100000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+				};
+				pm8901_s4: s4 {
+					regulator-min-microvolt = <1225000>;
+					regulator-max-microvolt = <1225000>;
+					qcom,switch-mode-frequency = <1600000>;
+					bias-pull-down;
+				};
+
+				/* LVS0 thru 3 and mvs0 are just switches */
+				pm8901_lvs0: lvs0 {
+					regulator-always-on;
+					bias-pull-down;
+				};
+				pm8901_lvs1: lvs1 {
+					bias-pull-down;
+				};
+				pm8901_lvs2: lvs2 {
+					bias-pull-down;
+				};
+				pm8901_lvs3: lvs3 {
+					bias-pull-down;
+				};
+
+				pm8901_mvs: mvs {
+					bias-pull-down;
 				};
 			};
 		};
