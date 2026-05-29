@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * MSM8660 / APQ8060 MPM (MSM Power Manager) wakeup interrupt controller
+ * MSM8x60 family (MSM8260/MSM8660/APQ8060) MPM (MSM Power Manager) wakeup interrupt controller
  *
  * The MPM is an always-on hardware block that keeps a small set of wake
  * sources alive while the application processor is powered down for
- * cpuidle Power Collapse or suspend-to-RAM. On MSM8660 / APQ8060 the
+ * cpuidle Power Collapse or suspend-to-RAM. On MSM8x60 the
  * vMPM (virtual MPM) registers live INSIDE the RPM's 4 KB control block
  * at:
  *

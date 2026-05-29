@@ -3,7 +3,7 @@
  * Copyright (c) 2008-2010, Code Aurora Forum. All rights reserved.
  * Copyright (c) 2024 Herman van Hazendonk <github.com@herrie.org>
  *
- * Z180 2D Graphics Engine driver for Qualcomm MSM8660/APQ8060
+ * Z180 2D Graphics Engine driver for Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060)
  *
  * This driver provides support for the Z180 2D graphics accelerator
  * including command stream submission, ringbuffer management, and

@@ -2,7 +2,7 @@
 /*
  * Copyright (c) 2024, Herman van Hazendonk <github.com@herrie.org>
  *
- * APQ8060/MSM8660 ASoC Machine driver using direct LPAIF hardware
+ * MSM8x60 family (MSM8260/MSM8660/APQ8060) ASoC Machine driver using direct LPAIF hardware
  *
  * This machine driver connects the LPAIF CPU DAI to external codecs
  * (e.g., WM8958 on HP TouchPad) without going through the Q6 DSP.

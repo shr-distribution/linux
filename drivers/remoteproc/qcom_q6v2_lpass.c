@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Qualcomm MSM8660/APQ8060 LPASS QDSP6v2 Peripheral Image Loader
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) LPASS QDSP6v2 Peripheral Image Loader
  *
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  * Copyright (c) 2024, Christophe Chabanois <christophe.chabanois@gmail.com>

@@ -2,8 +2,8 @@
 /*
  * camss-vfe-3-1.c
  *
- * Qualcomm MSM Camera Subsystem - VFE (Video Front End) Module v3.1
- * (MSM8660/APQ8060 gen1 backend)
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) Camera Subsystem
+ * - VFE (Video Front End) Module v3.1, gen1 backend
  *
  * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
@@ -37,7 +37,7 @@
  *  2. After other config writes, as a conservative "settle" flush. On ARM,
  *     writes to Device memory (these registers) are already ordered with
  *     respect to each other, so these are strictly redundant for pure
- *     MMIO-vs-MMIO ordering. They are kept deliberately: APQ8060/MSM8660's
+ *     MMIO-vs-MMIO ordering. They are kept deliberately: MSM8x60's
  *     shared MMSS-AXI fabric is timing-sensitive (a barrier/ordering bug in
  *     the AXI-halt path could hard-hang the SoC), so they are left in place
  *     rather than trimmed for a cosmetic win.
@@ -921,7 +921,7 @@ static u32 vfe31_calc_xbar(bool pix_active, bool video_active, bool zsl_active)
 
 /*
  * ============================================================================
- * VFE 3.1 REGISTER REFERENCE - MSM8660/APQ8060
+ * VFE 3.1 REGISTER REFERENCE - MSM8x60
  * ============================================================================
  *
  * This documentation is derived from analysis of HP webOS msm_vfe31.c kernel
@@ -6444,7 +6444,7 @@ static void vfe31_enable_pending_camif(struct vfe_device *vfe)
  * camss-vfe-gen1.c provides a shared streaming/buffer model
  * (vfe_enable_output / vfe_disable_output / vfe_isr_comp_done /
  * vfe_queue_buffer) driven by the vfe_hw_ops_gen1 vtable, and the VFE4.x /
- * gen1 backends plug into it. VFE31 (MSM8660/APQ8060) cannot, because that
+ * gen1 backends plug into it. VFE31 (MSM8x60) cannot, because that
  * model's assumptions do not hold on this hardware:
  *
  *  - Deferred CAMIF. On MSM8660 the CAMIF must not be started until the

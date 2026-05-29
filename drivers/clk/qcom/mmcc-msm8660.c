@@ -3,7 +3,7 @@
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
  * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
  *
- * MSM8660/APQ8060 Multimedia Clock Controller driver
+ * MSM8x60 family (MSM8260/MSM8660/APQ8060) Multimedia Clock Controller driver
  *
  * Split from mmcc-msm8960.c to properly handle MSM8660-specific clock
  * configurations, particularly the GFX3D reset bits which differ from MSM8960.
@@ -939,7 +939,7 @@ static const struct freq_tbl clk_tbl_gfx3d[] = {
 };
 
 /*
- * MSM8660/APQ8060-specific GFX3D clocks
+ * MSM8x60-specific GFX3D clocks
  *
  * MSM8660 uses different reset bits for the GFX3D banked MND divider:
  *   - Bank 0: mnctr_reset_bit = 23 (MSM8960 uses 25)
@@ -1238,7 +1238,7 @@ static struct clk_branch mdp_vsync_clk = {
 };
 
 /*
- * MSM8660/APQ8060-specific MDP pixel clocks
+ * MSM8x60-specific MDP pixel clocks
  *
  * MSM8660 uses MD16 register format where M value is in bits [31:16] and
  * D value (2*N-M) is in bits [15:0]. This differs from MSM8960 which uses
@@ -2455,7 +2455,7 @@ static const struct qcom_reset_map mmcc_msm8660_resets[] = {
 };
 
 /*
- * MSM8660/APQ8060 legacy footswitches.
+ * MSM8x60 legacy footswitches.
  * These use a different register layout than modern GDSCs:
  * - Bit 8: ENABLE (set to enable power)
  * - Bit 5: CLAMP (set to clamp I/O)
