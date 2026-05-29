@@ -3,7 +3,7 @@
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
  * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
  *
- * Clock and power-domain bindings for the MSM8660/APQ8060/MSM8260
+ * Clock and power-domain bindings for the MSM8x60 family (MSM8260/MSM8660/APQ8060)
  * Multimedia Clock Controller (MMCC).
  *
  * MSM8660, APQ8060 and MSM8260 are the same SoC (Scorpion-class APQ8060/MSM8x60
@@ -109,7 +109,7 @@
 #define CSI1_AHB_CLK					133
 
 /*
- * MSM8660/APQ8060 legacy footswitch power domains.
+ * MSM8x60 legacy footswitch power domains.
  * Used with the MMCC power-domain provider (#power-domain-cells = <1>).
  * Numbering is independent of the clock ID space above.
  */

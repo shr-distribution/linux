@@ -3,9 +3,9 @@
  * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
  *
- * Qualcomm MSM8660/APQ8060/MSM8260 LPASS Clock Controller driver.
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) LPASS Clock Controller driver.
  *
- * Split from lcc-msm8960.c because MSM8660/APQ8060/MSM8260 are a separate
+ * Split from lcc-msm8960.c because the MSM8x60 family is a separate
  * SoC generation (Scorpion) from MSM8960 (Krait). The clock topology is
  * compatible but PLL4 runs at a different rate (540.672 MHz, L=22) and the
  * driver has no need for the MDM9615 CXO patch or the 492 MHz frequency plan.
@@ -64,7 +64,7 @@ static const struct clk_parent_data lcc_pxo_pll4[] = {
 };
 
 /*
- * MSM8660/APQ8060 PLL4 runs at 540.672 MHz (24.576 MHz * 22, L=0x16).
+ * MSM8x60 PLL4 runs at 540.672 MHz (24.576 MHz * 22, L=0x16).
  * Divisors taken from the legacy webOS clock-8x60.c driver.
  * AIF_OSR has an 8-bit M/N counter, so 512000 Hz is not achievable with
  * this PLL frequency and is intentionally omitted from the 540 MHz tables.
@@ -235,7 +235,7 @@ CLK_AIF_OSR_DIV(spare_i2s_mic, 0x78, 0x7c, 0x80);
 CLK_AIF_OSR_DIV(codec_i2s_spkr, 0x6c, 0x70, 0x74);
 CLK_AIF_OSR_DIV(spare_i2s_spkr, 0x84, 0x88, 0x8c);
 
-/* PCM frequency table for MSM8660/APQ8060 with PLL4 at 540.672 MHz */
+/* PCM frequency table for MSM8x60 with PLL4 at 540.672 MHz */
 static const struct freq_tbl clk_tbl_pcm_540[] = {
 	{   256000, P_PLL4, 4, 1, 528 },
 	{   512000, P_PLL4, 4, 1, 264 },
@@ -476,7 +476,7 @@ static int lcc_msm8660_probe(struct platform_device *pdev)
 		return PTR_ERR(regmap);
 
 	/*
-	 * MSM8660/APQ8060 should always boot with PLL4 L=22 (540.672 MHz).
+	 * MSM8x60 should always boot with PLL4 L=22 (540.672 MHz).
 	 * Detect anyway so a board with a non-standard L value still gets a
 	 * coherent frequency plan instead of silently producing wrong rates.
 	 */

@@ -2,9 +2,9 @@
 /*
  * camss-csid-8x60.c
  *
- * Qualcomm MSM8660/APQ8060 Camera Subsystem - CSID Module
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) Camera Subsystem - CSID Module
  *
- * On MSM8660/APQ8060, the CSI decoder functionality is integrated into the
+ * On MSM8x60, the CSI decoder functionality is integrated into the
  * CSIPHY hardware block. This driver provides a minimal CSID implementation
  * to satisfy the V4L2 media pipeline requirements.
  *

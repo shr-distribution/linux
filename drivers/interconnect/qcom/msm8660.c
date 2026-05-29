@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Qualcomm MSM8660/APQ8060 interconnect driver
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) interconnect driver
  *
  * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
@@ -8,7 +8,7 @@
  * and webOS kernel msm_bus_board_8660.c / msm_bus_fabric.c
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
- * MSM8660/APQ8060 has a fabric-based bus architecture:
+ * MSM8x60 has a fabric-based bus architecture:
  *
  *              +------------------+
  *              |   APPSS Fabric   |  (CPU, L2, Memory)

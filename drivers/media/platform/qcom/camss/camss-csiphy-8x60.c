@@ -2,9 +2,9 @@
 /*
  * camss-csiphy-8x60.c
  *
- * Qualcomm MSM8660/APQ8060 Camera Subsystem - CSIPHY Module
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) Camera Subsystem - CSIPHY Module
  *
- * This driver implements the MIPI CSI PHY support for MSM8660/APQ8060.
+ * This driver implements the MIPI CSI PHY support for MSM8x60.
  * The CSI controller on these SoCs has a different register layout
  * compared to newer Qualcomm chips.
  *

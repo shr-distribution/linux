@@ -3,10 +3,10 @@
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  * Copyright (c) 2024, Herman van Hazendonk <github.com@herrie.org>
  *
- * lpass-msm8660.c -- ALSA SoC CPU DAI driver for MSM8660/APQ8060 LPASS
+ * lpass-msm8660.c -- ALSA SoC CPU DAI driver for MSM8x60 family (MSM8260/MSM8660/APQ8060) LPASS
  *
  * This driver provides direct hardware access to the LPAIF (Low Power
- * Audio Interface) on MSM8660/APQ8060 SoCs, bypassing the Q6 DSP.
+ * Audio Interface) on MSM8x60 SoCs, bypassing the Q6 DSP.
  * This approach matches how the original webOS kernel handled audio.
  */
 
@@ -25,7 +25,7 @@
 #include "lpass.h"
 
 /*
- * MSM8660/APQ8060 LPAIF I2S port definitions
+ * MSM8x60 LPAIF I2S port definitions
  *
  * The LPAIF has 5 I2S ports:
  *   0: Primary codec speaker (CODEC_SPKR)
@@ -44,7 +44,7 @@ enum msm8660_lpaif_i2s_ports {
 };
 
 /*
- * MSM8660/APQ8060 LPAIF DMA channel definitions
+ * MSM8x60 LPAIF DMA channel definitions
  *
  * Channels 0-4 are for playback (RDMA)
  * Channels 5-7 are for capture (WRDMA)
@@ -267,7 +267,7 @@ static int msm8660_lpass_exit(struct platform_device *pdev)
 }
 
 /*
- * MSM8660/APQ8060 LPAIF variant data
+ * MSM8x60 LPAIF variant data
  *
  * Register layout (from webOS audio_dma_msm8k.h):
  *   I2S control:  0x0004 + (0x04 * port)

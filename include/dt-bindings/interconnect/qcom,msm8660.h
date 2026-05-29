@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause) */
 /*
- * Qualcomm MSM8660/APQ8060 interconnect IDs
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) interconnect IDs
  *
  * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
@@ -12,7 +12,7 @@
 #define __DT_BINDINGS_INTERCONNECT_QCOM_MSM8660_H
 
 /*
- * MSM8660/APQ8060 has a fabric-based bus architecture:
+ * MSM8x60 has a fabric-based bus architecture:
  * - APPSS Fabric: CPU and memory interface
  * - System Fabric: System peripherals and DMA
  * - MMSS Fabric: Multimedia subsystem (display, camera, video)

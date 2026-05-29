@@ -3,7 +3,7 @@
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
  * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
  *
- * Reset bindings for the MSM8660/APQ8060/MSM8260 Multimedia Clock
+ * Reset bindings for the MSM8x60 family (MSM8260/MSM8660/APQ8060) Multimedia Clock
  * Controller (MMCC).
  *
  * MSM8660, APQ8060 and MSM8260 are the same SoC (Scorpion-class APQ8060/MSM8x60

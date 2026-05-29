@@ -354,7 +354,7 @@ static void gemini_device_run(void *priv)
 	 * Cache coherency for the offline DMA path.
 	 *
 	 * The Gemini hardware reads the source frame from DRAM and writes
-	 * the entropy-coded JPEG stream back to DRAM. APQ8060/MSM8660 is a
+	 * the entropy-coded JPEG stream back to DRAM. MSM8x60 family (MSM8260/MSM8660/APQ8060) is a
 	 * non-coherent platform — peripheral DMA does NOT snoop the CPU
 	 * caches. Without explicit syncs, the encoder reads whatever
 	 * DRAM-resident bytes happen to be there (often zeros from initial
