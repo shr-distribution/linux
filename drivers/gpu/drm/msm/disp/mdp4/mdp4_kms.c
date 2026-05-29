@@ -568,6 +568,17 @@ static int mdp4_kms_init(struct drm_device *dev)
 
 	clk_set_rate(mdp4_kms->clk, max_clk);
 
+	/*
+	 * Enable runtime PM before read_mdp_hw_revision() — that helper calls
+	 * mdp4_enable/mdp4_disable, which in turn wrap
+	 * pm_runtime_resume_and_get/pm_runtime_put_sync. Without an enabled
+	 * runtime PM state, the get is a no-op while the put still decrements
+	 * the usage counter, producing the "Runtime PM usage count underflow!"
+	 * warning on every probe (and every deferred-probe retry).
+	 */
+	pm_runtime_enable(dev->dev);
+	mdp4_kms->rpm_enabled = true;
+
 	read_mdp_hw_revision(mdp4_kms, &major, &minor);
 
 	if (major != 4) {
@@ -587,9 +598,6 @@ static int mdp4_kms_init(struct drm_device *dev)
 		}
 		clk_set_rate(mdp4_kms->lut_clk, max_clk);
 	}
-
-	pm_runtime_enable(dev->dev);
-	mdp4_kms->rpm_enabled = true;
 
 	/*
 	 * Call modeset_init() before disabling display outputs. modeset_init()
