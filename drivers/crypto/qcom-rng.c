@@ -270,17 +270,7 @@ static struct platform_driver qcom_rng_driver = {
 	}
 };
 
-static int __init qcom_rng_driver_init(void)
-{
-	return platform_driver_register(&qcom_rng_driver);
-}
-subsys_initcall(qcom_rng_driver_init);
-
-static void __exit qcom_rng_driver_exit(void)
-{
-	platform_driver_unregister(&qcom_rng_driver);
-}
-module_exit(qcom_rng_driver_exit);
+module_platform_driver(qcom_rng_driver);
 
 MODULE_ALIAS("platform:" KBUILD_MODNAME);
 MODULE_DESCRIPTION("Qualcomm random number generator driver");
