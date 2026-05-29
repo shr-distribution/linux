@@ -495,7 +495,16 @@ DEFINE_QNODE(mmfab_mas_hd_codec_port1, MSM8660_MMFAB_MAS_HD_CODEC_PORT1, 16,
  * ARB_TIER1 keeps AMPSS->SMI traffic high-priority within MMFAB so
  * CPU mmap reads/writes to SMI BOs don't get starved by MDP scanout.
  */
-DEFINE_QNODE(mmfab_to_appss, MSM8660_MMFAB_TO_APPSS, 8, 2, 1, ARB_TIER1,
+/*
+ * buswidth = 16: matches HTC and Samsung MSM8660 vendor msm_bus_board_8660.c
+ * (both at the MMSS-context MSM_BUS_FAB_APPSS entry, .buswidth = 16). The
+ * downstream slaves on this gateway -- mmfab_slv_smi (16) and the AMPSS L2
+ * inbound -- are both 16-byte paths, so the gateway itself must be 16-byte
+ * to avoid halving the computed bandwidth on CPU<->SMI traffic. webOS
+ * originally used 8 here, but the later HTC/Samsung trees corrected it to
+ * 16 once concurrent CPU + MDP scanout exposed the underrun.
+ */
+DEFINE_QNODE(mmfab_to_appss, MSM8660_MMFAB_TO_APPSS, 16, 2, 1, ARB_TIER1,
 	     MSM8660_AFAB_TO_MMSS,
 	     MSM8660_MMFAB_SLV_SMI,
 	     MSM8660_MMFAB_SLV_MM_IMEM);
