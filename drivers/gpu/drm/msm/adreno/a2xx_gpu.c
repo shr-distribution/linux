@@ -915,7 +915,9 @@ static void a2xx_gpu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 	}
 }
 
-static const struct adreno_gpu_funcs funcs = {
+static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev);
+
+const struct adreno_gpu_funcs a2xx_gpu_funcs = {
 	.base = {
 		.get_param = adreno_get_param,
 		.set_param = adreno_set_param,
@@ -938,13 +940,14 @@ static const struct adreno_gpu_funcs funcs = {
 		.gpu_set_freq = a2xx_gpu_set_freq,
 		.progress = a2xx_progress,
 	},
+	.init = a2xx_gpu_init,
 };
 
 static const struct msm_gpu_perfcntr perfcntrs[] = {
 /* TODO */
 };
 
-struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
+static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 {
 	struct a2xx_gpu *a2xx_gpu = NULL;
 	struct adreno_gpu *adreno_gpu;
@@ -971,7 +974,7 @@ struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	gpu->perfcntrs = perfcntrs;
 	gpu->num_perfcntrs = ARRAY_SIZE(perfcntrs);
 
-	ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs, 1);
+	ret = adreno_gpu_init(dev, pdev, adreno_gpu, &a2xx_gpu_funcs, 1);
 	if (ret)
 		goto fail;
 
