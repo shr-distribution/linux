@@ -2043,17 +2043,7 @@ static struct platform_driver qup_i2c_driver = {
 	},
 };
 
-static int __init qup_i2c_driver_init(void)
-{
-	return platform_driver_register(&qup_i2c_driver);
-}
-subsys_initcall(qup_i2c_driver_init);
-
-static void __exit qup_i2c_driver_exit(void)
-{
-	platform_driver_unregister(&qup_i2c_driver);
-}
-module_exit(qup_i2c_driver_exit);
+module_platform_driver(qup_i2c_driver);
 
 MODULE_DESCRIPTION("Qualcomm QUP based I2C controller");
 MODULE_LICENSE("GPL v2");
