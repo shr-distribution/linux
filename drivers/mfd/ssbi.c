@@ -317,7 +317,52 @@ static struct platform_driver ssbi_driver = {
 		.of_match_table = ssbi_match_table,
 	},
 };
-module_platform_driver(ssbi_driver);
+
+/*
+ * Register the SSBI bus driver at core_initcall, matching the mainline
+ * pattern used by newer Qualcomm SoCs' interconnect providers (sm8450,
+ * glymur, qdu1000, sc8280xp, sm8750).
+ *
+ * Why not module_platform_driver (device_initcall)? SSBI is the bus that
+ * hosts the PM8058/PM8901 PMIC chip directly (as opposed to the RPM-based
+ * regulator path, which is a separate node). Children of the SSBI bus
+ * (pm8xxx-core, qcom-ssbi-mpp, qcom-ssbi-gpio, pm8058-pwm, the vibrator
+ * block, etc.) only get created as platform_devices once SSBI's probe
+ * enumerates the bus -- so anything depending on those children must wait
+ * for SSBI to bind.
+ *
+ * With module_platform_driver, ssbi_driver_init runs at device_initcall.
+ * Within drivers/mfd/Makefile, ssbi.o is at line ~215 (out of ~250),
+ * meaning many other mfd drivers register before it. And drivers/Makefile
+ * places drivers/mfd/ at position 76, after clk/ (40), soc/ (46), gpu/
+ * (68), etc. Within device_initcall the kernel_init thread runs driver
+ * inits sequentially; the slow synchronous probes earlier in the level
+ * (USB chipidea, MDP4 with defer, gsbi, etc.) block kernel_init until
+ * SSBI's slot is reached. Empirically on HP TouchPad / APQ8060: SSBI
+ * probes at t=7.7s instead of t<2s, causing every PMIC consumer
+ * (pwm-backlight, vibrator, pwrkey) to cascade defers for seconds.
+ *
+ * core_initcall puts the driver registration before any device_initcall
+ * consumer. of_platform_default_populate at arch_initcall then immediately
+ * matches the ssbi DT nodes against the already-registered driver, so the
+ * SSBI bus probes as soon as arch_initcall completes -- pulling the entire
+ * PMIC stack ~5-6 seconds earlier on this platform.
+ *
+ * Safety: ssbi_probe() does no work that depends on later initcall levels
+ * (no clocks, regulators, or interconnect references in DT). Verified
+ * against drivers/mfd/ssbi.c probe path.
+ */
+static int __init ssbi_driver_init(void)
+{
+	return platform_driver_register(&ssbi_driver);
+}
+core_initcall(ssbi_driver_init);
+
+static void __exit ssbi_driver_exit(void)
+{
+	platform_driver_unregister(&ssbi_driver);
+}
+module_exit(ssbi_driver_exit);
 
 MODULE_DESCRIPTION("Qualcomm Single-wire Serial Bus Interface (SSBI) driver");
 MODULE_LICENSE("GPL v2");
