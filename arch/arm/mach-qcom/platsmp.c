@@ -126,7 +126,12 @@ static void qcom_cpu_die(unsigned int cpu)
 		spm_set_low_power_mode(drv, PM_SLEEP_MODE_SPC);
 
 		for (;;) {
-			int ret = cpu_suspend(0, qcom_pm_collapse_standalone);
+			/*
+			 * cpu_suspend's return value is intentionally ignored:
+			 * any return path (re-entry or early failure) funnels
+			 * back through the pen_release check below.
+			 */
+			(void)cpu_suspend(0, qcom_pm_collapse_standalone);
 
 			/*
 			 * We woke from power collapse (likely timer interrupt).
@@ -512,7 +517,6 @@ static int msm8660_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	int ret;
 	int cnt = 0;
 	unsigned long start_jiffies;
-	struct spm_driver_data *drv;
 
 	/*
 	 * Restore SPM to standby mode before attempting to bring CPU online.
