@@ -1163,7 +1163,21 @@ void __init setup_arch(char **cmdline_p)
 		register_restart_handler(&arm_restart_nb);
 	}
 
-	unflatten_device_tree();
+	/*
+	 * Work around a 6.18 -> 7.1-rc1 regression where the reserved FDT
+	 * memblock region gets freed late (likely the memblock_free() late-
+	 * freeing semantics change in 87ce9e83ab8b combined with a reserved-
+	 * memory rework), leaving every property's prop->name and prop->value
+	 * dangling into a now-zeroed region. of_find_property() then returns
+	 * NULL for every named property on every node (including clocks/
+	 * clock-names on AMBA mmci nodes), breaking every device that does
+	 * a named clk_get() etc.
+	 *
+	 * Use unflatten_and_copy_device_tree() so the kernel keeps a private
+	 * copy of the FDT and the prop name/value pointers remain valid even
+	 * after the original memblock-reserved region is freed.
+	 */
+	unflatten_and_copy_device_tree();
 
 	arm_dt_init_cpu_maps();
 	psci_dt_init();
