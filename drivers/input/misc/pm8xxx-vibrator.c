@@ -37,7 +37,26 @@ static const struct pm8xxx_regs pm8058_regs = {
 	.drv_offset = 0,
 	.drv_mask = GENMASK(7, 3),
 	.drv_shift = 3,
-	.drv_en_manual_mask = 0xfc,
+	/*
+	 * VIB_DRV (register 0x4A) bits 0-1 are HW-default control bits that
+	 * enable the vibrator block. Stripping them at probe disables the
+	 * block entirely, so subsequent level writes change bits 3-7 but the
+	 * motor output stays off. The legacy out-of-tree pmic8058-vibrator
+	 * driver explicitly preserved them via
+	 *     val &= ~VIB_DRV_EN_MANUAL_MASK   (mask = 0xfc, ~mask = 0x03)
+	 * which is equivalent to AND-ing with 0x03 here. Setting the field
+	 * to 0x03 lets the existing
+	 *     val &= regs->drv_en_manual_mask
+	 * in pm8xxx_vib_probe() restore that behavior for pm8058 without
+	 * affecting pm8916/pmi632 (both keep the field at 0).
+	 *
+	 * Naming note: "drv_en_manual_mask" + AND-without-NOT in the probe
+	 * is the inverse of legacy's semantics ("mask of EN_MANUAL bits to
+	 * CLEAR"), making 0xfc look correct at first glance but actually
+	 * stripping the bits we need to keep. A follow-up upstream rename
+	 * (e.g. drv_init_preserve_mask) would be clearer.
+	 */
+	.drv_en_manual_mask = 0x03,
 	.drv_in_step = true,
 };
 
