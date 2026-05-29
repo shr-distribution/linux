@@ -712,6 +712,7 @@ static int insert_iommu_master(struct device *dev,
 				const struct of_phandle_args *spec)
 {
 	struct msm_iommu_ctx_dev *master;
+	bool fresh_master;
 	int sid;
 
 	/*
@@ -720,6 +721,7 @@ static int insert_iommu_master(struct device *dev,
 	 * dev_iommu_priv_get() which stores only one pointer per device.
 	 */
 	master = find_master_for_dev(*iommu, dev);
+	fresh_master = !master;
 	if (!master) {
 		master = kzalloc(sizeof(*master), GFP_ATOMIC);
 		if (!master) {
@@ -730,11 +732,24 @@ static int insert_iommu_master(struct device *dev,
 		list_add(&master->list, &(*iommu)->ctx_list);
 	}
 
-	/* Check for duplicate MIDs */
+	/*
+	 * Check for duplicate MIDs. The msm_iommu_ctx_dev master is kzalloc'd
+	 * (not devm) and persists across deferred-probe retries, so seeing the
+	 * same MID again on a re-probe is normal — not a DT bug — and should
+	 * not produce a per-MID warning storm. Only warn loudly when the
+	 * master was freshly allocated this call, which is the case that
+	 * actually indicates a duplicate entry in the iommus= property.
+	 */
 	for (sid = 0; sid < master->num_mids; sid++)
 		if (master->mids[sid] == spec->args[0]) {
-			dev_warn(dev, "Stream ID 0x%x repeated; ignoring\n",
-				 sid);
+			if (fresh_master)
+				dev_warn(dev,
+					 "Stream ID 0x%x repeated; ignoring\n",
+					 sid);
+			else
+				dev_dbg(dev,
+					"Stream ID 0x%x already registered (probe retry)\n",
+					sid);
 			return 0;
 		}
 
