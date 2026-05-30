@@ -3861,6 +3861,28 @@
 	};
 };
 
+/*
+ * Disable the PM8058 internal vibrator block. The PMIC has a VIB_DRV
+ * output (pin T1 on the BGA) wired internally to register 0x4A, but on
+ * the HP TouchPad PCB that pin is not connected to the vibrator motor.
+ * The actual motor is driven by the LM8502 LED-and-haptic controller
+ * (drivers/leds/leds-lm8502.c) over I2C bus 2 -- the legacy webOS
+ * driver controls it via HAPTIC_FEEDBACK_CTRL (reg 0x21) and
+ * HAPTIC_PWM_DUTY_CYCLE (reg 0x22) after multiplexing the LM8502's
+ * shared D10 pin to vibrator output via D10_CURRENT_CTRL = 0.
+ *
+ * Binding pm8xxx-vibrator here would leave a /dev/input/event device
+ * that accepts FF_RUMBLE but cannot move anything (the chip writes its
+ * level register correctly, the pin is just dangling on this board).
+ * Confirmed on-device 2026-05-30 against the Topaz3G schematic
+ * (Schematics-Topaz3G-6050A2428701-MB-X01.20101012.pdf, sheet 5
+ * "PM8058 GPIO/MPP/CLK", showing VIB_DRV_N as a stub, vs sheet 2
+ * block diagram showing the LM8502 driving the vibrator motor).
+ */
+&pm8058_vib {
+	status = "disabled";
+};
+
 &pm8058_gpio {
 	backlight_pwm_gpios: backlight-pwm-state {
 		pinconf {
