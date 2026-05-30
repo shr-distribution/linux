@@ -4428,7 +4428,17 @@
 };
 
 &rot_iommu {
-	status = "okay";
+	/*
+	 * Disabled: the rotator m2m driver uses vb2-dma-contig and the
+	 * DMA-buf imports it receives from VIDC point at physically
+	 * contiguous CMA pages, so the engine reads/writes physical
+	 * addresses directly (legacy webOS msm_rotator used PMEM for the
+	 * same reason). Leaving the IOMMU enabled puts its context bank
+	 * in translation mode and faults on the rotator's physical CMA
+	 * accesses (FAR in whichever CMA region is active). Matches the
+	 * vfe_iommu treatment below.
+	 */
+	status = "disabled";
 };
 
 &ijpeg_iommu {
