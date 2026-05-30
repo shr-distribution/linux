@@ -33,6 +33,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/pm.h>
 #include <linux/workqueue.h>
+#include <linux/input.h>
 
 /* LM8502 Register Map */
 #define LM8502_ENGINE_CNTRL1		0x00
@@ -137,6 +138,23 @@ struct lm8502_data {
 	bool suspended;
 	bool initialized;             /* chip_init has run successfully */
 	struct delayed_work init_work; /* deferred chip_init */
+
+	/*
+	 * Vibrator (haptic) state. On the HP TouchPad the motor is wired
+	 * to the LM8502's internal H-bridge haptic output, NOT to the
+	 * PM8058 PMIC. Pin D10 of the LM8502 is multiplexed between flash
+	 * and vibrator -- D10_CURRENT_CTRL = 0 selects the vibrator path
+	 * (D10_CURRENT_CTRL = 0xFF would select flash). Exposed to
+	 * userspace as an EV_FF / FF_RUMBLE input device.
+	 *
+	 * @vib_invert_direction follows the legacy webOS pdata
+	 * `vib_invert_direction` flag (was 1 on tenderloin); set via the
+	 * "ti,vib-invert-direction" DT property.
+	 */
+	struct input_dev *vib_input;
+	struct work_struct vib_work;
+	u16 vib_magnitude;
+	bool vib_invert_direction;
 };
 
 static bool lm8502_volatile_reg(struct device *dev, unsigned int reg)
@@ -206,6 +224,127 @@ static int lm8502_write_retry(struct lm8502_data *priv, unsigned int reg,
 		ret = regmap_write(priv->regmap, reg, val);
 	}
 	return ret;
+}
+
+/*
+ * Vibrator (haptic) support.
+ *
+ * The HP TouchPad motor is driven by the LM8502's internal H-bridge,
+ * with pin D10 multiplexed between flash and vibrator on this board.
+ * Legacy webOS uses the following I2C sequence:
+ *
+ *   D10_CURRENT_CTRL     = 0           - select vibrator path
+ *                                        (0xFF would select flash)
+ *   HAPTIC_PWM_DUTY_CYCLE = duty(0..255)
+ *   HAPTIC_FEEDBACK_CTRL = 0x02 | dir  - start; bit1 = enable, bit0 = dir
+ *   ...
+ *   HAPTIC_FEEDBACK_CTRL = 0           - stop
+ *
+ * We expose this as an EV_FF / FF_RUMBLE input device. The play_effect
+ * callback only stores the magnitude and schedules a workqueue item;
+ * the actual I2C transactions happen in the work handler (sleeping
+ * context) and gate on priv->initialized so we don't try to talk to
+ * the chip before the deferred chip_init has run.
+ */
+static void lm8502_vib_work(struct work_struct *w)
+{
+	struct lm8502_data *priv = container_of(w, struct lm8502_data,
+						vib_work);
+	u8 duty;
+	u8 dir;
+	int ret;
+
+	mutex_lock(&priv->lock);
+
+	if (!priv->initialized || priv->suspended)
+		goto out;
+
+	if (priv->vib_magnitude) {
+		/*
+		 * Select vibrator on the shared D10 pin (mainline equivalent
+		 * of the legacy select_vibrator() board callback).
+		 */
+		ret = lm8502_write_retry(priv, LM8502_D10_CURRENT_CTRL, 0);
+		if (ret)
+			goto out;
+
+		/* Scale FF magnitude (0..0xFFFF) to PWM duty (0..255). */
+		duty = priv->vib_magnitude >> 8;
+		ret = lm8502_write_retry(priv, LM8502_HAPTIC_PWM_DUTY_CYCLE,
+					 duty);
+		if (ret)
+			goto out;
+
+		/*
+		 * HAPTIC_FEEDBACK_CTRL: bit 1 = enable, bit 0 = direction.
+		 * The board-side invert flag mirrors the legacy webOS pdata
+		 * "vib_invert_direction" used on tenderloin (= 1).
+		 */
+		dir = priv->vib_invert_direction ? 1 : 0;
+		ret = lm8502_write_retry(priv, LM8502_HAPTIC_FEEDBACK_CTRL,
+					 0x02 | dir);
+	} else {
+		ret = lm8502_write_retry(priv, LM8502_HAPTIC_FEEDBACK_CTRL,
+					 0);
+	}
+
+out:
+	mutex_unlock(&priv->lock);
+}
+
+static int lm8502_vib_play_effect(struct input_dev *dev, void *data,
+				  struct ff_effect *effect)
+{
+	struct lm8502_data *priv = input_get_drvdata(dev);
+	u16 mag = effect->u.rumble.strong_magnitude;
+
+	if (!mag)
+		mag = effect->u.rumble.weak_magnitude;
+
+	priv->vib_magnitude = mag;
+	schedule_work(&priv->vib_work);
+
+	return 0;
+}
+
+static int lm8502_vib_init(struct lm8502_data *priv)
+{
+	struct device *dev = &priv->client->dev;
+	struct input_dev *input;
+	int ret;
+
+	priv->vib_invert_direction =
+		device_property_read_bool(dev, "ti,vib-invert-direction");
+
+	INIT_WORK(&priv->vib_work, lm8502_vib_work);
+
+	input = devm_input_allocate_device(dev);
+	if (!input)
+		return -ENOMEM;
+
+	priv->vib_input = input;
+	input_set_drvdata(input, priv);
+
+	input->name = "lm8502_haptic";
+	input->id.bustype = BUS_I2C;
+	input->dev.parent = dev;
+
+	input_set_capability(input, EV_FF, FF_RUMBLE);
+
+	ret = input_ff_create_memless(input, NULL, lm8502_vib_play_effect);
+	if (ret) {
+		dev_err(dev, "FF memless create failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = input_register_device(input);
+	if (ret) {
+		dev_err(dev, "Failed to register vibrator input device: %d\n",
+			ret);
+		return ret;
+	}
+
+	return 0;
 }
 
 static int lm8502_chip_init(struct lm8502_data *priv)
@@ -533,10 +672,20 @@ static int lm8502_probe(struct i2c_client *client)
 		goto err_disable_vcc;
 	}
 
+	/*
+	 * Register the EV_FF / FF_RUMBLE input device for the vibrator
+	 * (haptic) output. The actual chip I2C writes happen lazily in
+	 * the work handler and gate on priv->initialized, so this is
+	 * safe to set up before the deferred chip_init has run.
+	 */
+	ret = lm8502_vib_init(priv);
+	if (ret)
+		goto err_disable_vcc;
+
 	/* Schedule deferred chip_init ~3 s after probe. */
 	schedule_delayed_work(&priv->init_work, msecs_to_jiffies(3000));
 
-	dev_info(dev, "LM8502 LED controller registered with %d LEDs (chip_init deferred 3 s)\n",
+	dev_info(dev, "LM8502 LED controller registered with %d LEDs + haptic (chip_init deferred 3 s)\n",
 		 priv->num_leds);
 
 	return 0;
@@ -552,6 +701,15 @@ static void lm8502_remove(struct i2c_client *client)
 	struct lm8502_data *priv = i2c_get_clientdata(client);
 
 	cancel_delayed_work_sync(&priv->init_work);
+	cancel_work_sync(&priv->vib_work);
+
+	/*
+	 * Best-effort: make sure the vibrator output is off before tearing
+	 * down. Only meaningful once chip_init has run -- if we never got
+	 * that far, the chip wasn't accepting writes anyway.
+	 */
+	if (priv->initialized)
+		regmap_write(priv->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
 
 	/* Disable the chip */
 	if (priv->enable_gpio)
@@ -572,10 +730,16 @@ static int lm8502_suspend(struct device *dev)
 	if (priv->suspended)
 		return 0;
 
+	/* Cancel any pending haptic work so we don't race with chip-off. */
+	cancel_work_sync(&priv->vib_work);
+
 	/* Turn off all LEDs */
 	mutex_lock(&priv->lock);
 	for (i = 0; i < priv->num_leds; i++)
 		regmap_write(priv->regmap, priv->leds[i].current_reg, 0);
+
+	/* Stop the vibrator output if it was running. */
+	regmap_write(priv->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
 
 	/* Disable the chip */
 	regmap_update_bits(priv->regmap, LM8502_ENGINE_CNTRL1,

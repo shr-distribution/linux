@@ -3666,6 +3666,15 @@
 		pinctrl-0 = <&lm8502_pins>;
 
 		/*
+		 * Vibrator motor is wired to the LM8502's internal H-bridge
+		 * haptic output (pin D10 shared with flash; driver writes
+		 * D10_CURRENT_CTRL = 0 to select the vibrator path on
+		 * each FF_RUMBLE start). Direction inversion matches the
+		 * legacy webOS board pdata `vib_invert_direction = 1`.
+		 */
+		ti,vib-invert-direction;
+
+		/*
 		 * HP TouchPad navigation bar LEDs.
 		 * Uses D1 (reg 0) and D2 (reg 1) outputs on LM8502.
 		 * Confirmed via webOS debugfs register dump.
