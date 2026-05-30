@@ -10,19 +10,26 @@ maintainers:
   - Herman van Hazendonk <github.com@herrie.org>
 
 description: |
-  PM8901 is a secondary PMIC paired with PM8058 on MSM8660/APQ8060
-  platforms. It exposes an over-temperature alarm block at SSBI offset
-  0x23 (CTRL) / 0x24 (PWM) with four selectable thresholds and three
-  escalating stages. Unlike PM8058, there is no raw die-temperature
-  ADC channel — the driver decodes the stage + threshold pair into a
-  representative millicelsius value.
+  PM8901 is a secondary PMIC paired with PM8058 on MSM8x60 family
+  (MSM8260/MSM8660/APQ8060) platforms. It exposes an over-temperature
+  alarm block at SSBI offset 0x23 (CTRL) with four selectable
+  thresholds and three escalating stages.
 
-  Two PMIC-internal interrupts are exposed: a stage-transition alarm
-  (TEMP_ALARM, PM8901 IRQ block 6 bit 4 == 52) and a hi-temp alarm
-  (TEMP_HI_ALARM, block 6 bit 5 == 53).
+  Unlike PM8058, there is no raw die-temperature ADC channel - the
+  driver decodes the stage + threshold pair into a representative
+  millicelsius value reported via the thermal-of framework.
 
-  The driver registers a thermal-of sensor; board DTs declare trip
-  points and a critical-trip action against it.
+  Two PMIC-internal interrupts are exposed:
+
+    - TEMP_ALARM    (PM8901 IRQ block 6 bit 4 == hwirq 52): asserted
+                    on every stage transition;
+    - TEMP_HI_ALARM (PM8901 IRQ block 6 bit 5 == hwirq 53): asserted
+                    when the part enters the high-temperature stage.
+
+  Both line up on the parent qcom,pm8901 interrupt-controller.
+
+allOf:
+  - $ref: /schemas/thermal/thermal-sensor.yaml#
 
 properties:
   compatible:
@@ -50,7 +57,6 @@ required:
   - reg
   - interrupts
   - interrupt-names
-  - "#thermal-sensor-cells"
 
 additionalProperties: false
 
@@ -59,14 +65,20 @@ examples:
     #include <dt-bindings/interrupt-controller/irq.h>
 
     ssbi {
-      pmic {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      pmic@0 {
         compatible = "qcom,pm8901";
-        #interrupt-cells = <2>;
-        interrupt-controller;
+        reg = <0>;
         #address-cells = <1>;
         #size-cells = <0>;
+        #interrupt-cells = <2>;
+        interrupt-controller;
+        interrupt-parent = <&tlmm>;
+        interrupts = <31 IRQ_TYPE_EDGE_RISING>;
 
-        pm8901_temp: temp-alarm@23 {
+        temp-alarm@23 {
           compatible = "qcom,pm8901-temp-alarm";
           reg = <0x23>;
           interrupts = <52 IRQ_TYPE_EDGE_RISING>,
