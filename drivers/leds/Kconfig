@@ -285,14 +285,20 @@ config LEDS_LM3692X
 	  of white LED string drivers used for backlighting.
 
 config LEDS_LM8502
-	tristate "LED support for TI LM8502"
-	depends on LEDS_CLASS && I2C && OF
+	tristate "LED + haptic support for TI LM8502"
+	depends on LEDS_CLASS && I2C && OF && INPUT
 	select REGMAP_I2C
+	select INPUT_FF_MEMLESS
 	help
 	  This option enables support for the TI LM8502 LED controller.
 	  The LM8502 is a combo LED controller with 10 LED outputs,
 	  programmable sequencing engines, haptic feedback controller,
 	  and flash/torch modes. It is used in the HP TouchPad tablet.
+
+	  The haptic output is exposed as an EV_FF / FF_RUMBLE input
+	  device (e.g. /dev/input/eventN named "lm8502_haptic") so
+	  userspace can drive the vibrator motor via the standard
+	  Linux force-feedback API.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called leds-lm8502.
