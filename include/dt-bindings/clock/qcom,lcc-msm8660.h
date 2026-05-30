@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /*
  * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  */
@@ -7,9 +7,9 @@
 #define _DT_BINDINGS_CLK_LCC_MSM8660_H
 
 /*
- * MSM8660/APQ8060 LPASS Clock Controller (LCC) clock IDs.
- * These are compatible with MSM8960 LCC as they share the same
- * audio subsystem clock architecture.
+ * MSM8x60 family (MSM8260/MSM8660/APQ8060) LPASS Clock Controller (LCC)
+ * clock IDs. These are compatible with MSM8960 LCC as MSM8x60 and
+ * MSM8960 share the same audio subsystem clock architecture.
  */
 
 #define PLL4				0
