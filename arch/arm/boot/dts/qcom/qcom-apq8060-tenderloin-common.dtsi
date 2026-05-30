@@ -1652,28 +1652,26 @@
 	};
 
 	/*
-	 * Vibrator - HP TouchPad uses GPIO 79 to enable the vibrator motor.
+	 * Vibrator: the HP TouchPad motor is driven by the PM8058 PMIC
+	 * vibrator block (register 0x4A), enumerated as vibrator@4a under
+	 * pm8058.dtsi and matched by the mainline pm8xxx-vibrator driver
+	 * (drivers/input/misc/pm8xxx-vibrator.c). Legacy webOS used the
+	 * same path via drivers/misc/pmic8058-vibrator.c.
 	 *
-	 * Legacy webOS kernel used PM8058 PMIC vibrator (pm8058-vib) with:
-	 *   - level_mV = 3000 (3.0V drive voltage)
-	 *   - max_timeout_ms = 15000
-	 *   - initial_vibrate_ms = 500
+	 * An earlier mainline DT speculatively added a `gpio-vibrator`
+	 * node here with enable-gpios = <&tlmm 79> and vcc-supply =
+	 * <&pm8058_l5>. On-device testing (2026-05-30) confirmed that
+	 * GPIO 79 does NOT toggle the motor and L5 is not the vibrator
+	 * supply rail; the gpio-vibrator driver bound cleanly and the
+	 * regulator/GPIO state changed under FF_RUMBLE, but the motor
+	 * stayed silent. The PM8058 vibrator@4a path is the correct one
+	 * and that node is already present in pm8058.dtsi.
 	 *
-	 * Note: PM8058 PMIC vibrator is also available via pm8058.dtsi
-	 * (vibrator@4a with compatible "qcom,pm8058-vib") and provides
-	 * hardware-controlled voltage levels (1200-3100mV in 100mV steps).
-	 * The GPIO-based approach here uses regulator pm8058_l5 for power.
-	 *
-	 * The LM8502 LED controller also has vibrator support parameters
-	 * in legacy kernel (vib_default_duty_cycle, vib_invert_direction)
-	 * but the actual vibrator motor appears to use GPIO 79.
+	 * Note: pm8xxx-vibrator also writes the level register correctly
+	 * (0x00 -> 0xE0 measured live) but the motor does not yet
+	 * physically move. That is a driver-level bug to be tracked
+	 * separately, not a DT problem.
 	 */
-	vibrator {
-		compatible = "gpio-vibrator";
-		enable-gpios = <&tlmm 79 GPIO_ACTIVE_HIGH>;
-		vcc-supply = <&pm8058_l5>;
-	};
-
 	/*
 	 * Physical buttons, matching the legacy board-tenderloin.c
 	 * board_gpio_keys_buttons[]: Volume Up/Down and the center
