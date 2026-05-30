@@ -208,7 +208,6 @@ struct msm8660_icc_node {
 	u16 links[MSM8660_ICC_MAX_LINKS];
 	u16 num_links;
 	u16 buswidth;
-	u64 rate;
 	s8 mas_port;
 	s8 slv_port;
 	u8 mas_tier;
@@ -226,6 +225,9 @@ struct msm8660_icc_node {
  * @ntieredslaves: number of tiered slaves (ARB rows)
  * @default_tiered_slave: 1-based index of default tiered slave for masters
  * @rpm_buf_size: number of u32 words for RPM write
+ * @bus_width: representative fabric bus width in bytes, used as the
+ *             divisor for translating aggregate bytes/sec into a single
+ *             clock rate that drives the whole fabric
  */
 struct msm8660_icc_desc {
 	struct msm8660_icc_node * const *nodes;
@@ -238,6 +240,7 @@ struct msm8660_icc_desc {
 	u8 ntieredslaves;
 	u8 default_tiered_slave;
 	u8 rpm_buf_size;
+	u8 bus_width;
 };
 
 /**
@@ -250,6 +253,10 @@ struct msm8660_icc_desc {
  * @arb: pre-allocated arbitration array (nmasters * ntieredslaves u16 entries)
  * @bwsum: pre-allocated bandwidth sum array (nslaves u16 entries)
  * @rpm_buf: pre-allocated RPM write buffer (rpm_buf_size u32 entries)
+ * @rate: last clock rate applied to the fabric bus_clks, used as the
+ *        single source of truth for whether the rate actually needs to
+ *        be reprogrammed (per-node caching would desync when different
+ *        masters update at different times)
  */
 struct msm8660_icc_provider {
 	struct icc_provider provider;
@@ -260,6 +267,7 @@ struct msm8660_icc_provider {
 	u16 *arb;
 	u16 *bwsum;
 	u32 *rpm_buf;
+	u32 rate;
 };
 
 /*
@@ -336,6 +344,7 @@ static const struct msm8660_icc_desc msm8660_afab = {
 	.ntieredslaves = 2,
 	.default_tiered_slave = 1,	/* EBI_CH0 */
 	.rpm_buf_size = 6,
+	.bus_width = 8,			/* 64-bit APPSS fabric datapath */
 };
 
 /*
@@ -436,6 +445,7 @@ static const struct msm8660_icc_desc msm8660_sfab = {
 	.ntieredslaves = 2,
 	.default_tiered_slave = 1,	/* APPSS gateway */
 	.rpm_buf_size = 22,
+	.bus_width = 8,			/* 64-bit System fabric datapath */
 };
 
 /*
@@ -495,16 +505,7 @@ DEFINE_QNODE(mmfab_mas_hd_codec_port1, MSM8660_MMFAB_MAS_HD_CODEC_PORT1, 16,
  * ARB_TIER1 keeps AMPSS->SMI traffic high-priority within MMFAB so
  * CPU mmap reads/writes to SMI BOs don't get starved by MDP scanout.
  */
-/*
- * buswidth = 16: matches HTC and Samsung MSM8660 vendor msm_bus_board_8660.c
- * (both at the MMSS-context MSM_BUS_FAB_APPSS entry, .buswidth = 16). The
- * downstream slaves on this gateway -- mmfab_slv_smi (16) and the AMPSS L2
- * inbound -- are both 16-byte paths, so the gateway itself must be 16-byte
- * to avoid halving the computed bandwidth on CPU<->SMI traffic. webOS
- * originally used 8 here, but the later HTC/Samsung trees corrected it to
- * 16 once concurrent CPU + MDP scanout exposed the underrun.
- */
-DEFINE_QNODE(mmfab_to_appss, MSM8660_MMFAB_TO_APPSS, 16, 2, 1, ARB_TIER1,
+DEFINE_QNODE(mmfab_to_appss, MSM8660_MMFAB_TO_APPSS, 8, 11, 1, ARB_TIER1,
 	     MSM8660_AFAB_TO_MMSS,
 	     MSM8660_MMFAB_SLV_SMI,
 	     MSM8660_MMFAB_SLV_MM_IMEM);
@@ -541,6 +542,7 @@ static const struct msm8660_icc_desc msm8660_mmfab = {
 	.ntieredslaves = 3,
 	.default_tiered_slave = 2,	/* APPSS gateway */
 	.rpm_buf_size = 23,
+	.bus_width = 16,		/* 128-bit Multimedia fabric datapath */
 };
 
 /*
@@ -608,6 +610,7 @@ static const struct msm8660_icc_desc msm8660_dfab = {
 	.bus_clks = msm8660_dfab_clocks,
 	.num_clks = ARRAY_SIZE(msm8660_dfab_clocks),
 	.rpm_resource = -1,		/* No RPM ARB for DFAB */
+	.bus_width = 8,			/* 64-bit Daytona fabric datapath */
 };
 
 /*
@@ -682,7 +685,6 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 		/* Use max of avg and peak bandwidth, convert to 128KB units */
 		bw_bytes = max(icc_units_to_bps(n->avg_bw),
 			       icc_units_to_bps(n->peak_bw));
-		do_div(bw_bytes, 8);	/* bits -> bytes */
 		bw_128k = (u16)min_t(u64, bw_bytes >> 17, ARB_BWMASK);
 
 		/* Set arb entry for masters at their default tiered slave */
@@ -733,13 +735,21 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 	sum_bw = icc_units_to_bps(agg_avg);
 	max_peak_bw = icc_units_to_bps(agg_peak);
 
+	/*
+	 * Divide by the *fabric* bus width, not src_qn->buswidth: every
+	 * master on a given fabric shares the same hardware clock, so the
+	 * required clock rate is a single function of total bandwidth and
+	 * the fabric's bus width. Picking the bus width of whichever node
+	 * happened to trigger this update would make the rate oscillate
+	 * depending on which master called icc_set_bw() last.
+	 */
 	rate = max(sum_bw, max_peak_bw);
-	do_div(rate, src_qn->buswidth);
+	do_div(rate, qp->desc->bus_width);
 	/* Apply minimum floor to prevent bus starvation */
 	rate = max_t(u64, rate, MSM8660_FABRIC_MIN_RATE);
 	rate = min_t(u32, rate, INT_MAX);
 
-	if (src_qn->rate != rate) {
+	if (qp->rate != rate) {
 		for (i = 0; i < qp->num_clks; i++) {
 			ret = clk_set_rate(qp->bus_clks[i].clk, rate);
 			if (ret) {
@@ -749,7 +759,7 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 				ret = 0;
 			}
 		}
-		src_qn->rate = rate;
+		qp->rate = rate;
 	}
 
 	/* Send RPM fabric arbitration if available */
@@ -766,10 +776,28 @@ static int msm8660_get_bw(struct icc_node *node, u32 *avg, u32 *peak)
 	return 0;
 }
 
+/*
+ * Look up the RPM that owns fabric arbitration writes.
+ *
+ * Returns NULL if the DT does not have a "qcom,rpm" phandle (in which
+ * case the caller silently drops RPM ARB and runs the fabric purely
+ * via clk_set_rate).
+ *
+ * Returns ERR_PTR(-EPROBE_DEFER) if the RPM device exists in DT but
+ * its driver has not finished probing yet, or if device_link_add()
+ * fails. The caller is expected to propagate this so the interconnect
+ * driver gets retried once the RPM is ready.
+ *
+ * On success returns the qcom_rpm handle and pins the RPM device
+ * lifetime to ours via a consumer-supplier device link, so the
+ * devres-allocated qcom_rpm cannot be freed while we still hold a
+ * pointer to it.
+ */
 static struct qcom_rpm *msm8660_get_rpm(struct device *dev)
 {
 	struct device_node *rpm_np;
 	struct platform_device *rpm_pdev;
+	struct device_link *link;
 	struct qcom_rpm *rpm;
 
 	rpm_np = of_parse_phandle(dev->of_node, "qcom,rpm", 0);
@@ -781,15 +809,29 @@ static struct qcom_rpm *msm8660_get_rpm(struct device *dev)
 	rpm_pdev = of_find_device_by_node(rpm_np);
 	of_node_put(rpm_np);
 	if (!rpm_pdev) {
-		dev_warn(dev, "RPM device not found, ARB disabled\n");
-		return NULL;
+		dev_dbg(dev, "RPM device not found yet, deferring probe\n");
+		return ERR_PTR(-EPROBE_DEFER);
 	}
 
 	rpm = dev_get_drvdata(&rpm_pdev->dev);
-	put_device(&rpm_pdev->dev);
 	if (!rpm) {
-		dev_warn(dev, "RPM not ready, ARB disabled\n");
-		return NULL;
+		put_device(&rpm_pdev->dev);
+		dev_dbg(dev, "RPM not ready, deferring probe\n");
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+
+	/*
+	 * Keep the RPM device alive for as long as we are bound; without
+	 * a device link, the devres-managed qcom_rpm could be released
+	 * out from under us if the RPM driver were unbound at runtime,
+	 * leaving a dangling pointer in qp->rpm.
+	 */
+	link = device_link_add(dev, &rpm_pdev->dev,
+			       DL_FLAG_AUTOREMOVE_CONSUMER);
+	put_device(&rpm_pdev->dev);
+	if (!link) {
+		dev_warn(dev, "failed to add device link to RPM, deferring\n");
+		return ERR_PTR(-EPROBE_DEFER);
 	}
 
 	return rpm;
@@ -834,11 +876,19 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 
 	/*
 	 * MSM8660 fabric clocks are managed by RPM firmware and may not be
-	 * available in mainline Linux yet. Make them optional.
+	 * available in mainline Linux yet. Once the clock provider exists,
+	 * we want to honour it; until then we run without per-fabric clock
+	 * scaling. The crucial part is that -EPROBE_DEFER means "the
+	 * provider exists but hasn't probed yet" and MUST be propagated so
+	 * we get retried; only other errors (genuine -ENOENT, etc.) get
+	 * downgraded to "no clocks, continue".
 	 */
 	ret = devm_clk_bulk_get_optional(dev, qp->num_clks, qp->bus_clks);
+	if (ret == -EPROBE_DEFER)
+		return ret;
 	if (ret) {
-		dev_warn(dev, "Failed to get bus clocks: %d (continuing anyway)\n", ret);
+		dev_warn(dev, "Failed to get bus clocks: %d (continuing without clock scaling)\n",
+			 ret);
 		qp->num_clks = 0;
 	}
 
@@ -854,6 +904,8 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	qp->desc = desc;
 	if (desc->rpm_resource >= 0) {
 		qp->rpm = msm8660_get_rpm(dev);
+		if (IS_ERR(qp->rpm))
+			return PTR_ERR(qp->rpm);
 		if (qp->rpm) {
 			int arb_size = desc->nmasters * desc->ntieredslaves;
 
@@ -1013,5 +1065,5 @@ static void __exit msm8660_noc_driver_exit(void)
 }
 module_exit(msm8660_noc_driver_exit);
 
-MODULE_DESCRIPTION("Qualcomm MSM8660/APQ8060 interconnect driver");
+MODULE_DESCRIPTION("Qualcomm MSM8x60 interconnect driver");
 MODULE_LICENSE("GPL v2");
