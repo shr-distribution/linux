@@ -369,6 +369,21 @@ config INPUT_GPIO_VIBRA
 	  To compile this driver as a module, choose M here: the module will be
 	  called gpio-vibra.
 
+config INPUT_LM8502_HAPTIC
+	tristate "TI LM8502 haptic (vibrator) support"
+	depends on MFD_LM8502
+	select INPUT_FF_MEMLESS
+	help
+	  Say Y here to expose the TI LM8502's internal H-bridge haptic
+	  output as a standard EV_FF / FF_RUMBLE input device.
+
+	  The MFD core (MFD_LM8502) handles the chip-wide I2C setup; this
+	  driver only owns the haptic-specific register sequence and FF
+	  interface. Used on the HP TouchPad to drive the vibrator motor.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called lm8502-haptic.
+
 config INPUT_COBALT_BTNS
 	tristate "Cobalt button interface"
 	depends on MIPS_COBALT

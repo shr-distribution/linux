@@ -3649,11 +3649,9 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&gsbi8_i2c_pins>;
 
-	lm8502: led-controller@33 {
+	lm8502: lm8502@33 {
 		compatible = "ti,lm8502";
 		reg = <0x33>;
-		#address-cells = <1>;
-		#size-cells = <0>;
 		status = "okay";
 
 		vcc-supply = <&pm8058_l16>;
@@ -3666,32 +3664,41 @@
 		pinctrl-0 = <&lm8502_pins>;
 
 		/*
+		 * HP TouchPad navigation bar LEDs.
+		 * Uses D1 (reg 0) and D2 (reg 1) outputs on LM8502.
+		 * Confirmed via webOS debugfs register dump.
+		 */
+		leds {
+			compatible = "ti,lm8502-leds";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led@0 {
+				reg = <0>;
+				label = "lm8502:white:navi_left";
+				color = <LED_COLOR_ID_WHITE>;
+				function = LED_FUNCTION_INDICATOR;
+				led-max-microamp = <9000>;
+			};
+			led@1 {
+				reg = <1>;
+				label = "lm8502:white:navi_right";
+				color = <LED_COLOR_ID_WHITE>;
+				function = LED_FUNCTION_INDICATOR;
+				led-max-microamp = <9000>;
+			};
+		};
+
+		/*
 		 * Vibrator motor is wired to the LM8502's internal H-bridge
 		 * haptic output (pin D10 shared with flash; driver writes
 		 * D10_CURRENT_CTRL = 0 to select the vibrator path on
 		 * each FF_RUMBLE start). Direction inversion matches the
 		 * legacy webOS board pdata `vib_invert_direction = 1`.
 		 */
-		ti,vib-invert-direction;
-
-		/*
-		 * HP TouchPad navigation bar LEDs.
-		 * Uses D1 (reg 0) and D2 (reg 1) outputs on LM8502.
-		 * Confirmed via webOS debugfs register dump.
-		 */
-		led@0 {
-			reg = <0>;
-			label = "lm8502:white:navi_left";
-			color = <LED_COLOR_ID_WHITE>;
-			function = LED_FUNCTION_INDICATOR;
-			led-max-microamp = <9000>;
-		};
-		led@1 {
-			reg = <1>;
-			label = "lm8502:white:navi_right";
-			color = <LED_COLOR_ID_WHITE>;
-			function = LED_FUNCTION_INDICATOR;
-			led-max-microamp = <9000>;
+		haptic {
+			compatible = "ti,lm8502-haptic";
+			ti,invert-direction;
 		};
 	};
 

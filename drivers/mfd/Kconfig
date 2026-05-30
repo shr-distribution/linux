@@ -2027,6 +2027,24 @@ config MFD_LM3533
 	  additional drivers must be enabled in order to use the LED,
 	  backlight or ambient-light-sensor functionality of the device.
 
+config MFD_LM8502
+	tristate "TI LM8502 combo LED + haptic + flash controller"
+	depends on I2C && OF
+	select MFD_CORE
+	select REGMAP_I2C
+	help
+	  Say yes here to enable support for the TI LM8502 combo
+	  LED / haptic feedback / camera-flash controller. The chip is
+	  used in the HP TouchPad tablet (Topaz and Opal).
+
+	  This driver provides the chip-wide MFD core (i2c probe, regmap,
+	  regulator High Power Mode handshake, enable GPIO, deferred reset
+	  and configuration sequence, and PM suspend/resume). Per-subsystem
+	  drivers must be enabled separately:
+
+	    LEDS_LM8502  - LED-class outputs D1..D10
+	    INPUT_LM8502_HAPTIC - FF_RUMBLE vibrator on the internal H-bridge
+
 config MFD_TIMBERDALE
 	tristate "Timberdale FPGA"
 	select MFD_CORE
