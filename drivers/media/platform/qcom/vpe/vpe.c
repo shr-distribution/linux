@@ -882,4 +882,4 @@ module_platform_driver(vpe_driver);
 
 MODULE_DESCRIPTION("Qualcomm MSM8660 Video Processing Engine driver");
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Herrie <herrie.org>");
+MODULE_AUTHOR("Herman van Hazendonk <github.com@herrie.org>");

@@ -1211,4 +1211,4 @@ module_platform_driver(gemini_driver);
 
 MODULE_DESCRIPTION("Qualcomm MSM8660 Gemini JPEG Encoder driver");
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Herrie <herrie.org>");
+MODULE_AUTHOR("Herman van Hazendonk <github.com@herrie.org>");
