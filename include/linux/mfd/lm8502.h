@@ -65,7 +65,7 @@
 
 /* ENGINE_CNTRL2 — value applied at chip_init: charge-pump CP_MODE = 1x.
  * Bit 5 selects the boost-converter compare mode; the value the legacy
- * webOS driver writes matches the LP55xx-family ENGINE_CNTRL2 "all
+ * legacy vendor driver writes matches the LP55xx-family ENGINE_CNTRL2 "all
  * engines in HOLD" default plus CP_MODE_1X.
  */
 #define LM8502_ENGINE_CNTRL2_INIT	0x20

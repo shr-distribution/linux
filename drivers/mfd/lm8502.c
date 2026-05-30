@@ -49,6 +49,20 @@
 /* Time the chip needs after RESET=0xFF before responding again. */
 #define LM8502_RESET_SETTLE_MS		50
 
+/*
+ * After raising enable_gpio the chip's internal reset deasserts and
+ * the I2C front-end becomes responsive; datasheet calls out ~1 ms.
+ */
+#define LM8502_ENABLE_SETTLE_US		1000
+
+/*
+ * regulator_set_load() on RPM-managed PMIC LDOs (PM8058_L16) only
+ * sends an IPC; the rail change is asynchronous. 5 ms is the worst-
+ * case RPM commit window measured on MSM8x60 silicon -- no polling
+ * API exposes commit completion.
+ */
+#define LM8502_RPM_HPM_SETTLE_US	5000
+
 /* Driver-private wrapper around the shared struct lm8502. */
 struct lm8502_core {
 	struct lm8502 chip;		/* shared with children via parent drvdata */
@@ -121,7 +135,7 @@ static int lm8502_chip_init(struct lm8502_core *core)
 {
 	struct lm8502 *chip = &core->chip;
 	struct device *dev = chip->dev;
-	int ret;
+	int ret, i;
 
 	/*
 	 * Software reset. Writes through regmap; the chip may briefly
@@ -144,6 +158,21 @@ static int lm8502_chip_init(struct lm8502_core *core)
 	ret = regmap_write(chip->regmap, LM8502_MISC, LM8502_MISC_INIT);
 	if (ret)
 		return dev_err_probe(dev, ret, "MISC write failed\n");
+
+	/*
+	 * Program every D<n>_CONTROL register so the LED child can issue
+	 * brightness writes to D<n>_CURRENT_CTRL immediately. Without
+	 * this the channels stay at the post-reset default and ignore
+	 * current writes until the user manually configures them.
+	 */
+	for (i = 0; i < LM8502_MAX_LEDS; i++) {
+		ret = regmap_write(chip->regmap, LM8502_D1_CONTROL + i,
+				   LM8502_LED_CONTROL_INIT);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "D%d_CONTROL write failed\n",
+					     i + 1);
+	}
 
 	return 0;
 }
@@ -203,16 +232,13 @@ static int lm8502_i2c_probe(struct i2c_client *client)
 		 * on platforms with simpler regulator topology.
 		 */
 		ret = regulator_set_load(core->vcc, 100000);
-		if (ret)
-			dev_warn(dev, "regulator_set_load(100mA) failed: %d\n",
-				 ret);
+		if (ret) {
+			dev_err_probe(dev, ret,
+				      "regulator_set_load(100mA) failed\n");
+			goto err_disable_vcc;
+		}
 
-		/*
-		 * Give RPM time to actually switch the rail to HPM before we
-		 * raise the chip-enable pin. The set_load call only sends an
-		 * IPC; the rail change is asynchronous.
-		 */
-		fsleep(5000);
+		fsleep(LM8502_RPM_HPM_SETTLE_US);
 	}
 
 	core->enable_gpio = devm_gpiod_get_optional(dev, "enable",
@@ -224,7 +250,7 @@ static int lm8502_i2c_probe(struct i2c_client *client)
 
 	if (core->enable_gpio) {
 		gpiod_set_value_cansleep(core->enable_gpio, 1);
-		fsleep(1000);		/* let the chip settle */
+		fsleep(LM8502_ENABLE_SETTLE_US);
 	}
 
 	dev_set_drvdata(dev, chip);
@@ -277,6 +303,7 @@ static int lm8502_suspend(struct device *dev)
 {
 	struct lm8502 *chip = dev_get_drvdata(dev);
 	struct lm8502_core *core = container_of(chip, struct lm8502_core, chip);
+	int ret;
 
 	mutex_lock(&chip->lock);
 	if (chip->suspended) {
@@ -285,25 +312,48 @@ static int lm8502_suspend(struct device *dev)
 	}
 
 	/* Stop the haptic output in case a child left it running. */
-	regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
+	ret = regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
+	if (ret) {
+		dev_err(dev, "suspend: HAPTIC_FEEDBACK_CTRL write failed: %d\n",
+			ret);
+		goto unlock;
+	}
 
 	/* Drop CHIP_EN to power-gate the analog side. */
-	regmap_update_bits(chip->regmap, LM8502_ENGINE_CNTRL1,
-			   LM8502_CHIP_EN, 0);
+	ret = regmap_update_bits(chip->regmap, LM8502_ENGINE_CNTRL1,
+				 LM8502_CHIP_EN, 0);
+	if (ret) {
+		dev_err(dev, "suspend: CHIP_EN clear failed: %d\n", ret);
+		goto unlock;
+	}
 
 	if (core->enable_gpio)
 		gpiod_set_value_cansleep(core->enable_gpio, 0);
+
+	/*
+	 * Drop the regulator to Low Power Mode now that the chip is
+	 * off; HPM is only needed while the analog stage draws ~100 mA,
+	 * and leaving it set wastes power across system suspend on
+	 * RPM-managed PMIC LDOs. Restored in resume.
+	 */
+	if (core->vcc)
+		regulator_set_load(core->vcc, 0);
 
 	chip->suspended = true;
 	mutex_unlock(&chip->lock);
 
 	return 0;
+
+unlock:
+	mutex_unlock(&chip->lock);
+	return ret;
 }
 
 static int lm8502_resume(struct device *dev)
 {
 	struct lm8502 *chip = dev_get_drvdata(dev);
 	struct lm8502_core *core = container_of(chip, struct lm8502_core, chip);
+	int ret;
 
 	mutex_lock(&chip->lock);
 	if (!chip->suspended) {
@@ -311,18 +361,58 @@ static int lm8502_resume(struct device *dev)
 		return 0;
 	}
 
-	if (core->enable_gpio) {
-		gpiod_set_value_cansleep(core->enable_gpio, 1);
-		fsleep(1000);
+	/*
+	 * Restore High Power Mode so the regulator can supply the
+	 * ~100 mA the analog stage draws under load. Symmetric with the
+	 * drop in suspend; safe no-op on consumers without
+	 * regulator-allow-set-load.
+	 */
+	if (core->vcc) {
+		ret = regulator_set_load(core->vcc, 100000);
+		if (ret) {
+			dev_err(dev, "resume: regulator_set_load(HPM) failed: %d\n",
+				ret);
+			goto unlock;
+		}
+		fsleep(LM8502_RPM_HPM_SETTLE_US);
 	}
 
-	regmap_update_bits(chip->regmap, LM8502_ENGINE_CNTRL1,
-			   LM8502_CHIP_EN, LM8502_CHIP_EN);
+	if (core->enable_gpio) {
+		gpiod_set_value_cansleep(core->enable_gpio, 1);
+		fsleep(LM8502_ENABLE_SETTLE_US);
+	}
+
+	/*
+	 * Suspend de-asserts the enable_gpio, which on most boards power-
+	 * gates the chip and clears its register state. Re-run the full
+	 * init sequence so ENGINE_CNTRL1/2, MISC and the per-channel
+	 * D<n>_CONTROL registers are restored before any child driver
+	 * touches the chip. lm8502_chip_init() also sets CHIP_EN as a
+	 * side-effect of programming ENGINE_CNTRL1.
+	 */
+	ret = lm8502_chip_init(core);
+	if (ret)
+		goto err_disable;
 
 	chip->suspended = false;
 	mutex_unlock(&chip->lock);
 
 	return 0;
+
+err_disable:
+	/*
+	 * chip_init failed; we already raised enable_gpio and committed
+	 * HPM. Unwind in reverse so the rail is back in a known-off
+	 * state -- otherwise the chip would sit half-initialised with
+	 * the regulator stuck in HPM until the next system suspend.
+	 */
+	if (core->enable_gpio)
+		gpiod_set_value_cansleep(core->enable_gpio, 0);
+	if (core->vcc)
+		regulator_set_load(core->vcc, 0);
+unlock:
+	mutex_unlock(&chip->lock);
+	return ret;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(lm8502_pm_ops, lm8502_suspend, lm8502_resume);

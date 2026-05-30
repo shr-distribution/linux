@@ -26770,6 +26770,15 @@ S:	Maintained
 F:	sound/soc/codecs/isabelle*
 F:	sound/soc/codecs/lm49453*
 
+TI LM8502 MFD DRIVER (LED + HAPTIC)
+M:	Herman van Hazendonk <github.com@herrie.org>
+S:	Maintained
+F:	Documentation/devicetree/bindings/mfd/ti,lm8502.yaml
+F:	drivers/input/misc/lm8502-haptic.c
+F:	drivers/leds/leds-lm8502.c
+F:	drivers/mfd/lm8502.c
+F:	include/linux/mfd/lm8502.h
+
 TI LMP92064 ADC DRIVER
 M:	Leonard Göhrs <l.goehrs@pengutronix.de>
 R:	kernel@pengutronix.de
