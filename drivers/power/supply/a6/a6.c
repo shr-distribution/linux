@@ -1298,8 +1298,24 @@ static int32_t a6_create_debug_interface(struct a6_device_state *state)
 {
 	int32_t rc = 0;
 	struct dentry *dentry_parent, *dentry_child;
+	char *name;
 
-	dentry_parent = debugfs_create_dir("a6", 0);
+	/*
+	 * The HP TouchPad carries two A6 controllers on i2c-2 (0x31 and
+	 * 0x32, one per battery cell), so a bare "a6" debugfs directory
+	 * name collides between the two probe calls and the second
+	 * instance fails with:
+	 *   debugfs: 'a6' already exists in '/'
+	 *   a6-battery 2-0032: Failed to create debug interface
+	 * Prefix with the i2c device name to keep each instance unique
+	 * (e.g. "a6-2-0031", "a6-2-0032").
+	 */
+	name = kasprintf(GFP_KERNEL, "a6-%s", dev_name(&state->i2c_dev->dev));
+	if (!name)
+		return -ENOMEM;
+
+	dentry_parent = debugfs_create_dir(name, NULL);
+	kfree(name);
 	if (IS_ERR(dentry_parent)) {
 		rc = PTR_ERR(dentry_parent);
 		goto err0;
