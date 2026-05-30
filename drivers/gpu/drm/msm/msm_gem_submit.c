@@ -415,8 +415,6 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 	 * rendering artifacts (e.g., triangulated surfaces in glmark2).
 	 */
 	if (!priv->has_cached_coherent) {
-		unsigned int n_synced = 0;
-
 		for (i = 0; i < submit->nr_bos; i++) {
 			struct drm_gem_object *obj = submit->bos[i].obj;
 			struct msm_gem_object *msm_obj = to_msm_bo(obj);
@@ -430,7 +428,6 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 			 * the PL310 outer L2 controller on ARMv7 / Scorpion.
 			 */
 			msm_gem_sync_for_gpu(obj);
-			n_synced++;
 
 			/* Diagnostic knob: also do dma_sync_sgtable_for_device(). */
 			if (msm_test_force_dma_sync && msm_obj->sgt) {
@@ -438,14 +435,6 @@ static int submit_pin_objects(struct msm_gem_submit *submit)
 							    msm_obj->sgt,
 							    DMA_TO_DEVICE);
 			}
-		}
-
-		/* One-shot debug: confirm path runs and how many BOs got synced. */
-		{
-			static unsigned int n_submits;
-			if ((n_submits++ & 0x1ff) == 0)
-				pr_info_ratelimited("msm: sync_for_gpu: submit %u, n_bos=%u, n_synced=%u\n",
-						    n_submits, submit->nr_bos, n_synced);
 		}
 	}
 
