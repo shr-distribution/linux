@@ -23,7 +23,7 @@
 			status = "disabled";
 		};
 
-		vibrator@4a {
+		pm8058_vib: vibrator@4a {
 			compatible = "qcom,pm8058-vib";
 			reg = <0x4a>;
 		};
