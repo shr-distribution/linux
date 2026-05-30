@@ -60,7 +60,7 @@ properties:
     properties:
       endpoint:
         $ref: /schemas/media/video-interfaces.yaml#
-        additionalProperties: false
+        unevaluatedProperties: false
 
         properties:
           bus-type:
@@ -70,11 +70,16 @@ properties:
           link-frequencies: true
           remote-endpoint: true
           data-lanes:
+            minItems: 1
             maxItems: 1
 
         required:
           - bus-type
           - link-frequencies
+          - data-lanes
+
+    required:
+      - endpoint
 
 required:
   - compatible
