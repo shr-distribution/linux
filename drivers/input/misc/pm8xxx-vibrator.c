@@ -125,10 +125,29 @@ static int pm8xxx_vib_set(struct pm8xxx_vib *vib, bool on)
 	if (regs->drv_in_step)
 		vib->level /= VIB_PER_STEP_mV(vib);
 
-	if (on)
+	if (on) {
 		val |= (vib->level << regs->drv_shift) & regs->drv_mask;
-	else
+		/*
+		 * Experimental (PM8058 motor-doesn't-move debug): also set
+		 * bits 0-1 of VIB_DRV. Hypothesis is that one or both of
+		 * those bits is a hardware "output enable" for the vibrator
+		 * block that must be set for level writes (bits 3-7) to
+		 * actually drive the output pin. Both legacy
+		 * pmic8058-vibrator and mainline pm8xxx-vibrator ZERO these
+		 * bits at probe (cold-boot default measured live as 0); if
+		 * the chip's reset state is "block disabled" then nothing
+		 * we write to the level field ever reaches the motor.
+		 *
+		 * If this makes the motor move on PM8058, we'll figure out
+		 * which of bits 0 / 1 / 2 is the actual enable and narrow
+		 * the OR mask accordingly. If it makes no difference, the
+		 * enable lives in a different register and this OR is safe
+		 * to drop again.
+		 */
+		val |= 0x03;
+	} else {
 		val &= ~regs->drv_mask;
+	}
 
 	rc = regmap_write(vib->regmap, vib->drv_addr, val);
 	if (rc < 0)
