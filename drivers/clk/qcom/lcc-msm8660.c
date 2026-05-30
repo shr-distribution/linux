@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014, The Linux Foundation. All rights reserved.
- * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
+ Herman van Hazendonk <github.com@herrie.org>
  *
  * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) LPASS Clock Controller driver.
  *
@@ -219,14 +219,29 @@ CLK_AIF_OSR_BIT_CLK(mi2s, 0x48, 14)
 
 /*
  * CLK_AIF_OSR_DIV - Audio Interface with divider clocks.
- * Enable bits per legacy MSM8660 kernel:
- *   - OSR branch enable: BIT(17)
- *   - BIT_DIV branch enable: BIT(15)
+ *
+ * MSM8x60 LPASS AIF register layout, verified against the legacy
+ * downstream Samsung MSM8660 source and the webOS clock-8x60.c
+ * CLK_AIF_BIT macro. Both legacy sources agree on the bit assignment:
+ * the bit-divider field starts at offset 10 and is four bits wide;
+ * bit 14 doubles as the cdiv external-source select; BIT_DIV branch
+ * enable is BIT(15); OSR branch enable is BIT(17); the BIT clock mux
+ * select is BIT(18) for codec_i2s and spare_i2s (mi2s uses bit 14,
+ * handled explicitly above this macro); reset is BIT(19).
+ *
+ * Earlier revisions of this driver used a width of 8 here, inherited
+ * from lcc-msm8960.c whose enables are at BIT(19) and BIT(21) and so
+ * do not overlap a wide divider field. On MSM8x60 the enables are at
+ * BIT(15) and BIT(17), so a width of 8 made the divider field cover
+ * bits 10 through 17 and a read-modify-write on the divider would
+ * clobber the two branch gates. A width of 4 confines the divider to
+ * bits 10 through 13, matching the standalone mi2s div clock above
+ * and what the legacy stack programs.
  */
 #define CLK_AIF_OSR_DIV(prefix, _ns, _md, hr)			\
 	CLK_AIF_OSR_SRC(prefix, _ns, _md)			\
 	CLK_AIF_OSR_CLK(prefix, _ns, hr, 17)			\
-	CLK_AIF_OSR_DIV_CLK(prefix, _ns, 8)			\
+	CLK_AIF_OSR_DIV_CLK(prefix, _ns, 4)			\
 	CLK_AIF_OSR_BIT_DIV_CLK(prefix, _ns, hr, 15)		\
 	CLK_AIF_OSR_BIT_CLK(prefix, _ns, 18)
 
@@ -266,6 +281,7 @@ static const struct freq_tbl clk_tbl_pcm_393[] = {
 	{  8192000, P_PLL4, 4, 1,  12 },
 	{ 12288000, P_PLL4, 4, 1,   8 },
 	{ 24576000, P_PLL4, 4, 1,   4 },
+	{ 27000000, P_PXO,  1, 0,   0 },
 	{ }
 };
 
@@ -460,6 +476,7 @@ static const struct qcom_cc_desc lcc_msm8660_desc = {
 };
 
 static const struct of_device_id lcc_msm8660_match_table[] = {
+	{ .compatible = "qcom,lcc-msm8260" },
 	{ .compatible = "qcom,lcc-msm8660" },
 	{ .compatible = "qcom,lcc-apq8060" },
 	{ }
@@ -468,8 +485,11 @@ MODULE_DEVICE_TABLE(of, lcc_msm8660_match_table);
 
 static int lcc_msm8660_probe(struct platform_device *pdev)
 {
+	const struct freq_tbl *aif_osr_tbl, *pcm_tbl;
 	struct regmap *regmap;
+	const char *plan_name;
 	u32 val;
+	int ret;
 
 	regmap = qcom_cc_map(pdev, &lcc_msm8660_desc);
 	if (IS_ERR(regmap))
@@ -480,22 +500,36 @@ static int lcc_msm8660_probe(struct platform_device *pdev)
 	 * Detect anyway so a board with a non-standard L value still gets a
 	 * coherent frequency plan instead of silently producing wrong rates.
 	 */
-	regmap_read(regmap, 0x4, &val);
+	ret = regmap_read(regmap, 0x4, &val);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to read PLL4 L register\n");
+
 	if (val == 0x16) {
-		dev_info(&pdev->dev,
-			 "PLL4 L=0x%x, using 540MHz frequency plan\n", val);
-		slimbus_src.freq_tbl = clk_tbl_aif_osr_540;
-		mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_540;
-		codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_540;
-		spare_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_540;
-		codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
-		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
-		pcm_src.freq_tbl = clk_tbl_pcm_540;
+		aif_osr_tbl = clk_tbl_aif_osr_540;
+		pcm_tbl = clk_tbl_pcm_540;
+		plan_name = "540MHz";
 	} else {
-		dev_info(&pdev->dev,
-			 "PLL4 L=0x%x, using fallback 393MHz frequency plan\n",
-			 val);
+		aif_osr_tbl = clk_tbl_aif_osr_393;
+		pcm_tbl = clk_tbl_pcm_393;
+		plan_name = "fallback 393MHz";
 	}
+
+	/*
+	 * Pick the matching frequency table on both branches; assigning
+	 * unconditionally also restores the default if this driver is
+	 * ever rebound on a system whose PLL4 has been reprogrammed.
+	 */
+	slimbus_src.freq_tbl		   = aif_osr_tbl;
+	mi2s_osr_src.freq_tbl		   = aif_osr_tbl;
+	codec_i2s_mic_osr_src.freq_tbl	   = aif_osr_tbl;
+	spare_i2s_mic_osr_src.freq_tbl	   = aif_osr_tbl;
+	codec_i2s_spkr_osr_src.freq_tbl	   = aif_osr_tbl;
+	spare_i2s_spkr_osr_src.freq_tbl	   = aif_osr_tbl;
+	pcm_src.freq_tbl		   = pcm_tbl;
+
+	dev_info(&pdev->dev, "PLL4 L=0x%x, using %s frequency plan\n",
+		 val, plan_name);
 
 	/* Enable PLL4 source on the LPASS Primary PLL Mux */
 	regmap_write(regmap, 0xc4, 0x1);
@@ -512,6 +546,6 @@ static struct platform_driver lcc_msm8660_driver = {
 };
 module_platform_driver(lcc_msm8660_driver);
 
-MODULE_DESCRIPTION("Qualcomm MSM8660/APQ8060 LPASS Clock Controller driver");
-MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("Qualcomm MSM8x60 LPASS Clock Controller driver");
+MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:lcc-msm8660");
