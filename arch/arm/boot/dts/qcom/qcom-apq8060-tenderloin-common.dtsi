@@ -13,6 +13,7 @@
 #include <dt-bindings/reset/qcom,mmcc-msm8660.h>
 #include <dt-bindings/clock/qcom,mmcc-msm8660.h>
 #include <dt-bindings/interconnect/qcom,msm8660.h>
+#include <dt-bindings/thermal/thermal.h>
 #include <dt-bindings/clock/qcom,rpmcc.h>
 #include <dt-bindings/clock/qcom,lcc-msm8660.h>
 #include <dt-bindings/sound/qcom,q6dsp-lpass-ports.h>
@@ -148,6 +149,22 @@
 					temperature = <145000>;
 					hysteresis = <2000>;
 					type = "critical";
+				};
+			};
+
+			/*
+			 * Cooling: throttle the Adreno 220 GPU OPP levels when
+			 * the PM8058 die crosses its passive trip. The TouchPad
+			 * has no GPU-local temperature sensor, so the PM8058 die
+			 * (sitting next to the SoC on the PoP package) is the
+			 * closest available proxy. THERMAL_NO_LIMIT / 0..max lets
+			 * the thermal core walk the full OPP range as needed.
+			 */
+			cooling-maps {
+				gpu-throttle {
+					trip = <&pm8058_alert0>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT
+								THERMAL_NO_LIMIT>;
 				};
 			};
 		};
@@ -1198,6 +1215,21 @@
 			interconnects = <&mmss_fabric MMFAB_MAS_GRAPHICS_3D
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "gfx-mem";
+
+			/*
+			 * Cooling device cells: <state>. msm_devfreq_init()
+			 * registers the GPU as a devfreq cooling device that
+			 * can throttle OPP levels in response to a thermal-zone
+			 * trip; the pm8058-thermal zone below maps its passive
+			 * trip onto us. Without this property,
+			 * of_devfreq_cooling_register() fails with
+			 *   adreno: msm_devfreq_init *ERROR* Couldn't register
+			 *   GPU cooling device
+			 * because thermal_of_cooling_device_register() rejects
+			 * any OF cooling-device that doesn't declare
+			 * #cooling-cells.
+			 */
+			#cooling-cells = <2>;
 		};
 
 		gpu_opp_table: gpu-opp-table {
