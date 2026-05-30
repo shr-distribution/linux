@@ -1287,25 +1287,13 @@
 				opp-microvolt = <1100000>;
 				opp-peak-kBps = <1255000>;
 			};
-			/*
-			 * gfx3d_src is a clk_dyn_rcg whose recalc_rate computes
-			 * parent_rate * M / N with integer truncation. PLL2 (800 MHz)
-			 * via M=2/N=7 yields 228571428 Hz, not the 228571000 Hz the
-			 * clock-driver freq_tbl advertises. Use the true achievable
-			 * rate so devfreq's freq_table (built from these OPPs) matches
-			 * clk_get_rate() exactly -- otherwise devfreq_monitor_resume
-			 * stores a clk_get_rate() value as previous_freq that fails to
-			 * resolve via devfreq_get_freq_level(), causing the periodic
-			 * "Couldn't update frequency transition information" warning.
-			 */
-			opp-228571428 {
-				opp-hz = /bits/ 64 <228571428>;
+			opp-228571000 {
+				opp-hz = /bits/ 64 <228571000>;
 				opp-microvolt = <1100000>;
 				opp-peak-kBps = <1434000>;
 			};
-			/* Same fix: PLL2 (800 MHz) / 3 = 266666666, not 266667000. */
-			opp-266666666 {
-				opp-hz = /bits/ 64 <266666666>;
+			opp-266667000 {
+				opp-hz = /bits/ 64 <266667000>;
 				opp-microvolt = <1200000>;
 				opp-peak-kBps = <2008000>;
 			};
