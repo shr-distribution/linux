@@ -21,14 +21,12 @@
  *
  *   start: D10_CURRENT_CTRL      = 0x00       // mux D10 pin to vibrator
  *          HAPTIC_PWM_DUTY_CYCLE = magnitude>>8
- *          HAPTIC_FEEDBACK_CTRL  = 0x02 | dir // bit1 enable, bit0 dir
+ *          HAPTIC_FEEDBACK_CTRL  = ENABLE | (INVERT_DIR if requested)
  *   stop:  HAPTIC_FEEDBACK_CTRL  = 0
  *
  * The play_effect callback only stores the magnitude and schedules a
  * workqueue item; the actual I2C writes happen in the work handler in
- * sleeping context and gate on lm8502_chip_ready() so this child can
- * register its input device at probe even while the parent's deferred
- * chip_init is still pending.
+ * sleeping context.
  */
 
 #include <linux/input.h>
@@ -52,32 +50,24 @@ static void lm8502_haptic_work(struct work_struct *w)
 	struct lm8502_haptic *priv =
 		container_of(w, struct lm8502_haptic, work);
 	struct lm8502 *chip = priv->chip;
-	u8 duty;
-	u8 dir;
-	int ret;
-
-	if (!lm8502_chip_ready(chip))
-		return;
+	u8 fb;
 
 	mutex_lock(&chip->lock);
+	if (chip->suspended)
+		goto out;
 
 	if (priv->magnitude) {
 		/* Mux the shared D10 pin to the vibrator path. */
-		ret = lm8502_write_retry(chip, LM8502_D10_CURRENT_CTRL, 0);
-		if (ret)
-			goto out;
+		regmap_write(chip->regmap, LM8502_D10_CURRENT_CTRL, 0);
+		regmap_write(chip->regmap, LM8502_HAPTIC_PWM_DUTY_CYCLE,
+			     priv->magnitude >> 8);
 
-		duty = priv->magnitude >> 8;
-		ret = lm8502_write_retry(chip, LM8502_HAPTIC_PWM_DUTY_CYCLE,
-					 duty);
-		if (ret)
-			goto out;
-
-		dir = priv->invert_direction ? 1 : 0;
-		ret = lm8502_write_retry(chip, LM8502_HAPTIC_FEEDBACK_CTRL,
-					 0x02 | dir);
+		fb = LM8502_HAPTIC_FB_ENABLE;
+		if (priv->invert_direction)
+			fb |= LM8502_HAPTIC_FB_INVERT_DIR;
+		regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, fb);
 	} else {
-		ret = lm8502_write_retry(chip, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
+		regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
 	}
 
 out:
@@ -139,12 +129,10 @@ static int lm8502_haptic_probe(struct platform_device *pdev)
 	ret = input_register_device(input);
 	if (ret)
 		return dev_err_probe(dev, ret,
-				     "Failed to register input device\n");
+				     "failed to register input device\n");
 
 	platform_set_drvdata(pdev, priv);
 
-	dev_info(dev, "FF_RUMBLE haptic registered (invert=%d)\n",
-		 priv->invert_direction);
 	return 0;
 }
 
@@ -156,11 +144,10 @@ static void lm8502_haptic_remove(struct platform_device *pdev)
 	cancel_work_sync(&priv->work);
 
 	/* Best-effort: stop the motor before tearing down. */
-	if (lm8502_chip_ready(chip)) {
-		mutex_lock(&chip->lock);
+	mutex_lock(&chip->lock);
+	if (!chip->suspended)
 		regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
-		mutex_unlock(&chip->lock);
-	}
+	mutex_unlock(&chip->lock);
 }
 
 static const struct of_device_id lm8502_haptic_of_match[] = {

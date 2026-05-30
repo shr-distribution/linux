@@ -2,17 +2,15 @@
 /*
  * TI LM8502 Multi-Function Device
  *
- * The LM8502 is a combo LED + haptic + camera-flash controller exposed
- * over I2C. The MFD core handles the i2c_client, regmap, regulator and
- * chip-wide initialization; per-subsystem child platform drivers in
- * drivers/leds/ and drivers/input/misc/ bind to the spawned children
- * and use the parent's regmap.
+ * The LM8502 is a combo LED + haptic controller exposed over I2C. The
+ * MFD core handles the i2c_client, regmap, regulator and chip-wide
+ * initialization; per-subsystem child platform drivers in drivers/leds/
+ * and drivers/input/misc/ bind to the spawned children and use the
+ * parent's regmap.
  *
  * Children retrieve the parent's lm8502 state via
  *     struct lm8502 *chip = dev_get_drvdata(pdev->dev.parent);
- * and gate all register writes on lm8502_chip_ready(chip) so they
- * cooperate with the deferred chip_init pattern documented in
- * drivers/mfd/lm8502.c.
+ * and serialise register access on chip->lock.
  */
 #ifndef __LINUX_MFD_LM8502_H
 #define __LINUX_MFD_LM8502_H
@@ -63,62 +61,70 @@
 #define LM8502_RESET			0x3D
 
 /* ENGINE_CNTRL1 bits */
-#define LM8502_CHIP_EN			0x40
+#define LM8502_CHIP_EN			BIT(6)
+
+/* ENGINE_CNTRL2 — value applied at chip_init: charge-pump CP_MODE = 1x.
+ * Bit 5 selects the boost-converter compare mode; the value the legacy
+ * webOS driver writes matches the LP55xx-family ENGINE_CNTRL2 "all
+ * engines in HOLD" default plus CP_MODE_1X.
+ */
+#define LM8502_ENGINE_CNTRL2_INIT	0x20
+
+/* MISC (0x36) bits applied at chip_init */
+#define LM8502_MISC_PWM_INPUT		BIT(1)	/* PWM input mux on D10 */
+/* BOOST_EN: internal boost converter -- REQUIRED for LED current. */
+#define LM8502_MISC_BOOST_EN		BIT(3)
+#define LM8502_MISC_POWER_SAVE		BIT(5)	/* clock gate idle blocks */
+#define LM8502_MISC_INIT		(LM8502_MISC_POWER_SAVE | \
+					 LM8502_MISC_BOOST_EN | \
+					 LM8502_MISC_PWM_INPUT)
+
+/* D<n>_CONTROL bits */
+#define LM8502_LED_MAPPING_MASK		0x03
+#define LM8502_LED_MAPPING_DIRECT	0x00	/* drive from current reg */
+#define LM8502_LED_MAX_CURRENT_MASK	0x18
+#define LM8502_LED_MAX_CURRENT_SHIFT	3
+#define LM8502_LED_MAX_CURRENT_9MA	0x02	/* field = 2 -> 9 mA cap */
+/*
+ * Initial D<n>_CONTROL value: MAX_CURRENT field = 2 (9 mA), DIRECT
+ * mapping. Programmed for every channel during chip_init so a child
+ * brightness write to D<n>_CURRENT_CTRL is honoured immediately.
+ */
+#define LM8502_LED_CONTROL_INIT		(LM8502_LED_MAX_CURRENT_9MA << \
+					 LM8502_LED_MAX_CURRENT_SHIFT)
+
+/* HAPTIC_FEEDBACK_CTRL bits */
+#define LM8502_HAPTIC_FB_INVERT_DIR	BIT(0)	/* H-bridge polarity flip */
+#define LM8502_HAPTIC_FB_ENABLE		BIT(1)	/* drive the motor */
 
 #define LM8502_MAX_LEDS			10
+
+/* RESET (0x3D) magic write value (LP55xx-family software reset). */
+#define LM8502_RESET_MAGIC		0xFF
 
 /* --- Shared parent state -------------------------------------------- */
 
 /**
  * struct lm8502 - parent (MFD core) state shared with child drivers
  * @dev:        the I2C client's struct device (parent of every child pdev)
- * @regmap:     the chip's 8-bit register map (volatile, no cache)
- * @lock:       serializes shared register operations between children
- *              (regmap has its own internal lock; @lock additionally
- *              protects @initialized / @suspended transitions)
- * @initialized: deferred chip_init has run successfully; child drivers
- *              must not issue dependent register writes before this
- *              flips true (use lm8502_chip_ready())
- * @suspended:  chip is currently powered down by parent suspend
+ * @regmap:     the chip's 8-bit register map (no cache; every read goes
+ *              to the bus)
+ * @lock:       serialises register sequences across children and against
+ *              the parent's PM callbacks
+ * @suspended:  set true while the chip is power-gated by parent suspend;
+ *              children must check it under @lock before touching
+ *              registers
+ *
+ * Chip readiness is implicit: child platform devices only probe after
+ * the MFD parent's probe has completed lm8502_chip_init() successfully,
+ * so by the time a child runs the chip is fully configured and ACKing
+ * I2C. There is no separate "initialized" flag.
  */
 struct lm8502 {
 	struct device *dev;
 	struct regmap *regmap;
 	struct mutex lock;
-	bool initialized;
 	bool suspended;
 };
-
-/**
- * lm8502_chip_ready() - is the chip ready for register writes?
- *
- * Returns true once the deferred chip_init in drivers/mfd/lm8502.c has
- * completed and the chip is not currently suspended. Child drivers
- * should check this before issuing register writes; pattern is:
- *
- *     if (!lm8502_chip_ready(chip))
- *         return -EAGAIN;     // for sync callbacks
- *         // or just bail from a work handler
- */
-static inline bool lm8502_chip_ready(struct lm8502 *chip)
-{
-	return chip->initialized && !chip->suspended;
-}
-
-/**
- * lm8502_write_retry() - regmap_write that retries once on -ENXIO
- *
- * The GSBI8/QUP bus on the HP TouchPad is shared with other I2C
- * clients (A6 batteries) and occasionally drops the first transaction
- * after a settling window with -ENXIO; the chip is also briefly
- * unresponsive in the post-reset window. Children should use this
- * helper for writes during initialization paths where dropping the
- * first byte is plausible. Steady-state brightness/haptic writes can
- * use plain regmap_write() since the chip is fully awake by then.
- *
- * Defined out-of-line in drivers/mfd/lm8502.c so all subsystem child
- * drivers share the same retry policy.
- */
-int lm8502_write_retry(struct lm8502 *chip, unsigned int reg, unsigned int val);
 
 #endif /* __LINUX_MFD_LM8502_H */

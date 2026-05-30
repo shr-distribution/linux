@@ -298,7 +298,7 @@ config LEDS_LM8502
 	depends on LEDS_CLASS && MFD_LM8502
 	help
 	  This option enables LED-class support for the TI LM8502 combo
-	  LED + haptic + flash controller (outputs D1..D10).
+	  LED + haptic controller (outputs D1..D10).
 
 	  The chip-wide MFD core (i2c probe, regmap, regulator, reset and
 	  init sequencing) is provided by drivers/mfd/lm8502.c -- enable

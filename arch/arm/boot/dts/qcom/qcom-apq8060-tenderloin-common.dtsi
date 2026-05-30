@@ -3701,9 +3701,6 @@
 		vcc-supply = <&pm8058_l16>;
 		enable-gpios = <&tlmm 121 GPIO_ACTIVE_HIGH>;
 
-		interrupt-parent = <&tlmm>;
-		interrupts = <128 IRQ_TYPE_EDGE_FALLING>;
-
 		pinctrl-names = "default";
 		pinctrl-0 = <&lm8502_pins>;
 
