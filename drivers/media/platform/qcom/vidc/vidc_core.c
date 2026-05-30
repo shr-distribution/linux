@@ -3,7 +3,7 @@
  * Qualcomm VIDC 1080p Video Codec driver
  *
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024, Linux-SHR Project
+ * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * This driver supports the VIDC 1080p video codec found in MSM8660/APQ8060
  * SoCs. Unlike newer Venus cores, VIDC 1080p uses direct register-based

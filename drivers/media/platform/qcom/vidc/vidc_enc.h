@@ -3,7 +3,7 @@
  * Qualcomm VIDC 1080p Video Encoder driver
  *
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024, Linux-SHR Project
+ * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
  */
 
 #ifndef __VIDC_ENC_H__
