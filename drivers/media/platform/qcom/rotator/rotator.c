@@ -1182,5 +1182,5 @@ static struct platform_driver rotator_driver = {
 module_platform_driver(rotator_driver);
 
 MODULE_DESCRIPTION("Qualcomm MSM8660 Rotator V4L2 driver");
-MODULE_AUTHOR("Herrie <herrie.org>");
+MODULE_AUTHOR("Herman van Hazendonk <github.com@herrie.org>");
 MODULE_LICENSE("GPL");
