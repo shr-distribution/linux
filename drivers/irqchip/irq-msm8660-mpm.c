@@ -98,6 +98,8 @@ struct msm8660_mpm {
 	struct irq_domain *domain;
 	struct msm8660_mpm_pin *pin_map;
 	unsigned int pin_map_count;
+	u32 *raw_pins;
+	unsigned int raw_pin_count;
 	int parent_irq;
 	struct mbox_client mbox_client;
 	struct mbox_chan *mbox_chan;
@@ -153,6 +155,24 @@ static int msm8660_mpm_pin_to_hwirq(struct msm8660_mpm *mpm, int pin)
 			return mpm->pin_map[i].hwirq;
 	}
 	return -ENOENT;
+}
+
+/*
+ * Return true if @pin is declared as a raw wake source in
+ * qcom,mpm-raw-pins. The raw-pin C API rejects requests for pins
+ * that are not in the board's allow-list, so a consumer cannot
+ * silently enable a wake source the integrator has not opted in to.
+ */
+static bool msm8660_mpm_raw_pin_allowed(struct msm8660_mpm *mpm,
+					unsigned int pin)
+{
+	unsigned int i;
+
+	for (i = 0; i < mpm->raw_pin_count; i++) {
+		if (mpm->raw_pins[i] == pin)
+			return true;
+	}
+	return false;
 }
 
 /*
@@ -477,6 +497,9 @@ EXPORT_SYMBOL_GPL(msm8660_mpm_get);
  * (SDC3_DAT1=21, SDC3_DAT3=22, SDC4_DAT1=23, SDC4_DAT3=24) that have no
  * GIC IRQ mapping. For pins that DO have a GIC mapping (in
  * qcom,mpm-pin-map), use the irqdomain path instead.
+ *
+ * The pin must be declared in qcom,mpm-raw-pins; otherwise the call is
+ * rejected with -EINVAL.
  */
 int msm8660_mpm_enable_pin(struct msm8660_mpm *mpm, unsigned int pin,
 			   bool enable)
@@ -485,6 +508,11 @@ int msm8660_mpm_enable_pin(struct msm8660_mpm *mpm, unsigned int pin,
 
 	if (!mpm || pin >= MSM8660_MPM_PIN_COUNT)
 		return -EINVAL;
+	if (!msm8660_mpm_raw_pin_allowed(mpm, pin)) {
+		dev_warn(mpm->dev,
+			 "pin %u not declared in qcom,mpm-raw-pins\n", pin);
+		return -EINVAL;
+	}
 
 	val = msm8660_mpm_read(mpm,
 		MSM8660_MPM_REG_ENABLE + (pin / 32) * 4);
@@ -536,6 +564,11 @@ int msm8660_mpm_set_pin_type(struct msm8660_mpm *mpm, unsigned int pin,
 
 	if (!mpm || pin >= MSM8660_MPM_PIN_COUNT)
 		return -EINVAL;
+	if (!msm8660_mpm_raw_pin_allowed(mpm, pin)) {
+		dev_warn(mpm->dev,
+			 "pin %u not declared in qcom,mpm-raw-pins\n", pin);
+		return -EINVAL;
+	}
 
 	edge = !!(flow_type & IRQ_TYPE_EDGE_BOTH);
 	polarity_high = !!(flow_type & (IRQ_TYPE_EDGE_RISING |
@@ -641,6 +674,31 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 		dev_dbg(dev, "pin map: pin %u -> hwirq %u\n", pin, hwirq);
 	}
 
+	/*
+	 * Parse raw wake pins (no GIC SPI mapping). Optional: a board
+	 * that does not use any direct MPM wake source can omit the
+	 * property and the raw-pin API will reject every request.
+	 */
+	ret = of_property_count_u32_elems(np, "qcom,mpm-raw-pins");
+	if (ret > 0) {
+		mpm->raw_pin_count = ret;
+		mpm->raw_pins = devm_kcalloc(dev, ret, sizeof(*mpm->raw_pins),
+					     GFP_KERNEL);
+		if (!mpm->raw_pins)
+			return -ENOMEM;
+
+		of_property_read_u32_array(np, "qcom,mpm-raw-pins",
+					   mpm->raw_pins, ret);
+		for (i = 0; i < mpm->raw_pin_count; i++) {
+			if (mpm->raw_pins[i] >= MSM8660_MPM_PIN_COUNT)
+				return dev_err_probe(dev, -EINVAL,
+					"qcom,mpm-raw-pins entry %d: pin %u >= %u\n",
+					i, mpm->raw_pins[i],
+					MSM8660_MPM_PIN_COUNT);
+			dev_dbg(dev, "raw pin: %u\n", mpm->raw_pins[i]);
+		}
+	}
+
 	parent_np = of_irq_find_parent(np);
 	if (!parent_np)
 		return dev_err_probe(dev, -ENODEV,
@@ -703,8 +761,8 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, mpm);
 	msm8660_mpm_global = mpm;
 
-	dev_info(dev, "ready: %d pin mappings, irq=%d\n",
-		 mpm->pin_map_count, mpm->parent_irq);
+	dev_info(dev, "ready: %u pin mappings, %u raw pins, irq=%d\n",
+		 mpm->pin_map_count, mpm->raw_pin_count, mpm->parent_irq);
 
 	return 0;
 
