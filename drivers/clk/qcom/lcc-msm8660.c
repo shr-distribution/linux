@@ -631,9 +631,17 @@ static DEFINE_SIMPLE_DEV_PM_OPS(lcc_msm8660_pm_ops, NULL, lcc_msm8660_resume);
 static struct platform_driver lcc_msm8660_driver = {
 	.probe		= lcc_msm8660_probe,
 	.driver		= {
-		.name		= "lcc-msm8660",
-		.of_match_table	= lcc_msm8660_match_table,
-		.pm		= pm_sleep_ptr(&lcc_msm8660_pm_ops),
+		.name			= "lcc-msm8660",
+		.of_match_table		= lcc_msm8660_match_table,
+		.pm			= pm_sleep_ptr(&lcc_msm8660_pm_ops),
+		/*
+		 * Single-instance system clock controller: prevent sysfs
+		 * unbind so the lcc_msm8660_bound singleton flag never needs
+		 * a reset path, and so consumer clk users do not need to
+		 * worry about the underlying clk_hw vanishing while they hold
+		 * a reference.
+		 */
+		.suppress_bind_attrs	= true,
 	},
 };
 module_platform_driver(lcc_msm8660_driver);
