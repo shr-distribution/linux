@@ -78,10 +78,21 @@ properties:
       the MPM hierarchical irqdomain to take advantage of these
       mappings.
 
-      Raw wake pins like SDC3/4 DATx (pins 21-24) are NOT listed
-      here - they have no GIC SPI mapping and are accessed through
-      the msm8660_mpm_set_pin_wake() / msm8660_mpm_enable_pin() C API
-      by consumer drivers.
+  qcom,mpm-raw-pins:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: |
+      List of MPM pin numbers that are wake-only sources without a
+      corresponding GIC SPI (for example SDC3_DAT1=21, SDC3_DAT3=22,
+      SDC4_DAT1=23, SDC4_DAT3=24 on MSM8x60). These describe real
+      hardware wake lines that the MPM monitors directly during
+      power-collapse.
+
+      Consumer drivers acquire the MPM through msm8660_mpm_get() and
+      then call msm8660_mpm_enable_pin() / msm8660_mpm_set_pin_wake()
+      to toggle monitoring. The driver validates the requested pin
+      against this allow-list; pins not declared here are rejected
+      with -EINVAL so a consumer cannot silently enable a wake source
+      the board integrator has not opted in to.
 
 required:
   - compatible
@@ -113,5 +124,6 @@ examples:
             qcom,mpm-pin-map = <25 100>,
                                <26 50>,
                                <27 79>;
+            qcom,mpm-raw-pins = <21>, <22>, <23>, <24>;
         };
     };
