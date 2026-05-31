@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/bitops.h>
 #include <linux/err.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -485,28 +486,33 @@ static const struct of_device_id lcc_msm8660_match_table[] = {
 MODULE_DEVICE_TABLE(of, lcc_msm8660_match_table);
 
 /*
- * Steer the LPASS Primary PLL Mux to PLL4. This is the only LCC-side write
- * needed to bring up the audio clock tree; it has to be redone on every
- * resume because the LPASS power domain may have been collapsed while the
- * system was suspended, which resets the mux to its default. Called from
- * probe and from the resume PM op so both paths share one implementation
- * and a single error-handling policy.
+ * Steer the LPASS Primary PLL Mux to PLL4. The MMIO write is the only
+ * LCC-side write needed to bring up the audio clock tree; it has to be
+ * redone on every resume because the LPASS power domain may have been
+ * collapsed while the system was suspended, which resets the mux to its
+ * default. The probe and resume paths share __lcc_msm8660_write_pll4_mux
+ * but wrap the error in their own logger (dev_err_probe in probe,
+ * dev_err in resume - the resume path cannot defer).
  */
 #define LCC_PRI_PLL_CLK_CTL_REG		0xc4
 #define LCC_PRI_PLL_SRC_PLL4		0x1
 
-static int lcc_msm8660_configure_pll4_mux(struct device *dev,
-					  struct regmap *regmap)
+static int __lcc_msm8660_write_pll4_mux(struct regmap *regmap)
 {
-	int ret;
-
-	ret = regmap_write(regmap, LCC_PRI_PLL_CLK_CTL_REG,
-			   LCC_PRI_PLL_SRC_PLL4);
-	if (ret)
-		return dev_err_probe(dev, ret,
-				     "failed to write LPASS Primary PLL mux\n");
-	return 0;
+	return regmap_write(regmap, LCC_PRI_PLL_CLK_CTL_REG,
+			    LCC_PRI_PLL_SRC_PLL4);
 }
+
+/*
+ * The LCC has no multi-instance support: every clk_rcg defined in this
+ * file is file-static and shared, so registering a second instance via
+ * qcom_cc_really_probe() would collide on clock-provider IDs and racing
+ * probes from different platform_device instances would corrupt each
+ * other's freq_tbl plan selection. Refuse the second probe explicitly
+ * rather than rely on the bus layer to serialise.
+ */
+static bool lcc_msm8660_bound;
+static DEFINE_MUTEX(lcc_msm8660_bound_lock);
 
 static int lcc_msm8660_probe(struct platform_device *pdev)
 {
@@ -516,19 +522,35 @@ static int lcc_msm8660_probe(struct platform_device *pdev)
 	u32 val;
 	int ret;
 
+	mutex_lock(&lcc_msm8660_bound_lock);
+	if (lcc_msm8660_bound) {
+		mutex_unlock(&lcc_msm8660_bound_lock);
+		return dev_err_probe(&pdev->dev, -EBUSY,
+			"only a single LCC instance is supported\n");
+	}
+
 	regmap = qcom_cc_map(pdev, &lcc_msm8660_desc);
-	if (IS_ERR(regmap))
+	if (IS_ERR(regmap)) {
+		mutex_unlock(&lcc_msm8660_bound_lock);
 		return PTR_ERR(regmap);
+	}
 
 	/*
 	 * MSM8x60 should always boot with PLL4 L=22 (540.672 MHz).
-	 * Detect anyway so a board with a non-standard L value still gets a
-	 * coherent frequency plan instead of silently producing wrong rates.
+	 * Detect anyway so a board with a non-standard L value still gets
+	 * a coherent frequency plan instead of silently producing wrong
+	 * rates. A failed read here is fatal: this driver does not use
+	 * runtime PM and there is no power-state recovery for deferred
+	 * probes to wait on, so use dev_err and propagate the error
+	 * directly instead of dev_err_probe.
 	 */
 	ret = regmap_read(regmap, 0x4, &val);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "failed to read PLL4 L register\n");
+	if (ret) {
+		dev_err(&pdev->dev,
+			"failed to read PLL4 L register: %d\n", ret);
+		mutex_unlock(&lcc_msm8660_bound_lock);
+		return ret;
+	}
 
 	if (val == 0x16) {
 		aif_osr_tbl = clk_tbl_aif_osr_540;
@@ -556,13 +578,18 @@ static int lcc_msm8660_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev, "PLL4 L=0x%x, using %s frequency plan\n",
 		 val, plan_name);
 
-	ret = lcc_msm8660_configure_pll4_mux(&pdev->dev, regmap);
-	if (ret)
-		return ret;
+	ret = __lcc_msm8660_write_pll4_mux(regmap);
+	if (ret) {
+		mutex_unlock(&lcc_msm8660_bound_lock);
+		return dev_err_probe(&pdev->dev, ret,
+			"failed to write LPASS Primary PLL mux\n");
+	}
 
 	ret = qcom_cc_really_probe(&pdev->dev, &lcc_msm8660_desc, regmap);
-	if (ret)
+	if (ret) {
+		mutex_unlock(&lcc_msm8660_bound_lock);
 		return ret;
+	}
 
 	/*
 	 * Stash the regmap so the resume path can re-apply the LPASS Primary
@@ -570,6 +597,8 @@ static int lcc_msm8660_probe(struct platform_device *pdev)
 	 * tree. qcom_cc_really_probe() does not touch platform drvdata.
 	 */
 	platform_set_drvdata(pdev, regmap);
+	lcc_msm8660_bound = true;
+	mutex_unlock(&lcc_msm8660_bound_lock);
 	return 0;
 }
 
@@ -580,12 +609,21 @@ static int lcc_msm8660_probe(struct platform_device *pdev)
  * the mux selection is an LCC-specific configuration that no other code
  * path will re-apply. Re-program it here so audio still works after the
  * first suspend/resume cycle.
+ *
+ * Resume cannot defer, so log with dev_err and return the raw errno
+ * rather than dev_err_probe (which silences EPROBE_DEFER).
  */
 static int lcc_msm8660_resume(struct device *dev)
 {
 	struct regmap *regmap = dev_get_drvdata(dev);
+	int ret;
 
-	return lcc_msm8660_configure_pll4_mux(dev, regmap);
+	ret = __lcc_msm8660_write_pll4_mux(regmap);
+	if (ret)
+		dev_err(dev,
+			"failed to restore LPASS Primary PLL mux on resume: %d\n",
+			ret);
+	return ret;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(lcc_msm8660_pm_ops, NULL, lcc_msm8660_resume);
