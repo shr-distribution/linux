@@ -62,9 +62,11 @@ properties:
 
   '#interrupt-cells':
     const: 2
-    description:
-      First cell is the MPM pin number / parent GIC SPI; second cell
-      is the trigger type.
+    description: |
+      First cell is the MPM pin number (the index used by the IPC
+      handler and the ENABLE/DETECT_CTL/POLARITY banks); the parent
+      GIC SPI is looked up from qcom,mpm-pin-map. Second cell is the
+      trigger type.
 
   qcom,mpm-pin-map:
     $ref: /schemas/types.yaml#/definitions/uint32-matrix
