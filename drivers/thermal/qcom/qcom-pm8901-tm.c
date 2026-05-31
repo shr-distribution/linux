@@ -20,6 +20,7 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/regmap.h>
 #include <linux/thermal.h>
 
@@ -263,13 +264,13 @@ static void pm8901_tm_restore_hw_shutdown(void *data)
 }
 
 /*
- * Hand thermal protection responsibility from the PMIC's hardware
- * auto-cut to the kernel thermal core. This is the LAST step of probe
- * so that, if any earlier step fails, the PMIC keeps protecting the
- * part on its own. Once it succeeds we install a devm action that
- * re-enables HW auto-cut if/when the driver is unbound.
+ * Set the OVRD bits that hand thermal-shutdown control to the kernel
+ * thermal core. Shared between initial probe and resume-from-suspend
+ * (where we previously handed control back to the PMIC HW for the
+ * duration of system sleep). Caller is responsible for any cleanup
+ * action registration.
  */
-static int pm8901_tm_enable_sw_override(struct pm8901_tm_chip *chip)
+static int pm8901_tm_set_sw_override(struct pm8901_tm_chip *chip)
 {
 	int ret;
 	u8 reg;
@@ -281,6 +282,21 @@ static int pm8901_tm_enable_sw_override(struct pm8901_tm_chip *chip)
 		ret = pm8901_tm_write_ctrl(chip, reg);
 	}
 	mutex_unlock(&chip->lock);
+	return ret;
+}
+
+/*
+ * Hand thermal protection responsibility from the PMIC's hardware
+ * auto-cut to the kernel thermal core. This is the LAST step of probe
+ * so that, if any earlier step fails, the PMIC keeps protecting the
+ * part on its own. Once it succeeds we install a devm action that
+ * re-enables HW auto-cut if/when the driver is unbound.
+ */
+static int pm8901_tm_enable_sw_override(struct pm8901_tm_chip *chip)
+{
+	int ret;
+
+	ret = pm8901_tm_set_sw_override(chip);
 	if (ret)
 		return ret;
 
@@ -383,6 +399,58 @@ static int pm8901_tm_probe(struct platform_device *pdev)
 }
 
 /*
+ * Hand thermal protection back to the PMIC's hardware auto-cut for the
+ * duration of system suspend. The kernel thermal core sleeps during
+ * suspend, so leaving SW-override engaged would leave the device
+ * physically unprotected if temperature rises during sleep. The PMIC
+ * HW auto-cut needs no OS support and operates with no power budget
+ * from us.
+ */
+static int pm8901_tm_suspend(struct device *dev)
+{
+	struct pm8901_tm_chip *chip = dev_get_drvdata(dev);
+
+	pm8901_tm_restore_hw_shutdown(chip);
+	return 0;
+}
+
+/*
+ * Re-engage SW override on resume so the kernel thermal core regains
+ * control of trip-point actions (mitigation, orderly_poweroff). If the
+ * PMIC has already shut down due to overtemp during sleep, we never
+ * get here.
+ */
+static int pm8901_tm_resume(struct device *dev)
+{
+	struct pm8901_tm_chip *chip = dev_get_drvdata(dev);
+	int ret;
+
+	ret = pm8901_tm_set_sw_override(chip);
+	if (ret)
+		dev_warn(dev,
+			 "failed to re-engage SW thermal override on resume: %d\n",
+			 ret);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(pm8901_tm_pm_ops,
+				pm8901_tm_suspend, pm8901_tm_resume);
+
+/*
+ * Restore PMIC HW auto-cut on machine shutdown / reboot. devm cleanup
+ * actions are NOT invoked from device_shutdown(), only from unbind, so
+ * without this hook the SW-override bits would persist into the reset
+ * cycle and the device would be physically unprotected during the
+ * bootloader phase before the next kernel takes over.
+ */
+static void pm8901_tm_shutdown(struct platform_device *pdev)
+{
+	struct pm8901_tm_chip *chip = platform_get_drvdata(pdev);
+
+	pm8901_tm_restore_hw_shutdown(chip);
+}
+
+/*
  * No explicit ->remove() needed: pm8901_tm_restore_hw_shutdown() is
  * registered as a devm action in probe and re-enables the PMIC's HW
  * auto-cut automatically on unbind.
@@ -398,8 +466,10 @@ static struct platform_driver pm8901_tm_driver = {
 	.driver = {
 		.name		= "pm8901-temp-alarm",
 		.of_match_table	= pm8901_tm_match_table,
+		.pm		= pm_sleep_ptr(&pm8901_tm_pm_ops),
 	},
-	.probe	= pm8901_tm_probe,
+	.probe		= pm8901_tm_probe,
+	.shutdown	= pm8901_tm_shutdown,
 };
 module_platform_driver(pm8901_tm_driver);
 
