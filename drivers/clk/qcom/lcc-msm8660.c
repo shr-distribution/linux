@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014, The Linux Foundation. All rights reserved.
- Herman van Hazendonk <github.com@herrie.org>
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) LPASS Clock Controller driver.
  *
