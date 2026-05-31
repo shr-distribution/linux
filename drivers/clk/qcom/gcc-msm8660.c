@@ -1571,18 +1571,6 @@ static struct clk_branch ppss_h_clk = {
 	},
 };
 
-/*
- * CE2 (Crypto Engine 2). On MSM8x60 the core functional clock and the
- * AHB interface clock share the same hardware enable bit (GCC_CE2_HCLK_CTL
- * 0x2740 BIT(4)). The QCE driver requests both "core" and "iface" by
- * name and devm_clk_get returns the SAME clk_hw for both, so consumer
- * reference-counting collapses to a single refcount over the underlying
- * branch. To preserve that property we expose a single clk_branch and
- * alias both DT IDs (CE2_H_CLK and CE2_P_CLK) at it in the provider
- * array below; defining two clk_branch structs that touch the same bit
- * would corrupt the common clock framework's per-clk refcount on the
- * shared hardware enable.
- */
 static struct clk_branch ce2_h_clk = {
 	.halt_reg = 0x2fd4,
 	.halt_bit = 0,
@@ -1591,6 +1579,24 @@ static struct clk_branch ce2_h_clk = {
 		.enable_mask = BIT(4),
 		.hw.init = &(struct clk_init_data){
 			.name = "ce2_h_clk",
+			.ops = &clk_branch_ops,
+		},
+	},
+};
+
+/*
+ * CE2 core/peripheral clock. On MSM8660, the core functional clock and
+ * AHB interface clock share the same hardware control register and bit.
+ * Vendor kernels map both "core_clk" and "iface_clk" to this same clock.
+ */
+static struct clk_branch ce2_p_clk = {
+	.halt_reg = 0x2fd4,
+	.halt_bit = 0,
+	.clkr = {
+		.enable_reg = 0x2740,
+		.enable_mask = BIT(4),
+		.hw.init = &(struct clk_init_data){
+			.name = "ce2_p_clk",
 			.ops = &clk_branch_ops,
 		},
 	},
@@ -2743,13 +2749,7 @@ static struct clk_regmap *gcc_msm8660_clks[] = {
 	[PMEM_CLK] = &pmem_clk.clkr,
 	[PPSS_H_CLK] = &ppss_h_clk.clkr,
 	[CE2_H_CLK] = &ce2_h_clk.clkr,
-	/*
-	 * CE2_P_CLK aliases CE2_H_CLK: they share the same hardware enable
-	 * bit, and the framework must see one refcounted clock to keep
-	 * enable/disable balanced across both "core" and "iface" QCE
-	 * consumer lookups. See the comment above ce2_h_clk.
-	 */
-	[CE2_P_CLK] = &ce2_h_clk.clkr,
+	[CE2_P_CLK] = &ce2_p_clk.clkr,
 	[PDM_SRC] = &pdm_src.clkr,
 	[PDM_CLK] = &pdm_clk.clkr,
 	[TSSC_CLK_SRC] = &tssc_src.clkr,
