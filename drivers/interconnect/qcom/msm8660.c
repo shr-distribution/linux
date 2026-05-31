@@ -984,7 +984,7 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 
 			qp->bwsum = devm_kcalloc(dev, desc->nslaves,
 						 sizeof(u16), GFP_KERNEL);
-			qp->arb = devm_kcalloc(dev, arb_size + 1,
+			qp->arb = devm_kcalloc(dev, arb_size,
 					       sizeof(u16), GFP_KERNEL);
 			qp->rpm_buf = devm_kcalloc(dev, desc->rpm_buf_size,
 						   sizeof(u32), GFP_KERNEL);
