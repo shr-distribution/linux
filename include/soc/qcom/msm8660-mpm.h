@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Qualcomm MSM8660 / APQ8060 MPM wake-source consumer interface.
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) MPM wake-source consumer interface.
  *
  * The MPM driver lives at drivers/irqchip/irq-msm8660-mpm.c. It exposes
  * TWO interfaces:
@@ -33,12 +33,14 @@
 #define MSM8660_MPM_PIN_SDC4_DAT1	23
 #define MSM8660_MPM_PIN_SDC4_DAT3	24
 
+struct device;
 struct device_node;
 struct msm8660_mpm;
 
 #if IS_ENABLED(CONFIG_QCOM_MSM8660_MPM)
 
-struct msm8660_mpm *msm8660_mpm_get(struct device_node *np,
+struct msm8660_mpm *msm8660_mpm_get(struct device *consumer,
+				    struct device_node *np,
 				    const char *propname);
 
 int msm8660_mpm_set_pin_wake(struct msm8660_mpm *mpm, unsigned int pin,
@@ -51,7 +53,8 @@ int msm8660_mpm_set_pin_type(struct msm8660_mpm *mpm, unsigned int pin,
 #else /* !CONFIG_QCOM_MSM8660_MPM */
 
 static inline struct msm8660_mpm *
-msm8660_mpm_get(struct device_node *np, const char *propname)
+msm8660_mpm_get(struct device *consumer, struct device_node *np,
+		const char *propname)
 {
 	return ERR_PTR(-ENODEV);
 }
