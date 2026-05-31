@@ -633,11 +633,21 @@ static void msm8660_pack_rpm_data(const u16 *bwsum, int nslaves,
 		index++;
 	}
 
-	/* Handle boundary between bwsum and arb for odd nslaves */
+	/*
+	 * Handle boundary between bwsum and arb for odd nslaves. When the
+	 * fabric has no master ports (arb_size == 0) the arb[0] access would
+	 * read out of bounds; pad the lone bwsum into the low half of the
+	 * word instead.
+	 */
 	if (nslaves & 1) {
-		buf[index] = ((u32)arb[0] << 16) | bwsum[i];
+		if (arb_size > 0) {
+			buf[index] = ((u32)arb[0] << 16) | bwsum[i];
+			i = 1;
+		} else {
+			buf[index] = bwsum[i];
+			i = 0;
+		}
 		index++;
-		i = 1;	/* Start arb from index 1 (index 0 already packed) */
 	} else {
 		i = 0;
 	}
@@ -761,9 +771,14 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 			ret = clk_set_rate(qp->bus_clks[i].clk, rate);
 			if (ret) {
 				dev_err(provider->dev,
-					"%s clk_set_rate error: %d\n",
-					qp->bus_clks[i].id, ret);
-				ret = 0;
+					"%s clk_set_rate(%llu) error: %d\n",
+					qp->bus_clks[i].id, rate, ret);
+				/*
+				 * Bail without updating qp->rate so the next
+				 * icc_set call will retry the rate change
+				 * rather than treating it as cached-applied.
+				 */
+				return ret;
 			}
 		}
 		qp->rate = rate;
@@ -1039,8 +1054,13 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 
 err_remove_nodes:
 	icc_nodes_remove(provider);
-	clk_bulk_disable_unprepare(qp->num_clks, qp->bus_clks);
-
+	/*
+	 * Do NOT call clk_bulk_disable_unprepare() here: the devm cleanup
+	 * action registered after clk_bulk_prepare_enable() will run
+	 * automatically when probe returns an error and devres unwinds.
+	 * Calling it manually would double-unprepare and corrupt the
+	 * clock-framework refcount.
+	 */
 	return ret;
 }
 
@@ -1050,8 +1070,7 @@ static void msm8660_icc_remove(struct platform_device *pdev)
 
 	icc_provider_deregister(&qp->provider);
 	icc_nodes_remove(&qp->provider);
-	if (qp->num_clks)
-		clk_bulk_disable_unprepare(qp->num_clks, qp->bus_clks);
+	/* clk cleanup happens via devm_add_action_or_reset on remove. */
 }
 
 static const struct of_device_id msm8660_noc_of_match[] = {
