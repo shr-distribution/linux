@@ -1,8 +1,8 @@
-/* SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause) */
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /*
  * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) interconnect IDs
  *
- * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on webOS kernel msm_bus_board_8660.c
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
