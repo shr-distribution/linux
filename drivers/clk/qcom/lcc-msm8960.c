@@ -6,11 +6,9 @@
 #include <linux/kernel.h>
 #include <linux/bitops.h>
 #include <linux/err.h>
-#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/pm.h>
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
 
@@ -93,9 +91,9 @@ static const struct freq_tbl clk_tbl_aif_osr_393[] = {
 
 /*
  * MSM8x60 family (MSM8260/MSM8660/APQ8060) PLL4 runs at 540.672 MHz
- * (24.576 MHz * 22, L=0x16). Divisors are taken from the legacy webOS
- * clock-8x60.c driver. AIF_OSR has an 8-bit M/N counter, so 512000 Hz
- * is not representable with this PLL frequency and is omitted.
+ * (24.576 MHz * 22, L=0x16). Divisors are derived from the legacy
+ * webOS clock-8x60.c driver. AIF_OSR has an 8-bit M/N counter, so
+ * 512000 Hz is not representable against this parent and is omitted.
  */
 static const struct freq_tbl clk_tbl_aif_osr_540[] = {
 	{   768000, P_PLL4, 4, 1, 176 },
@@ -482,72 +480,21 @@ static const struct qcom_cc_desc lcc_msm8960_desc = {
 	.num_clks = ARRAY_SIZE(lcc_msm8960_clks),
 };
 
-/*
- * Per-compatible quirks for SoC families that share the LCC IP block
- * but require behaviour that diverges from the MSM8960 default.
- *
- * The MSM8x60 family (MSM8260/MSM8660/APQ8060) needs:
- *
- *   - Singleton enforcement, because the file-static clk_rcg structs
- *     above are mutated by the freq-plan selection below and a second
- *     probe of the same driver on the same SoC would race the assignment
- *     and corrupt each other's freq_tbl pointers.
- *
- *   - Resume re-application of the LPASS Primary PLL mux: on this
- *     family the LPASS power domain is collapsed during system sleep,
- *     which resets register 0xc4 to its default of 0 (PXO). The audio
- *     clock tree silently produces wrong rates until the next reboot
- *     unless the mux is re-armed.
- *
- * .pll4_quirks gates both behaviours. The MSM8960/APQ8064/MDM9615
- * entries set it to false and the driver's behaviour for them is
- * unchanged.
- */
-struct lcc_msm8960_quirks {
-	bool pll4_quirks;
-};
-
-static const struct lcc_msm8960_quirks lcc_msm8x60_quirks = {
-	.pll4_quirks = true,
-};
-
 static const struct of_device_id lcc_msm8960_match_table[] = {
-	{ .compatible = "qcom,lcc-msm8260", .data = &lcc_msm8x60_quirks },
-	{ .compatible = "qcom,lcc-msm8660", .data = &lcc_msm8x60_quirks },
-	{ .compatible = "qcom,lcc-apq8060", .data = &lcc_msm8x60_quirks },
-	{ .compatible = "qcom,lcc-msm8960" },
+	{ .compatible = "qcom,lcc-apq8060" },
 	{ .compatible = "qcom,lcc-apq8064" },
 	{ .compatible = "qcom,lcc-mdm9615" },
+	{ .compatible = "qcom,lcc-msm8260" },
+	{ .compatible = "qcom,lcc-msm8660" },
+	{ .compatible = "qcom,lcc-msm8960" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, lcc_msm8960_match_table);
 
-/*
- * Single-instance bind tracking for the MSM8x60 family. The probe path
- * mutates the file-static clk_rcg .freq_tbl pointers based on the
- * detected PLL4 plan; a second concurrent probe would race that
- * assignment. The bound flag is per-compatible-family rather than
- * per-driver-instance because the bug it guards against is the shared
- * file-static state, not anything tied to the driver struct.
- */
-static bool lcc_msm8x60_bound;
-static DEFINE_MUTEX(lcc_msm8x60_bound_lock);
-
 static int lcc_msm8960_probe(struct platform_device *pdev)
 {
-	const struct lcc_msm8960_quirks *quirks;
 	u32 val;
-	int ret;
 	struct regmap *regmap;
-
-	quirks = of_device_get_match_data(&pdev->dev);
-
-	if (quirks && quirks->pll4_quirks) {
-		guard(mutex)(&lcc_msm8x60_bound_lock);
-		if (lcc_msm8x60_bound)
-			return dev_err_probe(&pdev->dev, -EBUSY,
-				"only a single LCC instance is supported\n");
-	}
 
 	/* patch for the cxo <-> pxo difference */
 	if (of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-mdm9615")) {
@@ -583,44 +530,14 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	/* Enable PLL4 source on the LPASS Primary PLL Mux */
 	regmap_write(regmap, 0xc4, 0x1);
 
-	ret = qcom_cc_really_probe(&pdev->dev, &lcc_msm8960_desc, regmap);
-	if (ret)
-		return ret;
-
-	if (quirks && quirks->pll4_quirks) {
-		/* Stash regmap for the resume path's mux re-application. */
-		platform_set_drvdata(pdev, regmap);
-		scoped_guard(mutex, &lcc_msm8x60_bound_lock)
-			lcc_msm8x60_bound = true;
-	}
-	return 0;
+	return qcom_cc_really_probe(&pdev->dev, &lcc_msm8960_desc, regmap);
 }
-
-/*
- * Resume re-applies the LPASS Primary PLL mux selection because on
- * MSM8x60 the LPASS power domain collapses during system sleep and
- * register 0xc4 is reset to its hardware default of 0 (PXO). 8960 and
- * later SoCs do not exhibit this behaviour and do not set drvdata, so
- * the helper is a no-op for them.
- */
-static int lcc_msm8960_resume(struct device *dev)
-{
-	struct regmap *regmap = dev_get_drvdata(dev);
-
-	if (!regmap)
-		return 0;
-
-	return regmap_write(regmap, 0xc4, 0x1);
-}
-
-static DEFINE_SIMPLE_DEV_PM_OPS(lcc_msm8960_pm_ops, NULL, lcc_msm8960_resume);
 
 static struct platform_driver lcc_msm8960_driver = {
 	.probe		= lcc_msm8960_probe,
 	.driver		= {
 		.name	= "lcc-msm8960",
 		.of_match_table = lcc_msm8960_match_table,
-		.pm	= pm_sleep_ptr(&lcc_msm8960_pm_ops),
 	},
 };
 module_platform_driver(lcc_msm8960_driver);
