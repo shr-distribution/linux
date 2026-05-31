@@ -724,6 +724,24 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 				    "RPM fabric ARB write failed: %d\n", ret);
 }
 
+/*
+ * u64-safe replacement for icc_std_aggregate(): the standard helper sums
+ * average bandwidth into a u32, which can wrap around when summed across
+ * many high-bandwidth nodes. We accumulate in u64 internally and saturate
+ * back to U32_MAX on overflow rather than wrapping silently to a small
+ * value that would underclock the fabric.
+ */
+static int msm8660_icc_aggregate(struct icc_node *node, u32 tag,
+				 u32 avg_bw, u32 peak_bw,
+				 u32 *agg_avg, u32 *agg_peak)
+{
+	u64 new_avg = (u64)*agg_avg + avg_bw;
+
+	*agg_avg = (new_avg > U32_MAX) ? U32_MAX : (u32)new_avg;
+	*agg_peak = max(*agg_peak, peak_bw);
+	return 0;
+}
+
 static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 {
 	struct msm8660_icc_node *src_qn;
@@ -1010,7 +1028,7 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	provider = &qp->provider;
 	provider->dev = dev;
 	provider->set = msm8660_icc_set;
-	provider->aggregate = icc_std_aggregate;
+	provider->aggregate = msm8660_icc_aggregate;
 	provider->xlate = of_icc_xlate_onecell;
 	provider->data = data;
 	provider->get_bw = msm8660_get_bw;
@@ -1118,11 +1136,12 @@ static int __init msm8660_noc_driver_init(void)
 }
 core_initcall(msm8660_noc_driver_init);
 
-static void __exit msm8660_noc_driver_exit(void)
-{
-	platform_driver_unregister(&msm8660_noc_driver);
-}
-module_exit(msm8660_noc_driver_exit);
+/*
+ * No module_exit: Kconfig is bool, the driver is built-in only, and
+ * unbind/unload paths are not exercised. core_initcall + module_exit
+ * mix badly anyway (you cannot unload something registered earlier
+ * than module_init level).
+ */
 
 MODULE_DESCRIPTION("Qualcomm MSM8x60 interconnect driver");
 MODULE_LICENSE("GPL v2");

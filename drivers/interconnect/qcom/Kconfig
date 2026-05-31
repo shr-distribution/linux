@@ -81,8 +81,12 @@ config INTERCONNECT_QCOM_MSM8953
 	  platforms.
 
 config INTERCONNECT_QCOM_MSM8660
-	tristate "Qualcomm MSM8x60 interconnect driver"
-	depends on INTERCONNECT_QCOM
+	# bool, not tristate: this provider must be registered at
+	# core_initcall to be ready before icc_init (subsys_initcall) walks
+	# devicetree consumers; a loadable module cannot satisfy that
+	# ordering. Build-in only.
+	bool "Qualcomm MSM8x60 interconnect driver"
+	depends on INTERCONNECT_QCOM=y
 	depends on MFD_QCOM_RPM
 	help
 	  This is a driver for the Qualcomm fabric-based bus interconnect
