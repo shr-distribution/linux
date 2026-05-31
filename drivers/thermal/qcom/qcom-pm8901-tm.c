@@ -9,8 +9,8 @@
  * override enabled, PWM gating at 8 Hz) and registers a thermal-of
  * sensor so a board DT can declare trip points and a critical action.
  *
- * Copyright (c) 2010-2011, Code Aurora Forum.
- * Copyright (c) 2026, HP TouchPad mainline port.
+ * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  */
 
 #include <linux/bitfield.h>
