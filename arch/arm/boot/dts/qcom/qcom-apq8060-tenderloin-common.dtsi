@@ -1044,7 +1044,8 @@
 			reg = <0x12500000 0x200>,
 			      <0x12500200 0x200>;
 			interrupt-parent = <&msm8660_mpm>;
-			interrupts = <100 IRQ_TYPE_LEVEL_HIGH>;
+			/* MPM pin 25 routes to USB1_HS GIC SPI 100 via qcom,mpm-pin-map */
+			interrupts = <25 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&gcc USB_HS1_XCVR_CLK>,
 				 <&gcc USB_HS1_H_CLK>,
 				 <&rpmcc RPM_DAYTONA_FABRIC_CLK>;
