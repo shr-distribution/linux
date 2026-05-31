@@ -560,10 +560,9 @@
 		 * msm8660_mpm_set_pin_wake() API to twiddle MPM enable
 		 * bits directly.
 		 */
-		msm8660_mpm: interrupt-controller {
+		msm8660_mpm: interrupt-controller@1049d8 {
 			compatible = "qcom,msm8660-mpm";
-			qcom,rpm-syscon = <&rpm>;
-			qcom,mpm-offset = <0x9d8>;
+			reg = <0x001049d8 0x440>;
 			interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
 			mboxes = <&gcc_ipc 1>;
 			interrupt-controller;
@@ -1677,7 +1676,19 @@
 				 <&mmcc ROT_AXI_CLK>;
 			clock-names = "core", "iface", "axi";
 			power-domains = <&mmcc ROT_GDSC>;
-			iommus = <&rot_iommu 0>;
+			/*
+			 * No iommus here -- mirrors the VFE workaround. The
+			 * rotator's V4L2 m2m driver uses vb2-dma-contig and the
+			 * DMA-buf imports it receives from VIDC point at physically
+			 * contiguous CMA pages, so the engine can read/write
+			 * physical addresses directly. Attaching rot_iommu flips
+			 * its context bank out of passthrough into translation with
+			 * an incomplete page table, and any DMA into the CMA region
+			 * (especially after CMA was relocated into the lower
+			 * System RAM bank at 0x42000000) faults with FSR=0x80 [MHF]
+			 * "no translation for the access". The legacy webOS
+			 * pmem/m2m path used physical addresses for the same reason.
+			 */
 			interconnects = <&mmss_fabric MMFAB_MAS_ROTATOR
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "rotator-mem";
