@@ -200,19 +200,22 @@ static irqreturn_t pm8901_tm_isr(int irq, void *data)
 	 * including them in the AND has no hardware effect but keeps the
 	 * intent obvious.
 	 *
-	 * On regmap_read failure we still issue a blind clearing write
-	 * (using the cached previous reg value with the SD bits cleared)
-	 * so a transient SSBI bus error cannot leave the IRQ asserted
-	 * indefinitely. If the bus is permanently dead the next write
-	 * will fail too, but at least we have tried to break the
-	 * livelock window.
+	 * On regmap_read failure we still issue a blind clearing write so
+	 * a transient SSBI bus error cannot leave the IRQ asserted
+	 * indefinitely. The blind write preserves CTRL_OVRD_ST2/ST3 (kept
+	 * permanently set after pm8901_tm_enable_sw_override() in probe);
+	 * writing zero would silently revert thermal control to the PMIC
+	 * hardware auto-shutdown path and the kernel thermal zone would
+	 * be ignored from that point on. If the bus is permanently dead
+	 * the next write fails too, but at least the livelock window is
+	 * closed without disarming kernel control.
 	 */
 	ret = pm8901_tm_read_ctrl(chip, &reg);
 	if (ret) {
 		dev_err_ratelimited(chip->dev,
 				    "alarm IRQ: ctrl read failed (%d); attempting blind clear\n",
 				    ret);
-		reg = 0;
+		reg = CTRL_OVRD_ST3 | CTRL_OVRD_ST2;
 	}
 	if (ret || (reg & (CTRL_ST2_SD | CTRL_ST3_SD))) {
 		reg &= ~(CTRL_ST2_SD | CTRL_ST3_SD | CTRL_STATUS_MASK);
