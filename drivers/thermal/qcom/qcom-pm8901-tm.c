@@ -188,15 +188,33 @@ static irqreturn_t pm8901_tm_isr(int irq, void *data)
 				    ret, chip->temp);
 
 	/*
-	 * Clearing ST2_SD / ST3_SD (write-1-to-clear) is REQUIRED to
-	 * deassert the level-triggered alarm IRQ from the PMIC. Without
-	 * this clear the same IRQ refires immediately on return and we
-	 * livelock. CTRL_STATUS_MASK is masked off in the same write
-	 * because those bits are RO-but-don't-care-on-write; preserving
-	 * them in a RMW would have no effect.
+	 * Clearing ST2_SD / ST3_SD is REQUIRED to deassert the
+	 * level-triggered alarm IRQ from the PMIC. Without this the same
+	 * IRQ refires immediately on return and we livelock.
+	 *
+	 * PM8901 CTRL_ST{2,3}_SD are write-zero-to-clear (despite their
+	 * "SD" status-bit naming): the legacy webOS driver clears them
+	 * with a RMW that masks them off (reg &= ~bits), and that is the
+	 * pattern we follow here. CTRL_STATUS_MASK is masked off in the
+	 * same write because those bits are read-only and ignore writes;
+	 * including them in the AND has no hardware effect but keeps the
+	 * intent obvious.
+	 *
+	 * On regmap_read failure we still issue a blind clearing write
+	 * (using the cached previous reg value with the SD bits cleared)
+	 * so a transient SSBI bus error cannot leave the IRQ asserted
+	 * indefinitely. If the bus is permanently dead the next write
+	 * will fail too, but at least we have tried to break the
+	 * livelock window.
 	 */
 	ret = pm8901_tm_read_ctrl(chip, &reg);
-	if (!ret && (reg & (CTRL_ST2_SD | CTRL_ST3_SD))) {
+	if (ret) {
+		dev_err_ratelimited(chip->dev,
+				    "alarm IRQ: ctrl read failed (%d); attempting blind clear\n",
+				    ret);
+		reg = 0;
+	}
+	if (ret || (reg & (CTRL_ST2_SD | CTRL_ST3_SD))) {
 		reg &= ~(CTRL_ST2_SD | CTRL_ST3_SD | CTRL_STATUS_MASK);
 		pm8901_tm_write_ctrl(chip, reg);
 	}
