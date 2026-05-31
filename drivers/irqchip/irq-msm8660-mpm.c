@@ -225,6 +225,13 @@ static bool msm8660_mpm_raw_pin_allowed(struct msm8660_mpm *mpm,
  *   2. Doorbell the RPM so it re-reads the request banks and stops
  *      asserting the IPC line. The RPM caches the vMPM request
  *      copies and will not notice the CLEAR until it is poked.
+ *
+ * This is a threaded IRQ (devm_request_threaded_irq with IRQF_ONESHOT)
+ * because msm8660_mpm_doorbell() takes the mailbox-core spinlock_t,
+ * which is sleepable on PREEMPT_RT, and because we hold bus_lock for
+ * the duration of the handler so the ENABLE read and CLEAR write see
+ * a consistent view of the bank that cannot be torn by a concurrent
+ * irq_set_wake() (which also takes bus_lock).
  */
 static irqreturn_t msm8660_mpm_irq(int irq, void *data)
 {
@@ -233,6 +240,8 @@ static irqreturn_t msm8660_mpm_irq(int irq, void *data)
 	unsigned long enable[MSM8660_MPM_REG_WIDTH];
 	bool any_cleared = false;
 	int i, j;
+
+	mutex_lock(&mpm->bus_lock);
 
 	for (i = 0; i < MSM8660_MPM_REG_WIDTH; i++) {
 		pending[i] = msm8660_mpm_read(mpm,
@@ -267,6 +276,8 @@ static irqreturn_t msm8660_mpm_irq(int irq, void *data)
 		(void)readl(mpm->base + MSM8660_MPM_REG_CLEAR);
 		msm8660_mpm_doorbell(mpm);
 	}
+
+	mutex_unlock(&mpm->bus_lock);
 
 	for (i = 0; i < MSM8660_MPM_REG_WIDTH; i++) {
 		unsigned long bits = pending[i];
@@ -853,12 +864,21 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 	}
 
 	/*
+	 * Threaded handler: msm8660_mpm_irq() calls msm8660_mpm_doorbell()
+	 * which takes the mailbox core's spinlock_t (sleepable on PREEMPT_RT)
+	 * and holds bus_lock for the duration of the read-modify-clear path
+	 * so it cannot run from hardirq context. IRQF_ONESHOT keeps the
+	 * parent GIC line masked until the kthread completes, so a flood of
+	 * re-asserts cannot re-enter the handler before bus_lock is dropped.
+	 *
 	 * .suppress_bind_attrs = true prevents the driver from ever being
-	 * unbound, so devm_request_irq is safe: the handler cannot outlive
-	 * the irqdomain because both have the lifetime of the kernel.
+	 * unbound, so devm_request_threaded_irq is safe: the handler cannot
+	 * outlive the irqdomain because both have the lifetime of the kernel.
 	 */
-	ret = devm_request_irq(dev, mpm->parent_irq, msm8660_mpm_irq,
-			       IRQF_TRIGGER_HIGH | IRQF_NO_SUSPEND,
+	ret = devm_request_threaded_irq(dev, mpm->parent_irq,
+			       NULL, msm8660_mpm_irq,
+			       IRQF_TRIGGER_HIGH | IRQF_NO_SUSPEND |
+			       IRQF_ONESHOT,
 			       "msm8660-mpm", mpm);
 	if (ret) {
 		dev_err(dev, "failed to request IRQ %d: %d\n",
