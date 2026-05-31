@@ -173,12 +173,28 @@ static irqreturn_t pm8901_tm_isr(int irq, void *data)
 
 	mutex_lock(&chip->lock);
 
+	/*
+	 * Update temperature; if the SSBI read fails we still proceed to
+	 * notify the thermal core with the previously cached value so the
+	 * core can pick up at the next periodic poll. Silently dropping
+	 * the IRQ would leave the system without thermal protection until
+	 * the next interrupt, which may never come if the SSBI bus has
+	 * gone unresponsive.
+	 */
 	ret = pm8901_tm_update_temp_locked(chip);
-	if (ret) {
-		mutex_unlock(&chip->lock);
-		return IRQ_HANDLED;
-	}
+	if (ret)
+		dev_err_ratelimited(chip->dev,
+				    "alarm IRQ: temperature update failed: %d (using cached %d)\n",
+				    ret, chip->temp);
 
+	/*
+	 * Clearing ST2_SD / ST3_SD (write-1-to-clear) is REQUIRED to
+	 * deassert the level-triggered alarm IRQ from the PMIC. Without
+	 * this clear the same IRQ refires immediately on return and we
+	 * livelock. CTRL_STATUS_MASK is masked off in the same write
+	 * because those bits are RO-but-don't-care-on-write; preserving
+	 * them in a RMW would have no effect.
+	 */
 	ret = pm8901_tm_read_ctrl(chip, &reg);
 	if (!ret && (reg & (CTRL_ST2_SD | CTRL_ST3_SD))) {
 		reg &= ~(CTRL_ST2_SD | CTRL_ST3_SD | CTRL_STATUS_MASK);
@@ -239,14 +255,14 @@ out:
 }
 
 /*
- * Re-enable PM8901's hardware auto-cut on the way out, so the PMIC takes
- * over thermal protection again once the kernel is no longer the
- * shutdown agent. Best-effort: log on failure, do not propagate the
- * error (there is nothing the unbind path can do about it).
+ * Re-enable PM8901's hardware auto-cut so the PMIC takes over thermal
+ * protection again. Returns the SSBI error if the write fails, or 0
+ * on success. Used both as a callable helper (suspend path needs the
+ * return value to abort PM if HW protection cannot be re-engaged) and
+ * as a devm action via the void wrapper below.
  */
-static void pm8901_tm_restore_hw_shutdown(void *data)
+static int __pm8901_tm_restore_hw_shutdown(struct pm8901_tm_chip *chip)
 {
-	struct pm8901_tm_chip *chip = data;
 	int ret;
 	u8 reg;
 
@@ -257,6 +273,19 @@ static void pm8901_tm_restore_hw_shutdown(void *data)
 		ret = pm8901_tm_write_ctrl(chip, reg);
 	}
 	mutex_unlock(&chip->lock);
+	return ret;
+}
+
+/*
+ * devm-action / shutdown / unbind wrapper: best-effort, log on failure.
+ * Returns void because devm_add_action / platform_driver .shutdown both
+ * require that signature, and at unbind there is nothing the caller
+ * could do with an error anyway.
+ */
+static void pm8901_tm_restore_hw_shutdown(void *data)
+{
+	struct pm8901_tm_chip *chip = data;
+	int ret = __pm8901_tm_restore_hw_shutdown(chip);
 
 	if (ret)
 		dev_warn(chip->dev,
@@ -409,9 +438,19 @@ static int pm8901_tm_probe(struct platform_device *pdev)
 static int pm8901_tm_suspend(struct device *dev)
 {
 	struct pm8901_tm_chip *chip = dev_get_drvdata(dev);
+	int ret;
 
-	pm8901_tm_restore_hw_shutdown(chip);
-	return 0;
+	/*
+	 * If we cannot hand thermal protection back to the PMIC HW
+	 * auto-cut for the duration of sleep, abort the suspend rather
+	 * than going to sleep with no thermal protection at all.
+	 */
+	ret = __pm8901_tm_restore_hw_shutdown(chip);
+	if (ret)
+		dev_err(dev,
+			"refusing to suspend; could not re-engage PMIC HW thermal shutdown: %d\n",
+			ret);
+	return ret;
 }
 
 /*
