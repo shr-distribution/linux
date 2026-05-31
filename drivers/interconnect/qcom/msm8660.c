@@ -784,6 +784,19 @@ static int msm8660_get_bw(struct icc_node *node, u32 *avg, u32 *peak)
 }
 
 /*
+ * devm cleanup paired with clk_bulk_prepare_enable() in probe. Registered
+ * via devm_add_action_or_reset() so any subsequent probe error path
+ * (including -EPROBE_DEFER from msm8660_get_rpm()) reliably releases the
+ * prepare/enable reference rather than leaking it across the retry.
+ */
+static void msm8660_icc_clk_release(void *data)
+{
+	struct msm8660_icc_provider *qp = data;
+
+	clk_bulk_disable_unprepare(qp->num_clks, qp->bus_clks);
+}
+
+/*
  * Look up the RPM that owns fabric arbitration writes.
  *
  * Returns NULL if the DT does not have a "qcom,rpm" phandle (in which
@@ -820,24 +833,32 @@ static struct qcom_rpm *msm8660_get_rpm(struct device *dev)
 		return ERR_PTR(-EPROBE_DEFER);
 	}
 
-	rpm = dev_get_drvdata(&rpm_pdev->dev);
-	if (!rpm) {
-		put_device(&rpm_pdev->dev);
-		dev_dbg(dev, "RPM not ready, deferring probe\n");
-		return ERR_PTR(-EPROBE_DEFER);
-	}
-
 	/*
-	 * Keep the RPM device alive for as long as we are bound; without
-	 * a device link, the devres-managed qcom_rpm could be released
-	 * out from under us if the RPM driver were unbound at runtime,
-	 * leaving a dangling pointer in qp->rpm.
+	 * Pin the supplier BEFORE reading its drvdata. The device link
+	 * (MANAGED, the default state) prevents the RPM driver from being
+	 * unbound while we hold the link, which closes the window where a
+	 * concurrent unbind+rebind could free the qcom_rpm pointer between
+	 * dev_get_drvdata() and the link being established. If the link
+	 * cannot be added (e.g. supplier is in the process of being
+	 * removed) we defer and retry.
 	 */
 	link = device_link_add(dev, &rpm_pdev->dev,
 			       DL_FLAG_AUTOREMOVE_CONSUMER);
 	put_device(&rpm_pdev->dev);
 	if (!link) {
 		dev_warn(dev, "failed to add device link to RPM, deferring\n");
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+
+	/*
+	 * Safe to read drvdata now: the device link pins the supplier so
+	 * it cannot be unbound until our consumer (this interconnect
+	 * provider) is unbound first.
+	 */
+	rpm = dev_get_drvdata(&rpm_pdev->dev);
+	if (!rpm) {
+		dev_dbg(dev, "RPM not ready, deferring probe\n");
+		device_link_remove(dev, &rpm_pdev->dev);
 		return ERR_PTR(-EPROBE_DEFER);
 	}
 
@@ -904,6 +925,18 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_warn(dev, "Failed to enable bus clocks: %d\n", ret);
 			qp->num_clks = 0;
+		} else {
+			/*
+			 * Register the cleanup right after a successful
+			 * prepare_enable so any later -EPROBE_DEFER or other
+			 * probe error path (e.g. msm8660_get_rpm failing
+			 * with -EPROBE_DEFER below) does not leak a clock
+			 * prepare/enable reference across the retry.
+			 */
+			ret = devm_add_action_or_reset(dev,
+				msm8660_icc_clk_release, qp);
+			if (ret)
+				return ret;
 		}
 	}
 
