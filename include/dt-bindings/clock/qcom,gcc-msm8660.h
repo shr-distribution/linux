@@ -87,7 +87,7 @@
 #define TSIF_REF_SRC                        74      /* drv legacy:TP,Pre3 - TSIF ref src */
 #define TSIF_REF_CLK                        75      /* drv legacy:HTC,Sam,TP,Pre3 - TSIF ref */
 #define CE1_H_CLK                           76      /* header-only - CE1 (crypto engine 1) AHB */
-#define CE2_H_CLK                           77      /* drv+dt - CE2 AHB */
+#define CE2_H_CLK                           77      /* drv - CE2 AHB */
 #define SFPB_H_CLK_SRC                      78      /* header-only - SFPB AHB src */
 /* header-only - SFPB (system peripheral bridge) AHB */
 #define SFPB_H_CLK				79
@@ -288,7 +288,7 @@
 /* New clock IDs added in this cleanup. Append-only — never insert in the
  * middle of the existing numbering, since that would shift IDs of
  * earlier entries and break DT ABI for boards already using them. */
-#define CE2_P_CLK                           258     /* drv+dt legacy:HTC,Sam,TP - CE2 APB (newly assigned, was missing) */
+#define CE2_P_CLK                           258     /* drv legacy:HTC,Sam,TP - CE2 APB (newly assigned, was missing) */
 #define PLL4_VOTE                           259     /* drv legacy - PLL4 software vote */
 
 #endif
