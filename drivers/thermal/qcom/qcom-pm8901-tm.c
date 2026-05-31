@@ -93,9 +93,10 @@ static int pm8901_tm_write_pwm(struct pm8901_tm_chip *chip, u8 val)
  *    plus +HYSTERESIS so we don't bounce
  *  - on a falling stage transition, use the upper bound of the new stage
  *    minus -HYSTERESIS
- *  - on the first read after probe (initialised == false), pick a
- *    representative point: midpoint of the stage range, or
- *    PM8901_TEMP_NO_ALARM when stage == 0.
+ *  - on the first read after probe (initialised == false), report the
+ *    lower bound of the current stage (the most conservative estimate
+ *    given that the hardware only tells us "we crossed this stage's
+ *    threshold"), or PM8901_TEMP_NO_ALARM when stage == 0.
  */
 static int pm8901_tm_update_temp_locked(struct pm8901_tm_chip *chip)
 {
@@ -194,8 +195,12 @@ static irqreturn_t pm8901_tm_isr(int irq, void *data)
 
 /*
  * Program PM8901 to the legacy default: threshold-set 0 (105 / 125 / 145 C),
- * software override enabled (kernel handles shutdown, PMIC does not auto-cut),
- * PWM at 8 Hz (legacy "cut down on unnecessary interrupts" rate).
+ * PWM at 8 Hz (legacy "cut down on unnecessary interrupts" rate), and
+ * prime the cached temperature. This intentionally does NOT yet flip the
+ * software-override bits; HW auto-shutdown is left enabled here so the
+ * PMIC keeps protecting the part if any later probe step fails. The
+ * SW-override switch happens in pm8901_tm_enable_sw_override() and is
+ * paired with a devm action that reverts the bits if the driver unbinds.
  */
 static int pm8901_tm_init_hw(struct pm8901_tm_chip *chip)
 {
@@ -208,13 +213,8 @@ static int pm8901_tm_init_hw(struct pm8901_tm_chip *chip)
 	if (ret)
 		goto out;
 
-	/*
-	 * Enable software override so PMIC does NOT auto-shut-down on stage 3.
-	 * Critical-trip orderly_poweroff is delivered by the kernel thermal
-	 * core via the DT thermal-zone trip with type = "critical".
-	 */
-	reg = (reg & ~(CTRL_OVRD_MASK | CTRL_STATUS_MASK | CTRL_THRESH_MASK)) |
-	      CTRL_OVRD_ST3 | CTRL_OVRD_ST2;
+	/* Clear status + threshold bits, leave OVRD bits as the HW found them. */
+	reg = reg & ~(CTRL_STATUS_MASK | CTRL_THRESH_MASK);
 	ret = pm8901_tm_write_ctrl(chip, reg);
 	if (ret)
 		goto out;
@@ -235,6 +235,57 @@ static int pm8901_tm_init_hw(struct pm8901_tm_chip *chip)
 out:
 	mutex_unlock(&chip->lock);
 	return ret;
+}
+
+/*
+ * Re-enable PM8901's hardware auto-cut on the way out, so the PMIC takes
+ * over thermal protection again once the kernel is no longer the
+ * shutdown agent. Best-effort: log on failure, do not propagate the
+ * error (there is nothing the unbind path can do about it).
+ */
+static void pm8901_tm_restore_hw_shutdown(void *data)
+{
+	struct pm8901_tm_chip *chip = data;
+	int ret;
+	u8 reg;
+
+	mutex_lock(&chip->lock);
+	ret = pm8901_tm_read_ctrl(chip, &reg);
+	if (!ret) {
+		reg &= ~CTRL_OVRD_MASK;
+		ret = pm8901_tm_write_ctrl(chip, reg);
+	}
+	mutex_unlock(&chip->lock);
+
+	if (ret)
+		dev_warn(chip->dev,
+			 "failed to restore PMIC HW auto-shutdown: %d\n", ret);
+}
+
+/*
+ * Hand thermal protection responsibility from the PMIC's hardware
+ * auto-cut to the kernel thermal core. This is the LAST step of probe
+ * so that, if any earlier step fails, the PMIC keeps protecting the
+ * part on its own. Once it succeeds we install a devm action that
+ * re-enables HW auto-cut if/when the driver is unbound.
+ */
+static int pm8901_tm_enable_sw_override(struct pm8901_tm_chip *chip)
+{
+	int ret;
+	u8 reg;
+
+	mutex_lock(&chip->lock);
+	ret = pm8901_tm_read_ctrl(chip, &reg);
+	if (!ret) {
+		reg = (reg & ~CTRL_OVRD_MASK) | CTRL_OVRD_ST3 | CTRL_OVRD_ST2;
+		ret = pm8901_tm_write_ctrl(chip, reg);
+	}
+	mutex_unlock(&chip->lock);
+	if (ret)
+		return ret;
+
+	return devm_add_action_or_reset(chip->dev,
+					pm8901_tm_restore_hw_shutdown, chip);
 }
 
 static int pm8901_tm_probe(struct platform_device *pdev)
@@ -293,32 +344,49 @@ static int pm8901_tm_probe(struct platform_device *pdev)
 				     "hi-alarm IRQ request failed\n");
 
 	platform_set_drvdata(pdev, chip);
+
+	/*
+	 * All resources that we need on the thermal hot path are now in
+	 * place; hand thermal-shutdown responsibility from the PMIC's
+	 * hardware auto-cut to the kernel thermal core. If this fails the
+	 * PMIC is left with its original (post-reset) HW auto-cut intact,
+	 * so we never leave the part unprotected.
+	 */
+	ret = pm8901_tm_enable_sw_override(chip);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to enable SW thermal override\n");
+
 	thermal_zone_device_update(chip->tz_dev, THERMAL_EVENT_UNSPECIFIED);
 
-	dev_info(&pdev->dev,
-		 "PM8901 thermal alarm: base=0x%x stage=%u thresh=%u temp=%d\n",
-		 chip->base, chip->stage, chip->thresh, chip->temp);
+	{
+		unsigned int stage, thresh;
+		int temp;
+
+		/*
+		 * IRQs and thermal-core polling are live by now, so the
+		 * cached state can be updated under chip->lock at any time.
+		 * Snapshot under the lock so the boot banner is consistent.
+		 */
+		mutex_lock(&chip->lock);
+		stage = chip->stage;
+		thresh = chip->thresh;
+		temp = chip->temp;
+		mutex_unlock(&chip->lock);
+
+		dev_info(&pdev->dev,
+			 "PM8901 thermal alarm: base=0x%x stage=%u thresh=%u temp=%d\n",
+			 chip->base, stage, thresh, temp);
+	}
 
 	return 0;
 }
 
-static void pm8901_tm_remove(struct platform_device *pdev)
-{
-	struct pm8901_tm_chip *chip = platform_get_drvdata(pdev);
-	u8 reg;
-
-	/*
-	 * Disable software override on the way out so the PMIC reverts to
-	 * its hardware auto-cut behaviour if the kernel is no longer the
-	 * shutdown agent. Best-effort: ignore errors.
-	 */
-	mutex_lock(&chip->lock);
-	if (!pm8901_tm_read_ctrl(chip, &reg)) {
-		reg &= ~CTRL_OVRD_MASK;
-		pm8901_tm_write_ctrl(chip, reg);
-	}
-	mutex_unlock(&chip->lock);
-}
+/*
+ * No explicit ->remove() needed: pm8901_tm_restore_hw_shutdown() is
+ * registered as a devm action in probe and re-enables the PMIC's HW
+ * auto-cut automatically on unbind.
+ */
 
 static const struct of_device_id pm8901_tm_match_table[] = {
 	{ .compatible = "qcom,pm8901-temp-alarm" },
@@ -332,7 +400,6 @@ static struct platform_driver pm8901_tm_driver = {
 		.of_match_table	= pm8901_tm_match_table,
 	},
 	.probe	= pm8901_tm_probe,
-	.remove	= pm8901_tm_remove,
 };
 module_platform_driver(pm8901_tm_driver);
 
