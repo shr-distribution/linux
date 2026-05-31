@@ -66,10 +66,6 @@ properties:
       First cell is the MPM pin number / parent GIC SPI; second cell
       is the trigger type.
 
-  qcom,mpm-pin-count:
-    $ref: /schemas/types.yaml#/definitions/uint32
-    description: Total number of MPM pins exposed.
-
   qcom,mpm-pin-map:
     $ref: /schemas/types.yaml#/definitions/uint32-matrix
     items:
@@ -94,7 +90,7 @@ required:
   - mboxes
   - interrupt-controller
   - '#interrupt-cells'
-  - qcom,mpm-pin-count
+  - qcom,mpm-pin-map
 
 additionalProperties: false
 
@@ -114,7 +110,6 @@ examples:
             interrupt-controller;
             #interrupt-cells = <2>;
             interrupt-parent = <&intc>;
-            qcom,mpm-pin-count = <64>;
             qcom,mpm-pin-map = <25 100>,
                                <26 50>,
                                <27 79>;
