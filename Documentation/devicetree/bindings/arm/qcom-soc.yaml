@@ -50,9 +50,12 @@ properties:
           - qcom,dsi-ctrl-6g-qcm2290
           - qcom,gpucc-sdm630
           - qcom,gpucc-sdm660
+          - qcom,lcc-apq8060
           - qcom,lcc-apq8064
           - qcom,lcc-ipq8064
           - qcom,lcc-mdm9615
+          - qcom,lcc-msm8260
+          - qcom,lcc-msm8660
           - qcom,lcc-msm8960
           - qcom,lpass-cpu-apq8016
           - qcom,usb-ss-ipq4019-phy
