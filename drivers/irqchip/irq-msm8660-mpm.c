@@ -161,12 +161,23 @@ static int msm8660_mpm_pin_to_hwirq(struct msm8660_mpm *mpm, int pin)
  * BEFORE dispatching the per-pin handlers so a fresh edge that arrives
  * during dispatch cannot be wiped out by a later CLEAR write, then
  * replay each pending pin through the irqdomain.
+ *
+ * After all CLEAR writes have been issued we MUST:
+ *   1. Flush them out of the CPU write buffer by doing a read-back
+ *      from the same MMIO window. Without this the relaxed CLEAR
+ *      can reorder past the parent GIC EOI and the level-triggered
+ *      IPC line will re-assert immediately, producing an interrupt
+ *      storm.
+ *   2. Doorbell the RPM so it re-reads the request banks and stops
+ *      asserting the IPC line. The RPM caches the vMPM request
+ *      copies and will not notice the CLEAR until it is poked.
  */
 static irqreturn_t msm8660_mpm_irq(int irq, void *data)
 {
 	struct msm8660_mpm *mpm = data;
 	unsigned long pending[MSM8660_MPM_REG_WIDTH];
 	unsigned long enable[MSM8660_MPM_REG_WIDTH];
+	bool any_cleared = false;
 	int i, j;
 
 	for (i = 0; i < MSM8660_MPM_REG_WIDTH; i++) {
@@ -181,11 +192,26 @@ static irqreturn_t msm8660_mpm_irq(int irq, void *data)
 		 * after this point will set the pending bit again and we
 		 * will service it on the next IPC IRQ. Clearing AFTER the
 		 * handler would race with that new latch and silently lose
-		 * the new edge.
+		 * the new edge. Relaxed writes here are flushed by the
+		 * readl + doorbell after the loop.
 		 */
-		if (pending[i])
+		if (pending[i]) {
 			msm8660_mpm_write(mpm,
 				MSM8660_MPM_REG_CLEAR + i * 4, pending[i]);
+			any_cleared = true;
+		}
+	}
+
+	/*
+	 * Flush the relaxed CLEAR writes out of the CPU write buffer
+	 * before we doorbell the RPM and before we return to the IRQ
+	 * core (which EOIs the parent GIC). A read-back from the same
+	 * MMIO window is the architecturally portable way to force
+	 * preceding posted writes to complete.
+	 */
+	if (any_cleared) {
+		(void)readl(mpm->base + MSM8660_MPM_REG_CLEAR);
+		msm8660_mpm_doorbell(mpm);
 	}
 
 	for (i = 0; i < MSM8660_MPM_REG_WIDTH; i++) {
