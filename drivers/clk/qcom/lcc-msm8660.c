@@ -17,6 +17,7 @@
 #include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/pm.h>
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
 
@@ -483,6 +484,30 @@ static const struct of_device_id lcc_msm8660_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, lcc_msm8660_match_table);
 
+/*
+ * Steer the LPASS Primary PLL Mux to PLL4. This is the only LCC-side write
+ * needed to bring up the audio clock tree; it has to be redone on every
+ * resume because the LPASS power domain may have been collapsed while the
+ * system was suspended, which resets the mux to its default. Called from
+ * probe and from the resume PM op so both paths share one implementation
+ * and a single error-handling policy.
+ */
+#define LCC_PRI_PLL_CLK_CTL_REG		0xc4
+#define LCC_PRI_PLL_SRC_PLL4		0x1
+
+static int lcc_msm8660_configure_pll4_mux(struct device *dev,
+					  struct regmap *regmap)
+{
+	int ret;
+
+	ret = regmap_write(regmap, LCC_PRI_PLL_CLK_CTL_REG,
+			   LCC_PRI_PLL_SRC_PLL4);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to write LPASS Primary PLL mux\n");
+	return 0;
+}
+
 static int lcc_msm8660_probe(struct platform_device *pdev)
 {
 	const struct freq_tbl *aif_osr_tbl, *pcm_tbl;
@@ -531,17 +556,46 @@ static int lcc_msm8660_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev, "PLL4 L=0x%x, using %s frequency plan\n",
 		 val, plan_name);
 
-	/* Enable PLL4 source on the LPASS Primary PLL Mux */
-	regmap_write(regmap, 0xc4, 0x1);
+	ret = lcc_msm8660_configure_pll4_mux(&pdev->dev, regmap);
+	if (ret)
+		return ret;
 
-	return qcom_cc_really_probe(&pdev->dev, &lcc_msm8660_desc, regmap);
+	ret = qcom_cc_really_probe(&pdev->dev, &lcc_msm8660_desc, regmap);
+	if (ret)
+		return ret;
+
+	/*
+	 * Stash the regmap so the resume path can re-apply the LPASS Primary
+	 * PLL mux selection without having to re-walk the clock provider
+	 * tree. qcom_cc_really_probe() does not touch platform drvdata.
+	 */
+	platform_set_drvdata(pdev, regmap);
+	return 0;
 }
+
+/*
+ * The LPASS power domain is typically collapsed during system suspend, which
+ * resets the Primary PLL mux to its hardware default. The kernel clock
+ * framework restores per-clock rates via the standard CCF machinery, but
+ * the mux selection is an LCC-specific configuration that no other code
+ * path will re-apply. Re-program it here so audio still works after the
+ * first suspend/resume cycle.
+ */
+static int lcc_msm8660_resume(struct device *dev)
+{
+	struct regmap *regmap = dev_get_drvdata(dev);
+
+	return lcc_msm8660_configure_pll4_mux(dev, regmap);
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(lcc_msm8660_pm_ops, NULL, lcc_msm8660_resume);
 
 static struct platform_driver lcc_msm8660_driver = {
 	.probe		= lcc_msm8660_probe,
 	.driver		= {
-		.name	= "lcc-msm8660",
-		.of_match_table = lcc_msm8660_match_table,
+		.name		= "lcc-msm8660",
+		.of_match_table	= lcc_msm8660_match_table,
+		.pm		= pm_sleep_ptr(&lcc_msm8660_pm_ops),
 	},
 };
 module_platform_driver(lcc_msm8660_driver);
