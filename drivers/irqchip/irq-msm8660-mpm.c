@@ -62,12 +62,12 @@
 #include <linux/irqdomain.h>
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/spinlock.h>
 
 #include <soc/qcom/msm8660-mpm.h>
 
@@ -103,6 +103,33 @@ struct msm8660_mpm {
 	int parent_irq;
 	struct mbox_client mbox_client;
 	struct mbox_chan *mbox_chan;
+
+	/*
+	 * The IRQ subsystem calls our mask/unmask/set_type/set_wake under
+	 * the irq_desc raw_spinlock_t. The mailbox core's chan->lock is a
+	 * spinlock_t which becomes an rt_mutex on PREEMPT_RT, so doorbells
+	 * cannot be issued from those callbacks. Implement the standard
+	 * irq_bus_lock pattern: callbacks only stage cached register state
+	 * under the sleepable bus_lock mutex; the actual MMIO writes and
+	 * the RPM doorbell are flushed in irq_bus_sync_unlock, which runs
+	 * in process context (sleepable) after the IRQ core has released
+	 * irq_desc->lock.
+	 *
+	 * The same mutex serializes the raw-pin C API (msm8660_mpm_enable_pin
+	 * / set_pin_wake / set_pin_type) so concurrent consumers cannot lose
+	 * each other's RMW updates on the shared bank registers.
+	 */
+	struct mutex bus_lock;
+
+	/* Per-bank cached state (last value committed to hardware) */
+	u32 enable_cached[MSM8660_MPM_REG_WIDTH];
+	u32 detect_cached[MSM8660_MPM_REG_WIDTH];
+	u32 polarity_cached[MSM8660_MPM_REG_WIDTH];
+
+	/* Per-bank pending state (staged by callbacks, written in sync_unlock) */
+	u32 enable[MSM8660_MPM_REG_WIDTH];
+	u32 detect[MSM8660_MPM_REG_WIDTH];
+	u32 polarity[MSM8660_MPM_REG_WIDTH];
 };
 
 /*
@@ -146,9 +173,16 @@ static void msm8660_mpm_doorbell(struct msm8660_mpm *mpm)
 				     "RPM doorbell failed: %d\n", ret);
 }
 
-static int msm8660_mpm_pin_to_hwirq(struct msm8660_mpm *mpm, int pin)
+/*
+ * Resolve an MPM pin number to its parent GIC SPI for the irqdomain
+ * hierarchy. Pins listed in qcom,mpm-pin-map have a corresponding GIC
+ * SPI; pins listed only in qcom,mpm-raw-pins (or pins that are not
+ * declared at all) return -ENOENT and cannot be allocated through the
+ * irqdomain path.
+ */
+static int msm8660_mpm_pin_to_gic_spi(struct msm8660_mpm *mpm, unsigned int pin)
 {
-	int i;
+	unsigned int i;
 
 	for (i = 0; i < mpm->pin_map_count; i++) {
 		if (mpm->pin_map[i].pin == pin)
@@ -238,13 +272,21 @@ static irqreturn_t msm8660_mpm_irq(int irq, void *data)
 		unsigned long bits = pending[i];
 
 		for_each_set_bit(j, &bits, 32) {
-			int pin = i * 32 + j;
-			int hwirq = msm8660_mpm_pin_to_hwirq(mpm, pin);
+			unsigned int pin = i * 32 + j;
 
-			if (hwirq >= 0) {
-				dev_dbg(mpm->dev, "wake pin %d -> hwirq %d\n",
-					pin, hwirq);
-				generic_handle_domain_irq(mpm->domain, hwirq);
+			/*
+			 * Domain hwirq == MPM pin. Only pins that have a GIC
+			 * SPI mapping are allocated through the irqdomain;
+			 * dispatch them. Raw pins (declared in
+			 * qcom,mpm-raw-pins) have no irqdomain consumer and
+			 * are silently dropped here - their wake event is
+			 * the IPC SPI itself, which the consumer's normal
+			 * device-suspend path already handled by the time
+			 * we get here.
+			 */
+			if (msm8660_mpm_pin_to_gic_spi(mpm, pin) >= 0) {
+				dev_dbg(mpm->dev, "wake pin %u\n", pin);
+				generic_handle_domain_irq(mpm->domain, pin);
 			}
 		}
 	}
@@ -253,71 +295,16 @@ static irqreturn_t msm8660_mpm_irq(int irq, void *data)
 }
 
 /*
- * Resolve an irq_data hwirq back to its MPM pin number, or -1 if the
- * pin is not in the qcom,mpm-pin-map (which would mean a consumer
- * bound to a hwirq that has no MPM mapping).
+ * Stage detect/polarity changes for a pin in the cached banks. Caller
+ * must hold mpm->bus_lock. Returns 0 or -EINVAL for unsupported type.
  */
-static int msm8660_mpm_hwirq_to_pin(struct msm8660_mpm *mpm, unsigned int hwirq)
+static int msm8660_mpm_stage_type(struct msm8660_mpm *mpm, unsigned int pin,
+				  unsigned int type)
 {
-	int i;
-
-	for (i = 0; i < mpm->pin_map_count; i++) {
-		if (mpm->pin_map[i].hwirq == hwirq)
-			return mpm->pin_map[i].pin;
-	}
-	return -1;
-}
-
-static void msm8660_mpm_enable_hwirq(struct irq_data *d, bool enable)
-{
-	struct msm8660_mpm *mpm = irq_data_get_irq_chip_data(d);
-	int pin;
-	u32 val, mask;
-
-	pin = msm8660_mpm_hwirq_to_pin(mpm, d->hwirq);
-	if (pin < 0)
-		return;
-
-	mask = BIT(pin % 32);
-	val = msm8660_mpm_read(mpm,
-		MSM8660_MPM_REG_ENABLE + (pin / 32) * 4);
-	if (enable)
-		val |= mask;
-	else
-		val &= ~mask;
-	msm8660_mpm_write(mpm,
-		MSM8660_MPM_REG_ENABLE + (pin / 32) * 4, val);
-
-	msm8660_mpm_doorbell(mpm);
-}
-
-static void msm8660_mpm_mask_irq(struct irq_data *d)
-{
-	msm8660_mpm_enable_hwirq(d, false);
-	irq_chip_mask_parent(d);
-}
-
-static void msm8660_mpm_unmask_irq(struct irq_data *d)
-{
-	msm8660_mpm_enable_hwirq(d, true);
-	irq_chip_unmask_parent(d);
-}
-
-static int msm8660_mpm_set_type(struct irq_data *d, unsigned int type)
-{
-	struct msm8660_mpm *mpm = irq_data_get_irq_chip_data(d);
-	u32 detect, polarity, mask;
-	int pin;
-
-	pin = msm8660_mpm_hwirq_to_pin(mpm, d->hwirq);
-	if (pin < 0)
-		return -ENOENT;
-
-	mask = BIT(pin % 32);
-	detect = msm8660_mpm_read(mpm,
-		MSM8660_MPM_REG_DETECT_CTL + (pin / 32) * 4);
-	polarity = msm8660_mpm_read(mpm,
-		MSM8660_MPM_REG_POLARITY + (pin / 32) * 4);
+	u32 mask = BIT(pin % 32);
+	unsigned int bank = pin / 32;
+	u32 detect = mpm->detect[bank];
+	u32 polarity = mpm->polarity[bank];
 
 	switch (type) {
 	case IRQ_TYPE_EDGE_RISING:
@@ -340,34 +327,130 @@ static int msm8660_mpm_set_type(struct irq_data *d, unsigned int type)
 		return -EINVAL;
 	}
 
-	msm8660_mpm_write(mpm,
-		MSM8660_MPM_REG_DETECT_CTL + (pin / 32) * 4, detect);
-	msm8660_mpm_write(mpm,
-		MSM8660_MPM_REG_POLARITY + (pin / 32) * 4, polarity);
+	mpm->detect[bank] = detect;
+	mpm->polarity[bank] = polarity;
+	return 0;
+}
 
-	msm8660_mpm_doorbell(mpm);
+/*
+ * Stage an ENABLE bit change. Caller must hold mpm->bus_lock.
+ */
+static void msm8660_mpm_stage_enable(struct msm8660_mpm *mpm, unsigned int pin,
+				     bool enable)
+{
+	u32 mask = BIT(pin % 32);
+	unsigned int bank = pin / 32;
+
+	if (enable)
+		mpm->enable[bank] |= mask;
+	else
+		mpm->enable[bank] &= ~mask;
+}
+
+/*
+ * Commit any pending bank state to MMIO + doorbell the RPM. Caller
+ * must hold mpm->bus_lock; runs in sleepable context so the mailbox
+ * send is RT-safe.
+ */
+static void msm8660_mpm_commit(struct msm8660_mpm *mpm)
+{
+	bool changed = false;
+	unsigned int i;
+
+	for (i = 0; i < MSM8660_MPM_REG_WIDTH; i++) {
+		if (mpm->enable[i] != mpm->enable_cached[i]) {
+			msm8660_mpm_write(mpm,
+				MSM8660_MPM_REG_ENABLE + i * 4,
+				mpm->enable[i]);
+			mpm->enable_cached[i] = mpm->enable[i];
+			changed = true;
+		}
+		if (mpm->detect[i] != mpm->detect_cached[i]) {
+			msm8660_mpm_write(mpm,
+				MSM8660_MPM_REG_DETECT_CTL + i * 4,
+				mpm->detect[i]);
+			mpm->detect_cached[i] = mpm->detect[i];
+			changed = true;
+		}
+		if (mpm->polarity[i] != mpm->polarity_cached[i]) {
+			msm8660_mpm_write(mpm,
+				MSM8660_MPM_REG_POLARITY + i * 4,
+				mpm->polarity[i]);
+			mpm->polarity_cached[i] = mpm->polarity[i];
+			changed = true;
+		}
+	}
+
+	if (changed) {
+		(void)readl(mpm->base + MSM8660_MPM_REG_ENABLE);
+		msm8660_mpm_doorbell(mpm);
+	}
+}
+
+/* ===================================================================
+ * irq_chip callbacks (run under irq_desc->lock for unmask/mask/set_type/
+ * set_wake; only stage cached state, defer hardware writes to
+ * bus_sync_unlock which runs in process context).
+ * ===================================================================
+ */
+
+static void msm8660_mpm_bus_lock(struct irq_data *d)
+{
+	struct msm8660_mpm *mpm = irq_data_get_irq_chip_data(d);
+
+	mutex_lock(&mpm->bus_lock);
+}
+
+static void msm8660_mpm_bus_sync_unlock(struct irq_data *d)
+{
+	struct msm8660_mpm *mpm = irq_data_get_irq_chip_data(d);
+
+	msm8660_mpm_commit(mpm);
+	mutex_unlock(&mpm->bus_lock);
+}
+
+/*
+ * mask / unmask are pure parent-GIC operations. The MPM ENABLE bit
+ * controls whether the pin is monitored during power-collapse; that is
+ * orthogonal to whether the IRQ is logically masked at the GIC during
+ * normal operation, and is owned by set_wake instead. Touching ENABLE
+ * here would corrupt the wake state across an unmask-on-resume cycle
+ * (the IRQ core does not call unmask if the IRQ is logically already
+ * unmasked, even if our HW state was disabled by a recent set_wake(0)).
+ */
+static void msm8660_mpm_mask_irq(struct irq_data *d)
+{
+	irq_chip_mask_parent(d);
+}
+
+static void msm8660_mpm_unmask_irq(struct irq_data *d)
+{
+	irq_chip_unmask_parent(d);
+}
+
+static int msm8660_mpm_set_type(struct irq_data *d, unsigned int type)
+{
+	struct msm8660_mpm *mpm = irq_data_get_irq_chip_data(d);
+	int ret;
+
+	ret = msm8660_mpm_stage_type(mpm, d->hwirq, type);
+	if (ret)
+		return ret;
 
 	return irq_chip_set_type_parent(d, type);
 }
 
 /*
- * Toggle MPM monitoring of the pin and propagate the wake request to
- * the parent GIC so it also stays alive during power-collapse.
- *
- * Without this callback the generic IRQ core would either silently
- * succeed (with IRQCHIP_SKIP_SET_WAKE) or fail outright, and neither
- * the MPM nor the GIC would actually be programmed to wake the system.
+ * Enable / disable MPM monitoring for this pin. Programming the HW
+ * ENABLE bit is what makes the pin a wake source, so it is owned
+ * exclusively by set_wake. The parent GIC's set_wake also runs so the
+ * GIC stays alive during power-collapse to receive the IPC SPI.
  */
 static int msm8660_mpm_set_wake(struct irq_data *d, unsigned int on)
 {
 	struct msm8660_mpm *mpm = irq_data_get_irq_chip_data(d);
-	int pin;
 
-	pin = msm8660_mpm_hwirq_to_pin(mpm, d->hwirq);
-	if (pin < 0)
-		return -ENOENT;
-
-	msm8660_mpm_enable_hwirq(d, !!on);
+	msm8660_mpm_stage_enable(mpm, d->hwirq, !!on);
 
 	return irq_chip_set_wake_parent(d, on);
 }
@@ -380,6 +463,8 @@ static struct irq_chip msm8660_mpm_chip = {
 	.irq_set_wake		= msm8660_mpm_set_wake,
 	.irq_eoi		= irq_chip_eoi_parent,
 	.irq_set_affinity	= irq_chip_set_affinity_parent,
+	.irq_bus_lock		= msm8660_mpm_bus_lock,
+	.irq_bus_sync_unlock	= msm8660_mpm_bus_sync_unlock,
 	.flags			= IRQCHIP_MASK_ON_SUSPEND,
 };
 
@@ -390,22 +475,43 @@ static int msm8660_mpm_domain_alloc(struct irq_domain *domain,
 	struct msm8660_mpm *mpm = domain->host_data;
 	struct irq_fwspec *fwspec = data;
 	struct irq_fwspec parent_fwspec;
-	irq_hw_number_t hwirq;
-	int i, ret;
+	unsigned int pin;
+	int gic_spi, i, ret;
 
 	if (fwspec->param_count != 2)
 		return -EINVAL;
 
-	hwirq = fwspec->param[0];
+	pin = fwspec->param[0];
+	if (pin >= MSM8660_MPM_PIN_COUNT)
+		return -EINVAL;
 
+	/*
+	 * Resolve the MPM pin to its parent GIC SPI. Only pins declared in
+	 * qcom,mpm-pin-map have a GIC SPI; reject allocation for pins that
+	 * are not (raw wake-only pins, or pins not in DT at all).
+	 */
+	gic_spi = msm8660_mpm_pin_to_gic_spi(mpm, pin);
+	if (gic_spi < 0) {
+		dev_err(mpm->dev,
+			"MPM pin %u has no GIC SPI mapping in qcom,mpm-pin-map\n",
+			pin);
+		return -ENOENT;
+	}
+
+	/*
+	 * Domain hwirq == MPM pin. The parent GIC's hwirq is the SPI we
+	 * just looked up. Keeping them separate is essential because the
+	 * IPC handler dispatches by pin number, while the parent fwspec
+	 * needs an SPI for the GIC distributor.
+	 */
 	for (i = 0; i < nr_irqs; i++)
-		irq_domain_set_hwirq_and_chip(domain, virq + i, hwirq + i,
+		irq_domain_set_hwirq_and_chip(domain, virq + i, pin + i,
 					      &msm8660_mpm_chip, mpm);
 
 	parent_fwspec.fwnode = domain->parent->fwnode;
 	parent_fwspec.param_count = 3;
 	parent_fwspec.param[0] = 0;
-	parent_fwspec.param[1] = hwirq;
+	parent_fwspec.param[1] = gic_spi;
 	parent_fwspec.param[2] = fwspec->param[1];
 
 	ret = irq_domain_alloc_irqs_parent(domain, virq, nr_irqs,
@@ -460,30 +566,41 @@ struct msm8660_mpm *msm8660_mpm_get(struct device *consumer,
 				    struct device_node *np,
 				    const char *propname)
 {
+	struct msm8660_mpm *mpm = smp_load_acquire(&msm8660_mpm_global);
 	struct device_node *mpm_np;
 	struct device_link *link;
 
-	if (!msm8660_mpm_global)
+	if (!mpm)
 		return ERR_PTR(-EPROBE_DEFER);
 
 	if (np && propname) {
 		mpm_np = of_parse_phandle(np, propname, 0);
 		if (!mpm_np)
 			return ERR_PTR(-ENOENT);
+		/*
+		 * The phandle must resolve to our own node. Without this
+		 * check a typo in the consumer's DT would silently return
+		 * the global handle and grant access to MPM pins the
+		 * integrator did not intend to expose.
+		 */
+		if (mpm_np != mpm->dev->of_node) {
+			of_node_put(mpm_np);
+			return ERR_PTR(-ENOENT);
+		}
 		of_node_put(mpm_np);
 	}
 
 	if (!consumer)
-		return msm8660_mpm_global;
+		return mpm;
 
-	link = device_link_add(consumer, msm8660_mpm_global->dev,
+	link = device_link_add(consumer, mpm->dev,
 			       DL_FLAG_AUTOREMOVE_CONSUMER);
 	if (!link) {
 		dev_warn(consumer, "failed to link to MPM, deferring\n");
 		return ERR_PTR(-EPROBE_DEFER);
 	}
 
-	return msm8660_mpm_global;
+	return mpm;
 }
 EXPORT_SYMBOL_GPL(msm8660_mpm_get);
 
@@ -504,8 +621,6 @@ EXPORT_SYMBOL_GPL(msm8660_mpm_get);
 int msm8660_mpm_enable_pin(struct msm8660_mpm *mpm, unsigned int pin,
 			   bool enable)
 {
-	u32 val;
-
 	if (!mpm || pin >= MSM8660_MPM_PIN_COUNT)
 		return -EINVAL;
 	if (!msm8660_mpm_raw_pin_allowed(mpm, pin)) {
@@ -514,16 +629,10 @@ int msm8660_mpm_enable_pin(struct msm8660_mpm *mpm, unsigned int pin,
 		return -EINVAL;
 	}
 
-	val = msm8660_mpm_read(mpm,
-		MSM8660_MPM_REG_ENABLE + (pin / 32) * 4);
-	if (enable)
-		val |= BIT(pin % 32);
-	else
-		val &= ~BIT(pin % 32);
-	msm8660_mpm_write(mpm,
-		MSM8660_MPM_REG_ENABLE + (pin / 32) * 4, val);
-
-	msm8660_mpm_doorbell(mpm);
+	mutex_lock(&mpm->bus_lock);
+	msm8660_mpm_stage_enable(mpm, pin, enable);
+	msm8660_mpm_commit(mpm);
+	mutex_unlock(&mpm->bus_lock);
 
 	return 0;
 }
@@ -559,8 +668,8 @@ EXPORT_SYMBOL_GPL(msm8660_mpm_set_pin_wake);
 int msm8660_mpm_set_pin_type(struct msm8660_mpm *mpm, unsigned int pin,
 			     unsigned int flow_type)
 {
-	u32 detect, polarity;
-	bool edge, polarity_high;
+	unsigned int sense = flow_type & IRQ_TYPE_SENSE_MASK;
+	int ret;
 
 	if (!mpm || pin >= MSM8660_MPM_PIN_COUNT)
 		return -EINVAL;
@@ -570,33 +679,13 @@ int msm8660_mpm_set_pin_type(struct msm8660_mpm *mpm, unsigned int pin,
 		return -EINVAL;
 	}
 
-	edge = !!(flow_type & IRQ_TYPE_EDGE_BOTH);
-	polarity_high = !!(flow_type & (IRQ_TYPE_EDGE_RISING |
-					IRQ_TYPE_LEVEL_HIGH));
+	mutex_lock(&mpm->bus_lock);
+	ret = msm8660_mpm_stage_type(mpm, pin, sense);
+	if (!ret)
+		msm8660_mpm_commit(mpm);
+	mutex_unlock(&mpm->bus_lock);
 
-	detect = msm8660_mpm_read(mpm,
-		MSM8660_MPM_REG_DETECT_CTL + (pin / 32) * 4);
-	polarity = msm8660_mpm_read(mpm,
-		MSM8660_MPM_REG_POLARITY + (pin / 32) * 4);
-
-	if (edge)
-		detect |= BIT(pin % 32);
-	else
-		detect &= ~BIT(pin % 32);
-
-	if (polarity_high)
-		polarity |= BIT(pin % 32);
-	else
-		polarity &= ~BIT(pin % 32);
-
-	msm8660_mpm_write(mpm,
-		MSM8660_MPM_REG_DETECT_CTL + (pin / 32) * 4, detect);
-	msm8660_mpm_write(mpm,
-		MSM8660_MPM_REG_POLARITY + (pin / 32) * 4, polarity);
-
-	msm8660_mpm_doorbell(mpm);
-
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL_GPL(msm8660_mpm_set_pin_type);
 
@@ -639,6 +728,27 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 	if (!mpm->base)
 		return dev_err_probe(dev, -ENOMEM,
 				     "failed to ioremap vMPM at %pR\n", res);
+
+	mutex_init(&mpm->bus_lock);
+
+	/*
+	 * Seed the cache from whatever state the firmware / boot loader
+	 * left in the vMPM banks. Anything we have not staged ourselves
+	 * (rare except for boot-time wake configuration) is preserved on
+	 * the next commit because commit() skips banks whose pending value
+	 * still matches the cached value.
+	 */
+	for (i = 0; i < MSM8660_MPM_REG_WIDTH; i++) {
+		mpm->enable_cached[i] = msm8660_mpm_read(mpm,
+			MSM8660_MPM_REG_ENABLE + i * 4);
+		mpm->detect_cached[i] = msm8660_mpm_read(mpm,
+			MSM8660_MPM_REG_DETECT_CTL + i * 4);
+		mpm->polarity_cached[i] = msm8660_mpm_read(mpm,
+			MSM8660_MPM_REG_POLARITY + i * 4);
+		mpm->enable[i] = mpm->enable_cached[i];
+		mpm->detect[i] = mpm->detect_cached[i];
+		mpm->polarity[i] = mpm->polarity_cached[i];
+	}
 
 	/*
 	 * Parse pin map (IRQ-mapped wake pins; raw pins like SDC4_DAT1
@@ -743,15 +853,13 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * Register the parent IRQ last and use plain request_irq() (not
-	 * devm_*) so we can free it explicitly in ->remove() before
-	 * irq_domain_remove(). With devm_request_irq() the handler
-	 * outlives irq_domain_remove() and a wake event arriving in the
-	 * removal window would dereference a freed domain pointer.
+	 * .suppress_bind_attrs = true prevents the driver from ever being
+	 * unbound, so devm_request_irq is safe: the handler cannot outlive
+	 * the irqdomain because both have the lifetime of the kernel.
 	 */
-	ret = request_irq(mpm->parent_irq, msm8660_mpm_irq,
-			  IRQF_TRIGGER_HIGH | IRQF_NO_SUSPEND,
-			  "msm8660-mpm", mpm);
+	ret = devm_request_irq(dev, mpm->parent_irq, msm8660_mpm_irq,
+			       IRQF_TRIGGER_HIGH | IRQF_NO_SUSPEND,
+			       "msm8660-mpm", mpm);
 	if (ret) {
 		dev_err(dev, "failed to request IRQ %d: %d\n",
 			mpm->parent_irq, ret);
@@ -759,7 +867,8 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, mpm);
-	msm8660_mpm_global = mpm;
+	/* Publish only after everything is wired up. */
+	smp_store_release(&msm8660_mpm_global, mpm);
 
 	dev_info(dev, "ready: %u pin mappings, %u raw pins, irq=%d\n",
 		 mpm->pin_map_count, mpm->raw_pin_count, mpm->parent_irq);
@@ -774,37 +883,29 @@ err_remove_domain:
 	return ret;
 }
 
-static void msm8660_mpm_remove(struct platform_device *pdev)
-{
-	struct msm8660_mpm *mpm = platform_get_drvdata(pdev);
-
-	/*
-	 * Tear down in strict reverse order: drop the singleton so new
-	 * consumers cannot grab a handle, free the IRQ so the handler
-	 * cannot fire again, free the mailbox channel, then remove the
-	 * domain. Consumer device_links established in msm8660_mpm_get()
-	 * prevent the parent device from being unbound while a consumer
-	 * still holds a handle.
-	 */
-	msm8660_mpm_global = NULL;
-	free_irq(mpm->parent_irq, mpm);
-	if (mpm->mbox_chan)
-		mbox_free_channel(mpm->mbox_chan);
-	irq_domain_remove(mpm->domain);
-}
-
 static const struct of_device_id msm8660_mpm_of_match[] = {
 	{ .compatible = "qcom,msm8660-mpm" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, msm8660_mpm_of_match);
 
+/*
+ * No ->remove(): this is a wake-controller required for system suspend
+ * and is referenced by the irqdomain hierarchy of every consumer that
+ * routes a wake source through it. Allowing the driver to be unbound
+ * while consumers hold virq mappings would leave dangling pointers to
+ * the freed irq_domain inside the core IRQ subsystem (irq_data of each
+ * mapped IRQ). Combined with .suppress_bind_attrs = true below, this
+ * means the driver binds once at boot and stays bound for the lifetime
+ * of the system, which also lets msm8660_mpm_global be safely read
+ * lockless from msm8660_mpm_get().
+ */
 static struct platform_driver msm8660_mpm_driver = {
 	.probe		= msm8660_mpm_probe,
-	.remove		= msm8660_mpm_remove,
 	.driver		= {
-		.name	= "msm8660-mpm",
-		.of_match_table = msm8660_mpm_of_match,
+		.name			= "msm8660-mpm",
+		.of_match_table		= msm8660_mpm_of_match,
+		.suppress_bind_attrs	= true,
 	},
 };
 
@@ -813,12 +914,6 @@ static int __init msm8660_mpm_init(void)
 	return platform_driver_register(&msm8660_mpm_driver);
 }
 subsys_initcall(msm8660_mpm_init);
-
-static void __exit msm8660_mpm_exit(void)
-{
-	platform_driver_unregister(&msm8660_mpm_driver);
-}
-module_exit(msm8660_mpm_exit);
 
 MODULE_DESCRIPTION("Qualcomm MSM8x60 MPM wakeup interrupt controller");
 MODULE_LICENSE("GPL");
