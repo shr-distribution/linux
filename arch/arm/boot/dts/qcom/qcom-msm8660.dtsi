@@ -571,6 +571,10 @@
 			qcom,mpm-pin-map = <25 100>,	/* USB1_HS */
 					   <26 50>,	/* TV_ENC */
 					   <27 79>;	/* HDMI */
+			qcom,mpm-raw-pins = <21>,	/* SDC3_DAT1 */
+					    <22>,	/* SDC3_DAT3 */
+					    <23>,	/* SDC4_DAT1 */
+					    <24>;	/* SDC4_DAT3 */
 			status = "okay";
 		};
 
