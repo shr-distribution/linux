@@ -2874,6 +2874,7 @@ static void mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 {
 	struct device_node *rpm_node;
 	struct platform_device *rpm_pdev;
+	struct device_link *link;
 	struct qcom_rpm *rpm;
 	/* halt_data[0]=0 = CLK_UNHALT for all bits; halt_data[1] = port mask */
 	u32 mmss_halt[2] = {0, GENMASK(13, 0)};
@@ -2888,8 +2889,26 @@ static void mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 	if (!rpm_pdev)
 		return;
 
+	/*
+	 * Pin the RPM supplier to this consumer device so that the
+	 * qcom_rpm driver cannot unbind (and free its drvdata) while we
+	 * are reading or using the pointer below. The link is dropped
+	 * automatically when the mmcc device goes away.
+	 */
+	link = device_link_add(dev, &rpm_pdev->dev,
+			       DL_FLAG_AUTOREMOVE_CONSUMER);
+	if (!link) {
+		put_device(&rpm_pdev->dev);
+		return;
+	}
+
 	rpm = dev_get_drvdata(&rpm_pdev->dev);
 	if (!rpm) {
+		/*
+		 * Supplier exists but has not bound yet -- skip the
+		 * unhalt rather than blocking mmcc probe; downstream
+		 * MMSS clients will be enabled on demand.
+		 */
 		put_device(&rpm_pdev->dev);
 		return;
 	}
