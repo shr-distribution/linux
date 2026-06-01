@@ -20155,6 +20155,15 @@ M:	Ye Liu <liuye@kylinos.cn>
 S:	Maintained
 F:	tools/mm/show_page_info.py
 
+PALM A6 BATTERY/EC DRIVER (HP TOUCHPAD)
+M:	Herman van Hazendonk <github.com@herrie.org>
+L:	linux-pm@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/power/supply/palm,a6-battery.yaml
+F:	drivers/power/supply/a6/
+F:	include/linux/a6.h
+F:	include/linux/a6_sbw_interface.h
+
 PANASONIC LAPTOP ACPI EXTRAS DRIVER
 M:	Kenneth Chan <kenneth.t.chan@gmail.com>
 L:	platform-driver-x86@vger.kernel.org

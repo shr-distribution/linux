@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/palm,a6-battery.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Palm A6 battery / embedded controller
+
+maintainers:
+  - Herman van Hazendonk <github.com@herrie.org>
+
+description:
+  The Palm A6 is a TI MSP430-based embedded controller used on the HP
+  TouchPad (Tenderloin) for battery monitoring, power management and
+  Touchstone inductive charging. The host communicates with the A6 over
+  I2C; firmware can be reprogrammed in-system over a Spy-Bi-Wire (SBW)
+  JTAG interface exposed on three GPIOs.
+
+  Some boards (TouchPad 4G) carry two A6 controllers at distinct I2C
+  addresses; each instance is described as a separate node with a
+  distinct palm,device-index value.
+
+properties:
+  compatible:
+    const: palm,a6-battery
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description:
+      Edge-falling interrupt asserted by the A6 when it has battery
+      status, charger status or wake events to report.
+
+  tck-gpios:
+    maxItems: 1
+    description:
+      Spy-Bi-Wire (SBW) test clock GPIO. Driven by the host during
+      firmware programming; left as input otherwise.
+
+  tdio-gpios:
+    maxItems: 1
+    description:
+      Spy-Bi-Wire (SBW) test data I/O GPIO. Bidirectional during
+      firmware programming; left as input otherwise.
+
+  wakeup-gpios:
+    maxItems: 1
+    description:
+      Host-driven GPIO used to wake the A6 from its own low-power
+      state before issuing commands.
+
+  palm,device-index:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1]
+    description:
+      Index used to distinguish multiple A6 instances on boards that
+      carry more than one (e.g. TouchPad 4G has two).
+
+  pinctrl-names: true
+  pinctrl-0: true
+
+  wakeup-source: true
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - tck-gpios
+  - tdio-gpios
+  - wakeup-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        battery@31 {
+            compatible = "palm,a6-battery";
+            reg = <0x31>;
+
+            palm,device-index = <0>;
+
+            tck-gpios = <&tlmm 157 GPIO_ACTIVE_HIGH>;
+            tdio-gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
+            wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>;
+
+            interrupt-parent = <&tlmm>;
+            interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
+            wakeup-source;
+        };
+    };
