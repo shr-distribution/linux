@@ -276,15 +276,17 @@ static inline void gdsc_assert_clamp_io(struct gdsc *sc)
 }
 
 /* Legacy MSM8x60 footswitch clamp handling - clamp bit is in main register */
-static inline void legacy_fs_deassert_clamp(struct gdsc *sc)
+static inline int legacy_fs_deassert_clamp(struct gdsc *sc)
 {
-	regmap_update_bits(sc->regmap, sc->gdscr, LEGACY_FS_CLAMP_MASK, 0);
+	return regmap_update_bits(sc->regmap, sc->gdscr,
+				  LEGACY_FS_CLAMP_MASK, 0);
 }
 
-static inline void legacy_fs_assert_clamp(struct gdsc *sc)
+static inline int legacy_fs_assert_clamp(struct gdsc *sc)
 {
-	regmap_update_bits(sc->regmap, sc->gdscr,
-			   LEGACY_FS_CLAMP_MASK, LEGACY_FS_CLAMP_MASK);
+	return regmap_update_bits(sc->regmap, sc->gdscr,
+				  LEGACY_FS_CLAMP_MASK,
+				  LEGACY_FS_CLAMP_MASK);
 }
 
 static inline void gdsc_assert_reset_aon(struct gdsc *sc)
@@ -344,7 +346,16 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 		if (sc->flags & SW_RESET)
 			gdsc_deassert_reset(sc);
 
-		legacy_fs_deassert_clamp(sc);
+		ret = legacy_fs_deassert_clamp(sc);
+		if (ret) {
+			/*
+			 * Rail is already powered up; if we cannot release
+			 * the I/O clamp, collapse the rail again to avoid
+			 * leaving the block live but isolated.
+			 */
+			gdsc_update_collapse_bit(sc, true);
+			return ret;
+		}
 
 		udelay(5);
 
@@ -420,7 +431,17 @@ static int gdsc_disable(struct generic_pm_domain *domain)
 			gdsc_assert_reset(sc);
 
 		/* Clamp I/O to ensure values remain fixed while collapsed */
-		legacy_fs_assert_clamp(sc);
+		ret = legacy_fs_assert_clamp(sc);
+		if (ret) {
+			/*
+			 * Clamp programming failed -- release the reset we
+			 * just asserted so the block is not stranded in
+			 * reset, then surface the error.
+			 */
+			if (sc->flags & SW_RESET)
+				gdsc_deassert_reset(sc);
+			return ret;
+		}
 
 		/* Collapse the power rail */
 		ret = gdsc_update_collapse_bit(sc, true);
