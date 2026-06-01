@@ -111,6 +111,17 @@ properties:
       CRCI (Client Request Control Interface) number for TX DMA channel.
       Required for ADM DMA flow control on MSM8x60.
 
+  resets:
+    maxItems: 1
+    description:
+      Reset controller for the CE2 engine. Mandatory on MSM8x60
+      (CE2 wedges across operations without an explicit reset);
+      not used on later parts.
+
+  reset-names:
+    items:
+      - const: core
+
 allOf:
   - if:
       properties:
@@ -192,6 +203,7 @@ allOf:
         - dma-names
         - qcom,rx-crci
         - qcom,tx-crci
+        - resets
 
 required:
   - compatible
