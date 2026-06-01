@@ -420,50 +420,22 @@ static int pix_rdi_set_parent(struct clk_hw *hw, u8 index)
 {
 	struct clk_pix_rdi *rdi = to_clk_pix_rdi(hw);
 	u32 val;
-	int i, ret = 0;
-	int num_parents = clk_hw_get_num_parents(hw);
 
 	/*
-	 * Turn on all parent sources during mux switch to ensure
-	 * glitch-free transition.
+	 * The clock framework guarantees that both the current and the
+	 * target parent are prepared and enabled when .set_parent is
+	 * invoked on a running mux, so the hardware is always switching
+	 * between two live sources -- safe for a glitch-free transition.
+	 *
+	 * Select parent: 0 = CSI0, 1 = CSI1.
 	 */
-	for (i = 0; i < num_parents; i++) {
-		struct clk_hw *p = clk_hw_get_parent_by_index(hw, i);
-		ret = clk_prepare_enable(p->clk);
-		if (ret)
-			goto err;
-	}
-
-	/* Select parent: 0=CSI0, 1=CSI1 */
 	val = (index == 1) ? rdi->s_mask : 0;
 	regmap_update_bits(rdi->clkr.regmap, rdi->s_reg, rdi->s_mask, val);
 
-	/*
-	 * Wait at least 6 cycles of slowest clock for the
-	 * glitch-free MUX to fully switch sources.
-	 */
+	/* Wait at least 6 cycles of the slowest source for the mux to settle. */
 	udelay(1);
 
-	/*
-	 * Now disable all parents that were temporarily enabled.
-	 * The clock framework will keep the selected parent enabled
-	 * as long as the child (csi_pix_clk/csi_rdi_clk) is enabled.
-	 */
-	for (i = num_parents - 1; i >= 0; i--) {
-		struct clk_hw *p = clk_hw_get_parent_by_index(hw, i);
-		clk_disable_unprepare(p->clk);
-	}
-
 	return 0;
-
-err:
-	/* On error, disable only the parents we successfully enabled */
-	for (i--; i >= 0; i--) {
-		struct clk_hw *p = clk_hw_get_parent_by_index(hw, i);
-		clk_disable_unprepare(p->clk);
-	}
-
-	return ret;
 }
 
 static u8 pix_rdi_get_parent(struct clk_hw *hw)
@@ -2818,23 +2790,16 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 	regmap_write(regmap, SW_RESET_CORE_REG, 0);
 
 	/*
-	 * Initialize CSI and MISC CC registers.
+	 * Initialize MISC CC registers.
 	 *
-	 * CSI_CC_REG (0x040): webOS camera dump shows 0x85
-	 *   - Bit 0: CSI digital wrapper 0 enable
-	 *   - Bit 2: CSI digital wrapper 1 enable
-	 *   - Bit 7: Unknown (possibly global CSI enable)
-	 * Without these bits set, CSIPHY data never reaches VFE.
+	 * CSI clocks are managed by the common clock framework on consumer
+	 * request via the registered csi*_src/csi*_clk/csi*_phy_clk
+	 * structures; no unconditional CSI_CC_REG write is needed here.
 	 *
-	 * MISC_CC_REG (0x058): webOS camera dump shows 0x0400
-	 *   - Bit 10: CSI1-to-VFE async bridge enable
-	 * MSM8660 has direct CSIPHY->VFE path, NOT the csi_pix/csi_rdi mux
-	 * architecture found in VFE3.2+. The csi_pix_clk/csi_rdi_clk (bits
-	 * 25-26 and 12-13) don't exist on this SoC - only bit 10 matters.
-	 *
-	 * MISC_CC2_REG: webOS shows 0x004007fd - additional enables.
+	 * MISC_CC_REG (0x058): bit 10 enables the CSI1-to-VFE async bridge.
+	 * MISC_CC2_REG: additional enables observed from the webOS reference
+	 *   register dump (0x004007fd).
 	 */
-	regmap_write(regmap, CSI_CC_REG, 0x00000085);
 	regmap_update_bits(regmap, MISC_CC_REG, 0xfefff7ff, 0x00000400);
 	regmap_update_bits(regmap, MISC_CC2_REG, 0xffff7fff, 0x000007fd);
 	/* Set dsi_byte_clk src to DSI PHY PLL, hdmi_app_clk src to PXO */
@@ -2881,26 +2846,24 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
  * Unhalt all RPM fabric AXI master ports.
  *
  * webOS downstream kernels (msm_bus_board_8660.c) program halt registers
- * on three fabrics: APPS (4 masters), SYSTEM (17 masters), MMSS
- * (14 masters). The downstream GDSC driver calls msm_bus_axi_portunhalt()
- * in footswitch_enable() when each power domain comes up; mainline GDSC
- * does not, leaving fabric master ports in their default (potentially
- * halted) state. This can cause DMA stalls and arbitration hangs.
+ * on three fabrics, but only the MMSS fabric is owned by this driver:
+ * MDP/ROTATOR/GFX2D/GFX3D/VFE/VPE/JPEG/HDCODEC all sit behind ports on
+ * the MMSS NoC. The downstream GDSC driver calls msm_bus_axi_portunhalt()
+ * in footswitch_enable() when each MMSS power domain comes up; mainline
+ * GDSC does not, leaving MMSS master ports in their default (potentially
+ * halted) state. This causes DMA stalls when the multimedia blocks first
+ * power on.
+ *
+ * The APPS and SYSTEM fabrics are owned by other subsystems (apps CPU /
+ * GCC-side peripherals) and are not this driver's responsibility -- they
+ * are handled by the qcom-msm8660 interconnect provider on platforms
+ * that need it.
  *
  * MMSS fabric master ports (port:name from webOS enum):
  *   0:MDP_PORT0   1:MDP_PORT1   2:ADM1_PORT0  3:ROTATOR
  *   4:GFX3D       5:JPEG_DEC    6:GFX2D0      7:VFE
  *   8:VPE         9:JPEG_ENC   10:GFX2D1     11:APPS_FAB
  *  12:HDCODEC0   13:HDCODEC1
- *
- * SYSTEM fabric master ports:
- *   0:APPSS_FAB    1:SPS         2:ADM0_PORT0  3:ADM0_PORT1
- *   4:ADM1_PORT0   5:ADM1_PORT1  6:LPASS_PROC  7:MSS_PROCI
- *   8:MSS_PROCD    9:MDM_PORT0  10:LPASS      11:CPSS_FPB
- *  12:SYSTEM_FPB  13:MMSS_FPB   14:ADM1_AHB   15:ADM0_AHB
- *  16:MSS_MDM_PORT1
- *
- * APPS fabric has 4 masters; unhalting all is safe.
  *
  * Driven from mmcc probe because it runs after the qcom_rpm platform
  * driver registers (mmcc is module_platform_driver, RPM is platform_init).
@@ -2914,8 +2877,6 @@ static void mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 	struct qcom_rpm *rpm;
 	/* halt_data[0]=0 = CLK_UNHALT for all bits; halt_data[1] = port mask */
 	u32 mmss_halt[2] = {0, GENMASK(13, 0)};
-	u32 sys_halt[2]  = {0, GENMASK(16, 0)};
-	u32 apps_halt[2] = {0, GENMASK(3, 0)};
 	int rc;
 
 	rpm_node = of_find_compatible_node(NULL, NULL, "qcom,rpm-msm8660");
@@ -2940,20 +2901,6 @@ static void mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 	else
 		dev_info(dev, "MMSS fabric: unhalted all master ports (0-13)\n");
 
-	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
-			    QCOM_RPM_SYS_FABRIC_HALT, sys_halt, 2);
-	if (rc)
-		dev_warn(dev, "system fabric unhalt failed: %d\n", rc);
-	else
-		dev_info(dev, "system fabric: unhalted all master ports (0-16)\n");
-
-	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
-			    QCOM_RPM_APPS_FABRIC_HALT, apps_halt, 2);
-	if (rc)
-		dev_warn(dev, "apps fabric unhalt failed: %d\n", rc);
-	else
-		dev_info(dev, "apps fabric: unhalted all master ports (0-3)\n");
-
 	put_device(&rpm_pdev->dev);
 }
 
@@ -2969,11 +2916,12 @@ static int mmcc_msm8660_probe(struct platform_device *pdev)
 	mmcc_msm8660_init_hw(regmap);
 
 	/*
-	 * Unhalt all MMSS / SYSTEM / APPS fabric AXI master ports.  Must
-	 * happen before any peripheral (MMSS block for MMSS fabric;
-	 * CE2/ADM/SDC/USB for SYSTEM fabric) performs DMA.  Driven from
-	 * mmcc probe because it runs after the qcom_rpm platform driver
-	 * has bound (gcc core_initcall is too early).
+	 * Unhalt MMSS fabric AXI master ports before any MMSS peripheral
+	 * (MDP / ROTATOR / GFX2D / GFX3D / VFE / VPE / JPEG / HDCODEC)
+	 * performs DMA. Driven from mmcc probe because it runs after the
+	 * qcom_rpm platform driver has bound (gcc core_initcall is too
+	 * early). APPS and SYSTEM fabrics belong to other subsystems and
+	 * are not touched here.
 	 */
 	mmcc_msm8660_unhalt_fabric_ports(&pdev->dev);
 
