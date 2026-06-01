@@ -539,11 +539,11 @@ config MSM_GCC_8960
 	  i2c, USB, SD/eMMC, SATA, PCIe, etc.
 
 config MSM_LCC_8960
-	tristate "APQ8060/APQ8064/MSM8x60/MSM8960/MDM9650 LPASS Clock Controller"
+	tristate "APQ8060/APQ8064/MSM8x60/MSM8960/MDM9615 LPASS Clock Controller"
 	depends on ARM || COMPILE_TEST
 	help
 	  Support for the LPASS clock controller on apq8060, apq8064,
-	  msm8260, msm8660, msm8960 and mdm9650 devices.
+	  msm8260, msm8660, msm8960 and mdm9615 devices.
 	  Say Y if you want to use audio devices such as i2s, pcm,
 	  SLIMBus, etc.
 
