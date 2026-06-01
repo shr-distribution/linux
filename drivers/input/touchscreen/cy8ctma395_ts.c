@@ -83,6 +83,7 @@ struct cy8ctma395_touchpoint {
 	int hover_x, hover_y;
 	int hover_delay;
 	int distance;
+	int input_slot;		/* allocated MT slot, -1 if none */
 };
 
 struct cy8ctma395_ts_data {
@@ -165,6 +166,7 @@ static void cy8ctma395_ts_clear_arrays(struct cy8ctma395_ts_data *ts)
 			ts->tp[i][j].hover_x = -1000;
 			ts->tp[i][j].hover_y = -1000;
 			ts->tp[i][j].hover_delay = HOVER_DEBOUNCE_DELAY;
+			ts->tp[i][j].input_slot = -1;
 		}
 	}
 
@@ -371,7 +373,7 @@ static void cy8ctma395_ts_process_new_touch(struct cy8ctma395_ts_data *ts,
 
 static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 {
-	int i, j, k;
+	int i, j;
 	int tpc = 0;
 	int smallest_distance[MAX_TOUCH];
 	int smallest_distance_loc[MAX_TOUCH];
@@ -455,6 +457,7 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 					t->hover_x = t->x;
 					t->hover_y = t->y;
 					t->hover_delay = HOVER_DEBOUNCE_DELAY;
+					t->input_slot = -1;
 
 					pr_debug("cy8ctma395: touch detected at (%d,%d) val=%d weight=%d\n",
 						t->x, t->y, highest_val, tweight);
@@ -521,17 +524,20 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 				t->touch_delay =
 					ts->tp[ts->prevtpoint][prev_idx].touch_delay;
 				t->distance = smallest_distance[i];
+				/*
+				 * Reuse the MT slot from the previous frame so
+				 * user space sees a single continuous contact
+				 * (essential for drag/swipe gestures).
+				 */
+				t->input_slot =
+					ts->tp[ts->prevtpoint][prev_idx].input_slot;
 
 				cy8ctma395_ts_avg_filter(ts, t);
 				cy8ctma395_ts_hover_debounce(ts, i);
 
-				/* Mark slot as still in use */
-				for (k = 0; k < MAX_TOUCH; k++) {
-					if (ts->slot_in_use[k] == -1) {
-						ts->slot_in_use[k] = 1;
-						break;
-					}
-				}
+				if (t->input_slot >= 0 &&
+				    t->input_slot < MAX_TOUCH)
+					ts->slot_in_use[t->input_slot] = 1;
 			}
 		} else {
 			cy8ctma395_ts_process_new_touch(ts, t);
@@ -543,19 +549,25 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 		struct cy8ctma395_touchpoint *t = &ts->tp[tpoint][i];
 
 		if (t->highest_val && !t->touch_delay && t->tracking_id >= 0) {
-			int slot = -1;
-
-			/* Find a free slot */
-			for (j = 0; j < MAX_TOUCH; j++) {
-				if (ts->slot_in_use[j] <= 0) {
-					slot = j;
-					ts->slot_in_use[j] = 1;
-					break;
+			/*
+			 * Continued touches kept their previous slot above.
+			 * Only new touches need a fresh slot here.  Skip slots
+			 * that are about to be lifted off (slot_in_use == -1)
+			 * so the inactivate + activate don't collide on the
+			 * same slot within one frame.
+			 */
+			if (t->input_slot < 0) {
+				for (j = 0; j < MAX_TOUCH; j++) {
+					if (ts->slot_in_use[j] == 0) {
+						t->input_slot = j;
+						ts->slot_in_use[j] = 1;
+						break;
+					}
 				}
 			}
 
-			if (slot >= 0) {
-				input_mt_slot(ts->input, slot);
+			if (t->input_slot >= 0) {
+				input_mt_slot(ts->input, t->input_slot);
 				input_mt_report_slot_state(ts->input,
 							   MT_TOOL_FINGER,
 							   true);
@@ -591,10 +603,15 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 	 */
 	input_mt_sync_frame(ts->input);
 
-	if (tpc > 0) {
-		input_sync(ts->input);
+	/*
+	 * Always sync after a completed scan, even when tpc == 0, so that
+	 * slot deactivations emitted by the liftoff loop above (and by
+	 * input_mt_sync_frame's INPUT_MT_DROP_UNUSED cleanup) actually
+	 * reach user space.
+	 */
+	input_sync(ts->input);
+	if (tpc > 0)
 		pr_debug("cy8ctma395: reporting %d touch(es)\n", tpc);
-	}
 
 	ts->previoustpc = tpc;
 	return tpc;
@@ -722,13 +739,17 @@ static size_t cy8ctma395_ts_receive_buf(struct serdev_device *serdev,
 		}
 	}
 
-	if (!cy8ctma395_ts_process_data(ts, data, count)) {
-		/* No touches detected - check for liftoff */
-		if (ts->previoustpc > 0) {
-			cy8ctma395_ts_liftoff(ts);
-			cy8ctma395_ts_clear_arrays(ts);
-		}
-	}
+	/*
+	 * Liftoff is handled inside cy8ctma395_ts_calc_point via the per-frame
+	 * slot_in_use bookkeeping plus input_mt_sync_frame's drop-unused pass.
+	 * Do NOT trigger a liftoff just because this serdev chunk did not
+	 * happen to contain a scan-complete marker: at 4 Mbps a single scan
+	 * spans many serdev callbacks, and spuriously lifting touches off
+	 * every chunk breaks drag/swipe gestures (taps still register because
+	 * the down+up arrive close in time, but a sustained contact is
+	 * repeatedly torn down before user space can recognise it as motion).
+	 */
+	cy8ctma395_ts_process_data(ts, data, count);
 
 	return count;
 }
