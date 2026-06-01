@@ -14,7 +14,7 @@
 
 /**
  * enum qce_version - crypto engine hardware version
- * @QCE_VERSION_CE2: Crypto Engine 2 (MSM8660/APQ8060)
+ * @QCE_VERSION_CE2: Crypto Engine 2 (MSM8x60 - MSM8260/MSM8660/APQ8060)
  * @QCE_VERSION_5: Crypto Engine v5.x (newer SoCs)
  */
 enum qce_version {

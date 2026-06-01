@@ -364,7 +364,7 @@ static irqreturn_t vfe_isr(int irq, void *dev)
 			vfe->isr_ops.comp_done(vfe, i);
 
 	for (wm = 0; wm < MSM_VFE_IMAGE_MASTERS_NUM; wm++)
-		if (status0 & BIT(9))
+		if (status0 & STATUS_0_IMAGE_MASTER_PING_PONG(wm))
 			if (vfe_bus_status[1] & STATUS1_WM_CLIENT_BUF_DONE(wm))
 				vfe->isr_ops.wm_done(vfe, wm);
 
@@ -511,17 +511,28 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	struct camss_buffer *ready_buf;
 	struct vfe_output *output;
 	unsigned long flags;
+	int wm_output;
 	u32 index;
 	u64 ts = ktime_get_ns();
 
 	/*
 	 * Some VFE modes route data to secondary WMs that aren't mapped
 	 * to output lines. Silently ignore their IRQs.
+	 *
+	 * vfe->wm_output_map[wm] is written from the stream stop/start
+	 * paths under output_lock held as a mutex; this ISR runs in
+	 * atomic context and cannot take it. Snapshot the value once
+	 * with READ_ONCE() so the check below and the array index that
+	 * follows operate on the same value: otherwise a concurrent
+	 * write of VFE_LINE_NONE (-1) between the two loads would let
+	 * the function pass the check and then dereference
+	 * &vfe->line[-1].
 	 */
-	if (vfe->wm_output_map[wm] == VFE_LINE_NONE)
+	wm_output = READ_ONCE(vfe->wm_output_map[wm]);
+	if (wm_output == VFE_LINE_NONE)
 		return;
 
-	line = &vfe->line[vfe->wm_output_map[wm]];
+	line = &vfe->line[wm_output];
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 

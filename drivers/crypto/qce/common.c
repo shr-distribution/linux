@@ -12,6 +12,7 @@
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/reset.h>
+#include <linux/sizes.h>
 #include <linux/types.h>
 #include <linux/unaligned.h>
 #include <crypto/aes.h>
@@ -930,6 +931,17 @@ static int qce_ce2_dma_chain_input_digest(struct qce_device *qce,
 	u8 *src_copy;
 	int ret;
 
+	/*
+	 * Cap nbytes well below UINT_MAX so the round_up(nbytes, 16)
+	 * below cannot overflow to 0 and let kzalloc(in_total) and
+	 * sg_copy_to_buffer(.., nbytes) below turn a 16-byte heap
+	 * allocation into a multi-gigabyte memcpy. 1 MiB is far above
+	 * the largest single hash chunk userspace will hand us through
+	 * the AHASH update path; anything larger is rejected as bogus.
+	 */
+	if (nbytes > SZ_1M)
+		return -EINVAL;
+
 	/* Input buffer: round up to 16-byte FIFO chunk, byte-swap to BE */
 	in_total = round_up(nbytes, 16);
 	if (in_total == 0)
@@ -953,7 +965,18 @@ static int qce_ce2_dma_chain_input_digest(struct qce_device *qce,
 		goto out_free_in;
 	}
 
-	/* Byte-swap input dwords to BE: CE2 reads each beat MSB-first */
+	/*
+	 * Stage the input dwords so the bytes in memory are in the order
+	 * the CE2 engine consumes them. The engine reads each 32-bit beat
+	 * MSB-first, so the memory layout must be big-endian:
+	 *     src_copy[i*4+0] -> high byte of beat i
+	 *     src_copy[i*4+3] -> low  byte of beat i
+	 * Build the value in CPU byte order then store via cpu_to_be32()
+	 * so the resulting memory bytes are [b0, b1, b2, b3] (BE) on any
+	 * host. cpu_to_le32() would be wrong on a little-endian host (the
+	 * no-op store leaves bytes in [b3, b2, b1, b0] order, the opposite
+	 * of what the engine consumes).
+	 */
 	in_dwords = in_total / 4;
 	in_words = (__le32 *)in_buf;
 	for (i = 0; i < in_dwords; i++) {
@@ -961,7 +984,7 @@ static int qce_ce2_dma_chain_input_digest(struct qce_device *qce,
 			((u32)src_copy[i * 4 + 1] << 16) |
 			((u32)src_copy[i * 4 + 2] <<  8) |
 			((u32)src_copy[i * 4 + 3] <<  0);
-		in_words[i] = cpu_to_le32(w);
+		in_words[i] = (__force __le32)cpu_to_be32(w);
 	}
 
 	/* Prep descriptor 1: input MEM_TO_DEV with CRCI 4 */
@@ -1575,13 +1598,18 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	memset(dst_copy, 0, padded);
 	sg_pcopy_to_buffer(src, sg_nents(src), src_copy, nbytes, sg_offset);
 
-	/* Byte-swap input dwords to BE (CE2 reads MSB-first) */
+	/*
+	 * Stage input dwords in BE memory order so the CE2 engine reads
+	 * each beat MSB-first; see qce_ce2_dma_chain_input_digest() for
+	 * the full rationale. cpu_to_be32() (not cpu_to_le32) is the
+	 * required helper on little-endian hosts.
+	 */
 	for (i = 0; i < dwords; i++) {
 		u32 w = ((u32)src_copy[i * 4 + 0] << 24) |
 			((u32)src_copy[i * 4 + 1] << 16) |
 			((u32)src_copy[i * 4 + 2] <<  8) |
 			((u32)src_copy[i * 4 + 3] <<  0);
-		in_buf[i] = cpu_to_le32(w);
+		in_buf[i] = (__force __le32)cpu_to_be32(w);
 	}
 
 	/* slave_config for both channels is done ONCE by

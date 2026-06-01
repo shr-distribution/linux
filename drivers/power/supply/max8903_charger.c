@@ -9,6 +9,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/property.h>
 #include <linux/slab.h>
@@ -50,6 +51,14 @@ struct max8903_data {
 	u32 usb_current_limit_high_ua;	/* Current when GPIO high */
 	u32 usb_current_limit_ua;	/* Current setting in uA */
 
+	/*
+	 * Serialises ta_in / usb_in updates against
+	 * max8903_set_property() which steers the current-limit write to
+	 * the DC or USB path based on which source is currently online.
+	 * The IRQ handlers are requested with IRQF_ONESHOT (threaded), so
+	 * a sleepable mutex is the right primitive in both contexts.
+	 */
+	struct mutex source_lock;
 	bool fault;
 	bool usb_in;
 	bool ta_in;
@@ -67,6 +76,24 @@ static int max8903_get_property(struct power_supply *psy,
 		union power_supply_propval *val)
 {
 	struct max8903_data *data = power_supply_get_drvdata(psy);
+	bool ta_in, usb_in;
+	u32 dc_limit, usb_limit;
+
+	/*
+	 * Snapshot the source flags and current-limit settings under the
+	 * source_lock that the IRQs (max8903_dcin / max8903_usbin) and
+	 * max8903_set_property() take when updating them, so we never
+	 * observe a torn pair of (source-online flag, current-limit ua).
+	 * The gpiod_get_value() reads further down deliberately stay
+	 * outside the lock — they hit the GPIO controller, not driver
+	 * state, and the IRQs do not touch them under the lock either.
+	 */
+	mutex_lock(&data->source_lock);
+	ta_in = data->ta_in;
+	usb_in = data->usb_in;
+	dc_limit = data->dc_current_limit_ua;
+	usb_limit = data->usb_current_limit_ua;
+	mutex_unlock(&data->source_lock);
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -75,27 +102,29 @@ static int max8903_get_property(struct power_supply *psy,
 			if (gpiod_get_value(data->chg))
 				/* CHG asserted */
 				val->intval = POWER_SUPPLY_STATUS_CHARGING;
-			else if (data->usb_in || data->ta_in)
+			else if (usb_in || ta_in)
 				val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 			else
 				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 		}
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
-		val->intval = 0;
-		if (data->usb_in || data->ta_in)
-			val->intval = 1;
+		val->intval = (ta_in || usb_in) ? 1 : 0;
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
-		val->intval = POWER_SUPPLY_HEALTH_GOOD;
-		if (data->fault)
-			val->intval = POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
+		/*
+		 * data->fault is a single bool toggled from one IRQ
+		 * handler, so a torn read is not possible; no need to
+		 * extend source_lock coverage here.
+		 */
+		val->intval = data->fault ? POWER_SUPPLY_HEALTH_UNSPEC_FAILURE
+					  : POWER_SUPPLY_HEALTH_GOOD;
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
-		if (data->ta_in && data->dc_current_limit_gpios)
-			val->intval = data->dc_current_limit_ua;
-		else if (data->usb_in && data->usb_current_limit_gpio)
-			val->intval = data->usb_current_limit_ua;
+		if (ta_in && data->dc_current_limit_gpios)
+			val->intval = dc_limit;
+		else if (usb_in && data->usb_current_limit_gpio)
+			val->intval = usb_limit;
 		else
 			return -ENODATA;
 		break;
@@ -108,50 +137,72 @@ static int max8903_get_property(struct power_supply *psy,
 
 static int max8903_set_dc_current_limit(struct max8903_data *data, u32 limit_ua)
 {
-	int i;
-	u32 best_limit = 0;
-	u32 best_gpio_value = 0;
+	int i, best_idx = -1;
+	u32 best_gpio_value;
 	DECLARE_BITMAP(values, 8);
 
 	if (!data->dc_current_limit_gpios)
 		return -EOPNOTSUPP;
 
-	/* Find highest supported current <= requested */
+	/*
+	 * Find the highest supported current <= requested. Use a -1
+	 * "not found" sentinel rather than tracking best_limit > 0 so
+	 * that a 0 uA entry (used to disable charging) can be selected
+	 * by a 0 uA request.
+	 */
 	for (i = 0; i < data->dc_current_limit_map_size; i++) {
-		if (data->dc_current_limit_map[i].limit_ua <= limit_ua &&
-		    data->dc_current_limit_map[i].limit_ua > best_limit) {
-			best_limit = data->dc_current_limit_map[i].limit_ua;
-			best_gpio_value = data->dc_current_limit_map[i].gpio_value;
-		}
+		if (data->dc_current_limit_map[i].limit_ua > limit_ua)
+			continue;
+		if (best_idx < 0 ||
+		    data->dc_current_limit_map[i].limit_ua >
+				data->dc_current_limit_map[best_idx].limit_ua)
+			best_idx = i;
 	}
 
-	if (!best_limit)
+	if (best_idx < 0)
 		return -EINVAL;
 
+	best_gpio_value = data->dc_current_limit_map[best_idx].gpio_value;
 	bitmap_from_arr32(values, &best_gpio_value, 8);
 	gpiod_set_array_value_cansleep(data->dc_current_limit_gpios->ndescs,
 				       data->dc_current_limit_gpios->desc,
 				       data->dc_current_limit_gpios->info,
 				       values);
 
-	data->dc_current_limit_ua = best_limit;
-	dev_dbg(data->dev, "DC current limit set to %u uA\n", best_limit);
+	data->dc_current_limit_ua = data->dc_current_limit_map[best_idx].limit_ua;
+	dev_dbg(data->dev, "DC current limit set to %u uA\n",
+		data->dc_current_limit_ua);
 
 	return 0;
 }
 
 static int max8903_set_usb_current_limit(struct max8903_data *data, u32 limit_ua)
 {
+	u32 selected;
+	int gpio_val;
+
 	if (!data->usb_current_limit_gpio)
 		return -EOPNOTSUPP;
 
+	/*
+	 * Pick the highest of the two configured limits that does not
+	 * exceed the requested cap. Mirror the DC path's policy: if
+	 * neither value fits (the request is below even the low limit),
+	 * refuse the request rather than silently program a higher
+	 * current that violates the system power budget.
+	 */
 	if (limit_ua >= data->usb_current_limit_high_ua) {
-		gpiod_set_value_cansleep(data->usb_current_limit_gpio, 1);
-		data->usb_current_limit_ua = data->usb_current_limit_high_ua;
+		selected = data->usb_current_limit_high_ua;
+		gpio_val = 1;
+	} else if (limit_ua >= data->usb_current_limit_low_ua) {
+		selected = data->usb_current_limit_low_ua;
+		gpio_val = 0;
 	} else {
-		gpiod_set_value_cansleep(data->usb_current_limit_gpio, 0);
-		data->usb_current_limit_ua = data->usb_current_limit_low_ua;
+		return -EINVAL;
 	}
+
+	gpiod_set_value_cansleep(data->usb_current_limit_gpio, gpio_val);
+	data->usb_current_limit_ua = selected;
 
 	dev_dbg(data->dev, "USB current limit set to %u uA\n",
 		data->usb_current_limit_ua);
@@ -164,14 +215,25 @@ static int max8903_set_property(struct power_supply *psy,
 		const union power_supply_propval *val)
 {
 	struct max8903_data *data = power_supply_get_drvdata(psy);
+	int ret;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		/*
+		 * Hold source_lock across the source check and the
+		 * resulting hardware write so the IRQ handler cannot
+		 * flip ta_in/usb_in between them and have us program the
+		 * limit for a source that has just gone offline.
+		 */
+		mutex_lock(&data->source_lock);
 		if (data->ta_in && data->dc_current_limit_gpios)
-			return max8903_set_dc_current_limit(data, val->intval);
+			ret = max8903_set_dc_current_limit(data, val->intval);
 		else if (data->usb_in && data->usb_current_limit_gpio)
-			return max8903_set_usb_current_limit(data, val->intval);
-		return -EINVAL;
+			ret = max8903_set_usb_current_limit(data, val->intval);
+		else
+			ret = -EINVAL;
+		mutex_unlock(&data->source_lock);
+		return ret;
 	default:
 		return -EINVAL;
 	}
@@ -204,12 +266,21 @@ static irqreturn_t max8903_dcin(int irq, void *_data)
 	 * library as the line should be flagged GPIO_ACTIVE_LOW in the device
 	 * tree.
 	 */
+	/*
+	 * Sample the line under source_lock so a concurrent
+	 * max8903_set_property() observes either the old or the new
+	 * state consistently, never a torn read where the lock is held
+	 * but the cached flag is about to be updated.
+	 */
+	mutex_lock(&data->source_lock);
 	ta_in = gpiod_get_value(data->dok);
-
-	if (ta_in == data->ta_in)
+	if (ta_in == data->ta_in) {
+		mutex_unlock(&data->source_lock);
 		return IRQ_HANDLED;
+	}
 
 	data->ta_in = ta_in;
+	mutex_unlock(&data->source_lock);
 
 	/* Set Current-Limit-Mode 1:DC 0:USB */
 	if (data->dcm)
@@ -263,12 +334,16 @@ static irqreturn_t max8903_usbin(int irq, void *_data)
 	 * library as the line should be flagged GPIO_ACTIVE_LOW in the device
 	 * tree.
 	 */
+	/* See ta_in handler: sample the line under the lock. */
+	mutex_lock(&data->source_lock);
 	usb_in = gpiod_get_value(data->uok);
-
-	if (usb_in == data->usb_in)
+	if (usb_in == data->usb_in) {
+		mutex_unlock(&data->source_lock);
 		return IRQ_HANDLED;
+	}
 
 	data->usb_in = usb_in;
+	mutex_unlock(&data->source_lock);
 
 	/* Do not touch Current-Limit-Mode */
 
@@ -377,15 +452,49 @@ static int max8903_parse_dc_current_limit(struct platform_device *pdev,
 		return -ENOMEM;
 
 	for (i = 0; i < data->dc_current_limit_map_size; i++) {
+		u32 gpio_value = map[i * 2 + 1];
+
+		/*
+		 * gpio_value is the bitmap programmed across the
+		 * dc-current-limit GPIOs, so it cannot represent more
+		 * bits than the GPIO array width. A larger value would
+		 * be silently truncated by gpiod_set_array_value() and
+		 * select the wrong limit; reject it at parse time so
+		 * the bogus DT is visible to the integrator.
+		 */
+		if (gpio_value >= BIT(data->dc_current_limit_gpios->ndescs)) {
+			dev_err(dev,
+				"dc-current-limit-mapping entry %d: gpio_value 0x%x exceeds %u-GPIO range\n",
+				i, gpio_value,
+				data->dc_current_limit_gpios->ndescs);
+			return -EINVAL;
+		}
 		data->dc_current_limit_map[i].limit_ua = map[i * 2];
-		data->dc_current_limit_map[i].gpio_value = map[i * 2 + 1];
+		data->dc_current_limit_map[i].gpio_value = gpio_value;
 	}
 
-	/* Set initial current to lowest value for safety */
-	data->dc_current_limit_ua = data->dc_current_limit_map[0].limit_ua;
+	/*
+	 * devm_gpiod_get_array_optional() above asked for GPIOD_OUT_LOW,
+	 * so the hardware mux starts at gpio_value 0. Require the DT
+	 * mapping to include a gpio_value=0 entry so the software
+	 * current-limit state has a definite initial value matching the
+	 * hardware. Without this entry we would have to guess and the
+	 * reported INPUT_CURRENT_LIMIT could disagree with what the
+	 * mux is actually wired to until a set_property write picks a
+	 * real value.
+	 */
+	for (i = 0; i < data->dc_current_limit_map_size; i++)
+		if (data->dc_current_limit_map[i].gpio_value == 0)
+			break;
+	if (i == data->dc_current_limit_map_size) {
+		dev_err(dev,
+			"dc-current-limit-mapping must include a gpio_value=0 entry to describe the boot-time mux state\n");
+		return -EINVAL;
+	}
+	data->dc_current_limit_ua = data->dc_current_limit_map[i].limit_ua;
 
-	dev_dbg(dev, "DC current limit control: %d levels available\n",
-		data->dc_current_limit_map_size);
+	dev_dbg(dev, "DC current limit control: %d levels available, initial %u uA\n",
+		data->dc_current_limit_map_size, data->dc_current_limit_ua);
 
 	return 0;
 }
@@ -541,6 +650,7 @@ static int max8903_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	data->dev = dev;
+	mutex_init(&data->source_lock);
 	platform_set_drvdata(pdev, data);
 
 	ret = max8903_setup_gpios(pdev);

@@ -219,6 +219,59 @@ static const struct phy_ops qcom_usb_hs_phy_ops = {
 	.owner = THIS_MODULE,
 };
 
+/*
+ * The binding caps both qcom,init-seq and qcom,vendor-init-seq at
+ * maxItems: 32 (addr, val) pairs, i.e. 64 bytes total. Enforce that
+ * limit here so a malformed DT cannot drive an unbounded
+ * devm_kmalloc_array() and so the misconfiguration is visible at
+ * probe time instead of silently truncated.
+ */
+#define QCOM_USB_HS_PHY_INIT_SEQ_MAX_PAIRS	32
+#define QCOM_USB_HS_PHY_INIT_SEQ_MAX_BYTES	\
+	(QCOM_USB_HS_PHY_INIT_SEQ_MAX_PAIRS * 2)
+
+static int qcom_usb_hs_phy_parse_init_seq(struct ulpi *ulpi,
+					  const char *propname,
+					  struct ulpi_seq **out)
+{
+	struct ulpi_seq *seq;
+	int size;
+
+	size = of_property_count_u8_elems(ulpi->dev.of_node, propname);
+	if (size < 0)
+		size = 0;
+	if (size > QCOM_USB_HS_PHY_INIT_SEQ_MAX_BYTES) {
+		dev_err(&ulpi->dev,
+			"%s: %d bytes exceeds %d-byte maximum\n",
+			propname, size, QCOM_USB_HS_PHY_INIT_SEQ_MAX_BYTES);
+		return -EINVAL;
+	}
+	if (size % 2) {
+		dev_err(&ulpi->dev,
+			"%s: %d bytes is not a whole number of (addr, val) pairs\n",
+			propname, size);
+		return -EINVAL;
+	}
+
+	seq = devm_kmalloc_array(&ulpi->dev, (size / 2) + 1, sizeof(*seq),
+				 GFP_KERNEL);
+	if (!seq)
+		return -ENOMEM;
+
+	if (size) {
+		int ret = of_property_read_u8_array(ulpi->dev.of_node,
+						    propname, (u8 *)seq, size);
+		if (ret)
+			return ret;
+	}
+	/* NUL-terminate so the power_on loop's seq->addr-as-sentinel works. */
+	seq[size / 2].addr = 0;
+	seq[size / 2].val = 0;
+
+	*out = seq;
+	return 0;
+}
+
 static int qcom_usb_hs_phy_probe(struct ulpi *ulpi)
 {
 	struct qcom_usb_hs_phy *uphy;
@@ -226,7 +279,6 @@ static int qcom_usb_hs_phy_probe(struct ulpi *ulpi)
 	struct clk *clk;
 	struct regulator *reg;
 	struct reset_control *reset;
-	int size;
 	int ret;
 
 	uphy = devm_kzalloc(&ulpi->dev, sizeof(*uphy), GFP_KERNEL);
@@ -235,43 +287,20 @@ static int qcom_usb_hs_phy_probe(struct ulpi *ulpi)
 	ulpi_set_drvdata(ulpi, uphy);
 	uphy->ulpi = ulpi;
 
-	size = of_property_count_u8_elems(ulpi->dev.of_node, "qcom,init-seq");
-	if (size < 0)
-		size = 0;
-	uphy->init_seq = devm_kmalloc_array(&ulpi->dev, (size / 2) + 1,
-					   sizeof(*uphy->init_seq), GFP_KERNEL);
-	if (!uphy->init_seq)
-		return -ENOMEM;
-	ret = of_property_read_u8_array(ulpi->dev.of_node, "qcom,init-seq",
-					(u8 *)uphy->init_seq, size);
-	if (ret && size)
+	ret = qcom_usb_hs_phy_parse_init_seq(ulpi, "qcom,init-seq",
+					     &uphy->init_seq);
+	if (ret)
 		return ret;
-	/* NUL terminate */
-	uphy->init_seq[size / 2].addr = uphy->init_seq[size / 2].val = 0;
-
 	/*
 	 * Optional raw-address vendor init sequence — same encoding as
 	 * qcom,init-seq (u8 addr/val pairs) but each pair is written to
 	 * the raw ULPI address rather than to ULPI_EXT_VENDOR_SPECIFIC +
 	 * addr. Lets boards reach the standard vendor range 0x30-0x3F.
 	 */
-	size = of_property_count_u8_elems(ulpi->dev.of_node,
-					  "qcom,vendor-init-seq");
-	if (size < 0)
-		size = 0;
-	uphy->vendor_init_seq = devm_kmalloc_array(&ulpi->dev,
-						   (size / 2) + 1,
-						   sizeof(*uphy->vendor_init_seq),
-						   GFP_KERNEL);
-	if (!uphy->vendor_init_seq)
-		return -ENOMEM;
-	ret = of_property_read_u8_array(ulpi->dev.of_node,
-					"qcom,vendor-init-seq",
-					(u8 *)uphy->vendor_init_seq, size);
-	if (ret && size)
+	ret = qcom_usb_hs_phy_parse_init_seq(ulpi, "qcom,vendor-init-seq",
+					     &uphy->vendor_init_seq);
+	if (ret)
 		return ret;
-	uphy->vendor_init_seq[size / 2].addr = 0;
-	uphy->vendor_init_seq[size / 2].val = 0;
 
 	uphy->ref_clk = clk = devm_clk_get(&ulpi->dev, "ref");
 	if (IS_ERR(clk))

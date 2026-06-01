@@ -478,7 +478,7 @@ static int qce_skcipher_register_one(const struct qce_skcipher_def *def,
 	alg->decrypt			= qce_skcipher_decrypt;
 
 	/*
-	 * On CE2 (MSM8660/APQ8060) the engine only chains CBC correctly
+	 * On CE2 (MSM8x60) the engine only chains CBC correctly
 	 * within a single ADM macro burst (CE2_ADM_BURST_SIZE = 64 B = 4
 	 * AES blocks).  Multi-burst ops silently emit wrong ciphertext
 	 * for blocks 5+.  Until that's fixed, keep qce_skcipher priority

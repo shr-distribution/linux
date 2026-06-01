@@ -42,7 +42,7 @@ static int qce_dma_configure_crci(struct qce_device *qce, struct dma_chan *chan,
 		 * even when CRCI flow control is on, so they must point at
 		 * the correct QCE registers.
 		 *
-		 * CE2 (MSM8660/APQ8060): Input data goes to DATA_SHADOW (0x8000),
+		 * CE2 (MSM8x60): Input data goes to DATA_SHADOW (0x8000),
 		 * a large shadow register block that ADM writes to via CRCI.
 		 * Hash results are read from AUTH_IV0 (0x100) after CRCI fires.
 		 * Using DATA_IN/DATA_OUT (0x00/0x10) causes CE2 to ignore the
