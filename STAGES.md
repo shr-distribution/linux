@@ -44,6 +44,11 @@ Sent ~Day 7 after first round of review feedback for Stages 1+2.
 |---|---|---|---|---|
 | 11 | mt9m113 sensor | `submit/media-mt9m113` | media-i2c | must land before camss DTS sets it as remote-endpoint |
 | 12 | cy8ctma395 touchscreen | `submit/input-cy8ctma395` | input | independent tree |
+| 13 | Palm A6 battery/EC | `submit/power-supply-palm-a6` | power-supply | 2 patches: dt-binding + driver. Tenderloin-specific; large driver (~6.4 KLOC) but standalone. |
+| 14 | TI LM8502 combo binding | `submit/dt-bindings-mfd-lm8502` | dt-bindings | base binding; depended on by #15-#17 |
+| 15 | TI LM8502 MFD core | `submit/mfd-lm8502` | mfd | parent driver |
+| 16 | TI LM8502 LED child | `submit/leds-lm8502` | leds | depends on #15 |
+| 17 | TI LM8502 haptic (FF_RUMBLE) child | `submit/input-lm8502-haptic` | input | depends on #15; TouchPad vibrator motor |
 
 ## Stage 4 — MSM8x60 multimedia stack
 
