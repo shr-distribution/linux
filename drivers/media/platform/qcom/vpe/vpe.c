@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Qualcomm MSM8660 Video Processing Engine (VPE) V4L2 mem2mem driver
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) Video Processing Engine (VPE) V4L2 mem2mem driver
  *
  * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
+-2026 Herman van Hazendonk <github.com@herrie.org>
  *
- * Based on legacy msm_vpe1 driver from webOS kernel.
+ * Based on the legacy vendor MSM8x60 msm_vpe1 driver.
  * Ported to V4L2 mem2mem framework.
  */
 
@@ -880,6 +880,6 @@ static struct platform_driver vpe_driver = {
 
 module_platform_driver(vpe_driver);
 
-MODULE_DESCRIPTION("Qualcomm MSM8660 Video Processing Engine driver");
+MODULE_DESCRIPTION("Qualcomm MSM8x60 Video Processing Engine driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Herman van Hazendonk <github.com@herrie.org>");

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
- * Copyright (c) 2026, Herman van Hazendonk <github.com@herrie.org>
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * MSM8x60 family (MSM8260/MSM8660/APQ8060) Multimedia Clock Controller driver
  *
- * Split from mmcc-msm8960.c to properly handle MSM8660-specific clock
+ * Split from mmcc-msm8960.c to properly handle MSM8x60-specific clock
  * configurations, particularly the GFX3D reset bits which differ from MSM8960.
  */
 
@@ -171,7 +171,7 @@ static struct clk_branch camclk0_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 15,
 	/*
-	 * The legacy webOS kernel used halt_reg = NULL for this clock,
+	 * The legacy vendor kernel used halt_reg = NULL for this clock,
 	 * meaning it never checked the halt status. The hardware doesn't
 	 * properly report the clock state via the halt register. Use
 	 * BRANCH_HALT_SKIP to avoid the "status stuck at 'off'" warning.
@@ -246,7 +246,7 @@ static struct clk_branch camclk1_clk = {
 /*
  * CSI clock frequency table for MSM8660.
  * Uses simple pre-divider from PLL8 (384 MHz), NOT MND divider.
- * Reference: webOS clock-8x60.c clk_tbl_csi[]
+ * Reference: legacy vendor kernel clock-8x60.c clk_tbl_csi[]
  */
 static const struct freq_tbl clk_tbl_csi[] = {
 	{ 192000000, P_PLL8, 2, 0, 0 },
@@ -258,7 +258,7 @@ static const struct freq_tbl clk_tbl_csi[] = {
  * CSI clock for MSM8660 uses simple pre-divider, NOT MND divider.
  * CC_REG = 0x0040, NS_REG = 0x0048, no MD register.
  * Pre-divider is in NS_REG bits [15:12], source select in bits [2:0].
- * Reference: webOS clock-8x60.c CLK_CSI macro
+ * Reference: legacy vendor kernel clock-8x60.c CLK_CSI macro
  */
 static struct clk_rcg csi0_src = {
 	.ns_reg = 0x0048,
@@ -328,31 +328,27 @@ static struct clk_branch csi0_phy_clk = {
 };
 
 /*
- * CSI1 on MSM8660 shares the same source clock as CSI0.
- * In webOS, both CSI0 and CSI1 are branches from a single CSI_SRC.
- * Use same registers as csi0_src (CC=0x0040, NS=0x0048).
- * The enable bit for csi1_src root is also BIT(2) in CC_REG.
+ * CSI1 on MSM8660 shares the SAME hardware source-clock register
+ * (NS_REG 0x0048, CC_REG 0x0040) as CSI0 -- the legacy vendor
+ * kernel has a single CSI_SRC that fans out to both CSI0 and CSI1
+ * branches. Expose it under its own CCF name (CSI1_SRC) for binding
+ * ABI compatibility, but implement it as a passthrough branch
+ * parented on csi0_src so clk_set_rate() always flows to the single
+ * underlying RCG. This avoids the race where independent
+ * clk_set_rate(csi0_src) / clk_set_rate(csi1_src) would clobber
+ * each other's M/N/D and source-mux fields in 0x0048.
  */
-static struct clk_rcg csi1_src = {
-	.ns_reg = 0x0048,
-	/* No md_reg - CSI uses pre-divider only, not MND */
-	.p = {
-		.pre_div_shift = 12,
-		.pre_div_width = 4,
-	},
-	.s = {
-		.src_sel_shift = 0,
-		.parent_map = mmcc_pxo_pll8_pll2_map,
-	},
-	.freq_tbl = clk_tbl_csi,
+static struct clk_branch csi1_src = {
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
-		.enable_reg = 0x0040,
-		.enable_mask = BIT(2),
 		.hw.init = &(struct clk_init_data){
 			.name = "csi1_src",
-			.parent_data = mmcc_pxo_pll8_pll2,
-			.num_parents = ARRAY_SIZE(mmcc_pxo_pll8_pll2),
-			.ops = &clk_rcg_ops,
+			.parent_hws = (const struct clk_hw*[]){
+				&csi0_src.clkr.hw,
+			},
+			.num_parents = 1,
+			.ops = &clk_branch_ops,
+			.flags = CLK_SET_RATE_PARENT,
 		},
 	},
 };
@@ -362,7 +358,7 @@ static struct clk_branch csi1_clk = {
 	.halt_bit = 14,
 	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
-		/* CSI1 enable is in CSI_CC_REG (0x0040) BIT(7) per webOS */
+		/* CSI1 enable is in CSI_CC_REG (0x0040) BIT(7) per legacy vendor kernel */
 		.enable_reg = 0x0040,
 		.enable_mask = BIT(7),
 		.hw.init = &(struct clk_init_data){
@@ -917,7 +913,7 @@ static const struct freq_tbl clk_tbl_gfx3d[] = {
  *   - Bank 0: mnctr_reset_bit = 23 (MSM8960 uses 25)
  *   - Bank 1: mnctr_reset_bit = 22 (MSM8960 uses 24)
  *
- * This was verified against the webOS 2.6 kernel source (clock-8x60.c).
+ * This was verified against the legacy vendor kernel 2.6 kernel source (clock-8x60.c).
  */
 static struct clk_dyn_rcg gfx3d_src = {
 	.ns_reg[0] = 0x008c,
@@ -1210,31 +1206,32 @@ static struct clk_branch mdp_vsync_clk = {
 };
 
 /*
- * MSM8x60-specific MDP pixel clocks
+ * MDP pixel clock (LCDC primary panel path).
  *
- * MSM8660 uses MD16 register format where M value is in bits [31:16] and
- * D value (2*N-M) is in bits [15:0]. This differs from MSM8960 which uses
- * MD8 format with M in bits [23:16] and D in bits [7:0].
- *
- * NS register offset is 0x00DC (not 0x00E0 as in MSM8960).
+ * MSM8x60 uses the MD16 register format: the MD register holds M in bits
+ * [31:16] and ~N in bits [15:0]; the NS register holds ~(N - M) in bits
+ * [31:16]. mmcc-msm8960 by contrast uses the MD8 format (M and ~N
+ * packed as 8-bit halves of the MD register and N in NS bits [23:16]).
+ * The common clk_rcg_ops covers both layouts -- configure width = 16
+ * and m_val_shift = 16 to select MD16. NS register sits at 0x00dc on
+ * MSM8x60 (vs 0x00e0 on MSM8960).
  */
 static const struct freq_tbl clk_tbl_mdp_pixel[] = {
-	/* Format: { freq, src, pre_div, m, n } - use pre_div like clk_tbl_cam */
-	{  25600000, P_PLL8, 3,   1,    5 },	/* 384 / 3 * 1/5  = 25.6 MHz */
-	{  27000000, P_PXO,  1,   0,    0 },	/* PXO direct      = 27 MHz */
-	{  42667000, P_PLL8, 1,   1,    9 },	/* 384 * 1/9       = 42.667 MHz */
-	{  43192000, P_PLL8, 1,  64,  569 },	/* 384 * 64/569    = 43.192 MHz */
-	{  48000000, P_PLL8, 4,   1,    2 },	/* 384 / 4 * 1/2   = 48 MHz */
-	{  53990000, P_PLL8, 2, 169,  601 },	/* 384 / 2 * 169/601 = 53.99 MHz */
-	{  64000000, P_PLL8, 3,   1,    2 },	/* 384 / 3 * 1/2   = 64 MHz */
-	{  69300000, P_PLL8, 1, 231, 1280 },	/* 384 * 231/1280  = 69.3 MHz - HP TouchPad panel */
-	{  76800000, P_PLL8, 1,   1,    5 },	/* 384 * 1/5       = 76.8 MHz */
-	{  85333000, P_PLL8, 1,   2,    9 },	/* 384 * 2/9       = 85.333 MHz */
-	{  96000000, P_PLL8, 4,   0,    0 },	/* 384 / 4         = 96 MHz */
+	{  25600000, P_PLL8, 3,   1,    5 },	/* 384 / 3 * 1/5     =  25.6 MHz */
+	{  27000000, P_PXO,  1,   0,    0 },	/* PXO direct        =  27 MHz */
+	{  42667000, P_PLL8, 1,   1,    9 },	/* 384 * 1/9         =  42.667 MHz */
+	{  43192000, P_PLL8, 1,  64,  569 },	/* 384 * 64/569      =  43.192 MHz */
+	{  48000000, P_PLL8, 4,   1,    2 },	/* 384 / 4 * 1/2     =  48 MHz */
+	{  53990000, P_PLL8, 2, 169,  601 },	/* 384 / 2 * 169/601 =  53.99 MHz */
+	{  64000000, P_PLL8, 3,   1,    2 },	/* 384 / 3 * 1/2     =  64 MHz */
+	{  69300000, P_PLL8, 1, 231, 1280 },	/* 384 * 231/1280    =  69.3 MHz - HP TouchPad panel */
+	{  76800000, P_PLL8, 1,   1,    5 },	/* 384 * 1/5         =  76.8 MHz */
+	{  85333000, P_PLL8, 1,   2,    9 },	/* 384 * 2/9         =  85.333 MHz */
+	{  96000000, P_PLL8, 4,   0,    0 },	/* 384 / 4           =  96 MHz */
 	{ 100030000, P_PLL8, 2, 211,  405 },	/* 384 / 2 * 211/405 = 100.03 MHz */
-	{ 106500000, P_PLL8, 1,  71,  256 },	/* 384 * 71/256    = 106.5 MHz */
-	{ 109714000, P_PLL8, 1,   2,    7 },	/* 384 * 2/7       = 109.714 MHz */
-	{ 128000000, P_PLL8, 3,   0,    0 },	/* 384 / 3         = 128 MHz */
+	{ 106500000, P_PLL8, 1,  71,  256 },	/* 384 * 71/256      = 106.5 MHz */
+	{ 109714000, P_PLL8, 1,   2,    7 },	/* 384 * 2/7         = 109.714 MHz */
+	{ 128000000, P_PLL8, 3,   0,    0 },	/* 384 / 3           = 128 MHz */
 	{ }
 };
 
@@ -1246,8 +1243,8 @@ static struct clk_rcg mdp_pixel_src = {
 		.mnctr_reset_bit = 7,
 		.mnctr_mode_shift = 6,
 		.n_val_shift = 16,
-		.m_val_shift = 8,		/* Try standard 8-bit format */
-		.width = 8,			/* Try standard 8-bit width */
+		.m_val_shift = 16,	/* MD16: M at MD[31:16], ~N at MD[15:0] */
+		.width = 16,
 	},
 	.p = {
 		.pre_div_shift = 14,
@@ -1265,7 +1262,7 @@ static struct clk_rcg mdp_pixel_src = {
 			.name = "mdp_pixel_src",
 			.parent_data = mmcc_pxo_pll8_pll2,
 			.num_parents = ARRAY_SIZE(mmcc_pxo_pll8_pll2),
-			.ops = &clk_rcg_ops,  /* Testing with clk_tbl_cam-style freq_tbl */
+			.ops = &clk_rcg_ops,
 		},
 	},
 };
@@ -2496,7 +2493,7 @@ static struct gdsc ijpeg_gdsc = {
 	 * mach-msm/footswitch-8x60.c does exactly this: setup_clocks ->
 	 * clk_reset(axi, ASSERT) + clk_reset(ahb, ASSERT) + clk_reset(core,
 	 * ASSERT) -> udelay -> rail charge -> deassert in reverse -> extra
-	 * core ASSERT/DEASSERT toggle. HTC and Samsung MSM8660 trees use the
+	 * core ASSERT/DEASSERT toggle. multiple downstream vendor kernels MSM8660 trees use the
 	 * same sequence. With only the AHB reset toggled the JPEG register
 	 * file comes up healthy (CPU reads/writes look fine) but the FE's
 	 * AXI-side address generator and burst sequencer stay in whatever
@@ -2506,7 +2503,7 @@ static struct gdsc ijpeg_gdsc = {
 	 * idle 0x80 regardless of buffer contents while WE writes succeed.
 	 * Listing AXI + CORE here lets the GDSC framework assert/deassert
 	 * them around rail charge (gdsc_enable LEGACY_FOOTSWITCH | SW_RESET
-	 * path), matching the legacy/HTC/Samsung convergent recipe and
+	 * path), matching the legacy/downstream vendor kernels convergent recipe and
 	 * mirroring the gfx3d_gdsc precedent above.
 	 */
 	.resets = (unsigned int []){
@@ -2646,7 +2643,7 @@ MODULE_DEVICE_TABLE(of, mmcc_msm8660_match_table);
 
 /*
  * MSM8660 MMCC register offsets for initialization.
- * Based on webOS kernel arch/arm/mach-msm/clock-8x60.c
+ * Based on legacy vendor kernel arch/arm/mach-msm/clock-8x60.c
  */
 
 /* Reset registers - safe to deassert */
@@ -2745,9 +2742,9 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 	}
 
 	/*
-	 * MSM8660 MMCC hardware initialization based on webOS kernel.
+	 * MSM8660 MMCC hardware initialization based on legacy vendor kernel.
 	 *
-	 * WebOS sets specific control bits in AHB_EN_REG:
+	 * legacy vendor kernel sets specific control bits in AHB_EN_REG:
 	 *   rmwreg(0x00000003, AHB_EN_REG, 0x0F7FFFFF);
 	 * BIT(0) and BIT(1) are control bits (FPB enable, HW gating disable),
 	 * NOT clock enables. Clock enables start at BIT(2) and above.
@@ -2767,14 +2764,14 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 	/*
 	 * AHB_EN2_REG contains additional control bits including
 	 * VFE_AHB FORCE_CORE_ON to prevent memory collapse.
-	 * WebOS: rmwreg(0x000007F9, AHB_EN2_REG, 0x7FFFBFFF);
+	 * legacy vendor kernel: rmwreg(0x000007F9, AHB_EN2_REG, 0x7FFFBFFF);
 	 */
 	regmap_update_bits(regmap, AHB_EN2_REG, 0x7fffbfff, 0x000007f9);
 
 	/*
 	 * Initialize AXI bus registers for memory access paths.
 	 * These enable HW gating and set FORCE_CORE_ON bits for AXI clocks.
-	 * WebOS: rmwreg(0x000307F9, MAXI_EN_REG, 0x0FFFFFFF);
+	 * legacy vendor kernel: rmwreg(0x000307F9, MAXI_EN_REG, 0x0FFFFFFF);
 	 *        writel(0x3FE7FCFF, MAXI_EN3_REG);
 	 *        writel(0x000001D8, SAXI_EN_REG);
 	 * Note: MAXI_EN2_REG is owned by RPM, don't touch it.
@@ -2797,7 +2794,7 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 	 * structures; no unconditional CSI_CC_REG write is needed here.
 	 *
 	 * MISC_CC_REG (0x058): bit 10 enables the CSI1-to-VFE async bridge.
-	 * MISC_CC2_REG: additional enables observed from the webOS reference
+	 * MISC_CC2_REG: additional enables observed from the legacy vendor kernel reference
 	 *   register dump (0x004007fd).
 	 */
 	regmap_update_bits(regmap, MISC_CC_REG, 0xfefff7ff, 0x00000400);
@@ -2843,9 +2840,9 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
 }
 
 /*
- * Unhalt all RPM fabric AXI master ports.
+ * Unhalt MMSS fabric AXI master ports.
  *
- * webOS downstream kernels (msm_bus_board_8660.c) program halt registers
+ * legacy vendor kernels (msm_bus_board_8660.c) program halt registers
  * on three fabrics, but only the MMSS fabric is owned by this driver:
  * MDP/ROTATOR/GFX2D/GFX3D/VFE/VPE/JPEG/HDCODEC all sit behind ports on
  * the MMSS NoC. The downstream GDSC driver calls msm_bus_axi_portunhalt()
@@ -2859,7 +2856,7 @@ static void mmcc_msm8660_init_hw(struct regmap *regmap)
  * are handled by the qcom-msm8660 interconnect provider on platforms
  * that need it.
  *
- * MMSS fabric master ports (port:name from webOS enum):
+ * MMSS fabric master ports (port:name from legacy vendor kernel enum):
  *   0:MDP_PORT0   1:MDP_PORT1   2:ADM1_PORT0  3:ROTATOR
  *   4:GFX3D       5:JPEG_DEC    6:GFX2D0      7:VFE
  *   8:VPE         9:JPEG_ENC   10:GFX2D1     11:APPS_FAB
@@ -2957,6 +2954,6 @@ static struct platform_driver mmcc_msm8660_driver = {
 
 module_platform_driver(mmcc_msm8660_driver);
 
-MODULE_DESCRIPTION("QCOM MMCC MSM8660/APQ8060 Driver");
-MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("Qualcomm MSM8x60 Multimedia Clock Controller driver");
+MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:mmcc-msm8660");

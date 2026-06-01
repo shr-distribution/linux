@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Qualcomm MSM8660 Video Processing Engine (VPE) driver
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) Video Processing Engine (VPE) driver
  *
  * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
+-2026 Herman van Hazendonk <github.com@herrie.org>
  *
- * Based on legacy msm_vpe1 driver from webOS kernel.
+ * Based on the legacy vendor MSM8x60 msm_vpe1 driver.
  */
 
 #ifndef _VPE_HW_H_
@@ -83,8 +83,8 @@
 /*
  * NV12 (pseudo-planar Y + interleaved CbCr) surface descriptors, taken from
  * the msm8660 camera HAL's VPE input/output plane config (mm_vpe_set_input_plane
- * / mm_vpe_set_output_plane in liboemcamera.so -- identical on Sony nozomi,
- * HTC and Samsung). The format word encodes fetch mode, plane count, chroma
+ * / mm_vpe_set_output_planein the downstream vendor HAL -- identical on downstream vendor kernel downstream board,
+ * multiple downstream vendor kernels). The format word encodes fetch mode, plane count, chroma
  * sampling and component widths; the source and output words differ in byte 2.
  */
 #define VPE_SRC_FORMAT_NV12		0x0012223f

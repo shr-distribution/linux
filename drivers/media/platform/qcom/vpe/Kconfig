@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 config VIDEO_QCOM_VPE
-	tristate "Qualcomm MSM8660 Video Processing Engine driver"
+	tristate "Qualcomm MSM8x60 Video Processing Engine driver"
 	depends on V4L_MEM2MEM_DRIVERS
 	depends on VIDEO_DEV
 	depends on ARCH_QCOM || COMPILE_TEST

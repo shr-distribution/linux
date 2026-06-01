@@ -8,6 +8,7 @@
 #include <linux/err.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
@@ -92,7 +93,7 @@ static const struct freq_tbl clk_tbl_aif_osr_393[] = {
 /*
  * MSM8x60 family (MSM8260/MSM8660/APQ8060) PLL4 runs at 540.672 MHz
  * (24.576 MHz * 22, L=0x16). Divisors are derived from the legacy
- * webOS clock-8x60.c driver. AIF_OSR has an 8-bit M/N counter, so
+ * legacy vendor kernel clock-8x60.c driver. AIF_OSR has an 8-bit M/N counter, so
  * 512000 Hz is not representable against this parent and is omitted.
  */
 static const struct freq_tbl clk_tbl_aif_osr_540[] = {
@@ -491,17 +492,62 @@ static const struct of_device_id lcc_msm8960_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, lcc_msm8960_match_table);
 
+static bool lcc_msm8960_is_msm8x60(struct device_node *node)
+{
+	return of_device_is_compatible(node, "qcom,lcc-msm8260") ||
+	       of_device_is_compatible(node, "qcom,lcc-msm8660") ||
+	       of_device_is_compatible(node, "qcom,lcc-apq8060");
+}
+
+/*
+ * The MSM8x60 / MDM9615 branches below mutate file-scope static state
+ * (PLL parent_data, RCG freq_tbl pointers, branch enable_mask, div
+ * width, bit_clk mux shift). On a system with a single LCC instance
+ * --- the only configuration this driver is ever expected to see in
+ * practice --- that is benign. Belt-and-braces: serialise probes and
+ * record which SoC variant configured the globals so a second probe
+ * (e.g. a misconfigured DT with both a "qcom,lcc-msm8660" and a
+ * "qcom,lcc-mdm9615" node, or an asymmetric multi-SoC test platform)
+ * cannot interleave with a different variant and silently clobber the
+ * first instance's clock metadata.
+ */
+enum lcc_variant {
+	LCC_VARIANT_UNCONFIGURED = 0,
+	LCC_VARIANT_DEFAULT,	/* apq8064 / msm8960 — no static mutation */
+	LCC_VARIANT_MDM9615,
+	LCC_VARIANT_MSM8X60,
+};
+static DEFINE_MUTEX(lcc_msm8960_probe_lock);
+static enum lcc_variant lcc_msm8960_variant;
+
 static int lcc_msm8960_probe(struct platform_device *pdev)
 {
 	u32 val;
+	int ret;
 	struct regmap *regmap;
-	bool is_msm8x60 =
-		of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8260") ||
-		of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8660") ||
-		of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-apq8060");
+	bool is_msm8x60 = lcc_msm8960_is_msm8x60(pdev->dev.of_node);
+	bool is_mdm9615 = of_device_is_compatible(pdev->dev.of_node,
+						  "qcom,lcc-mdm9615");
+	enum lcc_variant want;
+
+	if (is_msm8x60)
+		want = LCC_VARIANT_MSM8X60;
+	else if (is_mdm9615)
+		want = LCC_VARIANT_MDM9615;
+	else
+		want = LCC_VARIANT_DEFAULT;
+
+	mutex_lock(&lcc_msm8960_probe_lock);
+	if (lcc_msm8960_variant != LCC_VARIANT_UNCONFIGURED &&
+	    lcc_msm8960_variant != want) {
+		mutex_unlock(&lcc_msm8960_probe_lock);
+		return dev_err_probe(&pdev->dev, -EBUSY,
+			"LCC globals already configured for variant %d; refusing variant %d\n",
+			lcc_msm8960_variant, want);
+	}
 
 	/* patch for the cxo <-> pxo difference */
-	if (of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-mdm9615")) {
+	if (is_mdm9615) {
 		pxo_parent_data.fw_name = "cxo";
 		pxo_parent_data.name = "cxo_board";
 		lcc_pxo_pll4[0].fw_name = "cxo";
@@ -509,17 +555,23 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	}
 
 	regmap = qcom_cc_map(pdev, &lcc_msm8960_desc);
-	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
+	if (IS_ERR(regmap)) {
+		ret = PTR_ERR(regmap);
+		goto err_unlock;
+	}
 
 	/*
 	 * Select frequency plan. On the MSM8x60 family PLL4 is managed by
-	 * RPM/modem firmware and reaches its final L=0x16 (540 MHz) value
-	 * asynchronously; reading the L-register at probe time can
-	 * transiently return an intermediate value (observed: 0x14 at
-	 * probe vs 540 MHz reported by the clock framework moments
-	 * later). Trust the device tree compatible instead and pick the
-	 * 540 MHz plan unconditionally for MSM8x60.
+	 * RPM/modem firmware and reaches its final L value (0x16, 540.672
+	 * MHz) asynchronously, so reading the LCC L-register at probe time
+	 * is unreliable -- it can transiently report intermediate values
+	 * even though the runtime rate is stable at 540 MHz. Trust the
+	 * device tree compatible instead and select the 540 MHz plan
+	 * unconditionally for the MSM8x60 family.
+	 *
+	 * For all other compatibles read the L-register and pick the plan
+	 * that matches (the apps processor programs PLL4 itself there, so
+	 * the read is meaningful).
 	 */
 	if (is_msm8x60) {
 		slimbus_src.freq_tbl = clk_tbl_aif_osr_540;
@@ -530,8 +582,13 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
 		pcm_src.freq_tbl = clk_tbl_pcm_540;
 	} else {
-		/* Use the correct frequency plan depending on speed of PLL4 */
-		regmap_read(regmap, 0x4, &val);
+		ret = regmap_read(regmap, 0x4, &val);
+		if (ret) {
+			dev_err_probe(&pdev->dev, ret,
+				      "failed to read PLL4 L-value\n");
+			goto err_unlock;
+		}
+
 		if (val == 0x12) {
 			slimbus_src.freq_tbl = clk_tbl_aif_osr_492;
 			mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_492;
@@ -541,6 +598,15 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 			spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
 			pcm_src.freq_tbl = clk_tbl_pcm_492;
 		} else if (val != 0x10) {
+			/*
+			 * 0x10 (L=16, 393.216 MHz) is the file-static
+			 * initializer default and is left intact above. Any
+			 * other L value means a hardware variant this driver
+			 * does not have a frequency table for; warn so the
+			 * wrong rates that will be programmed are at least
+			 * visible in dmesg instead of producing silent audio
+			 * glitches.
+			 */
 			dev_warn(&pdev->dev,
 				 "unknown PLL4 L=0x%x, assuming default 393.216 MHz frequency plan\n",
 				 val);
@@ -548,13 +614,24 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	}
 	/*
 	 * MSM8x60 family uses different register-bit positions for the
-	 * codec/spare I2S MIC/SPKR OSR + DIV + BIT_DIV branches than the
-	 * CLK_AIF_OSR_DIV wrapper macro above hard-codes for MSM8960:
+	 * codec/spare I2S MIC/SPKR OSR + DIV + BIT_DIV branches and the
+	 * BIT_CLK mux than the CLK_AIF_OSR_DIV wrapper macro above
+	 * hard-codes for MSM8960:
 	 *
 	 *                       wrapper (MSM8960)   MSM8x60
 	 *   OSR clk en_bit      21                  17
 	 *   DIV clk width       8                   4
 	 *   BIT_DIV clk en_bit  19                  15
+	 *   BIT_CLK mux shift   18                  14
+	 *
+	 * The bit positions are all shifted down by 4 from the MSM8960
+	 * defaults. Without the mux shift fix, set_rate on bit_clk would
+	 * select an unconnected external "codec_clk" parent at bit 18
+	 * (a no-op on real MSM8x60 silicon), the divider in div_clk
+	 * would never be programmed, and BCLK would stay at the OSR
+	 * rate (e.g. 12.288 MHz instead of 1.536 MHz for 48 kHz audio),
+	 * which prevents the codec FLL from locking and silently breaks
+	 * playback with -EIO on aplay.
 	 *
 	 * mi2s_*, slimbus_*, audio_slimbus, sps_slimbus and the pcm
 	 * branches already use the MSM8x60 positions (their per-branch
@@ -565,9 +642,7 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	 * per-clk_regmap_div instances carry the correct values when the
 	 * clock framework registers and queries them.
 	 */
-	if (of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8260") ||
-	    of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8660") ||
-	    of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-apq8060")) {
+	if (is_msm8x60) {
 		codec_i2s_mic_osr_clk.clkr.enable_mask = BIT(17);
 		codec_i2s_mic_div_clk.width            = 4;
 		codec_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
@@ -584,13 +659,13 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		codec_i2s_spkr_div_clk.width            = 4;
 		codec_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
 		codec_i2s_spkr_bit_div_clk.halt_check  = BRANCH_HALT_SKIP;
-		codec_i2s_spkr_bit_clk.shift           = 14;
+		codec_i2s_spkr_bit_clk.shift            = 14;
 
 		spare_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
 		spare_i2s_spkr_div_clk.width            = 4;
 		spare_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
 		spare_i2s_spkr_bit_div_clk.halt_check  = BRANCH_HALT_SKIP;
-		spare_i2s_spkr_bit_clk.shift           = 14;
+		spare_i2s_spkr_bit_clk.shift            = 14;
 		/*
 		 * The bit_div HALT bit (reg hr, bit 0) does not assert on
 		 * MSM8x60 within the 200 us clk_branch_toggle() poll
@@ -614,12 +689,28 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	 * standalone MSM8x60 driver never wrote to this register and
 	 * audio playback worked there; preserve that behavior.
 	 */
-	if (!of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8260") &&
-	    !of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8660") &&
-	    !of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-apq8060"))
-		regmap_write(regmap, 0xc4, 0x1);
+	if (!is_msm8x60) {
+		ret = regmap_write(regmap, 0xc4, 0x1);
+		if (ret) {
+			dev_err_probe(&pdev->dev, ret,
+				      "failed to select PLL4 on LPASS Primary PLL Mux\n");
+			goto err_unlock;
+		}
+	}
 
-	return qcom_cc_really_probe(&pdev->dev, &lcc_msm8960_desc, regmap);
+	ret = qcom_cc_really_probe(&pdev->dev, &lcc_msm8960_desc, regmap);
+	if (ret)
+		goto err_unlock;
+
+	/* Static mutations now reflect this variant; remember for any
+	 * subsequent probe attempt. */
+	lcc_msm8960_variant = want;
+	mutex_unlock(&lcc_msm8960_probe_lock);
+	return 0;
+
+err_unlock:
+	mutex_unlock(&lcc_msm8960_probe_lock);
+	return ret;
 }
 
 static struct platform_driver lcc_msm8960_driver = {

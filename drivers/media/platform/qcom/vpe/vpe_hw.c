@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Qualcomm MSM8660 Video Processing Engine (VPE) - Hardware abstraction
+ * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) Video Processing Engine (VPE) - Hardware abstraction
  *
  * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
- * Copyright (c) 2024-2026 Herman van Hazendonk <github.com@herrie.org>
+-2026 Herman van Hazendonk <github.com@herrie.org>
  *
- * Based on legacy msm_vpe1 driver from webOS kernel.
+ * Based on the legacy vendor MSM8x60 msm_vpe1 driver.
  */
 
 #include <linux/delay.h>
@@ -20,9 +20,9 @@
  * the hardware wants: LSB = (tap0<<16)|tap1, MSB = (tap3<<16)|tap2 (each tap a
  * 10-bit signed coefficient, taps sum to 512 = unity gain).
  *
- * Recovered from the TouchPad's own (unstripped) webOS libqcameralib.so
- * (vpe_scale_0p*_C0..C3 + vpe_init_scale_table); byte-identical to the HTC
- * liboemcamera tables. The names are dst/src bands: 0p2_0p4 is the flattest
+ * Recovered from the TouchPad's own (unstripped) the legacy vendor camera library
+ * (vpe_scale_0p*_C0..C3 + vpe_init_scale_table); byte-identical to the downstream vendor kernel
+ * the corresponding downstream vendor HAL tables. The names are dst/src bands: 0p2_0p4 is the flattest
  * (heaviest downscale anti-alias) and 0p8_20p0 the sharpest (passthrough at
  * phase 0, used for upscale/1:1).
  */
@@ -212,8 +212,8 @@ void vpe_hw_set_src_size(void __iomem *base, u32 img_w, u32 img_h,
 	/*
 	 * Source format + unpack pattern for NV12 (pseudo-planar Y + CbCr).
 	 * These are the exact words the msm camera HAL programs for the VPE
-	 * input plane (confirmed identical across the Sony nozomi, HTC and
-	 * Samsung msm8660 liboemcamera.so / mm_vpe_set_input_plane). Our prior
+	 * input plane (confirmed identical across the multiple downstream vendor kernels including
+	 * the downstream vendor MSM8660 HAL / mm_vpe_set_input_plane). Our prior
 	 * placeholder 0x2 / 0x03020100 left the engine unable to interpret the
 	 * surface, so it consumed the kick but produced no output.
 	 */
@@ -327,7 +327,7 @@ void vpe_hw_set_scale(void __iomem *base, u32 src_w, u32 src_h, u32 dst_w, u32 d
 	 *   0p6_0p8   1.25-1.66x down
 	 *   0p4_0p6   1.66-2.5x  down
 	 *   0p2_0p4   >2.5x      down (flattest, strongest anti-alias)
-	 * Values verified byte-identical between the webOS and HTC HALs. Earlier
+	 * Values verified byte-identical between the legacy vendor kernel and downstream vendor kernel HALs. Earlier
 	 * upscale used 0p4_0p6 (soft); 0p8_20p0 is the correct sharp upscale set.
 	 */
 	{
