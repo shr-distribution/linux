@@ -114,9 +114,13 @@ properties:
   resets:
     maxItems: 1
     description:
-      Reset controller for the CE2 engine. Mandatory on MSM8x60
-      (CE2 wedges across operations without an explicit reset);
-      not used on later parts.
+      Optional reset controller for the CE2 engine. When provided,
+      the driver uses it to recover the engine from the per-op
+      wedge that affects MSM8x60 CE2 hardware after ~5 operations
+      (legacy Samsung downstream kernels assert/deassert the same
+      reset once at init; HTC and webOS legacy kernels omit it).
+      Without it the driver still probes and registers algorithms
+      but cannot recover from a wedged engine.
 
   reset-names:
     items:
@@ -203,7 +207,6 @@ allOf:
         - dma-names
         - qcom,rx-crci
         - qcom,tx-crci
-        - resets
 
 required:
   - compatible
