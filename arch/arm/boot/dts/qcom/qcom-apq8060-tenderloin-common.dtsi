@@ -441,12 +441,16 @@
 			reg = <0x18500000 0x10000>;
 			interrupts = <GIC_SPI 195 IRQ_TYPE_LEVEL_HIGH>;
 			/*
-			 * On MSM8660, core and bus clocks share the same
-			 * hardware register (CE2_HCLK_CTL 0x2740 bit 4).
-			 * Vendor kernels map ce2_p_clk to "core_clk" only,
-			 * but mainline driver expects all three.
+			 * On MSM8660 the CE2 block has a single hardware
+			 * enable (CE2_HCLK_CTL 0x2740 bit 4). The qce driver
+			 * requests "core", "iface" and "bus" via
+			 * devm_clk_get_optional_enabled(); reference the
+			 * single CE2_H_CLK phandle under all three names so
+			 * clk_get() returns the same struct clk and per-
+			 * consumer refcounting works against the single
+			 * underlying enable bit.
 			 */
-			clocks = <&gcc CE2_P_CLK>, <&gcc CE2_H_CLK>, <&gcc CE2_P_CLK>;
+			clocks = <&gcc CE2_H_CLK>, <&gcc CE2_H_CLK>, <&gcc CE2_H_CLK>;
 			clock-names = "core", "iface", "bus";
 			resets = <&gcc CE2_RESET>;
 			reset-names = "clk";
