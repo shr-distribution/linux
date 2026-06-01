@@ -526,6 +526,18 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
 		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
 		pcm_src.freq_tbl = clk_tbl_pcm_540;
+	} else if (val != 0x10) {
+		/*
+		 * 0x10 (L=16, 393.216 MHz) is the file-static initializer
+		 * default and is left intact above. Any other L value means
+		 * a hardware variant this driver does not have a frequency
+		 * table for; warn so the wrong rates that will be programmed
+		 * are at least visible in dmesg instead of producing silent
+		 * audio glitches.
+		 */
+		dev_warn(&pdev->dev,
+			 "unknown PLL4 L=0x%x, assuming default 393.216 MHz frequency plan\n",
+			 val);
 	}
 	/*
 	 * MSM8x60 family uses different register-bit positions for the
@@ -552,35 +564,35 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		codec_i2s_mic_osr_clk.clkr.enable_mask = BIT(17);
 		codec_i2s_mic_div_clk.width            = 4;
 		codec_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
-		codec_i2s_mic_bit_div_clk.halt_check   = BRANCH_HALT_SKIP;
 
 		spare_i2s_mic_osr_clk.clkr.enable_mask = BIT(17);
 		spare_i2s_mic_div_clk.width            = 4;
 		spare_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
-		spare_i2s_mic_bit_div_clk.halt_check   = BRANCH_HALT_SKIP;
 
 		codec_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
 		codec_i2s_spkr_div_clk.width            = 4;
 		codec_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
-		codec_i2s_spkr_bit_div_clk.halt_check  = BRANCH_HALT_SKIP;
 
 		spare_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
 		spare_i2s_spkr_div_clk.width            = 4;
 		spare_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
-		spare_i2s_spkr_bit_div_clk.halt_check  = BRANCH_HALT_SKIP;
-		/*
-		 * The bit_div HALT bit (reg hr, bit 0) does not assert on
-		 * MSM8x60 within the 200 us window clk_branch_toggle()
-		 * polls. The OSR clock's HALT (bit 1) does assert, so this
-		 * is not a power-up/clock-routing issue; only the bit_div
-		 * branch's poll is unreliable. Skip the check so PCM stop
-		 * does not WARN and return -EBUSY (which propagates to
-		 * userspace as aplay write -EIO).
-		 */
 	}
 
-	/* Enable PLL4 source on the LPASS Primary PLL Mux */
-	regmap_write(regmap, 0xc4, 0x1);
+	/*
+	 * Enable PLL4 source on the LPASS Primary PLL Mux.
+	 *
+	 * Skip this write on MSM8x60 family devices: on MSM8x60 LPASS
+	 * register 0xc4 has different semantics than on MSM8960, and
+	 * the unconditional write of 1 stalls the LPAIF DMA data path
+	 * (clocks look correct, trigger START completes, but period
+	 * IRQs never fire and aplay hits XRUN/-EIO). The pre-merge
+	 * standalone MSM8x60 driver never wrote to this register and
+	 * audio playback worked there; preserve that behavior.
+	 */
+	if (!of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8260") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8660") &&
+	    !of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-apq8060"))
+		regmap_write(regmap, 0xc4, 0x1);
 
 	return qcom_cc_really_probe(&pdev->dev, &lcc_msm8960_desc, regmap);
 }
