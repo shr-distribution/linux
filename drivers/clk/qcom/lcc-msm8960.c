@@ -572,21 +572,25 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		codec_i2s_mic_div_clk.width            = 4;
 		codec_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
 		codec_i2s_mic_bit_div_clk.halt_check   = BRANCH_HALT_SKIP;
+		codec_i2s_mic_bit_clk.shift            = 14;
 
 		spare_i2s_mic_osr_clk.clkr.enable_mask = BIT(17);
 		spare_i2s_mic_div_clk.width            = 4;
 		spare_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
 		spare_i2s_mic_bit_div_clk.halt_check   = BRANCH_HALT_SKIP;
+		spare_i2s_mic_bit_clk.shift            = 14;
 
 		codec_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
 		codec_i2s_spkr_div_clk.width            = 4;
 		codec_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
 		codec_i2s_spkr_bit_div_clk.halt_check  = BRANCH_HALT_SKIP;
+		codec_i2s_spkr_bit_clk.shift           = 14;
 
 		spare_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
 		spare_i2s_spkr_div_clk.width            = 4;
 		spare_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
 		spare_i2s_spkr_bit_div_clk.halt_check  = BRANCH_HALT_SKIP;
+		spare_i2s_spkr_bit_clk.shift           = 14;
 		/*
 		 * The bit_div HALT bit (reg hr, bit 0) does not assert on
 		 * MSM8x60 within the 200 us clk_branch_toggle() poll
