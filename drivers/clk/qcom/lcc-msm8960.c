@@ -527,6 +527,45 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
 		pcm_src.freq_tbl = clk_tbl_pcm_540;
 	}
+	/*
+	 * MSM8x60 family uses different register-bit positions for the
+	 * codec/spare I2S MIC/SPKR OSR + DIV + BIT_DIV branches than the
+	 * CLK_AIF_OSR_DIV wrapper macro above hard-codes for MSM8960:
+	 *
+	 *                       wrapper (MSM8960)   MSM8x60
+	 *   OSR clk en_bit      21                  17
+	 *   DIV clk width       8                   4
+	 *   BIT_DIV clk en_bit  19                  15
+	 *
+	 * mi2s_*, slimbus_*, audio_slimbus, sps_slimbus and the pcm
+	 * branches already use the MSM8x60 positions (their per-branch
+	 * macros are not collapsed into a wrapper), so only the four
+	 * CLK_AIF_OSR_DIV-wrapped instances need this fix-up.
+	 *
+	 * Apply before qcom_cc_really_probe() so the per-clk_branch and
+	 * per-clk_regmap_div instances carry the correct values when the
+	 * clock framework registers and queries them.
+	 */
+	if (of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8260") ||
+	    of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8660") ||
+	    of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-apq8060")) {
+		codec_i2s_mic_osr_clk.clkr.enable_mask = BIT(17);
+		codec_i2s_mic_div_clk.width            = 4;
+		codec_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
+
+		spare_i2s_mic_osr_clk.clkr.enable_mask = BIT(17);
+		spare_i2s_mic_div_clk.width            = 4;
+		spare_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
+
+		codec_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
+		codec_i2s_spkr_div_clk.width            = 4;
+		codec_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
+
+		spare_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
+		spare_i2s_spkr_div_clk.width            = 4;
+		spare_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
+	}
+
 	/* Enable PLL4 source on the LPASS Primary PLL Mux */
 	regmap_write(regmap, 0xc4, 0x1);
 
