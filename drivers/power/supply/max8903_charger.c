@@ -139,7 +139,13 @@ static int max8903_set_dc_current_limit(struct max8903_data *data, u32 limit_ua)
 {
 	int i, best_idx = -1;
 	u32 best_gpio_value;
-	DECLARE_BITMAP(values, 8);
+	/*
+	 * gpio_value is a u32 in the DT mapping and is parse-time
+	 * validated to fit in BIT(ndescs); size the bitmap to the full
+	 * width of the source u32 so a DT with up to 32 dc-current-limit
+	 * GPIOs cannot overflow this stack buffer.
+	 */
+	DECLARE_BITMAP(values, BITS_PER_TYPE(u32));
 
 	if (!data->dc_current_limit_gpios)
 		return -EOPNOTSUPP;
@@ -163,7 +169,7 @@ static int max8903_set_dc_current_limit(struct max8903_data *data, u32 limit_ua)
 		return -EINVAL;
 
 	best_gpio_value = data->dc_current_limit_map[best_idx].gpio_value;
-	bitmap_from_arr32(values, &best_gpio_value, 8);
+	bitmap_from_arr32(values, &best_gpio_value, BITS_PER_TYPE(u32));
 	gpiod_set_array_value_cansleep(data->dc_current_limit_gpios->ndescs,
 				       data->dc_current_limit_gpios->desc,
 				       data->dc_current_limit_gpios->info,
