@@ -396,8 +396,16 @@ static int lpass_cpu_daiops_trigger(struct snd_pcm_substream *substream,
 			clk_disable(drvdata->mi2s_osr_clk[id]);
 			return ret;
 		}
-		dev_info(dai->dev, "trigger: bit_clk enabled, rate=%lu Hz\n",
-			 clk_get_rate(drvdata->mi2s_bit_clk[id]));
+		/*
+		 * Don't call clk_get_rate() here — since ALSA commit
+		 * e661c488696 ("ALSA: pcm: Handle XRUN at trigger START")
+		 * soc_pcm_trigger() is called with the substream
+		 * spinlock held, so the .trigger callback runs in atomic
+		 * context. clk_get_rate() takes clk_prepare_lock (a
+		 * mutex) which would BUG: scheduling while atomic.
+		 * The rate is already logged by hw_params just above.
+		 */
+		dev_info(dai->dev, "trigger: bit_clk enabled\n");
 
 		/* Small delay to let clocks stabilize */
 		udelay(10);
