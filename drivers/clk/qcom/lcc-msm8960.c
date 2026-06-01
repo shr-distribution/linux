@@ -552,18 +552,31 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		codec_i2s_mic_osr_clk.clkr.enable_mask = BIT(17);
 		codec_i2s_mic_div_clk.width            = 4;
 		codec_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
+		codec_i2s_mic_bit_div_clk.halt_check   = BRANCH_HALT_SKIP;
 
 		spare_i2s_mic_osr_clk.clkr.enable_mask = BIT(17);
 		spare_i2s_mic_div_clk.width            = 4;
 		spare_i2s_mic_bit_div_clk.clkr.enable_mask = BIT(15);
+		spare_i2s_mic_bit_div_clk.halt_check   = BRANCH_HALT_SKIP;
 
 		codec_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
 		codec_i2s_spkr_div_clk.width            = 4;
 		codec_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
+		codec_i2s_spkr_bit_div_clk.halt_check  = BRANCH_HALT_SKIP;
 
 		spare_i2s_spkr_osr_clk.clkr.enable_mask = BIT(17);
 		spare_i2s_spkr_div_clk.width            = 4;
 		spare_i2s_spkr_bit_div_clk.clkr.enable_mask = BIT(15);
+		spare_i2s_spkr_bit_div_clk.halt_check  = BRANCH_HALT_SKIP;
+		/*
+		 * The bit_div HALT bit (reg hr, bit 0) does not assert on
+		 * MSM8x60 within the 200 us window clk_branch_toggle()
+		 * polls. The OSR clock's HALT (bit 1) does assert, so this
+		 * is not a power-up/clock-routing issue; only the bit_div
+		 * branch's poll is unreliable. Skip the check so PCM stop
+		 * does not WARN and return -EBUSY (which propagates to
+		 * userspace as aplay write -EIO).
+		 */
 	}
 
 	/* Enable PLL4 source on the LPASS Primary PLL Mux */
