@@ -495,6 +495,10 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 {
 	u32 val;
 	struct regmap *regmap;
+	bool is_msm8x60 =
+		of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8260") ||
+		of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-msm8660") ||
+		of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-apq8060");
 
 	/* patch for the cxo <-> pxo difference */
 	if (of_device_is_compatible(pdev->dev.of_node, "qcom,lcc-mdm9615")) {
@@ -508,17 +512,16 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	/* Use the correct frequency plan depending on speed of PLL4 */
-	regmap_read(regmap, 0x4, &val);
-	if (val == 0x12) {
-		slimbus_src.freq_tbl = clk_tbl_aif_osr_492;
-		mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		spare_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
-		pcm_src.freq_tbl = clk_tbl_pcm_492;
-	} else if (val == 0x16) {
+	/*
+	 * Select frequency plan. On the MSM8x60 family PLL4 is managed by
+	 * RPM/modem firmware and reaches its final L=0x16 (540 MHz) value
+	 * asynchronously; reading the L-register at probe time can
+	 * transiently return an intermediate value (observed: 0x14 at
+	 * probe vs 540 MHz reported by the clock framework moments
+	 * later). Trust the device tree compatible instead and pick the
+	 * 540 MHz plan unconditionally for MSM8x60.
+	 */
+	if (is_msm8x60) {
 		slimbus_src.freq_tbl = clk_tbl_aif_osr_540;
 		mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_540;
 		codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_540;
@@ -526,18 +529,22 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 		codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
 		spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_540;
 		pcm_src.freq_tbl = clk_tbl_pcm_540;
-	} else if (val != 0x10) {
-		/*
-		 * 0x10 (L=16, 393.216 MHz) is the file-static initializer
-		 * default and is left intact above. Any other L value means
-		 * a hardware variant this driver does not have a frequency
-		 * table for; warn so the wrong rates that will be programmed
-		 * are at least visible in dmesg instead of producing silent
-		 * audio glitches.
-		 */
-		dev_warn(&pdev->dev,
-			 "unknown PLL4 L=0x%x, assuming default 393.216 MHz frequency plan\n",
-			 val);
+	} else {
+		/* Use the correct frequency plan depending on speed of PLL4 */
+		regmap_read(regmap, 0x4, &val);
+		if (val == 0x12) {
+			slimbus_src.freq_tbl = clk_tbl_aif_osr_492;
+			mi2s_osr_src.freq_tbl = clk_tbl_aif_osr_492;
+			codec_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
+			spare_i2s_mic_osr_src.freq_tbl = clk_tbl_aif_osr_492;
+			codec_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
+			spare_i2s_spkr_osr_src.freq_tbl = clk_tbl_aif_osr_492;
+			pcm_src.freq_tbl = clk_tbl_pcm_492;
+		} else if (val != 0x10) {
+			dev_warn(&pdev->dev,
+				 "unknown PLL4 L=0x%x, assuming default 393.216 MHz frequency plan\n",
+				 val);
+		}
 	}
 	/*
 	 * MSM8x60 family uses different register-bit positions for the
