@@ -533,6 +533,21 @@ static int max8903_parse_usb_current_limit(struct platform_device *pdev,
 		data->usb_current_limit_high_ua = limits[1];
 	}
 
+	/*
+	 * max8903_set_usb_current_limit() picks the highest cap that
+	 * doesn't exceed the request by checking >=high first then
+	 * >=low; that policy only works when high > low. Reject DTs
+	 * that hand the property in the wrong order rather than
+	 * silently program a sub-optimal current limit.
+	 */
+	if (data->usb_current_limit_high_ua <= data->usb_current_limit_low_ua) {
+		dev_err(dev,
+			"usb-current-limit-values must be [low, high] with high > low (got low=%u uA, high=%u uA)\n",
+			data->usb_current_limit_low_ua,
+			data->usb_current_limit_high_ua);
+		return -EINVAL;
+	}
+
 	/* Start at low current for safety */
 	data->usb_current_limit_ua = data->usb_current_limit_low_ua;
 
