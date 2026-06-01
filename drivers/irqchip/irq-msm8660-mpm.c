@@ -20,7 +20,7 @@
  *     so of_find_device_by_node() returns NULL and the init silently
  *     hangs.
  *
- * This driver replicates the 2.6.35-palm `arch/arm/mach-msm/mpm.c`
+ * This driver replicates the legacy vendor `arch/arm/mach-msm/mpm.c`
  * mechanism as a regular platform driver: probes after platform
  * infrastructure is ready, ioremaps the vMPM sub-region of the RPM
  * control block (the qcom,rpm driver maps the surrounding area for
@@ -857,10 +857,15 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 	if (IS_ERR(mpm->mbox_chan)) {
 		ret = PTR_ERR(mpm->mbox_chan);
 		mpm->mbox_chan = NULL;
-		if (ret == -EPROBE_DEFER)
-			goto err_remove_domain;
-		dev_warn(dev, "no mailbox channel: %d (continuing without RPM doorbell)\n",
-			 ret);
+		/*
+		 * "mboxes" is mandatory in the binding: without it the MPM
+		 * cannot ring its RPM doorbell and the wake-config writes
+		 * we issue from the IRQ handler will never take effect.
+		 * Fail probe loudly rather than registering an irqchip that
+		 * silently drops wake events.
+		 */
+		dev_err_probe(dev, ret, "mailbox channel request failed\n");
+		goto err_remove_domain;
 	}
 
 	/*
