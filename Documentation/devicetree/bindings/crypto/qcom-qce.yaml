@@ -120,7 +120,7 @@ properties:
 
   reset-names:
     items:
-      - const: core
+      - const: clk
 
 allOf:
   - if:
