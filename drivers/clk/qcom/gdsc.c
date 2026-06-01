@@ -308,46 +308,45 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 	struct gdsc *sc = domain_to_gdsc(domain);
 	int ret;
 
-	pr_info("gdsc_enable: %s (flags=0x%x gdscr=0x%x)\n",
-		sc->pd.name, sc->flags, sc->gdscr);
-
 	if (sc->pwrsts == PWRSTS_ON)
 		return gdsc_deassert_reset(sc);
 
 	/*
 	 * Legacy MSM8x60 footswitch enable sequence:
-	 * 1. Assert resets
-	 * 2. Enable power rail (set ENABLE bit)
-	 * 3. Wait 2us for rail to charge
-	 * 4. Deassert resets
-	 * 5. Unclamp I/O (clear CLAMP bit)
-	 * 6. Wait 5us for signals to settle
+	 *   1. assert per-block resets (if SW_RESET)
+	 *   2. set ENABLE in GDSCR to power up the rail
+	 *   3. wait 2us for the rail to fully charge
+	 *   4. deassert resets
+	 *   5. clear CLAMP in GDSCR to release the I/O clamp
+	 *   6. wait 5us for clamps to release and signals to settle
+	 *
+	 * No status-bit polling -- the hardware does not expose one, so
+	 * the fixed delays below are the only safe synchronisation point.
 	 */
 	if (sc->flags & LEGACY_FOOTSWITCH) {
-		pr_info("gdsc_enable: %s using legacy footswitch sequence\n",
-			sc->pd.name);
-
 		if (sc->flags & SW_RESET)
 			gdsc_assert_reset(sc);
 
 		ret = gdsc_update_collapse_bit(sc, false);
-		if (ret)
+		if (ret) {
+			/*
+			 * Power-up write failed -- release the reset we
+			 * just asserted so the block does not stay stuck
+			 * in reset for the rest of the system's lifetime.
+			 */
+			if (sc->flags & SW_RESET)
+				gdsc_deassert_reset(sc);
 			return ret;
+		}
 
-		/* Wait for rail to fully charge */
 		udelay(2);
 
 		if (sc->flags & SW_RESET)
 			gdsc_deassert_reset(sc);
 
-		/* Unclamp I/O ports */
 		legacy_fs_deassert_clamp(sc);
 
-		/* Wait for clamps to clear and signals to settle */
 		udelay(5);
-
-		pr_info("gdsc_enable: %s legacy footswitch enabled\n",
-			sc->pd.name);
 
 		return 0;
 	}
@@ -516,10 +515,18 @@ static int gdsc_init(struct gdsc *sc)
 
 	/*
 	 * Legacy footswitches have a simpler register layout without
-	 * the wait time configuration of modern GDSCs.
+	 * the wait time configuration of modern GDSCs. Clear the
+	 * RETENTION bit so subsequent disable actually power-collapses
+	 * the rail rather than holding state; the vendor MSM8x60
+	 * footswitch driver does the same one-shot clear at probe.
 	 */
-	if (sc->flags & LEGACY_FOOTSWITCH)
+	if (sc->flags & LEGACY_FOOTSWITCH) {
+		ret = regmap_update_bits(sc->regmap, sc->gdscr,
+					 LEGACY_FS_RETENTION_MASK, 0);
+		if (ret)
+			return ret;
 		goto skip_wait_config;
+	}
 
 	/*
 	 * Disable HW trigger: collapse/restore occur based on registers writes.

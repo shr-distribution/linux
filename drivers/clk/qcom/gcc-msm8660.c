@@ -1571,6 +1571,16 @@ static struct clk_branch ppss_h_clk = {
 	},
 };
 
+/*
+ * CE2 (Crypto Engine 2): single hardware enable in GCC_CE2_HCLK_CTL
+ * (0x2740, BIT(4)). The upstream qce driver requests both "core" and
+ * "iface" via devm_clk_get_optional_enabled(); the consumer device
+ * tree references this single phandle twice under both clock-names,
+ * yielding the same struct clk for both clk_get() lookups. Per-
+ * consumer refcounting then works correctly against the single
+ * underlying enable bit -- avoiding the race two independent
+ * clk_branch structs would create over the same hardware register.
+ */
 static struct clk_branch ce2_h_clk = {
 	.halt_reg = 0x2fd4,
 	.halt_bit = 0,
@@ -1579,24 +1589,6 @@ static struct clk_branch ce2_h_clk = {
 		.enable_mask = BIT(4),
 		.hw.init = &(struct clk_init_data){
 			.name = "ce2_h_clk",
-			.ops = &clk_branch_ops,
-		},
-	},
-};
-
-/*
- * CE2 core/peripheral clock. On MSM8660, the core functional clock and
- * AHB interface clock share the same hardware control register and bit.
- * Vendor kernels map both "core_clk" and "iface_clk" to this same clock.
- */
-static struct clk_branch ce2_p_clk = {
-	.halt_reg = 0x2fd4,
-	.halt_bit = 0,
-	.clkr = {
-		.enable_reg = 0x2740,
-		.enable_mask = BIT(4),
-		.hw.init = &(struct clk_init_data){
-			.name = "ce2_p_clk",
 			.ops = &clk_branch_ops,
 		},
 	},
@@ -2749,7 +2741,6 @@ static struct clk_regmap *gcc_msm8660_clks[] = {
 	[PMEM_CLK] = &pmem_clk.clkr,
 	[PPSS_H_CLK] = &ppss_h_clk.clkr,
 	[CE2_H_CLK] = &ce2_h_clk.clkr,
-	[CE2_P_CLK] = &ce2_p_clk.clkr,
 	[PDM_SRC] = &pdm_src.clkr,
 	[PDM_CLK] = &pdm_clk.clkr,
 	[TSSC_CLK_SRC] = &tssc_src.clkr,

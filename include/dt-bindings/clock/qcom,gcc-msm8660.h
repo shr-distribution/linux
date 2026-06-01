@@ -288,7 +288,6 @@
 /* New clock IDs added in this cleanup. Append-only — never insert in the
  * middle of the existing numbering, since that would shift IDs of
  * earlier entries and break DT ABI for boards already using them. */
-#define CE2_P_CLK                           258     /* drv legacy:HTC,Sam,TP - CE2 APB (newly assigned, was missing) */
-#define PLL4_VOTE                           259     /* drv legacy - PLL4 software vote */
+#define PLL4_VOTE                           258     /* drv legacy - PLL4 software vote */
 
 #endif
