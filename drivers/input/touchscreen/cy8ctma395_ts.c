@@ -71,6 +71,69 @@
 #define HOVER_DEBOUNCE_DELAY	30
 #define PIXELS_PER_POINT	25
 
+/*
+ * Module-parameter tunables, exported under
+ *   /sys/module/cy8ctma395_ts/parameters/
+ *
+ * Provided for on-device A/B testing of the post-rewrite touch
+ * pipeline against the pre-rewrite working driver. Every knob defaults
+ * to the value the rewrite shipped, so the module loads with bit-
+ * identical behaviour; the user can then flip any individual knob via
+ * sysfs to isolate which behaviour change is responsible for a touch
+ * regression (e.g. the Qt-evdevtouch swipe stutter) without
+ * rebuilding the kernel.
+ *
+ * The fuzz knobs are pushed into the input device's absinfo at the
+ * top of cy8ctma395_ts_calc_point() so writes via sysfs take effect on
+ * the next reported event. The clamp / hover / avg_filter knobs are
+ * read directly in the relevant code paths each scan.
+ */
+static unsigned int param_pressure_clamp = 1;
+static unsigned int param_touch_major_clamp = 1;
+static unsigned int param_avg_filter = 1;
+static int param_fuzz_mt_x = 2;
+static int param_fuzz_mt_y = 1;
+static int param_fuzz_mt_pressure;
+static int param_fuzz_st_x = 2;
+static int param_fuzz_st_y = 1;
+static int param_fuzz_st_pressure;
+static unsigned int param_hover_radius = HOVER_DEBOUNCE_RADIUS;
+static unsigned int param_hover_delay = HOVER_DEBOUNCE_DELAY;
+
+module_param_named(pressure_clamp, param_pressure_clamp, uint, 0644);
+MODULE_PARM_DESC(pressure_clamp,
+	"Clamp ABS_MT_PRESSURE to declared range [250,2000] (default 1). t->pw is the integrated pow_1_5 weight and runs into the tens of thousands, so with the clamp on the value is pinned at 2000 every reported frame; some userspace touch recognisers rely on a live pressure signal to keep a swipe alive (set 0 to forward raw t->pw).");
+
+module_param_named(touch_major_clamp, param_touch_major_clamp, uint, 0644);
+MODULE_PARM_DESC(touch_major_clamp,
+	"Clamp ABS_MT_TOUCH_MAJOR to declared range [0,500] (default 1, set 0 to forward raw bounding-box width).");
+
+module_param_named(avg_filter, param_avg_filter, uint, 0644);
+MODULE_PARM_DESC(avg_filter,
+	"3-frame weighted-average smoothing on touch coordinates (default 1). Adds ~3 frames of latency; set 0 to report unfiltered centroids per scan.");
+
+module_param_named(fuzz_mt_x, param_fuzz_mt_x, int, 0644);
+MODULE_PARM_DESC(fuzz_mt_x, "Fuzz on ABS_MT_POSITION_X (default 2)");
+module_param_named(fuzz_mt_y, param_fuzz_mt_y, int, 0644);
+MODULE_PARM_DESC(fuzz_mt_y, "Fuzz on ABS_MT_POSITION_Y (default 1)");
+module_param_named(fuzz_mt_pressure, param_fuzz_mt_pressure, int, 0644);
+MODULE_PARM_DESC(fuzz_mt_pressure, "Fuzz on ABS_MT_PRESSURE (default 0)");
+
+module_param_named(fuzz_st_x, param_fuzz_st_x, int, 0644);
+MODULE_PARM_DESC(fuzz_st_x,
+	"Fuzz on ABS_X (the single-touch axis Qt evdevtouch / xf86-input-evdev read; default 2 matches the 6de96bdc restore; 0 forwards every centroid wobble unfiltered).");
+module_param_named(fuzz_st_y, param_fuzz_st_y, int, 0644);
+MODULE_PARM_DESC(fuzz_st_y, "Fuzz on ABS_Y (default 1)");
+module_param_named(fuzz_st_pressure, param_fuzz_st_pressure, int, 0644);
+MODULE_PARM_DESC(fuzz_st_pressure, "Fuzz on ABS_PRESSURE (default 0)");
+
+module_param_named(hover_radius, param_hover_radius, uint, 0644);
+MODULE_PARM_DESC(hover_radius,
+	"Pixel dead-zone for the hover-debounce freeze (default 2). Set 0 to disable the freeze entirely; a stationary finger's reported coords then track the live centroid jitter.");
+module_param_named(hover_delay, param_hover_delay, uint, 0644);
+MODULE_PARM_DESC(hover_delay,
+	"Stationary frames before a contact's reported coords lock to its hover_x/hover_y (default 30).");
+
 
 struct cy8ctma395_touchpoint {
 	int pw;			/* pressure/weight */
@@ -207,7 +270,7 @@ static void cy8ctma395_ts_clear_arrays(struct cy8ctma395_ts_data *ts)
 			ts->tp[i][j].touch_delay = -1000;
 			ts->tp[i][j].hover_x = -1000;
 			ts->tp[i][j].hover_y = -1000;
-			ts->tp[i][j].hover_delay = HOVER_DEBOUNCE_DELAY;
+			ts->tp[i][j].hover_delay = param_hover_delay;
 			ts->tp[i][j].input_slot = -1;
 		}
 	}
@@ -347,6 +410,15 @@ static void cy8ctma395_ts_avg_filter(struct cy8ctma395_ts_data *ts,
 	int prevtpoint = ts->prevtpoint;
 	int prev2tpoint = ts->prev2tpoint;
 
+	/*
+	 * Runtime kill switch: leave t->x / t->y at the unfiltered centroid
+	 * (already set by the matrix-scan loop in calc_point) so a userspace
+	 * touch recogniser sees the raw per-scan trajectory rather than a
+	 * 3-frame weighted blend that lags by ~3 frames.
+	 */
+	if (!param_avg_filter)
+		return;
+
 	xsum = 4 * t->unfiltered_x + 2 * ts->tp[prevtpoint][prev_loc].unfiltered_x;
 	ysum = 4 * t->unfiltered_y + 2 * ts->tp[prevtpoint][prev_loc].unfiltered_y;
 
@@ -370,8 +442,8 @@ static void cy8ctma395_ts_hover_debounce(struct cy8ctma395_ts_data *ts, int idx)
 
 	t->hover_delay = ts->tp[prevtpoint][prev_loc].hover_delay;
 
-	if (abs(t->x - ts->tp[prevtpoint][prev_loc].hover_x) < HOVER_DEBOUNCE_RADIUS &&
-	    abs(t->y - ts->tp[prevtpoint][prev_loc].hover_y) < HOVER_DEBOUNCE_RADIUS) {
+	if (abs(t->x - ts->tp[prevtpoint][prev_loc].hover_x) < (int)param_hover_radius &&
+	    abs(t->y - ts->tp[prevtpoint][prev_loc].hover_y) < (int)param_hover_radius) {
 		if (!t->hover_delay) {
 			t->x = ts->tp[prevtpoint][prev_loc].hover_x;
 			t->y = ts->tp[prevtpoint][prev_loc].hover_y;
@@ -384,7 +456,7 @@ static void cy8ctma395_ts_hover_debounce(struct cy8ctma395_ts_data *ts, int idx)
 			t->hover_y = ts->tp[prevtpoint][prev_loc].hover_y;
 		}
 	} else {
-		t->hover_delay = HOVER_DEBOUNCE_DELAY;
+		t->hover_delay = param_hover_delay;
 	}
 }
 
@@ -410,6 +482,24 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 	int smallest_distance[MAX_TOUCH];
 	int smallest_distance_loc[MAX_TOUCH];
 	int tpoint;
+
+	/*
+	 * Push the current fuzz module parameters into the input device's
+	 * absinfo. The input core re-reads absinfo->fuzz on every
+	 * input_handle_event() call, so a sysfs write to
+	 *   /sys/module/cy8ctma395_ts/parameters/fuzz_*
+	 * takes effect on the next reported event. Cheap (~6 integer
+	 * stores per scan) and avoids the bookkeeping of a separate
+	 * parameter-set callback to find the input device.
+	 */
+	if (likely(ts->input->absinfo)) {
+		ts->input->absinfo[ABS_X].fuzz = param_fuzz_st_x;
+		ts->input->absinfo[ABS_Y].fuzz = param_fuzz_st_y;
+		ts->input->absinfo[ABS_PRESSURE].fuzz = param_fuzz_st_pressure;
+		ts->input->absinfo[ABS_MT_POSITION_X].fuzz = param_fuzz_mt_x;
+		ts->input->absinfo[ABS_MT_POSITION_Y].fuzz = param_fuzz_mt_y;
+		ts->input->absinfo[ABS_MT_PRESSURE].fuzz = param_fuzz_mt_pressure;
+	}
 
 	if (ts->tp[ts->tpoint][0].x < -20) {
 		/* Total liftoff occurred */
@@ -476,7 +566,7 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 					t->touch_delay = 0;
 					t->hover_x = t->x;
 					t->hover_y = t->y;
-					t->hover_delay = HOVER_DEBOUNCE_DELAY;
+					t->hover_delay = param_hover_delay;
 					t->input_slot = -1;
 
 					pr_debug("cy8ctma395: touch detected at (%d,%d) val=%d weight=%d\n",
@@ -612,10 +702,14 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 				 */
 				input_report_abs(ts->input,
 						 ABS_MT_TOUCH_MAJOR,
-						 clamp(t->touch_major, 0, 500));
+						 param_touch_major_clamp ?
+						 clamp(t->touch_major, 0, 500) :
+						 t->touch_major);
 				input_report_abs(ts->input,
 						 ABS_MT_PRESSURE,
-						 clamp(t->pw, 250, 2000));
+						 param_pressure_clamp ?
+						 clamp(t->pw, 250, 2000) :
+						 t->pw);
 			}
 		} else if (t->touch_delay) {
 			t->touch_delay--;
