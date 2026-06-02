@@ -3855,10 +3855,10 @@
 	 * multi-touch events via the input subsystem.
 	 */
 	touchscreen: touchscreen {
-		compatible = "cypress,cy8ctma395-ts";
+		compatible = "cypress,cy8ctma395";
 
-		/* I2C bus for initialization (address 0x67) */
-		i2c-bus = <&gsbi10_i2c>;
+		/* I2C client sibling (address 0x67), see &gsbi10_i2c below */
+		cypress,i2c = <&touchscreen_i2c>;
 
 		/* Power supply - 3.05V digital */
 		vdd-supply = <&pm8058_l10>;
@@ -3881,36 +3881,19 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&gsbi10_i2c_pins>;
 
-/*
-	 * NOTE: The touchscreen is now handled by the serdev driver
-	 * (cy8ctma395-ts) under gsbi10_serial. The I2C interface at 0x67
-	 * is accessed directly by that driver for initialization.
-	 *
-	 * The old I2C-only node is kept here for reference but disabled.
-	 * See TOUCHSCREEN_MULTI_SLAVE_ANALYSIS.md for protocol details.
-	 */
-
 	/*
-	 * Legacy I2C touchscreen node (disabled - use serdev driver instead)
-	 *
+	 * I2C-side of the CY8CTMA395 touchscreen. The data path runs over
+	 * UART (see the serdev "touchscreen" node under &gsbi10_serial
+	 * above); this node exists so the I2C 0x67 address is enumerated
+	 * the standard way under its I2C controller (visible to
+	 * i2cdetect, validated by dtbs_check, and pulled into PM ordering
+	 * via device_link from the serdev side). The cy8ctma395_i2c stub
+	 * driver claims it and does nothing else.
+	 */
 	touchscreen_i2c: touchscreen@67 {
-		compatible = "cypress,cy8ctma340";
+		compatible = "cypress,cy8ctma395";
 		reg = <0x67>;
-		status = "disabled";
-
-		vcpin-supply = <&vdd50_boost>;
-		vdd-supply = <&pm8058_l10>;
-		interrupts-extended = <&tlmm 123 IRQ_TYPE_LEVEL_LOW>;
-		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
-		wakeup-source;
-		pinctrl-names = "default";
-		pinctrl-0 = <&touch_pins>;
-		touchscreen-size-x = <768>;
-		touchscreen-size-y = <1024>;
-		touchscreen-fuzz-x = <4>;
-		touchscreen-fuzz-y = <4>;
 	};
-	*/
 };
 
 &pm8058 {
