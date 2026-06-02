@@ -537,10 +537,16 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 
 		/*
 		 * MH_INT bit0=AXI_READ_ERR, bit1=AXI_WRITE_ERR, bit2=MMU_PAGE_FAULT.
-		 * The chronic fault is bit1 (AXI write error) — a GPU write the bus
-		 * rejected — NOT a page fault (PF reads 0). AXI_ERR (raw reg 0x0a45 =
-		 * MH_AXI_ERROR, between MH_INTERRUPT_CLEAR 0xa44 and PERFCOUNTER0 0xa46)
-		 * holds the offending AXI address.
+		 * AXI_WRITE_ERROR is recoverable in place: the bus dropped a write,
+		 * the CP carries on, ack-and-ignore is the legacy KGSL behaviour.
+		 * AXI_READ_ERROR / MMU_PAGE_FAULT, however, leave the CP parked on
+		 * the faulting fetch -- the MH line re-asserts on every bus cycle.
+		 * Without halting the CP and masking MH, the ISR re-enters in a
+		 * tight loop, starves the FIFO-LOW gpu_worker / drm_sched workers
+		 * (RT throttle), and the hangcheck softirq never runs -> RCU stall.
+		 *
+		 * AXI_ERR (raw reg 0x0a45 = MH_AXI_ERROR, between MH_INTERRUPT_CLEAR
+		 * 0xa44 and PERFCOUNTER0 0xa46) holds the offending AXI address.
 		 */
 		dev_warn_ratelimited(gpu->dev->dev,
 			"MH_INT: %08X AXI_ERR: %08X PF: %08X RBBM: %08X IB1: %08X/%u IB2: %08X COPY_DEST: %08X COLOR_INFO: %08X\n",
@@ -555,6 +561,26 @@ static irqreturn_t a2xx_irq(struct msm_gpu *gpu)
 			gpu_read(gpu, REG_A2XX_RB_COLOR_INFO));
 
 		gpu_write(gpu, REG_A2XX_MH_INTERRUPT_CLEAR, status);
+
+		if (status & (A2XX_MH_INTERRUPT_MASK_AXI_READ_ERROR |
+			      A2XX_MH_INTERRUPT_MASK_MMU_PAGE_FAULT)) {
+			/*
+			 * Halt the micro-engine so it stops re-fetching the faulting
+			 * address, then mask MH so any residual edge cannot re-arm
+			 * before a2xx_hw_init() re-enables it during recovery.
+			 */
+			gpu_write(gpu, REG_AXXX_CP_ME_CNTL, AXXX_CP_ME_CNTL_HALT);
+			gpu_write(gpu, REG_A2XX_MH_INTERRUPT_MASK, 0);
+
+			/*
+			 * Kick recover_work directly instead of waiting for the
+			 * 500ms hangcheck softirq -- under an MH IRQ storm the
+			 * softirq doesn't run in time. recover_worker takes
+			 * gpu->lock, dumps crash state (which records the offending
+			 * submit + BO list), runs ->recover(), and replays.
+			 */
+			kthread_queue_work(gpu->worker, &gpu->recover_work);
+		}
 	}
 
 	if (mstatus & A2XX_MASTER_INT_SIGNAL_CP_INT_STAT) {
