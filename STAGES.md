@@ -16,13 +16,14 @@ no maintainer sees more than one bundle at once.
 
 | # | Bundle | `submit/*` branch | Subsystem | Status |
 |---|---|---|---|---|
-| 1 | gcc-cleanup (3 patches) | `submit/dt-bindings-gcc-msm8660-cleanup` | clk | v3 ready under /tmp/v3-out/gcc-cleanup |
-| 2 | mmcc-msm8660 | `submit/clk-mmcc-msm8660` | clk | ready |
-| 3a | lcc hardening (3 patches, all compatibles) | `submit/clk-lcc-msm8960-hardening` | clk | v2 ready |
-| 3b | lcc add-MSM8x60 (2 patches) | `submit/clk-lcc-msm8660` | clk | v2 ready; depends on 1 (PLL4_VOTE) |
-| 4 | interconnect-msm8660 | `submit/interconnect-msm8660` | icc | v5-r2 ready under /tmp/v3-out/interconnect |
-| 5 | irqchip-msm8660-mpm | `submit/irqchip-msm8660-mpm` | irqchip | v5 ready |
-| 6 | thermal-pm8901-tm | `submit/thermal-pm8901-tm` | thermal | v5-r2 ready under /tmp/v3-out/pm8901-tm |
+| 0 | gdsc framework (2 patches: LEGACY_FOOTSWITCH + RPM_ALWAYS_ON) | `submit/clk-gdsc-msm8x60-legacy` | clk | **v1 sent 2026-06-02 (msg-id 20260602050840.435933-1)**; prereq for #2 |
+| 1 | gcc-cleanup (2 patches: CE2 H + PLL4_VOTE) | `submit/dt-bindings-gcc-msm8660-cleanup` | clk | **v1 sent 2026-06-02 (msg-id 20260602042747.277270-1)** |
+| 2 | mmcc-msm8660 | `submit/clk-mmcc-msm8660` | clk | **v1 sent 2026-06-02 (msg-id 20260602043623.285901-1)**; v2 pending (unhalt -EPROBE_DEFER fix + cover dep on #0); depends on #0 |
+| 3a | lcc hardening (3 patches, all compatibles) | `submit/clk-lcc-msm8960-hardening` | clk | **v1 sent 2026-06-02 (msg-id 20260602045002.290918-1)** |
+| 3b | lcc add-MSM8x60 (2 patches) | `submit/clk-lcc-msm8660` | clk | held — depends on #1 (PLL4_VOTE) landing first |
+| 4 | interconnect-msm8660 | `submit/interconnect-msm8660` | icc | ready to send |
+| 5 | irqchip-msm8660-mpm | `submit/irqchip-msm8660-mpm` | irqchip | ready to send |
+| 6 | thermal-pm8901-tm | `submit/thermal-pm8901-tm` | thermal | ready to send |
 
 ## Stage 2 — charger, phy, crypto, media VFE fix
 
