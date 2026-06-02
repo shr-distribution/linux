@@ -2904,7 +2904,7 @@ static int mmcc_msm8660_init_hw(struct regmap *regmap)
  * Doing the same in gcc probe (core_initcall) is too early -- RPM is
  * not yet bound and qcom_rpm_write() has no target.
  */
-static void mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
+static int mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 {
 	struct device_node *rpm_node;
 	struct platform_device *rpm_pdev;
@@ -2916,12 +2916,13 @@ static void mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 
 	rpm_node = of_find_compatible_node(NULL, NULL, "qcom,rpm-msm8660");
 	if (!rpm_node)
-		return;
+		return dev_err_probe(dev, -ENODEV,
+				     "no qcom,rpm-msm8660 node in DT; cannot unhalt MMSS fabric\n");
 
 	rpm_pdev = of_find_device_by_node(rpm_node);
 	of_node_put(rpm_node);
 	if (!rpm_pdev)
-		return;
+		return -EPROBE_DEFER;
 
 	/*
 	 * Pin the RPM supplier to this consumer device so that the
@@ -2933,28 +2934,34 @@ static void mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 			       DL_FLAG_AUTOREMOVE_CONSUMER);
 	if (!link) {
 		put_device(&rpm_pdev->dev);
-		return;
+		return -EPROBE_DEFER;
 	}
 
 	rpm = dev_get_drvdata(&rpm_pdev->dev);
 	if (!rpm) {
 		/*
-		 * Supplier exists but has not bound yet -- skip the
-		 * unhalt rather than blocking mmcc probe; downstream
-		 * MMSS clients will be enabled on demand.
+		 * Supplier device exists but its driver has not bound
+		 * yet; defer mmcc probe so the unhalt actually happens
+		 * before any MMSS client (MDP / CAMSS / GFX / JPEG /
+		 * VPE / HDCODEC) issues DMA against a halted fabric.
+		 * Mainline GDSC does not re-attempt the unhalt on
+		 * power-domain enable, so a silent skip here would
+		 * leave the fabric permanently halted for the life of
+		 * the system.
 		 */
 		put_device(&rpm_pdev->dev);
-		return;
+		return -EPROBE_DEFER;
 	}
 
 	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
 			    QCOM_RPM_MM_FABRIC_HALT, mmss_halt, 2);
-	if (rc)
-		dev_warn(dev, "MMSS fabric unhalt failed: %d\n", rc);
-	else
-		dev_info(dev, "MMSS fabric: unhalted all master ports (0-13)\n");
-
 	put_device(&rpm_pdev->dev);
+	if (rc)
+		return dev_err_probe(dev, rc,
+				     "MMSS fabric unhalt RPM write failed\n");
+
+	dev_info(dev, "MMSS fabric: unhalted all master ports (0-13)\n");
+	return 0;
 }
 
 static int mmcc_msm8660_probe(struct platform_device *pdev)
@@ -2978,9 +2985,13 @@ static int mmcc_msm8660_probe(struct platform_device *pdev)
 	 * performs DMA. Driven from mmcc probe because it runs after the
 	 * qcom_rpm platform driver has bound (gcc core_initcall is too
 	 * early). APPS and SYSTEM fabrics belong to other subsystems and
-	 * are not touched here.
+	 * are not touched here. If RPM has not bound yet we defer rather
+	 * than continue, because mainline GDSC does not re-issue the
+	 * unhalt on power-domain enable.
 	 */
-	mmcc_msm8660_unhalt_fabric_ports(&pdev->dev);
+	ret = mmcc_msm8660_unhalt_fabric_ports(&pdev->dev);
+	if (ret)
+		return ret;
 
 	return qcom_cc_really_probe(&pdev->dev, &mmcc_msm8660_desc, regmap);
 }
