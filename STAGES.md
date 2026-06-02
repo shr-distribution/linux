@@ -25,7 +25,7 @@ no maintainer sees more than one bundle at once.
 | 4 | interconnect-msm8660 | `submit/interconnect-msm8660` | icc | ready to send |
 | 5 | irqchip-msm8660-mpm | `submit/irqchip-msm8660-mpm` | irqchip | ready to send |
 | 6 | thermal-pm8901-tm | `submit/thermal-pm8901-tm` | thermal | ready to send |
-| 6b | qcom-msm8660.dtsi gcc pll4 reference (follow-up) | (not yet branched) | arm-dts | depends on #1 v2 landing + #3b lcc-add-MSM8x60 (provides &lcc PLL4 source); schedule after both |
+| 6b | qcom-msm8660.dtsi: add LCC node + gcc pll4 reference (2 patches) | `submit/arm-dts-qcom-msm8660-gcc-pll4` | arm-dts | depends on #1 v2 (strict binding) + #3b lcc-add-MSM8x60 (driver); schedule after both. DTB builds clean on its own; dtbs_check passes once #1 v2 lands. |
 
 ## Stage 2 — charger, phy, crypto, media VFE fix
 
