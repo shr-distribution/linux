@@ -25,6 +25,7 @@
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
+#include <linux/input/touchscreen.h>
 #include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
@@ -142,6 +143,18 @@ struct cy8ctma395_ts_data {
 	int touch_delay_count;
 
 	bool powered;
+
+	/*
+	 * Screen resolution. Filled at probe from
+	 * touchscreen_parse_properties() (touchscreen-size-x/y in DT);
+	 * defaults to X_RESOLUTION x Y_RESOLUTION (1024 x 768; the HP
+	 * TouchPad panel) when the DT does not override them. Used by
+	 * the centroid -> screen-coord conversion in calc_point so a
+	 * board with a different panel can adjust without a driver
+	 * patch.
+	 */
+	unsigned int screen_w;
+	unsigned int screen_h;
 
 	/*
 	 * Serialises the parser/matrix state between the serdev RX callback
@@ -397,20 +410,6 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 	int smallest_distance[MAX_TOUCH];
 	int smallest_distance_loc[MAX_TOUCH];
 	int tpoint;
-	int max_val = 0;
-	static unsigned long last_calc_print;
-
-	/* Find max value in matrix for debug */
-	for (i = 0; i < X_AXIS_POINTS; i++) {
-		for (j = 0; j < Y_AXIS_POINTS; j++) {
-			if (ts->matrix[i][j] > max_val)
-				max_val = ts->matrix[i][j];
-		}
-	}
-
-	if (printk_timed_ratelimit(&last_calc_print, 5000))
-		pr_info("cy8ctma395: calc_point called, rows=%u, max_val=%d, thresh=%d\n",
-			ts->rows_received, max_val, ts->touch_continue_thresh);
 
 	if (ts->tp[ts->tpoint][0].x < -20) {
 		/* Total liftoff occurred */
@@ -459,15 +458,17 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 					t->prev_loc = -1;
 
 					/* Convert to screen coordinates */
-					t->x = (X_RESOLUTION - 1) -
-					       (t->j * X_RESOLUTION /
+					t->x = (ts->screen_w - 1) -
+					       (t->j * ts->screen_w /
 						(Y_AXIS_POINTS - 1));
-					t->y = (Y_RESOLUTION - 1) -
-					       (t->i * Y_RESOLUTION /
+					t->y = (ts->screen_h - 1) -
+					       (t->i * ts->screen_h /
 						(X_AXIS_POINTS - 1));
 
-					t->x = clamp(t->x, 0, X_RESOLUTION - 1);
-					t->y = clamp(t->y, 0, Y_RESOLUTION - 1);
+					t->x = clamp(t->x, 0,
+						     (int)ts->screen_w - 1);
+					t->y = clamp(t->y, 0,
+						     (int)ts->screen_h - 1);
 
 					t->unfiltered_x = t->x;
 					t->unfiltered_y = t->y;
@@ -729,18 +730,11 @@ static int cy8ctma395_ts_process_data(struct cy8ctma395_ts_data *ts,
 {
 	size_t i;
 	int touches = 0;
-	static unsigned long last_frame_print;
-	static int frame_count;
 
 	for (i = 0; i < len; i++) {
 		cy8ctma395_ts_put_byte(ts, data[i]);
-		if (cy8ctma395_ts_frame_valid(ts, 0)) {
-			frame_count++;
-			if (printk_timed_ratelimit(&last_frame_print, 5000))
-				pr_info("cy8ctma395: valid frame #%d, type=0x%02x, idx=%d\n",
-					frame_count, ts->cline[1], ts->cidx);
+		if (cy8ctma395_ts_frame_valid(ts, 0))
 			touches += cy8ctma395_ts_consume_frame(ts);
-		}
 	}
 
 	return touches;
@@ -750,40 +744,6 @@ static size_t cy8ctma395_ts_receive_buf(struct serdev_device *serdev,
 					const u8 *data, size_t count)
 {
 	struct cy8ctma395_ts_data *ts = serdev_device_get_drvdata(serdev);
-	static unsigned long last_print;
-	static size_t total_bytes;
-	static bool first_data = true;
-
-	total_bytes += count;
-	if (printk_timed_ratelimit(&last_print, 5000))
-		dev_info(&serdev->dev, "UART RX: %zu bytes total, last %zu bytes\n",
-			 total_bytes, count);
-
-	/* Print first 64 bytes received for debugging */
-	if (first_data && count > 0) {
-		first_data = false;
-		print_hex_dump(KERN_INFO, "cy8ctma395 first RX: ", DUMP_PREFIX_OFFSET,
-			       16, 1, data, min_t(size_t, count, 64), true);
-	}
-
-	/* Periodically analyze data format */
-	{
-		static unsigned long last_sample;
-		static size_t ff_count;
-		size_t i;
-
-		/* Count 0xFF bytes (potential frame starts) */
-		for (i = 0; i < count; i++) {
-			if (data[i] == 0xFF)
-				ff_count++;
-		}
-
-		if (printk_timed_ratelimit(&last_sample, 10000) && count >= 16) {
-			pr_info("cy8ctma395: data analysis - 0xFF count: %zu, sample:\n", ff_count);
-			print_hex_dump(KERN_INFO, "  ", DUMP_PREFIX_OFFSET,
-				       16, 1, data, min_t(size_t, count, 64), true);
-		}
-	}
 
 	/*
 	 * Liftoff is handled inside cy8ctma395_ts_calc_point via the per-frame
@@ -1007,7 +967,6 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 {
 	struct device *dev = &serdev->dev;
 	struct cy8ctma395_ts_data *ts;
-	struct i2c_adapter *i2c_adap;
 	struct device_node *i2c_node;
 	int ret;
 
@@ -1018,50 +977,68 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	ts->serdev = serdev;
 	serdev_device_set_drvdata(serdev, ts);
 
-	/* Get I2C adapter from device tree */
-	i2c_node = of_parse_phandle(dev->of_node, "i2c-bus", 0);
-	if (!i2c_node) {
-		dev_err(dev, "No i2c-bus specified\n");
-		return -ENODEV;
-	}
+	/*
+	 * Resolve the I2C sibling. The CY8CTMA395 has two host-side
+	 * signalling paths: a 4 Mbps UART (this serdev_device, the
+	 * primary data stream) and an I2C slave at 0x67 used for
+	 * init/power. The two are described as separate DT nodes:
+	 *
+	 *   serial { touchscreen { compatible = "cypress,cy8ctma395";
+	 *                          cypress,i2c = <&cy8c_i2c>; ... }; };
+	 *   i2c    { touchscreen@67 { compatible = "cypress,cy8ctma395";
+	 *                             reg = <0x67>; }; };
+	 *
+	 * The companion cy8ctma395_i2c_driver below binds to the i2c
+	 * sibling and parks the resulting struct i2c_client in
+	 * dev->driver_data. We dereference that here.
+	 *
+	 * Earlier revisions used a single non-standard "i2c-bus" phandle
+	 * pointing at the whole I2C adapter and called
+	 * i2c_new_dummy_device(adapter, 0x67) to manufacture a hidden
+	 * client. That bypassed standard DT enumeration / i2cdetect /
+	 * collision checking and was flagged in review; switch to the
+	 * proper two-node pattern.
+	 */
+	i2c_node = of_parse_phandle(dev->of_node, "cypress,i2c", 0);
+	if (!i2c_node)
+		return dev_err_probe(dev, -EINVAL,
+				     "missing cypress,i2c phandle to I2C sibling\n");
 
-	i2c_adap = of_find_i2c_adapter_by_node(i2c_node);
+	ts->i2c = of_find_i2c_device_by_node(i2c_node);
 	of_node_put(i2c_node);
-	if (!i2c_adap)
+	if (!ts->i2c)
 		return -EPROBE_DEFER;
 
-	ts->i2c = i2c_new_dummy_device(i2c_adap, CY8CTMA395_I2C_ADDR);
-	if (IS_ERR(ts->i2c)) {
-		i2c_put_adapter(i2c_adap);
-		dev_err(dev, "Failed to create I2C device\n");
-		return PTR_ERR(ts->i2c);
+	/*
+	 * The I2C sibling driver may have created the i2c_client but
+	 * not yet have completed bind. Wait until it has.
+	 */
+	if (!ts->i2c->dev.driver) {
+		put_device(&ts->i2c->dev);
+		return -EPROBE_DEFER;
 	}
 
 	/*
-	 * Force PM ordering between this serdev child and the I2C
-	 * adapter we just attached to. cy8ctma395_ts_resume() drives
-	 * I2C writes against that adapter as part of power-on; dpm_list
-	 * orders by registration, which has no awareness of this
-	 * cross-bus dependency we invented by hijacking a sibling
-	 * adapter. Without a device_link, on some boots the I2C
-	 * adapter is still suspended when our resume runs, the I2C
-	 * writes return -ENXIO, the new failure handling promotes that
-	 * to a fatal -EIO with regulator_disable(), and the touchscreen
-	 * stays permanently disabled until reboot.
+	 * Force PM ordering: cy8ctma395_ts_resume() drives I2C writes
+	 * via ts->i2c as part of power-on. dpm_list orders by
+	 * registration, with no awareness of the cross-bus
+	 * serdev<->i2c relationship we invent here. Without a
+	 * device_link, on some boots the I2C client (and its adapter)
+	 * is still suspended when our resume runs, the I2C writes
+	 * return -ENXIO, the fatal-init handling promotes that to
+	 * permanent disable.
 	 *
 	 * DL_FLAG_AUTOREMOVE_CONSUMER drops the link on our unbind.
 	 * DL_FLAG_PM_RUNTIME ensures the supplier is runtime-resumed
 	 * before this consumer runs.
 	 */
-	if (!device_link_add(dev, &i2c_adap->dev,
+	if (!device_link_add(dev, &ts->i2c->dev,
 			     DL_FLAG_AUTOREMOVE_CONSUMER |
 			     DL_FLAG_PM_RUNTIME)) {
-		dev_err(dev, "Failed to link I2C adapter for PM ordering\n");
-		i2c_unregister_device(ts->i2c);
-		i2c_put_adapter(i2c_adap);
-		return -ENODEV;
+		put_device(&ts->i2c->dev);
+		return dev_err_probe(dev, -ENODEV,
+				     "device_link to I2C sibling failed\n");
 	}
-	i2c_put_adapter(i2c_adap);
 
 	/* Get GPIOs */
 	ts->gpio_reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
@@ -1132,6 +1109,18 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 		dev_err(dev, "Failed to init MT slots: %d\n", ret);
 		goto err_i2c;
 	}
+
+	/*
+	 * Let touchscreen_parse_properties() override the defaulted
+	 * ABS_MT_POSITION_X / Y maxima with the standard touchscreen
+	 * bindings (touchscreen-size-x / -y, touchscreen-inverted-x / -y,
+	 * touchscreen-swapped-x-y) so a board with a different panel
+	 * does not need a driver patch. Cache the result for the
+	 * centroid -> screen-coord conversion in calc_point.
+	 */
+	touchscreen_parse_properties(ts->input, true, NULL);
+	ts->screen_w = input_abs_get_max(ts->input, ABS_MT_POSITION_X) + 1;
+	ts->screen_h = input_abs_get_max(ts->input, ABS_MT_POSITION_Y) + 1;
 
 	/*
 	 * Initialise state BEFORE the serdev RX callback can ever fire.
@@ -1230,7 +1219,12 @@ err_power:
 err_serdev:
 	serdev_device_close(serdev);
 err_i2c:
-	i2c_unregister_device(ts->i2c);
+	/*
+	 * Drop the of_find_i2c_device_by_node() reference. The i2c_client
+	 * itself is owned by cy8ctma395_i2c_driver and lives across our
+	 * unbind.
+	 */
+	put_device(&ts->i2c->dev);
 	return ret;
 }
 
@@ -1247,7 +1241,7 @@ static void cy8ctma395_ts_remove(struct serdev_device *serdev)
 	mutex_lock(&ts->state_lock);
 	cy8ctma395_ts_power_off(ts);
 	mutex_unlock(&ts->state_lock);
-	i2c_unregister_device(ts->i2c);
+	put_device(&ts->i2c->dev);
 }
 
 static int cy8ctma395_ts_suspend(struct device *dev)
@@ -1320,7 +1314,73 @@ static struct serdev_device_driver cy8ctma395_ts_driver = {
 	.probe = cy8ctma395_ts_probe,
 	.remove = cy8ctma395_ts_remove,
 };
-module_serdev_device_driver(cy8ctma395_ts_driver);
+
+/*
+ * Companion I2C driver. The CY8CTMA395 is described in DT as TWO nodes
+ * sharing one compatible string -- a serdev child of the UART (the
+ * primary data path) and an I2C client at address 0x67 under the I2C
+ * controller (used by the serdev driver for init / power-on /
+ * register configuration only). This stub binds to the I2C node so
+ * the framework creates a real, DT-described struct i2c_client (vs
+ * the prior i2c_new_dummy_device(adapter, 0x67) hack); the serdev
+ * driver then looks the client up via of_find_i2c_device_by_node()
+ * through the cypress,i2c phandle.
+ *
+ * No actual I2C traffic happens here -- all writes are issued from
+ * the serdev side. The driver core's bind state is what we care
+ * about: it serves as both "the i2c client exists" and "the i2c
+ * controller is bound" gate for the serdev probe and for the PM
+ * device_link.
+ */
+static int cy8ctma395_i2c_probe(struct i2c_client *client)
+{
+	return 0;
+}
+
+static const struct of_device_id cy8ctma395_i2c_of_match[] = {
+	{ .compatible = "cypress,cy8ctma395" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, cy8ctma395_i2c_of_match);
+
+static struct i2c_driver cy8ctma395_i2c_driver = {
+	.driver = {
+		.name = "cy8ctma395-i2c",
+		.of_match_table = cy8ctma395_i2c_of_match,
+	},
+	.probe = cy8ctma395_i2c_probe,
+};
+
+static int __init cy8ctma395_init(void)
+{
+	int ret;
+
+	/*
+	 * Order matters: register the i2c stub FIRST so it is available
+	 * when the serdev probe runs of_find_i2c_device_by_node() against
+	 * the cypress,i2c phandle. If the i2c side has not bound yet when
+	 * the serdev probe fires, the serdev probe returns -EPROBE_DEFER
+	 * and the driver core retries -- so registration order is not
+	 * strictly required for correctness, but it minimises retries.
+	 */
+	ret = i2c_add_driver(&cy8ctma395_i2c_driver);
+	if (ret)
+		return ret;
+
+	ret = serdev_device_driver_register(&cy8ctma395_ts_driver);
+	if (ret)
+		i2c_del_driver(&cy8ctma395_i2c_driver);
+
+	return ret;
+}
+module_init(cy8ctma395_init);
+
+static void __exit cy8ctma395_exit(void)
+{
+	serdev_device_driver_unregister(&cy8ctma395_ts_driver);
+	i2c_del_driver(&cy8ctma395_i2c_driver);
+}
+module_exit(cy8ctma395_exit);
 
 MODULE_AUTHOR("CyanogenMod Touchpad Project");
 MODULE_AUTHOR("Herman van Hazendonk <github.com@herrie.org>");

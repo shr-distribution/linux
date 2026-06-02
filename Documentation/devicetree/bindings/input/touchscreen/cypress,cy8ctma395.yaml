@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/input/touchscreen/cypress,cy8ctma395.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Cypress CY8CTMA395 Touchscreen (serdev)
+title: Cypress CY8CTMA395 Touchscreen
 
 maintainers:
   - Herman van Hazendonk <github.com@herrie.org>
@@ -14,8 +14,21 @@ description: |
   the HP TouchPad tablet. It consists of a master CY8CTMA395 and five
   slave CY8CTMA375 chips providing a 30x40 capacitance matrix.
 
-  The touchscreen sends raw capacitance data over UART at 4 Mbps.
-  I2C is used for initialization and power management commands.
+  The controller is wired to the host over two distinct buses and is
+  therefore described as two device-tree nodes sharing the same
+  compatible:
+
+    1. A serdev child of the host UART (the primary data path) over
+       which the controller streams raw capacitance frames at 4 Mbps.
+       This node carries the reset / wake GPIOs and the VDD supply
+       phandles, plus a "cypress,i2c" phandle pointing at (2).
+
+    2. An I2C client at address 0x67 under the I2C controller the
+       controller is wired to. This node holds the standard "reg"
+       property so the address is visible to i2cdetect / dt schema
+       collision checking. The serdev side resolves the i2c_client
+       through the cypress,i2c phandle and uses it for the
+       initialisation and power-management register writes.
 
 allOf:
   - $ref: touchscreen.yaml#
@@ -24,27 +37,41 @@ properties:
   compatible:
     const: cypress,cy8ctma395
 
-  i2c-bus:
+  reg:
+    description: I2C client address (0x67); present only on the I2C node
+    maxItems: 1
+
+  cypress,i2c:
     $ref: /schemas/types.yaml#/definitions/phandle
-    description: Phandle to the I2C bus used for initialization commands
+    description: |
+      Phandle to the companion I2C client node for init / power-on
+      register writes. Required on the serdev node, omitted on the
+      I2C node.
 
   reset-gpios:
     maxItems: 1
-    description: GPIO connected to the XRES (reset) pin
+    description: GPIO connected to the XRES (reset) pin (serdev node)
 
   wake-gpios:
     maxItems: 1
-    description: GPIO connected to the WAKE pin
+    description: GPIO connected to the WAKE pin (serdev node)
 
   vdd-supply:
-    description: Regulator for the touchscreen power supply
+    description: Regulator for the touchscreen power supply (serdev node)
 
 required:
   - compatible
-  - i2c-bus
-  - reset-gpios
-  - wake-gpios
-  - vdd-supply
+
+oneOf:
+  - description: I2C node
+    required:
+      - reg
+  - description: serdev node
+    required:
+      - cypress,i2c
+      - reset-gpios
+      - wake-gpios
+      - vdd-supply
 
 unevaluatedProperties: false
 
@@ -52,10 +79,20 @@ examples:
   - |
     #include <dt-bindings/gpio/gpio.h>
 
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cy8c_i2c: touchscreen@67 {
+            compatible = "cypress,cy8ctma395";
+            reg = <0x67>;
+        };
+    };
+
     serial {
         touchscreen {
             compatible = "cypress,cy8ctma395";
-            i2c-bus = <&gsbi10_i2c>;
+            cypress,i2c = <&cy8c_i2c>;
             reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
             wake-gpios = <&tlmm 123 GPIO_ACTIVE_HIGH>;
             vdd-supply = <&pm8058_l19>;
