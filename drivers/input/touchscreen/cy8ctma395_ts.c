@@ -1123,6 +1123,26 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	ts->screen_h = input_abs_get_max(ts->input, ABS_MT_POSITION_Y) + 1;
 
 	/*
+	 * Restore the single-touch fuzz values that copy_abs() in
+	 * input_mt_init_slots() strips to 0. Userspace MT-aware stacks
+	 * (Wayland/libinput) ignore the ST axes, but legacy single-touch
+	 * paths (Qt's evdevtouch plugin, xf86-input-evdev) read ABS_X /
+	 * ABS_Y / ABS_PRESSURE directly and rely on fuzz to suppress
+	 * sub-cell centroid jitter -- without it, a stationary finger
+	 * looks like a continuous swipe and tap-as-click recognisers
+	 * cancel the click.
+	 *
+	 * Run AFTER touchscreen_parse_properties() so the fuzz survives
+	 * any DT-driven axis swap / invert / resize. Use the same
+	 * (small) fuzz values as the MT axes; the centroid is computed
+	 * to sub-pixel precision so a fuzz of 1-2 pixels is well below
+	 * "real" finger movement.
+	 */
+	input_abs_set_fuzz(ts->input, ABS_X, 2);
+	input_abs_set_fuzz(ts->input, ABS_Y, 1);
+	input_abs_set_fuzz(ts->input, ABS_PRESSURE, 0);
+
+	/*
 	 * Initialise state BEFORE the serdev RX callback can ever fire.
 	 * serdev_device_set_client_ops() below publishes the receive_buf
 	 * pointer to the serdev controller; once published, a queued RX
