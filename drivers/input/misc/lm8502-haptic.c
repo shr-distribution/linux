@@ -40,6 +40,9 @@
 
 struct lm8502_haptic {
 	struct lm8502 *chip;
+	struct device *dev;	/* &pdev->dev, cached for ratelimited logging
+				 * from the workqueue / stop paths where we
+				 * cannot reach the platform_device directly. */
 	struct input_dev *input;
 	struct work_struct work;
 	u16 magnitude;
@@ -62,6 +65,7 @@ static void lm8502_haptic_work(struct work_struct *w)
 	struct lm8502 *chip = priv->chip;
 	u16 magnitude;
 	u8 fb;
+	int ret;
 
 	mutex_lock(&chip->lock);
 	if (chip->suspended)
@@ -98,22 +102,53 @@ static void lm8502_haptic_work(struct work_struct *w)
 			priv->d10_saved_valid = true;
 		}
 
-		/* Mux the shared D10 pin to the vibrator path. */
-		regmap_write(chip->regmap, LM8502_D10_CURRENT_CTRL, 0);
-		regmap_write(chip->regmap, LM8502_HAPTIC_PWM_DUTY_CYCLE,
-			     magnitude >> 8);
+		/*
+		 * Mux the shared D10 pin to the vibrator path. I2C errors
+		 * are surfaced via dev_err_ratelimited and the sequence
+		 * continues best-effort: there is nowhere to return the
+		 * failure to (we run from a workqueue scheduled by
+		 * play_effect, which has already returned 0 to userspace).
+		 * The most we can do is make a flaky bus visible in dmesg.
+		 */
+		ret = regmap_write(chip->regmap, LM8502_D10_CURRENT_CTRL, 0);
+		if (ret)
+			dev_err_ratelimited(priv->dev,
+				"D10 mux write failed: %d\n", ret);
+		ret = regmap_write(chip->regmap, LM8502_HAPTIC_PWM_DUTY_CYCLE,
+				   magnitude >> 8);
+		if (ret)
+			dev_err_ratelimited(priv->dev,
+				"PWM duty cycle write failed: %d\n", ret);
 
 		fb = LM8502_HAPTIC_FB_ENABLE;
 		if (priv->invert_direction)
 			fb |= LM8502_HAPTIC_FB_INVERT_DIR;
-		regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, fb);
+		ret = regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, fb);
+		if (ret)
+			dev_err_ratelimited(priv->dev,
+				"haptic enable write failed: %d\n", ret);
 	} else {
-		regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
+		ret = regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
+		if (ret)
+			dev_err_ratelimited(priv->dev,
+				"haptic disable write failed: %d\n", ret);
 
-		/* Restore the shared D10 pin so the LED child resumes. */
+		/*
+		 * Restore the shared D10 pin so the LED child resumes.
+		 * If this write fails the LED child stays muxed off; log
+		 * the failure but leave d10_saved_valid set so a later
+		 * stop / shutdown can retry the restore.
+		 */
 		if (priv->d10_saved_valid) {
-			regmap_write(chip->regmap, LM8502_D10_CURRENT_CTRL,
-				     priv->d10_saved);
+			ret = regmap_write(chip->regmap,
+					   LM8502_D10_CURRENT_CTRL,
+					   priv->d10_saved);
+			if (ret) {
+				dev_err_ratelimited(priv->dev,
+					"D10 restore write failed: %d (LED may be stuck off)\n",
+					ret);
+				goto out;
+			}
 			priv->d10_saved_valid = false;
 		}
 	}
@@ -170,6 +205,8 @@ static int lm8502_haptic_probe(struct platform_device *pdev)
 		ret = dev_err_probe(dev, -ENODEV, "no parent lm8502 chip\n");
 		goto err_free_priv;
 	}
+
+	priv->dev = dev;
 
 	priv->invert_direction =
 		device_property_read_bool(dev, "ti,invert-direction");
@@ -231,16 +268,31 @@ err_free_priv:
 static void lm8502_haptic_stop(struct lm8502_haptic *priv)
 {
 	struct lm8502 *chip = priv->chip;
+	int ret;
 
 	cancel_work_sync(&priv->work);
 
-	/* Best-effort: stop the motor and release the shared D10 pin. */
+	/*
+	 * Best-effort: stop the motor and release the shared D10 pin.
+	 * I2C errors are logged ratelimited; we cannot fail .remove or
+	 * .shutdown over a bus glitch and we have already cancelled the
+	 * workqueue, so the most we can do is make the failure visible.
+	 */
 	mutex_lock(&chip->lock);
 	if (!chip->suspended) {
-		regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
+		ret = regmap_write(chip->regmap,
+				   LM8502_HAPTIC_FEEDBACK_CTRL, 0);
+		if (ret)
+			dev_err_ratelimited(priv->dev,
+				"stop: haptic disable failed: %d\n", ret);
 		if (priv->d10_saved_valid) {
-			regmap_write(chip->regmap, LM8502_D10_CURRENT_CTRL,
-				     priv->d10_saved);
+			ret = regmap_write(chip->regmap,
+					   LM8502_D10_CURRENT_CTRL,
+					   priv->d10_saved);
+			if (ret)
+				dev_err_ratelimited(priv->dev,
+					"stop: D10 restore failed: %d (LED may be stuck off)\n",
+					ret);
 			priv->d10_saved_valid = false;
 		}
 	}
