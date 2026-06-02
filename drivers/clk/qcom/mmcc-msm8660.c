@@ -562,10 +562,18 @@ static struct clk_branch csiphy1_timer_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_dsi[] = {
-	{ }
-};
-
+/*
+ * DSI clocks have no fixed frequency table: the rate is set dynamically
+ * from the panel driver via clk_set_rate(). Use the table-less ops the
+ * sibling mmcc-msm8960.c driver uses for the same hardware:
+ *   - clk_rcg_bypass2_ops for the pixel / byte / m-n bit clock parents,
+ *   - clk_rcg_pixel_ops   for the dsi1_pixel_src counter,
+ *   - clk_rcg_esc_ops     for the escape-clock source.
+ * Earlier revisions used clk_rcg_bypass_ops with an empty placeholder
+ * freq_tbl, which dereferences the first entry as { .src = 0 = P_PXO }
+ * and { .pre_div = 0 -> 255 } in __clk_rcg_set_rate -- forcing the mux
+ * to PXO and corrupting NS-register pre-div bits 14..21.
+ */
 static struct clk_rcg dsi1_src = {
 	.ns_reg = 0x0054,
 	.md_reg = 0x0050,
@@ -585,7 +593,6 @@ static struct clk_rcg dsi1_src = {
 		.src_sel_shift = 0,
 		.parent_map = mmcc_pxo_dsi2_dsi1_map,
 	},
-	.freq_tbl = clk_tbl_dsi,
 	.clkr = {
 		.enable_reg = 0x004c,
 		.enable_mask = BIT(2),
@@ -593,7 +600,7 @@ static struct clk_rcg dsi1_src = {
 			.name = "dsi1_src",
 			.parent_data = mmcc_pxo_dsi2_dsi1,
 			.num_parents = ARRAY_SIZE(mmcc_pxo_dsi2_dsi1),
-			.ops = &clk_rcg_bypass_ops,
+			.ops = &clk_rcg_bypass2_ops,
 			.flags = CLK_SET_RATE_PARENT,
 		},
 	},
@@ -634,7 +641,7 @@ static struct clk_rcg dsi1_byte_src = {
 			.name = "dsi1_byte_src",
 			.parent_data = mmcc_pxo_dsi1_dsi2_byte,
 			.num_parents = ARRAY_SIZE(mmcc_pxo_dsi1_dsi2_byte),
-			.ops = &clk_rcg_bypass_ops,
+			.ops = &clk_rcg_bypass2_ops,
 			.flags = CLK_SET_RATE_PARENT,
 		},
 	},
@@ -675,7 +682,7 @@ static struct clk_rcg dsi1_esc_src = {
 			.name = "dsi1_esc_src",
 			.parent_data = mmcc_pxo_dsi1_dsi2_byte,
 			.num_parents = ARRAY_SIZE(mmcc_pxo_dsi1_dsi2_byte),
-			.ops = &clk_rcg_bypass_ops,
+			.ops = &clk_rcg_esc_ops,
 			.flags = CLK_SET_RATE_PARENT,
 		},
 	},
@@ -725,7 +732,8 @@ static struct clk_rcg dsi1_pixel_src = {
 			.name = "dsi1_pixel_src",
 			.parent_data = mmcc_pxo_dsi2_dsi1,
 			.num_parents = ARRAY_SIZE(mmcc_pxo_dsi2_dsi1),
-			.ops = &clk_rcg_ops,
+			.ops = &clk_rcg_pixel_ops,
+			.flags = CLK_SET_RATE_PARENT,
 		},
 	},
 };
@@ -1872,6 +1880,11 @@ static struct clk_branch jpegd_axi_clk = {
 static struct clk_branch vcodec_axi_clk = {
 	.halt_reg = 0x01d8,
 	.halt_bit = 3,
+	/*
+	 * Same MMSS-fabric-stuck-at-on case as vcodec_axi_{a,b}_clk below
+	 * (and as rot_axi_clk / gfx3d_axi_clk). Skip the halt poll.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0018,
 		.enable_mask = BIT(19),
@@ -1885,6 +1898,14 @@ static struct clk_branch vcodec_axi_clk = {
 static struct clk_branch vcodec_axi_a_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 26,
+	/*
+	 * Shares the MMSS fabric with MDP / rotator / GFX3D (same class as
+	 * rot_axi_clk and gfx3d_axi_clk above). While the display is being
+	 * scanned out the fabric never idles, so this branch cannot halt
+	 * and clk_branch_wait_for_halt() would WARN "status stuck at 'on'"
+	 * every time the video codec runtime-suspends. Skip the halt poll.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0020,
 		.enable_mask = BIT(25),
@@ -1898,6 +1919,11 @@ static struct clk_branch vcodec_axi_a_clk = {
 static struct clk_branch vcodec_axi_b_clk = {
 	.halt_reg = 0x01e8,
 	.halt_bit = 25,
+	/*
+	 * Same MMSS-fabric-stuck-at-on case as vcodec_axi_a_clk above
+	 * (and as rot_axi_clk / gfx3d_axi_clk). Skip the halt poll.
+	 */
+	.halt_check = BRANCH_HALT_SKIP,
 	.clkr = {
 		.enable_reg = 0x0020,
 		.enable_mask = BIT(26),
