@@ -27,11 +27,9 @@ properties:
       - qcom,gcc-msm8660
 
   clocks:
-    minItems: 2
     maxItems: 3
 
   clock-names:
-    minItems: 2
     items:
       - const: pxo
       - const: cxo
@@ -52,7 +50,7 @@ examples:
       reg = <0x900000 0x4000>;
       #clock-cells = <1>;
       #reset-cells = <1>;
-      clocks = <&pxo_board>, <&cxo_board>;
-      clock-names = "pxo", "cxo";
+      clocks = <&pxo_board>, <&cxo_board>, <&lcc_clk_pll4>;
+      clock-names = "pxo", "cxo", "pll4";
     };
 ...
