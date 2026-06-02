@@ -9,7 +9,7 @@ Update **the row** when a branch's state changes. Append new findings to
 the **Findings Log** at the bottom. Bump the "Last updated" stamp every
 time you change either.
 
-**Last updated:** 2026-06-02 18:05 CEST
+**Last updated:** 2026-06-02 18:20 CEST
 
 ---
 
@@ -28,39 +28,59 @@ time you change either.
 
 ## Stage 1 — clocks / interconnect / wake / thermal
 
-| # | Branch | Commits | Sent | Last Sashiko | Pending |
-|---|---|---|---|---|---|
-| 0 | `clk-gdsc-msm8x60-legacy` (Set A v4) | 2 | v1 `20260602050840.435933-1` | **v3 r1 (claude-opus) 17:37**: 3 findings (2 new, 1 preexisting=Set B). New ones (double rsupply vote + regulator_disable err overrides genpd off) folded into v4 → v4 sashiko **queued** | v4 re-check clean → v2 send |
-| 0b | `clk-gdsc-preexisting-fixes` (Set B) | 3 | **v1 sent 2026-06-02 16:09** `20260602140934.796697-1` | 2026-06-02 15:52 Vertex r1 ✅ 4 findings, all `preexisting:true` | Wait for maintainer review |
-| 1 | `dt-bindings-gcc-msm8660-cleanup` | 3 | v1 `20260602042747.277270-1` (2 patches); **v2 staged** (strict YAML pll4 + halt-bit comment) | **claude-cli r1 17:58 ✅**: 2 findings — DTS non-conformance accepted (follow-up #6b); ce2_h_clk halt-bit=0 false positive (verified against downstream vendor) | Hold v2 send pending lkml v1 feedback |
-| 2 | `clk-mmcc-msm8660` | 3 | v1 `20260602043623.285901-1` | r7 clean (10:40, 596 KB log) | v2 reroll drafted (unhalt -EPROBE_DEFER + GFX2D resets); blocked on #0 v2 |
-| 3a | `clk-lcc-msm8960-hardening` | 3 | v1 `20260602045002.290918-1` | v5-r2 clean | Wait for review |
-| 3b | `clk-lcc-msm8660` | 2 | held | clean earlier | Unblocked once #1 PLL4_VOTE lands |
-| 4 | `interconnect-msm8660` | 2 | not sent | r9/r10 stage-failed today (auth) | Re-run with Vertex → send |
-| 5 | `irqchip-msm8660-mpm` | 2 | not sent | v5 clean earlier (MPM rework) | Re-run with Vertex → send |
-| 6 | `thermal-pm8901-tm` | 3 | not sent | v4 clean earlier | Re-run with Vertex → send |
-| side | `clk-qcom-pll-vote-null-check` | 1 | sent standalone | clean | Wait for review |
+Dependency notation: `→ #N` means **this row must wait for row N to land**.
+Rows are ordered: independent first, then dependents grouped at the end.
+
+### Independent (no cross-series deps)
+
+| # | Branch | Commits | Deps | Sent | Last Sashiko | Pending |
+|---|---|---|---|---|---|---|
+| 0 | `clk-gdsc-msm8x60-legacy` (Set A v4) | 2 | — | v1 `20260602050840.435933-1` | **v3 r1 (claude-opus) 17:37**: 3 findings (2 new, 1 preexisting=Set B). New ones (double rsupply vote + regulator_disable err overrides genpd off) folded into v4 → v4 sashiko **queued** | v4 re-check clean → v2 send |
+| 0b | `clk-gdsc-preexisting-fixes` (Set B) | 3 | — | **v1 sent 2026-06-02 16:09** `20260602140934.796697-1` | 2026-06-02 15:52 Vertex r1 ✅ 4 findings, all `preexisting:true` | Wait for maintainer review |
+| 1 | `dt-bindings-gcc-msm8660-cleanup` | 3 | — | v1 `20260602042747.277270-1` (2 patches); **v2 staged** (strict YAML pll4 + halt-bit comment) | **claude-cli r1 17:58 ✅**: 2 findings — DTS non-conformance accepted (follow-up #6b); ce2_h_clk halt-bit=0 false positive (verified against downstream vendor) | Hold v2 send pending lkml v1 feedback |
+| 3a | `clk-lcc-msm8960-hardening` | 3 | — | v1 `20260602045002.290918-1` | v5-r2 clean | Wait for review |
+| 4 | `interconnect-msm8660` | 2 | — | not sent | r9/r10 stage-failed today (auth) | Re-run with Vertex → send |
+| 5 | `irqchip-msm8660-mpm` | 2 | — | not sent | v5 clean earlier (MPM rework) | Re-run with Vertex → send |
+| 6 | `thermal-pm8901-tm` | 3 | — | not sent | v4 clean earlier | Re-run with Vertex → send |
+| side | `clk-qcom-pll-vote-null-check` | 1 | — | sent standalone | clean | Wait for review |
+
+### Dependent (held until prereq lands in -next)
+
+| # | Branch | Commits | Deps | Sent | Last Sashiko | Pending |
+|---|---|---|---|---|---|---|
+| 2 | `clk-mmcc-msm8660` | 3 | **→ #0** (gdsc framework provides LEGACY_FOOTSWITCH + RPM_ALWAYS_ON used by MMCC's GDSC entries) | v1 `20260602043623.285901-1` | r7 clean (10:40, 596 KB log) | v2 reroll drafted (unhalt -EPROBE_DEFER + GFX2D resets); blocked on #0 v2 |
+| 3b | `clk-lcc-msm8660` | 2 | **→ #1** (PLL4_VOTE source in gcc-msm8660) | held | clean earlier | Unblocked once #1 v1 lands |
+| 6b | `arm-dts-qcom-msm8660-gcc-pll4` | 2 | **→ #1 v2** (strict binding requires pll4); **→ #3b** (defines `qcom,lcc-msm8660` driver compatible needed for `&lcc` node bind) | not sent | not yet reviewed | Both deps land → send |
 
 ## Stage 2 — charger / phy / crypto / media VFE fix
 
-| # | Branch | Commits | Sent | Last Sashiko | Pending |
-|---|---|---|---|---|---|
-| 7 | `media-camss-vfe-17x-wm-done-fix` | 2 | not sent | v3 ready | Re-run with Vertex → send |
-| 8 | `phy-usb-hs-vendor-init-seq` | 2 | not sent | v5 clean earlier (uint8-array schema) | Re-run with Vertex → send |
-| 9 | `power-max8903-dc-limit` | 2 | not sent | v5 clean earlier (source_lock + DT gpio_value=0 require) | Re-run with Vertex → send |
-| 10 | `crypto-qce-msm8660` | 2 | not sent | v5 ready; r2 (Criticals + 4 High) pending | Re-run with Vertex → send |
+All independent (no cross-series deps).
+
+| # | Branch | Commits | Deps | Sent | Last Sashiko | Pending |
+|---|---|---|---|---|---|---|
+| 7 | `media-camss-vfe-17x-wm-done-fix` | 2 | — | not sent | v3 ready | Re-run with Vertex → send |
+| 8 | `phy-usb-hs-vendor-init-seq` | 2 | — | not sent | v5 clean earlier (uint8-array schema) | Re-run with Vertex → send |
+| 9 | `power-max8903-dc-limit` | 2 | — | not sent | v5 clean earlier (source_lock + DT gpio_value=0 require) | Re-run with Vertex → send |
+| 10 | `crypto-qce-msm8660` | 2 | — | not sent | v5 ready; r2 (Criticals + 4 High) pending | Re-run with Vertex → send |
 
 ## Stage 3 — standalone new drivers
 
-| # | Branch | Commits | Sent | Last Sashiko | Pending |
-|---|---|---|---|---|---|
-| 11 | `media-mt9m113` | 2 | not sent | Stage 3 r1 done | Review findings (if any) |
-| 12 | `input-cy8ctma395` | 2 | not sent | r7 stage-failed today; **fuzz fix live + verified on device** | Re-run with Vertex → send |
-| 13 | `power-supply-palm-a6` | 2 | not sent | r1 done | A6 split into 5 patches in progress |
-| 14 | `dt-bindings-mfd-lm8502` | 1 | not sent | r1 done | Review |
-| 15 | `mfd-lm8502` | 1 | not sent | r1 done | LM8502 r2 confirmation pending |
-| 16 | `leds-lm8502` | 1 | not sent | r1 done | Review |
-| 17 | `input-lm8502-haptic` | 1 | not sent | r2 (D10 race fix) clean | Review |
+### Independent (no cross-series deps)
+
+| # | Branch | Commits | Deps | Sent | Last Sashiko | Pending |
+|---|---|---|---|---|---|---|
+| 11 | `media-mt9m113` | 2 | — | not sent | Stage 3 r1 done | Review findings (if any) |
+| 12 | `input-cy8ctma395` | 2 | — | not sent | r7 stage-failed today; **fuzz fix live + verified on device** | Re-run with Vertex → send |
+| 13 | `power-supply-palm-a6` | 2 | — | not sent | r1 done | A6 split into 5 patches in progress |
+| 14 | `dt-bindings-mfd-lm8502` | 1 | — | not sent | r1 done | Review |
+| 15 | `mfd-lm8502` | 1 | — | not sent | r1 done | LM8502 r2 confirmation pending |
+
+### Dependent (LM8502 MFD child drivers)
+
+| # | Branch | Commits | Deps | Sent | Last Sashiko | Pending |
+|---|---|---|---|---|---|---|
+| 16 | `leds-lm8502` | 1 | **→ #14** (binding) + **→ #15** (mfd core) | not sent | r1 done | Review |
+| 17 | `input-lm8502-haptic` | 1 | **→ #14** (binding) + **→ #15** (mfd core) | not sent | r2 (D10 race fix) clean | Review |
 
 ---
 
