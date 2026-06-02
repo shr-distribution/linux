@@ -29,6 +29,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
+#include <linux/math64.h>
 #include <linux/of.h>
 #include <linux/slab.h>
 
@@ -586,16 +587,34 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 					 * float.
 					 */
 					if (param_subcell_precision) {
-						t->x = (int)((ts->screen_w - 1) -
-							     (s64)jsum *
-							     ts->screen_w /
-							     ((s64)tweight *
-							      (Y_AXIS_POINTS - 1)));
-						t->y = (int)((ts->screen_h - 1) -
-							     (s64)isum *
-							     ts->screen_h /
-							     ((s64)tweight *
-							      (X_AXIS_POINTS - 1)));
+						/*
+						 * div_s64() because plain `/`
+						 * on s64 lowers to
+						 * __aeabi_ldivmod which the
+						 * kernel does not link in on
+						 * ARM32. The divisor
+						 * (tweight * (axis_points-1))
+						 * fits in s32: tweight peaks
+						 * around the matrix-wide
+						 * pow_1_5 sum (~ 4 M for an
+						 * extreme palm) and the
+						 * (axis - 1) factor is < 40.
+						 */
+						s64 x_num = (s64)jsum *
+							    ts->screen_w;
+						s32 x_den = tweight *
+							    (Y_AXIS_POINTS - 1);
+						s64 y_num = (s64)isum *
+							    ts->screen_h;
+						s32 y_den = tweight *
+							    (X_AXIS_POINTS - 1);
+
+						t->x = (ts->screen_w - 1) -
+						       (int)div_s64(x_num,
+								    x_den);
+						t->y = (ts->screen_h - 1) -
+						       (int)div_s64(y_num,
+								    y_den);
 					} else {
 						t->x = (ts->screen_w - 1) -
 						       (t->j * ts->screen_w /
