@@ -16,7 +16,7 @@
  *   Jordan Patterson (jyxent) - tracking ID code
  *
  * Copyright (c) 2011 CyanogenMod Touchpad Project
- * Copyright (c) 2024 Linux kernel adaptation
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  */
 
 #include <linux/module.h>
@@ -687,11 +687,23 @@ static int cy8ctma395_ts_consume_frame(struct cy8ctma395_ts_data *ts)
 			ts->rows_received = 0;
 		}
 
-		/* Copy row data into matrix */
+		/*
+		 * Copy row data into matrix. The cline[2] row index is a
+		 * 5-bit value (0..31) but the matrix only has X_AXIS_POINTS
+		 * (30) rows. Indices 30/31 indicate either a desync against
+		 * the controller's frame format or noise on the UART; drop
+		 * the row rather than write past the matrix, and warn
+		 * ratelimited so a misconfigured controller does not log-
+		 * spam but is still visible at all.
+		 */
 		if (row < X_AXIS_POINTS) {
 			for (i = 0; i < Y_AXIS_POINTS; i++)
 				ts->matrix[row][i] = ts->cline[i + 3];
 			ts->rows_received++;
+		} else {
+			dev_warn_ratelimited(&ts->serdev->dev,
+				"row index %d out of range (>= %d), frame dropped\n",
+				row, X_AXIS_POINTS);
 		}
 	}
 
@@ -1089,17 +1101,23 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 
 	ts->input->name = "HP TouchPad Touchscreen";
 	ts->input->phys = "cy8ctma395/input0";
-	ts->input->id.bustype = BUS_RS232;
+	/*
+	 * BUS_HOST: the controller talks to us over an on-SoC UART via
+	 * the serdev bus; there is no physical RS-232 connector. Matches
+	 * other serdev-attached input drivers.
+	 */
+	ts->input->id.bustype = BUS_HOST;
 	ts->input->id.vendor = 0x04b4;	/* Cypress */
 	ts->input->id.product = 0x0395;
 	ts->input->id.version = 0x0100;
 
-	/* Single-touch axes - needed for pointer emulation */
-	input_set_abs_params(ts->input, ABS_X, 0, X_RESOLUTION - 1, 2, 0);
-	input_set_abs_params(ts->input, ABS_Y, 0, Y_RESOLUTION - 1, 1, 0);
-	input_set_abs_params(ts->input, ABS_PRESSURE, 250, 2000, 0, 0);
-
-	/* Multi-touch axes */
+	/*
+	 * Multi-touch axes. input_mt_init_slots(INPUT_MT_DIRECT) below
+	 * synthesises the corresponding ABS_X / ABS_Y / ABS_PRESSURE
+	 * single-touch axes from these for pointer-emulation, so
+	 * declaring them here would be dead code (the MT init would
+	 * overwrite anything we set first).
+	 */
 	input_set_abs_params(ts->input, ABS_MT_POSITION_X,
 			     0, X_RESOLUTION - 1, 2, 0);
 	input_set_abs_params(ts->input, ABS_MT_POSITION_Y,
@@ -1145,30 +1163,41 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	serdev_device_set_client_ops(serdev, &cy8ctma395_ts_serdev_ops);
 	serdev_device_set_flow_control(serdev, false);
 	{
-		unsigned int actual_baud;
+		int actual_baud;
 		unsigned int delta;
 
-		actual_baud = serdev_device_set_baudrate(serdev, 4000000);
 		/*
-		 * The CY8CTMA395 streams capacitance frames at 4 Mbps over
-		 * UART. If the host controller cannot match that rate (or
-		 * the closest hardware-selectable divisor is too far off),
-		 * the bytestream parser below desynchronises and we report
-		 * spurious touches. Reject anything outside +/- 1 % so a
-		 * silent host-side fallback (e.g. msm_serial picking 921600)
-		 * fails probe rather than producing junk.
+		 * serdev_device_set_baudrate() returns a signed int -- a
+		 * negative errno on hard failure, otherwise the actual
+		 * baud the controller settled on. Test < 0 BEFORE the
+		 * unsigned tolerance arithmetic so a -ENODEV does not
+		 * wrap into a huge "out-of-tolerance" delta and produce
+		 * a misleading error.
+		 */
+		actual_baud = serdev_device_set_baudrate(serdev, 4000000);
+		if (actual_baud < 0) {
+			ret = actual_baud;
+			dev_err(dev, "set_baudrate failed: %d\n", ret);
+			goto err_serdev;
+		}
+		/*
+		 * The CY8CTMA395 streams capacitance frames at 4 Mbps. If
+		 * the host controller cannot match that rate (or the closest
+		 * hardware-selectable divisor is too far off), the bytestream
+		 * parser below desynchronises and we report spurious touches.
+		 * Reject anything outside +/- 1 %.
 		 */
 		delta = actual_baud > 4000000 ?
 			actual_baud - 4000000 : 4000000 - actual_baud;
 		if (delta > 40000) {
 			dev_err(dev,
-				"UART baud out of tolerance: requested 4000000, got %u\n",
+				"UART baud out of tolerance: requested 4000000, got %d\n",
 				actual_baud);
 			ret = -ENODEV;
 			goto err_serdev;
 		}
-		dev_info(dev, "Requested baud 4000000, actual baud %u\n",
-			 actual_baud);
+		dev_dbg(dev, "Requested baud 4000000, actual baud %d\n",
+			actual_baud);
 	}
 
 	/* Power on touchscreen */
@@ -1277,7 +1306,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(cy8ctma395_ts_pm_ops,
 				cy8ctma395_ts_suspend, cy8ctma395_ts_resume);
 
 static const struct of_device_id cy8ctma395_ts_of_match[] = {
-	{ .compatible = "cypress,cy8ctma395-ts" },
+	{ .compatible = "cypress,cy8ctma395" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, cy8ctma395_ts_of_match);
@@ -1294,5 +1323,6 @@ static struct serdev_device_driver cy8ctma395_ts_driver = {
 module_serdev_device_driver(cy8ctma395_ts_driver);
 
 MODULE_AUTHOR("CyanogenMod Touchpad Project");
+MODULE_AUTHOR("Herman van Hazendonk <github.com@herrie.org>");
 MODULE_DESCRIPTION("Cypress CY8CTMA395 Touchscreen serdev Driver");
 MODULE_LICENSE("GPL");

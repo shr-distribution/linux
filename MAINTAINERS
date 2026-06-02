@@ -6991,6 +6991,13 @@ L:	linux-input@vger.kernel.org
 S:	Maintained
 F:	drivers/input/touchscreen/cy8ctma140.c
 
+CYPRESS CY8CTMA395 TOUCHSCREEN DRIVER (HP TOUCHPAD)
+M:	Herman van Hazendonk <github.com@herrie.org>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/input/touchscreen/cypress,cy8ctma395.yaml
+F:	drivers/input/touchscreen/cy8ctma395_ts.c
+
 CYPRESS STREETFIGHTER TOUCHKEYS DRIVER
 M:	Yassine Oudjana <y.oudjana@protonmail.com>
 L:	linux-input@vger.kernel.org
@@ -20155,15 +20162,6 @@ M:	Ye Liu <liuye@kylinos.cn>
 S:	Maintained
 F:	tools/mm/show_page_info.py
 
-PALM A6 BATTERY/EC DRIVER (HP TOUCHPAD)
-M:	Herman van Hazendonk <github.com@herrie.org>
-L:	linux-pm@vger.kernel.org
-S:	Maintained
-F:	Documentation/devicetree/bindings/power/supply/palm,a6-battery.yaml
-F:	drivers/power/supply/a6/
-F:	include/linux/a6.h
-F:	include/linux/a6_sbw_interface.h
-
 PANASONIC LAPTOP ACPI EXTRAS DRIVER
 M:	Kenneth Chan <kenneth.t.chan@gmail.com>
 L:	platform-driver-x86@vger.kernel.org
@@ -26779,15 +26777,6 @@ S:	Maintained
 F:	sound/soc/codecs/isabelle*
 F:	sound/soc/codecs/lm49453*
 
-TI LM8502 MFD DRIVER (LED + HAPTIC)
-M:	Herman van Hazendonk <github.com@herrie.org>
-S:	Maintained
-F:	Documentation/devicetree/bindings/mfd/ti,lm8502.yaml
-F:	drivers/input/misc/lm8502-haptic.c
-F:	drivers/leds/leds-lm8502.c
-F:	drivers/mfd/lm8502.c
-F:	include/linux/mfd/lm8502.h
-
 TI LMP92064 ADC DRIVER
 M:	Leonard Göhrs <l.goehrs@pengutronix.de>
 R:	kernel@pengutronix.de
@@ -27605,15 +27594,6 @@ USB NETWORKING DRIVERS
 L:	linux-usb@vger.kernel.org
 S:	Odd Fixes
 F:	drivers/net/usb/
-
-USB NOVACOM GADGET DRIVER
-M:	Herman van Hazendonk <github.com@herrie.org>
-L:	linux-usb@vger.kernel.org
-S:	Maintained
-F:	Documentation/usb/gadget_novacom.rst
-F:	drivers/usb/gadget/function/f_novacom.c
-F:	drivers/usb/gadget/function/u_novacom.h
-F:	drivers/usb/gadget/legacy/novacom.c
 
 USB OHCI DRIVER
 M:	Alan Stern <stern@rowland.harvard.edu>
