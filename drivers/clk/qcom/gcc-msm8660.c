@@ -72,7 +72,6 @@ enum {
 	P_PXO,
 	P_PLL8,
 	P_CXO,
-	P_PXO_XO,	/* PXO selected on the XO mux (selector 1 vs 0 on BB mux) */
 };
 
 static const struct parent_map gcc_pxo_pll8_map[] = {
@@ -97,36 +96,11 @@ static const struct clk_parent_data gcc_pxo_pll8_cxo[] = {
 	{ .fw_name = "cxo", .name = "cxo_board" },
 };
 
-/*
- * XO mux: PDM and TSSC source from the cross-controller (XO) mux instead of
- * the BB mux that the rest of the GCC peripherals use. On the XO mux the
- * parent-select values are CXO=0, PXO=1, MXO=2, GND=3 (see vendor MSM8660
- * clock-8x60.c SRC_SEL_XO_*) — only PXO is plumbed into the upstream binding.
- */
-static const struct parent_map gcc_pxo_xo_map[] = {
-	{ P_PXO_XO, 1 },
-};
-
-static const struct clk_parent_data gcc_pxo_xo[] = {
-	{ .fw_name = "pxo", .name = "pxo_board" },
-};
-
 static const struct freq_tbl clk_tbl_gsbi_uart[] = {
-	/*
-	 * Match the legacy webOS gsbi_uart ftbl exactly: pre_div=1 (feed the MND
-	 * fractional divider from the full 384 MHz PLL8, not a /2 = 192 MHz
-	 * pre-divided clock) with half the M. Same output rate, but a 384 MHz MND
-	 * input quantizes the divider's output edges to ~2.6 ns instead of
-	 * ~5.2 ns => roughly half the cycle-to-cycle jitter. On the TouchPad the
-	 * CSR BlueCore BT UART RX (>=1% baud tolerance) decodes webOS's lower-
-	 * jitter 7372800 clock (115200 link-est, CSR DIV_4) but rejects mainline's
-	 * pre_div=2 version even with byte/register-identical TX. Mainline default
-	 * was pre_div=2 with 2x M for these four rates.
-	 */
-	{  1843200, P_PLL8, 1,  3, 625 },
-	{  3686400, P_PLL8, 1,  6, 625 },
-	{  7372800, P_PLL8, 1, 12, 625 },
-	{ 14745600, P_PLL8, 1, 24, 625 },
+	{  1843200, P_PLL8, 2,  6, 625 },
+	{  3686400, P_PLL8, 2, 12, 625 },
+	{  7372800, P_PLL8, 2, 24, 625 },
+	{ 14745600, P_PLL8, 2, 48, 625 },
 	{ 16000000, P_PLL8, 4,  1,   6 },
 	{ 24000000, P_PLL8, 4,  1,   4 },
 	{ 32000000, P_PLL8, 4,  1,   3 },
@@ -1558,30 +1532,38 @@ static struct clk_branch pmem_clk = {
 	},
 };
 
-static struct clk_branch ppss_h_clk = {
-	.halt_reg = 0x2fc8,
-	.halt_bit = 19,
-	.clkr = {
-		.enable_reg = 0x2580,
-		.enable_mask = BIT(4),
-		.hw.init = &(struct clk_init_data){
-			.name = "ppss_h_clk",
-			.ops = &clk_branch_ops,
-		},
-	},
-};
-
 /*
- * CE2 (Crypto Engine 2): single hardware enable in GCC_CE2_HCLK_CTL
- * (0x2740, BIT(4)). The upstream qce driver requests both "core" and
- * "iface" via devm_clk_get_optional_enabled(); the consumer device
- * tree references this single phandle twice under both clock-names,
- * yielding the same struct clk for both clk_get() lookups. Per-
- * consumer refcounting then works correctly against the single
- * underlying enable bit -- avoiding the race two independent
- * clk_branch structs would create over the same hardware register.
+ * Crypto Engine 2 (CE2) clock.
+ *
+ * On MSM8x60 the CE2 block at 0x18500000 is gated by a single hardware
+ * enable in GCC_CE2_HCLK_CTL (0x2740, BIT(4)). The vendor MSM8660
+ * clock-8x60.c routes both the "core" and "iface" consumer-name lookups
+ * to this one register, and the upstream QCE crypto driver requests
+ * both clock names via devm_clk_get_optional_enabled(). Without the
+ * clock present at probe the QCE MMIO window reads back 0x0 and DMA
+ * hangs indefinitely waiting for handshake signals that never arrive.
+ *
+ * Register a single clk_branch: the consumer DT can reference the same
+ * clock phandle twice under different clock-names ("core" and "iface"),
+ * which yields the same struct clk for both clk_get() calls. Per-
+ * consumer refcounting then works correctly and the single underlying
+ * enable bit is asserted while either consumer holds the clock
+ * prepared, instead of having two independent clk_branch structs
+ * racing the same hardware bit.
  */
 static struct clk_branch ce2_h_clk = {
+	/*
+	 * CE2_HCLK halt status is bit 0 of CLK_HALT_CFPB_STATEC (0x2fd4) on
+	 * MSM8x60. Other sibling entries on this register use bits 5/7/11/...,
+	 * and the closest sibling driver (gcc-msm8960) uses different bits
+	 * for its CE1 branches, so this one looks out of place at a glance.
+	 * The choice matches the downstream vendor clock-8x60.c table:
+	 *
+	 *   CLK_NORATE(CE2_P, CE2_HCLK_CTL_REG, BIT(4), NULL, 0,
+	 *              CLK_HALT_CFPB_STATEC_REG, HALT, 0, ...)
+	 *
+	 * confirmed against multiple MSM8x60 reference trees.
+	 */
 	.halt_reg = 0x2fd4,
 	.halt_bit = 0,
 	.clkr = {
@@ -1590,102 +1572,6 @@ static struct clk_branch ce2_h_clk = {
 		.hw.init = &(struct clk_init_data){
 			.name = "ce2_h_clk",
 			.ops = &clk_branch_ops,
-		},
-	},
-};
-
-/*
- * PDM (Pulse Density Modulation). Vendor clock-8x60.c lines 702-732:
- *   ns_reg/cc_reg/reset_reg = PDM_CLK_NS_REG (0x2cc0)
- *   br_en BIT(9), root_en BIT(11), reset BIT(12)
- *   halt CLK_HALT_CFPB_STATEC bit 3, src_sel BM(1,0) via XO mux, no MND
- *   single rate 27 MHz off PXO. Reset already in gcc_msm8660_resets[].
- */
-static const struct freq_tbl clk_tbl_pdm[] = {
-	{ 27000000, P_PXO_XO, 1, 0, 0 },
-	{ }
-};
-
-static struct clk_rcg pdm_src = {
-	.ns_reg = 0x2cc0,
-	.s = {
-		.src_sel_shift = 0,
-		.parent_map = gcc_pxo_xo_map,
-	},
-	.freq_tbl = clk_tbl_pdm,
-	.clkr = {
-		.enable_reg = 0x2cc0,
-		.enable_mask = BIT(11),
-		.hw.init = &(struct clk_init_data){
-			.name = "pdm_src",
-			.parent_data = gcc_pxo_xo,
-			.num_parents = ARRAY_SIZE(gcc_pxo_xo),
-			.ops = &clk_rcg_ops,
-		},
-	},
-};
-
-static struct clk_branch pdm_clk = {
-	.halt_reg = 0x2fd4,
-	.halt_bit = 3,
-	.clkr = {
-		.enable_reg = 0x2cc0,
-		.enable_mask = BIT(9),
-		.hw.init = &(struct clk_init_data){
-			.name = "pdm_clk",
-			.parent_hws = (const struct clk_hw*[]){
-				&pdm_src.clkr.hw
-			},
-			.num_parents = 1,
-			.ops = &clk_branch_ops,
-			.flags = CLK_SET_RATE_PARENT,
-		},
-	},
-};
-
-/*
- * TSSC (Touch Screen Sample Controller). Vendor clock-8x60.c lines 842-872:
- *   ns_reg/cc_reg = TSSC_CLK_CTL_REG (0x2ca0)
- *   br_en BIT(4), NO root_en mask, reset BIT(7)
- *   halt CLK_HALT_CFPB_STATEC bit 4, src_sel BM(1,0) via XO mux, no MND
- *   single rate 27 MHz off PXO. Reset already in gcc_msm8660_resets[].
- */
-static const struct freq_tbl clk_tbl_tssc[] = {
-	{ 27000000, P_PXO_XO, 1, 0, 0 },
-	{ }
-};
-
-static struct clk_rcg tssc_src = {
-	.ns_reg = 0x2ca0,
-	.s = {
-		.src_sel_shift = 0,
-		.parent_map = gcc_pxo_xo_map,
-	},
-	.freq_tbl = clk_tbl_tssc,
-	.clkr.hw = {
-		.init = &(struct clk_init_data){
-			.name = "tssc_src",
-			.parent_data = gcc_pxo_xo,
-			.num_parents = ARRAY_SIZE(gcc_pxo_xo),
-			.ops = &clk_rcg_ops,
-		},
-	},
-};
-
-static struct clk_branch tssc_clk = {
-	.halt_reg = 0x2fd4,
-	.halt_bit = 4,
-	.clkr = {
-		.enable_reg = 0x2ca0,
-		.enable_mask = BIT(4),
-		.hw.init = &(struct clk_init_data){
-			.name = "tssc_clk",
-			.parent_hws = (const struct clk_hw*[]){
-				&tssc_src.clkr.hw
-			},
-			.num_parents = 1,
-			.ops = &clk_branch_ops,
-			.flags = CLK_SET_RATE_PARENT,
 		},
 	},
 };
@@ -2739,12 +2625,7 @@ static struct clk_regmap *gcc_msm8660_clks[] = {
 	[GP2_SRC] = &gp2_src.clkr,
 	[GP2_CLK] = &gp2_clk.clkr,
 	[PMEM_CLK] = &pmem_clk.clkr,
-	[PPSS_H_CLK] = &ppss_h_clk.clkr,
 	[CE2_H_CLK] = &ce2_h_clk.clkr,
-	[PDM_SRC] = &pdm_src.clkr,
-	[PDM_CLK] = &pdm_clk.clkr,
-	[TSSC_CLK_SRC] = &tssc_src.clkr,
-	[TSSC_CLK] = &tssc_clk.clkr,
 	[PRNG_SRC] = &prng_src.clkr,
 	[PRNG_CLK] = &prng_clk.clkr,
 	[SDC1_SRC] = &sdc1_src.clkr,
