@@ -511,8 +511,20 @@ static int gdsc_disable(struct generic_pm_domain *domain)
 
 		if (sc->rsupply) {
 			ret = regulator_disable(sc->rsupply);
-			if (ret < 0)
-				return ret;
+			if (ret < 0) {
+				/*
+				 * The rail is already collapsed. Reporting
+				 * the regulator error to genpd would leave it
+				 * thinking the domain is still ON when the
+				 * silicon is in fact off; the next consumer
+				 * enable would then be no-op'd by genpd and
+				 * hit dead hardware. Better to leak the
+				 * regulator vote (visible via /sys/.../
+				 * regulator) than to corrupt genpd state.
+				 */
+				pr_err("%s: regulator_disable failed (%d) after rail collapse; vote leaked, genpd state kept consistent with silicon\n",
+				       sc->pd.name, ret);
+			}
 		}
 
 		return 0;
@@ -599,7 +611,7 @@ static bool gdsc_get_hwmode(struct generic_pm_domain *domain, struct device *dev
 static int gdsc_init(struct gdsc *sc)
 {
 	u32 mask, val;
-	int on, ret;
+	int initial_on, on, ret;
 
 	/*
 	 * Legacy MSM8x60 footswitches share none of the modern GDSC
@@ -647,6 +659,18 @@ static int gdsc_init(struct gdsc *sc)
 
 skip_wait_config:
 	/*
+	 * Sample the GDSC power state BEFORE any probe-time enable below
+	 * so the "sync the kernel state" regulator vote only runs when the
+	 * GDSC was already on at probe (bootloader handoff). For the
+	 * PWRSTS_ON / ALWAYS_ON force-enable paths, gdsc_enable() and
+	 * gdsc_toggle_logic() take the vote themselves -- re-voting from
+	 * the sync block would double-vote rsupply and leak a reference.
+	 */
+	initial_on = gdsc_check_status(sc, GDSC_ON);
+	if (initial_on < 0)
+		return initial_on;
+
+	/*
 	 * Force gdsc ON if only ON state is supported. For legacy
 	 * footswitches, gdsc_toggle_logic() would only flip the ENABLE
 	 * bit and skip the I/O-clamp release + settle delay that the
@@ -667,8 +691,12 @@ skip_wait_config:
 		return on;
 
 	if (on) {
-		/* The regulator must be on, sync the kernel state */
-		if (sc->rsupply) {
+		/*
+		 * Sync the kernel regulator state only if the GDSC was
+		 * already on at probe; if we just enabled it above, the
+		 * vote was taken inside gdsc_enable() / gdsc_toggle_logic().
+		 */
+		if (sc->rsupply && initial_on) {
 			ret = regulator_enable(sc->rsupply);
 			if (ret < 0)
 				return ret;
