@@ -99,6 +99,7 @@ static int param_fuzz_st_y = 1;
 static int param_fuzz_st_pressure;
 static unsigned int param_hover_radius = HOVER_DEBOUNCE_RADIUS;
 static unsigned int param_hover_delay = HOVER_DEBOUNCE_DELAY;
+static unsigned int param_single_emit_per_scan;
 
 module_param_named(pressure_clamp, param_pressure_clamp, uint, 0644);
 MODULE_PARM_DESC(pressure_clamp,
@@ -133,6 +134,10 @@ MODULE_PARM_DESC(hover_radius,
 module_param_named(hover_delay, param_hover_delay, uint, 0644);
 MODULE_PARM_DESC(hover_delay,
 	"Stationary frames before a contact's reported coords lock to its hover_x/hover_y (default 30).");
+
+module_param_named(single_emit_per_scan, param_single_emit_per_scan, uint, 0644);
+MODULE_PARM_DESC(single_emit_per_scan,
+	"Reset rows_received / matrix inside the FRAME_SCAN_COMPLETE handler so the start-of-next-row-0 path does not re-fire cy8ctma395_ts_calc_point() on the same scan (default 0). On-device evtest shows the current double-fire produces a 1-ms-then-9-ms paired event pattern that breaks slide-to-unlock recognisers; set 1 to emit exactly one report per scan.");
 
 
 struct cy8ctma395_touchpoint {
@@ -767,6 +772,31 @@ static int cy8ctma395_ts_consume_frame(struct cy8ctma395_ts_data *ts)
 	if (ts->cline[1] == FRAME_SCAN_COMPLETE) {
 		/* All row data received, calculate touches */
 		ret = cy8ctma395_ts_calc_point(ts);
+
+		/*
+		 * Without resetting here, rows_received stays at X_AXIS_POINTS
+		 * across the SCAN_COMPLETE -> next-scan-start-row gap, so the
+		 * `if (ts->rows_received > 0)` guard in the FRAME_ROW_DATA path
+		 * below re-fires cy8ctma395_ts_calc_point() on the still-
+		 * populated matrix of the scan we just emitted.  On-device
+		 * evtest shows that produces a paired event pattern (two
+		 * SYN_REPORTs ~1 ms apart followed by a ~9 ms gap rather than
+		 * a steady ~10 ms cadence): both calc_point() calls operate on
+		 * the same matrix, but the frame-rotation state (tpoint /
+		 * prevtpoint / prev2tpoint) advances between them, so the
+		 * avg_filter blends with a different `prev` and emits a
+		 * slightly different X / Y / pressure than the first call.
+		 * Userspace slide-to-unlock recognisers parse the gap pattern
+		 * as "move, stop, move, stop" and cancel the gesture.
+		 *
+		 * Gated behind a module parameter for on-device A/B
+		 * comparison.  When the knob proves out, fold this into the
+		 * unconditional consume_frame path and drop the kparam.
+		 */
+		if (param_single_emit_per_scan) {
+			memset(ts->matrix, 0, sizeof(ts->matrix));
+			ts->rows_received = 0;
+		}
 	}
 
 	if (ts->cline[1] == FRAME_ROW_DATA) {
