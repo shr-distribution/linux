@@ -2953,10 +2953,28 @@ static int mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 		return -EPROBE_DEFER;
 
 	/*
-	 * Pin the RPM supplier to this consumer device so that the
-	 * qcom_rpm driver cannot unbind (and free its drvdata) while we
-	 * are reading or using the pointer below. The link is dropped
+	 * Pin the RPM supplier to this consumer device so that, once
+	 * fully bound, qcom_rpm cannot unbind (and free its drvdata)
+	 * while we are using the pointer below. The link is dropped
 	 * automatically when the mmcc device goes away.
+	 *
+	 * device_link_add() does NOT block on supplier->bound -- it
+	 * can succeed against a supplier that is mid-probe, has not
+	 * called probe() at all yet, or whose probe is on the way to
+	 * failing (early dev_set_drvdata is followed by an error path
+	 * that re-clears drvdata and frees the rpm structure). Reading
+	 * dev_get_drvdata() at any of those moments would either see
+	 * NULL or, worse, see a stale pointer just before the driver
+	 * core's bind cleanup frees it underneath us.
+	 *
+	 * Serialise against bind/unbind by taking device_lock() on the
+	 * supplier and using device_is_bound() (which checks both that
+	 * dev->driver is set and that the probe completed via the
+	 * driver-attach klist). The lock is held only across the
+	 * drvdata read and the single qcom_rpm_write() commit; it
+	 * does not nest with anything qcom_rpm_write touches
+	 * (rpm->lock + the mailbox subsystem; neither takes
+	 * device_lock).
 	 */
 	link = device_link_add(dev, &rpm_pdev->dev,
 			       DL_FLAG_AUTOREMOVE_CONSUMER);
@@ -2965,25 +2983,29 @@ static int mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 		return -EPROBE_DEFER;
 	}
 
-	rpm = dev_get_drvdata(&rpm_pdev->dev);
-	if (!rpm) {
+	device_lock(&rpm_pdev->dev);
+	if (!device_is_bound(&rpm_pdev->dev)) {
 		/*
-		 * Supplier device exists but its driver has not bound
-		 * yet; defer mmcc probe so the unhalt actually happens
-		 * before any MMSS client (MDP / CAMSS / GFX / JPEG /
-		 * VPE / HDCODEC) issues DMA against a halted fabric.
-		 * Mainline GDSC does not re-attempt the unhalt on
-		 * power-domain enable, so a silent skip here would
-		 * leave the fabric permanently halted for the life of
-		 * the system.
+		 * Supplier device exists but its driver has not yet
+		 * completed bind (either still probing or probe failed).
+		 * Defer mmcc probe so the unhalt actually happens before
+		 * any MMSS client (MDP / CAMSS / GFX / JPEG / VPE /
+		 * HDCODEC) issues DMA against a halted fabric. Mainline
+		 * GDSC does not re-attempt the unhalt on power-domain
+		 * enable, so a silent skip here would leave the fabric
+		 * permanently halted for the life of the system.
 		 */
+		device_unlock(&rpm_pdev->dev);
 		put_device(&rpm_pdev->dev);
 		return -EPROBE_DEFER;
 	}
 
+	rpm = dev_get_drvdata(&rpm_pdev->dev);
 	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
 			    QCOM_RPM_MM_FABRIC_HALT, mmss_halt, 2);
+	device_unlock(&rpm_pdev->dev);
 	put_device(&rpm_pdev->dev);
+
 	if (rc)
 		return dev_err_probe(dev, rc,
 				     "MMSS fabric unhalt RPM write failed\n");
