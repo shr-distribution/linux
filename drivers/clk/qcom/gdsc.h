@@ -69,18 +69,22 @@ struct gdsc {
 #define NO_RET_PERIPH	BIT(8)
 #define HW_CTRL_TRIGGER	BIT(9)
 /*
- * Legacy MSM8x60 footswitch - uses different register layout:
- * - Bit 5: CLAMP (set to clamp I/O)
- * - Bit 8: ENABLE (set to enable power)
- * - No status bit, just wait after toggle
+ * Legacy MSM8x60-family footswitch (a.k.a. "GFS"). Different register layout
+ * from the modern GDSC blocks: CLAMP at bit 5, ENABLE at bit 8, RETENTION at
+ * bit 9, and there is no power-status bit so software has to assume the
+ * transition completed after a fixed delay rather than polling status.
  */
 #define LEGACY_FOOTSWITCH	BIT(10)
 /*
- * Keep the domain powered across runtime PM (clocks may still gate), and only
- * let it power-collapse on system suspend. Maps to GENPD_FLAG_RPM_ALWAYS_ON.
- * Used for GFX3D on MSM8660, where power-collapsing the GPU footswitch on every
- * runtime idle forces a cold a2xx_hw_init microcode reload whose MMIO burst can
- * stall the shared MMSS AXI when it coincides with an MDP display underrun.
+ * Keep the domain powered across runtime PM (its clocks may still gate via
+ * the clock framework) and only allow it to power-collapse on system
+ * suspend. Maps to GENPD_FLAG_RPM_ALWAYS_ON on the underlying genpd. Useful
+ * for blocks whose cold-start sequence is expensive enough that runtime
+ * power cycling causes user-visible latency or hardware corner-case bugs --
+ * e.g. the MSM8x60 a2xx (Adreno 220) graphics footswitch, whose first
+ * power-up after collapse forces a full microcode reload that can stall
+ * the shared MMSS AXI fabric when it coincides with an MDP display
+ * underrun.
  */
 #define RPM_ALWAYS_ON	BIT(11)
 	struct reset_controller_dev	*rcdev;
