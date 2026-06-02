@@ -27,12 +27,15 @@ properties:
       - qcom,gcc-msm8660
 
   clocks:
-    maxItems: 2
+    minItems: 2
+    maxItems: 3
 
   clock-names:
+    minItems: 2
     items:
       - const: pxo
       - const: cxo
+      - const: pll4
 
   '#power-domain-cells': false
 
@@ -42,7 +45,7 @@ required:
 unevaluatedProperties: false
 
 examples:
-  # Example for GCC for MSM8974:
+  # Example for GCC for MSM8660:
   - |
     clock-controller@900000 {
       compatible = "qcom,gcc-msm8660";
