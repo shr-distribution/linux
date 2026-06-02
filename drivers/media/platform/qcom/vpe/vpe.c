@@ -357,33 +357,53 @@ static void vpe_device_run(void *priv)
 	struct vpe_ctx *ctx = priv;
 	struct vpe_dev *vpe = ctx->vpe;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
+	struct vpe_frame src, dst;
+	struct v4l2_rect crop, compose;
+	int rotation;
 	dma_addr_t src_y, src_cbcr, dst_y, dst_cbcr;
 	u32 src_stride, dst_stride;
 
 	src_buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	dst_buf = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
 
+	/*
+	 * v4l2_m2m calls device_run from its worker without holding the
+	 * video_device .lock that vpe_s_fmt() / vpe_s_selection() take, so
+	 * a userspace S_FMT on the non-streaming queue can race the format
+	 * reads below (torn u32 reads, stale fmt pointer). Snapshot the
+	 * format / selection / rotation fields under vpe->lock and drive
+	 * the hardware off the snapshot so the wait_for_completion below
+	 * cannot starve a concurrent ioctl on the other queue.
+	 */
+	mutex_lock(&vpe->lock);
+	src = ctx->src;
+	dst = ctx->dst;
+	crop = ctx->crop;
+	compose = ctx->compose;
+	rotation = ctx->rotation;
+	mutex_unlock(&vpe->lock);
+
 	/* Get buffer addresses (NV12: Y plane followed by interleaved CbCr) */
 	src_y = vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
-	src_cbcr = src_y + ctx->src.bytesperline * ctx->src.height;
-	src_stride = ctx->src.bytesperline;
+	src_cbcr = src_y + src.bytesperline * src.height;
+	src_stride = src.bytesperline;
 
 	dst_y = vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
-	dst_cbcr = dst_y + ctx->dst.bytesperline * ctx->dst.height;
-	dst_stride = ctx->dst.bytesperline;
+	dst_cbcr = dst_y + dst.bytesperline * dst.height;
+	dst_stride = dst.bytesperline;
 
 	/* Configure hardware: scale the source crop ROI into the output area */
 	vpe_hw_set_src_addr(vpe->base, src_y, src_cbcr);
 	vpe_hw_set_dst_addr(vpe->base, dst_y, dst_cbcr);
-	vpe_hw_set_src_size(vpe->base, ctx->src.width, ctx->src.height,
-			    ctx->crop.width, ctx->crop.height, src_stride);
-	vpe_hw_set_dst_size(vpe->base, ctx->compose.width, ctx->compose.height,
+	vpe_hw_set_src_size(vpe->base, src.width, src.height,
+			    crop.width, crop.height, src_stride);
+	vpe_hw_set_dst_size(vpe->base, compose.width, compose.height,
 			    dst_stride);
-	vpe_hw_set_scale(vpe->base, ctx->crop.width, ctx->crop.height,
-			 ctx->compose.width, ctx->compose.height);
-	vpe_hw_set_roi(vpe->base, ctx->crop.left, ctx->crop.top,
-		       ctx->compose.left, ctx->compose.top);
-	vpe_hw_set_rotation(vpe->base, ctx->rotation);
+	vpe_hw_set_scale(vpe->base, crop.width, crop.height,
+			 compose.width, compose.height);
+	vpe_hw_set_roi(vpe->base, crop.left, crop.top,
+		       compose.left, compose.top);
+	vpe_hw_set_rotation(vpe->base, rotation);
 
 	/*
 	 * Kick the engine and wait for the frame-done IRQ. The operation is a
