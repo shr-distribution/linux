@@ -70,15 +70,6 @@
 #define HOVER_DEBOUNCE_DELAY	30
 #define PIXELS_PER_POINT	25
 
-/*
- * Hard cap on flood-fill recursion depth. Touch regions are bounded by
- * the matrix (30 x 40 = 1200 cells), but the recursive cy8ctma395_ts_*
- * helpers below take ~96 bytes of stack each, so a worst-case 1200-deep
- * call exceeds the 8-16 KiB kernel stack. Realistic finger contacts span
- * ~5-30 cells; a palm spans ~50; anything past this cap is pathological
- * UART data we should abandon rather than walk into a stack overflow.
- */
-#define CY8CTMA395_FLOOD_DEPTH_MAX	64
 
 struct cy8ctma395_touchpoint {
 	int pw;			/* pressure/weight */
@@ -116,6 +107,24 @@ struct cy8ctma395_ts_data {
 	/* Capacitance matrix */
 	u8 matrix[X_AXIS_POINTS][Y_AXIS_POINTS];
 	int invalid_matrix[X_AXIS_POINTS][Y_AXIS_POINTS];
+
+	/*
+	 * Pre-allocated work stack for the iterative flood-fill in
+	 * cy8ctma395_ts_flood_fill(). Bounded by MATRIX_SIZE = 1200
+	 * cells since we never revisit a cell (invalid_matrix marks it
+	 * before push). 6 bytes per entry x 1200 = 7.2 KiB of struct
+	 * footprint, kept here rather than on the stack because the
+	 * worst-case adversarial UART payload could otherwise push the
+	 * recursive variant past ARM's 8 KiB THREAD_SIZE.
+	 *
+	 * Access is serialised by state_lock so two RX bursts cannot
+	 * stomp on the same stack.
+	 */
+	struct {
+		u16 i;
+		u16 j;
+		bool fringe;
+	} ff_stack[MATRIX_SIZE];
 
 	/* Touch tracking - 3 frames for filtering */
 	struct cy8ctma395_touchpoint tp[3][MAX_TOUCH];
@@ -210,131 +219,109 @@ static void cy8ctma395_ts_liftoff(struct cy8ctma395_ts_data *ts)
 	input_sync(ts->input);
 }
 
-/* Recursive flood fill for touch area fringe detection */
-static void cy8ctma395_ts_area_fringe(struct cy8ctma395_ts_data *ts,
-				      long *isum, long *jsum, int *tweight,
-				      int i, int j, int cur_touch_id,
-				      int depth)
+/*
+ * Iterative flood fill on the capacitance matrix. Replaces the prior
+ * recursive cy8ctma395_ts_determine_area() + cy8ctma395_ts_area_fringe()
+ * pair, which (even with a depth cap) put ~150-byte frames on the
+ * kernel stack and could exceed ARM's 8 KiB THREAD_SIZE under
+ * pathological UART data.
+ *
+ * The fill has two semantics, kept in a single function so neighbours
+ * can be re-pushed easily across them:
+ *
+ *   fringe == false  --  main "press" area, equivalent to the old
+ *                        determine_area(). Tracks the bounding box
+ *                        (mini/maxi/minj/maxj) and the highest cell
+ *                        value, and admits any neighbour >= UNPRESS
+ *                        as another main-area cell, or any neighbour
+ *                        >= FRINGE && < this cell as a fringe cell.
+ *
+ *   fringe == true   --  decreasing "fringe" cells around the area,
+ *                        equivalent to the old area_fringe(). Only
+ *                        admits neighbours >= FRINGE && < this cell.
+ *
+ * The work stack lives in ts->ff_stack (allocated once at probe; sized
+ * for the worst case of every matrix cell being queued exactly once).
+ * cur_touch_id is written into ts->invalid_matrix on PUSH (not on POP)
+ * so the same cell can never be queued twice -- this bounds the stack
+ * depth at MATRIX_SIZE.
+ *
+ * Caller holds state_lock (the RX path; suspend; remove).
+ */
+static void cy8ctma395_ts_flood_fill(struct cy8ctma395_ts_data *ts,
+				     long *isum, long *jsum, int *tweight,
+				     int start_i, int start_j,
+				     int *mini, int *maxi,
+				     int *minj, int *maxj,
+				     int cur_touch_id, int *highest_val)
 {
-	int powered;
+	unsigned int top = 0;
 
-	if (depth-- == 0)
-		return;
+	ts->invalid_matrix[start_i][start_j] = cur_touch_id;
+	ts->ff_stack[top].i = start_i;
+	ts->ff_stack[top].j = start_j;
+	ts->ff_stack[top].fringe = false;
+	top++;
 
-	ts->invalid_matrix[i][j] = cur_touch_id;
+	while (top > 0) {
+		int i, j, dir;
+		bool fringe;
+		int powered;
+		u8 cell;
 
-	powered = pow_1_5(ts->matrix[i][j]);
-	*tweight += powered;
-	*isum += (long)powered * i;
-	*jsum += (long)powered * j;
+		top--;
+		i      = ts->ff_stack[top].i;
+		j      = ts->ff_stack[top].j;
+		fringe = ts->ff_stack[top].fringe;
+		cell   = ts->matrix[i][j];
 
-	/* Check adjacent cells if they're decreasing (part of same touch) */
-	if (i > 0 && ts->invalid_matrix[i-1][j] != cur_touch_id &&
-	    ts->matrix[i-1][j] >= LARGE_AREA_FRINGE &&
-	    ts->matrix[i-1][j] < ts->matrix[i][j])
-		cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-					  i - 1, j, cur_touch_id, depth);
+		powered = pow_1_5(cell);
+		*tweight += powered;
+		*isum += (long)powered * i;
+		*jsum += (long)powered * j;
 
-	if (i < X_AXIS_POINTS - 1 && ts->invalid_matrix[i+1][j] != cur_touch_id &&
-	    ts->matrix[i+1][j] >= LARGE_AREA_FRINGE &&
-	    ts->matrix[i+1][j] < ts->matrix[i][j])
-		cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-					  i + 1, j, cur_touch_id, depth);
+		if (!fringe) {
+			if (i < *mini) *mini = i;
+			if (i > *maxi) *maxi = i;
+			if (j < *minj) *minj = j;
+			if (j > *maxj) *maxj = j;
+			if (cell > *highest_val)
+				*highest_val = cell;
+		}
 
-	if (j > 0 && ts->invalid_matrix[i][j-1] != cur_touch_id &&
-	    ts->matrix[i][j-1] >= LARGE_AREA_FRINGE &&
-	    ts->matrix[i][j-1] < ts->matrix[i][j])
-		cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-					  i, j - 1, cur_touch_id, depth);
+		/* Walk the 4-connected neighbourhood */
+		for (dir = 0; dir < 4; dir++) {
+			static const int di[4] = { -1,  1,  0,  0 };
+			static const int dj[4] = {  0,  0, -1,  1 };
+			int ni = i + di[dir];
+			int nj = j + dj[dir];
+			u8 ncell;
+			bool nfringe;
 
-	if (j < Y_AXIS_POINTS - 1 && ts->invalid_matrix[i][j+1] != cur_touch_id &&
-	    ts->matrix[i][j+1] >= LARGE_AREA_FRINGE &&
-	    ts->matrix[i][j+1] < ts->matrix[i][j])
-		cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-					  i, j + 1, cur_touch_id, depth);
-}
+			if (ni < 0 || ni >= X_AXIS_POINTS ||
+			    nj < 0 || nj >= Y_AXIS_POINTS)
+				continue;
+			if (ts->invalid_matrix[ni][nj] == cur_touch_id)
+				continue;
 
-/* Recursive flood fill for main touch area detection */
-static void cy8ctma395_ts_determine_area(struct cy8ctma395_ts_data *ts,
-					 long *isum, long *jsum, int *tweight,
-					 int i, int j,
-					 int *mini, int *maxi,
-					 int *minj, int *maxj,
-					 int cur_touch_id, int *highest_val,
-					 int depth)
-{
-	int powered;
+			ncell = ts->matrix[ni][nj];
 
-	if (depth-- == 0)
-		return;
+			if (!fringe && ncell >= LARGE_AREA_UNPRESS) {
+				nfringe = false;
+			} else if (ncell >= LARGE_AREA_FRINGE && ncell < cell) {
+				nfringe = true;
+			} else {
+				continue;
+			}
 
-	ts->invalid_matrix[i][j] = cur_touch_id;
-
-	/* Track size of touch area */
-	if (i < *mini) *mini = i;
-	if (i > *maxi) *maxi = i;
-	if (j < *minj) *minj = j;
-	if (j > *maxj) *maxj = j;
-
-	if (ts->matrix[i][j] > *highest_val)
-		*highest_val = ts->matrix[i][j];
-
-	powered = pow_1_5(ts->matrix[i][j]);
-	*tweight += powered;
-	*isum += (long)powered * i;
-	*jsum += (long)powered * j;
-
-	/* Check adjacent cells */
-	if (i > 0 && ts->invalid_matrix[i-1][j] != cur_touch_id) {
-		if (ts->matrix[i-1][j] >= LARGE_AREA_UNPRESS)
-			cy8ctma395_ts_determine_area(ts, isum, jsum, tweight,
-						     i - 1, j, mini, maxi,
-						     minj, maxj,
-						     cur_touch_id, highest_val,
-						     depth);
-		else if (ts->matrix[i-1][j] >= LARGE_AREA_FRINGE &&
-			 ts->matrix[i-1][j] < ts->matrix[i][j])
-			cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-						  i - 1, j, cur_touch_id, depth);
-	}
-
-	if (i < X_AXIS_POINTS - 1 && ts->invalid_matrix[i+1][j] != cur_touch_id) {
-		if (ts->matrix[i+1][j] >= LARGE_AREA_UNPRESS)
-			cy8ctma395_ts_determine_area(ts, isum, jsum, tweight,
-						     i + 1, j, mini, maxi,
-						     minj, maxj,
-						     cur_touch_id, highest_val,
-						     depth);
-		else if (ts->matrix[i+1][j] >= LARGE_AREA_FRINGE &&
-			 ts->matrix[i+1][j] < ts->matrix[i][j])
-			cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-						  i + 1, j, cur_touch_id, depth);
-	}
-
-	if (j > 0 && ts->invalid_matrix[i][j-1] != cur_touch_id) {
-		if (ts->matrix[i][j-1] >= LARGE_AREA_UNPRESS)
-			cy8ctma395_ts_determine_area(ts, isum, jsum, tweight,
-						     i, j - 1, mini, maxi,
-						     minj, maxj,
-						     cur_touch_id, highest_val,
-						     depth);
-		else if (ts->matrix[i][j-1] >= LARGE_AREA_FRINGE &&
-			 ts->matrix[i][j-1] < ts->matrix[i][j])
-			cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-						  i, j - 1, cur_touch_id, depth);
-	}
-
-	if (j < Y_AXIS_POINTS - 1 && ts->invalid_matrix[i][j+1] != cur_touch_id) {
-		if (ts->matrix[i][j+1] >= LARGE_AREA_UNPRESS)
-			cy8ctma395_ts_determine_area(ts, isum, jsum, tweight,
-						     i, j + 1, mini, maxi,
-						     minj, maxj,
-						     cur_touch_id, highest_val,
-						     depth);
-		else if (ts->matrix[i][j+1] >= LARGE_AREA_FRINGE &&
-			 ts->matrix[i][j+1] < ts->matrix[i][j])
-			cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-						  i, j + 1, cur_touch_id, depth);
+			if (WARN_ON_ONCE(top >= MATRIX_SIZE))
+				return;
+			ts->invalid_matrix[ni][nj] = cur_touch_id;
+			ts->ff_stack[top].i = ni;
+			ts->ff_stack[top].j = nj;
+			ts->ff_stack[top].fringe = nfringe;
+			top++;
+		}
 	}
 }
 
@@ -453,13 +440,12 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 				int highest_val = ts->matrix[i][j];
 				struct cy8ctma395_touchpoint *t;
 
-				cy8ctma395_ts_determine_area(ts, &isum, &jsum,
-							     &tweight, i, j,
-							     &mini, &maxi,
-							     &minj, &maxj,
-							     tpc + 1,
-							     &highest_val,
-							     CY8CTMA395_FLOOD_DEPTH_MAX);
+				cy8ctma395_ts_flood_fill(ts, &isum, &jsum,
+							 &tweight, i, j,
+							 &mini, &maxi,
+							 &minj, &maxj,
+							 tpc + 1,
+							 &highest_val);
 
 				if (tweight > 0) {
 					t = &ts->tp[tpoint][tpc];
@@ -932,21 +918,40 @@ retry:
 		return ret < 0 ? ret : -EIO;
 	}
 
-	ret = cy8ctma395_ts_i2c_write(ts, 0x30, 0x0F);
-	dev_info(dev, "I2C write 0x30=0x0F: ret=%d\n", ret);
-	ret = cy8ctma395_ts_i2c_write(ts, 0x40, 0x02);
-	dev_info(dev, "I2C write 0x40=0x02: ret=%d\n", ret);
-	ret = cy8ctma395_ts_i2c_write(ts, 0x41, 0x10);
-	dev_info(dev, "I2C write 0x41=0x10: ret=%d\n", ret);
-	ret = cy8ctma395_ts_i2c_write(ts, 0x0A, 0x04);
-	dev_info(dev, "I2C write 0x0A=0x04: ret=%d\n", ret);
-	ret = cy8ctma395_ts_i2c_write(ts, 0x08, 0x03);
-	dev_info(dev, "I2C write 0x08=0x03: ret=%d\n", ret);
+	/*
+	 * Register-configuration writes following init_seq1. Same anti-
+	 * pattern argument applies as above: silently continuing here
+	 * left ts->powered = true but the controller half-configured;
+	 * downstream symptom was a "successfully bound" touchscreen that
+	 * streamed garbage frames. Treat any failure as fatal.
+	 */
+	struct {
+		u8 reg;
+		u8 val;
+	} regs[] = {
+		{ 0x30, 0x0f },
+		{ 0x40, 0x02 },
+		{ 0x41, 0x10 },
+		{ 0x0a, 0x04 },
+		{ 0x08, 0x03 },
+	};
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(regs); i++) {
+		ret = cy8ctma395_ts_i2c_write(ts, regs[i].reg, regs[i].val);
+		if (ret != 1) {
+			dev_err(dev,
+				"I2C write %02x=%02x failed: %d -- aborting power-on\n",
+				regs[i].reg, regs[i].val, ret);
+			regulator_disable(ts->vdd);
+			return ret < 0 ? ret : -EIO;
+		}
+	}
 
 	/* Assert wake to start streaming */
-	dev_info(dev, "GPIO: assert wake to start streaming (logical 1)\n");
+	dev_dbg(dev, "GPIO: assert wake to start streaming (logical 1)\n");
 	gpiod_set_value_cansleep(ts->gpio_wake, 1);
-	dev_info(dev, "Touchscreen power-on complete, waiting for UART data...\n");
+	dev_dbg(dev, "Touchscreen power-on complete, waiting for UART data...\n");
 
 	ts->powered = true;
 	return 0;
@@ -957,10 +962,28 @@ static void cy8ctma395_ts_power_off(struct cy8ctma395_ts_data *ts)
 	if (!ts->powered)
 		return;
 
+	/*
+	 * Mirror the power-on sequence in reverse to avoid back-powering
+	 * the controller through its CMOS inputs:
+	 *
+	 *   1. deassert WAKE (the last GPIO we drove high in power_on),
+	 *   2. assert RESET so the chip stops driving its own outputs,
+	 *   3. only THEN drop VDD.
+	 *
+	 * The previous order (regulator_disable() first, GPIOs still high)
+	 * dropped VDD while WAKE was being driven to logic high; with VDD
+	 * collapsing under a CMOS input held above VDD + 0.3 V the chip
+	 * is out of every Cypress PSoC absolute-maximum spec and at risk
+	 * of latch-up. This runs on every suspend, remove and
+	 * power-on-failure path.
+	 */
+	gpiod_set_value_cansleep(ts->gpio_wake, 0);
+	gpiod_set_value_cansleep(ts->gpio_reset, 1);
+	usleep_range(1000, 1500);
+
 	regulator_disable(ts->vdd);
 
-	/* Reset to stop data stream */
-	gpiod_set_value_cansleep(ts->gpio_reset, 1);
+	/* Hold reset low after the rail collapses */
 	usleep_range(10000, 15000);
 	gpiod_set_value_cansleep(ts->gpio_reset, 0);
 	usleep_range(80000, 85000);
@@ -996,11 +1019,37 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 		return -EPROBE_DEFER;
 
 	ts->i2c = i2c_new_dummy_device(i2c_adap, CY8CTMA395_I2C_ADDR);
-	i2c_put_adapter(i2c_adap);
 	if (IS_ERR(ts->i2c)) {
+		i2c_put_adapter(i2c_adap);
 		dev_err(dev, "Failed to create I2C device\n");
 		return PTR_ERR(ts->i2c);
 	}
+
+	/*
+	 * Force PM ordering between this serdev child and the I2C
+	 * adapter we just attached to. cy8ctma395_ts_resume() drives
+	 * I2C writes against that adapter as part of power-on; dpm_list
+	 * orders by registration, which has no awareness of this
+	 * cross-bus dependency we invented by hijacking a sibling
+	 * adapter. Without a device_link, on some boots the I2C
+	 * adapter is still suspended when our resume runs, the I2C
+	 * writes return -ENXIO, the new failure handling promotes that
+	 * to a fatal -EIO with regulator_disable(), and the touchscreen
+	 * stays permanently disabled until reboot.
+	 *
+	 * DL_FLAG_AUTOREMOVE_CONSUMER drops the link on our unbind.
+	 * DL_FLAG_PM_RUNTIME ensures the supplier is runtime-resumed
+	 * before this consumer runs.
+	 */
+	if (!device_link_add(dev, &i2c_adap->dev,
+			     DL_FLAG_AUTOREMOVE_CONSUMER |
+			     DL_FLAG_PM_RUNTIME)) {
+		dev_err(dev, "Failed to link I2C adapter for PM ordering\n");
+		i2c_unregister_device(ts->i2c);
+		i2c_put_adapter(i2c_adap);
+		return -ENODEV;
+	}
+	i2c_put_adapter(i2c_adap);
 
 	/* Get GPIOs */
 	ts->gpio_reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
@@ -1066,6 +1115,21 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 		goto err_i2c;
 	}
 
+	/*
+	 * Initialise state BEFORE the serdev RX callback can ever fire.
+	 * serdev_device_set_client_ops() below publishes the receive_buf
+	 * pointer to the serdev controller; once published, a queued RX
+	 * burst can invoke cy8ctma395_ts_receive_buf() on a foreign worker
+	 * at any moment, and its first action is mutex_lock(&ts->state_lock).
+	 * Doing mutex_init() after that publication races the RX path on
+	 * zero-fill memory (CONFIG_DEBUG_MUTEXES BUGs; otherwise the
+	 * wait_lock can be torn). clear_arrays() must precede it for the
+	 * same reason: the RX path consumes tp[][].input_slot expecting
+	 * the -1 sentinel rather than the 0 left by devm_kzalloc.
+	 */
+	mutex_init(&ts->state_lock);
+	cy8ctma395_ts_clear_arrays(ts);
+
 	/* Setup serdev */
 	ret = serdev_device_open(serdev);
 	if (ret) {
@@ -1106,10 +1170,6 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 		dev_info(dev, "Requested baud 4000000, actual baud %u\n",
 			 actual_baud);
 	}
-
-	/* Initialize state */
-	mutex_init(&ts->state_lock);
-	cy8ctma395_ts_clear_arrays(ts);
 
 	/* Power on touchscreen */
 	ret = cy8ctma395_ts_power_on(ts);
@@ -1164,10 +1224,26 @@ static void cy8ctma395_ts_remove(struct serdev_device *serdev)
 static int cy8ctma395_ts_suspend(struct device *dev)
 {
 	struct cy8ctma395_ts_data *ts = dev_get_drvdata(dev);
+	struct serdev_device *serdev = ts->serdev;
+
+	/*
+	 * Stop the RX path BEFORE powering off and clearing state. With
+	 * the serdev port still open, tty-layer buffered bytes (or noise
+	 * from the chip's collapsing VDD on its TX line) keep arriving
+	 * at our receive_buf, which then walks tp[][] / matrix[] after
+	 * liftoff cleared them and emits phantom touches to userspace
+	 * right around sleep. The matching reopen runs in resume below;
+	 * the parser state (cline / cidx / rows_received) is reset there
+	 * too so any half-frame from before suspend cannot stitch onto
+	 * the first real bytes after resume.
+	 */
+	serdev_device_close(serdev);
 
 	mutex_lock(&ts->state_lock);
 	cy8ctma395_ts_liftoff(ts);
 	cy8ctma395_ts_power_off(ts);
+	ts->cidx = 0;
+	ts->rows_received = 0;
 	mutex_unlock(&ts->state_lock);
 
 	return 0;
@@ -1176,14 +1252,25 @@ static int cy8ctma395_ts_suspend(struct device *dev)
 static int cy8ctma395_ts_resume(struct device *dev)
 {
 	struct cy8ctma395_ts_data *ts = dev_get_drvdata(dev);
+	struct serdev_device *serdev = ts->serdev;
 	int ret;
 
 	mutex_lock(&ts->state_lock);
 	cy8ctma395_ts_clear_arrays(ts);
 	ret = cy8ctma395_ts_power_on(ts);
 	mutex_unlock(&ts->state_lock);
+	if (ret)
+		return ret;
 
-	return ret;
+	ret = serdev_device_open(serdev);
+	if (ret)
+		return ret;
+
+	serdev_device_set_client_ops(serdev, &cy8ctma395_ts_serdev_ops);
+	serdev_device_set_flow_control(serdev, false);
+	serdev_device_set_baudrate(serdev, 4000000);
+
+	return 0;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(cy8ctma395_ts_pm_ops,
