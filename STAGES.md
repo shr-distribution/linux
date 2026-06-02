@@ -18,7 +18,7 @@ no maintainer sees more than one bundle at once.
 |---|---|---|---|---|
 | 0 | gdsc framework (2 patches: LEGACY_FOOTSWITCH + RPM_ALWAYS_ON) | `submit/clk-gdsc-msm8x60-legacy` | clk | **v1 sent 2026-06-02 (msg-id 20260602050840.435933-1)**; prereq for #2; v2 pending |
 | 0b | gdsc 3 pre-existing fixes (poll_status / ALWAYS_ON retval / unregister) | `submit/clk-gdsc-preexisting-fixes` | clk | **v1 sent 2026-06-02 (msg-id 20260602140934.796697-1)** independent series |
-| 1 | gcc-cleanup (2 patches: CE2 H + PLL4_VOTE) | `submit/dt-bindings-gcc-msm8660-cleanup` | clk | **v1 sent 2026-06-02 (msg-id 20260602042747.277270-1)** |
+| 1 | gcc-cleanup (v1: CE2 H + PLL4_VOTE; v2 adds YAML pll4 fix) | `submit/dt-bindings-gcc-msm8660-cleanup` | clk | **v1 sent 2026-06-02 (msg-id 20260602042747.277270-1)**; v2 staged (3 patches, reorder YAML to PATCH 1/3 before send); hold for lkml v1 feedback |
 | 2 | mmcc-msm8660 | `submit/clk-mmcc-msm8660` | clk | **v1 sent 2026-06-02 (msg-id 20260602043623.285901-1)**; v2 pending (unhalt -EPROBE_DEFER fix + cover dep on #0); depends on #0 |
 | 3a | lcc hardening (3 patches, all compatibles) | `submit/clk-lcc-msm8960-hardening` | clk | **v1 sent 2026-06-02 (msg-id 20260602045002.290918-1)** |
 | 3b | lcc add-MSM8x60 (2 patches) | `submit/clk-lcc-msm8660` | clk | held — depends on #1 (PLL4_VOTE) landing first |

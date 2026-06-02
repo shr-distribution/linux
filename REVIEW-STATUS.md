@@ -9,7 +9,7 @@ Update **the row** when a branch's state changes. Append new findings to
 the **Findings Log** at the bottom. Bump the "Last updated" stamp every
 time you change either.
 
-**Last updated:** 2026-06-02 16:12 CEST
+**Last updated:** 2026-06-02 16:20 CEST
 
 ---
 
@@ -32,7 +32,7 @@ time you change either.
 |---|---|---|---|---|---|
 | 0 | `clk-gdsc-msm8x60-legacy` (Set A v2) | 2 | v1 `20260602050840.435933-1` | r3 attempts 2026-06-02 stage-failed (auth) — **re-run needed** | Re-run with Vertex → v2 send |
 | 0b | `clk-gdsc-preexisting-fixes` (Set B) | 3 | **v1 sent 2026-06-02 16:09** `20260602140934.796697-1` | 2026-06-02 15:52 Vertex r1 ✅ 4 findings, all `preexisting:true` | Wait for maintainer review |
-| 1 | `dt-bindings-gcc-msm8660-cleanup` | 3 | v1 `20260602042747.277270-1` | v4 clean earlier | Wait for maintainer review |
+| 1 | `dt-bindings-gcc-msm8660-cleanup` | 3 | v1 `20260602042747.277270-1` (2 patches); **v2 staged** (+YAML pll4 fix) | v4 [Low] clean earlier (CE2/PLL4_VOTE bits); YAML fix not yet re-reviewed but is a trivial schema relaxation | Hold v2 send pending lkml feedback on v1; reorder YAML to PATCH 1/3 before send (currently 3/3) |
 | 2 | `clk-mmcc-msm8660` | 3 | v1 `20260602043623.285901-1` | r7 clean (10:40, 596 KB log) | v2 reroll drafted (unhalt -EPROBE_DEFER + GFX2D resets); blocked on #0 v2 |
 | 3a | `clk-lcc-msm8960-hardening` | 3 | v1 `20260602045002.290918-1` | v5-r2 clean | Wait for review |
 | 3b | `clk-lcc-msm8660` | 2 | held | clean earlier | Unblocked once #1 PLL4_VOTE lands |
