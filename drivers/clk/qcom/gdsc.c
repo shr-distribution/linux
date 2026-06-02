@@ -125,21 +125,14 @@ static int gdsc_hwctrl(struct gdsc *sc, bool en)
 static int gdsc_poll_status(struct gdsc *sc, enum gdsc_status status)
 {
 	ktime_t start;
-	int ret;
 
 	start = ktime_get();
 	do {
-		ret = gdsc_check_status(sc, status);
-		if (ret < 0)
-			return ret;
-		if (ret)
+		if (gdsc_check_status(sc, status))
 			return 0;
 	} while (ktime_us_delta(ktime_get(), start) < STATUS_POLL_TIMEOUT_US);
 
-	ret = gdsc_check_status(sc, status);
-	if (ret < 0)
-		return ret;
-	if (ret)
+	if (gdsc_check_status(sc, status))
 		return 0;
 
 	return -ETIMEDOUT;
@@ -317,7 +310,7 @@ static void gdsc_retain_ff_on(struct gdsc *sc)
 static int gdsc_enable(struct generic_pm_domain *domain)
 {
 	struct gdsc *sc = domain_to_gdsc(domain);
-	int ret;
+	int ret, rc;
 
 	/*
 	 * Modern PWRSTS_ON-only GDSCs are pure reset-controllers: there
@@ -380,12 +373,24 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 			 * leaving the block live but isolated, re-assert
 			 * the reset so the block ends in a defined
 			 * power-off state, and undo the regulator vote.
+			 * Errors from these best-effort rollback steps are
+			 * reported but do not override the original error
+			 * returned to the caller -- the secondary failure
+			 * means the hardware state is already indeterminate
+			 * and the regulator vote must still be released.
 			 */
-			gdsc_update_collapse_bit(sc, true);
+			rc = gdsc_update_collapse_bit(sc, true);
+			if (rc)
+				pr_err("%s: rail collapse rollback failed (%d) after clamp release failure (%d); hw may be in inconsistent state\n",
+				       sc->pd.name, rc, ret);
 			if (sc->flags & SW_RESET)
 				gdsc_assert_reset(sc);
-			if (sc->rsupply)
-				regulator_disable(sc->rsupply);
+			if (sc->rsupply) {
+				rc = regulator_disable(sc->rsupply);
+				if (rc)
+					pr_err("%s: regulator_disable failed (%d) in clamp-release rollback\n",
+					       sc->pd.name, rc);
+			}
 			return ret;
 		}
 
@@ -447,7 +452,7 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 static int gdsc_disable(struct generic_pm_domain *domain)
 {
 	struct gdsc *sc = domain_to_gdsc(domain);
-	int ret;
+	int ret, rc;
 
 	/*
 	 * Symmetric to gdsc_enable: modern PWRSTS_ON-only GDSCs only
@@ -489,9 +494,16 @@ static int gdsc_disable(struct generic_pm_domain *domain)
 			 * to its enabled state rather than being stranded
 			 * in the half-disabled "clamped + reset + on"
 			 * state; the regulator vote stays in place because
-			 * the rail is still drawing from it.
+			 * the rail is still drawing from it. A secondary
+			 * failure of the clamp release is reported but
+			 * cannot override the original error: the rail is
+			 * still ON, so the caller's view ("disable failed,
+			 * leave ON") is the correct outcome regardless.
 			 */
-			legacy_fs_deassert_clamp(sc);
+			rc = legacy_fs_deassert_clamp(sc);
+			if (rc)
+				pr_err("%s: clamp release rollback failed (%d) after rail collapse failure (%d); hw may be clamped+ON\n",
+				       sc->pd.name, rc, ret);
 			if (sc->flags & SW_RESET)
 				gdsc_deassert_reset(sc);
 			return ret;
@@ -695,9 +707,7 @@ skip_wait_config:
 		 * any such GDSC that is currently off so the genpd flags
 		 * we set below match the silicon state.
 		 */
-		ret = gdsc_enable(&sc->pd);
-		if (ret)
-			return ret;
+		gdsc_enable(&sc->pd);
 		on = true;
 	}
 
@@ -861,18 +871,10 @@ err_pm_subdomain_remove:
 void gdsc_unregister(struct gdsc_desc *desc)
 {
 	struct device *dev = desc->dev;
-	struct gdsc **scs = desc->scs;
 	size_t num = desc->num;
-	int i;
 
-	of_genpd_del_provider(dev->of_node);
 	gdsc_pm_subdomain_remove(desc, num);
-
-	for (i = 0; i < num; i++) {
-		if (!scs[i])
-			continue;
-		pm_genpd_remove(&scs[i]->pd);
-	}
+	of_genpd_del_provider(dev->of_node);
 }
 
 /*
