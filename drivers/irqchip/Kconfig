@@ -530,7 +530,6 @@ config QCOM_MSM8660_MPM
 	depends on ARCH_QCOM
 	depends on MAILBOX
 	select IRQ_DOMAIN_HIERARCHY
-	default y
 	help
 	  Platform driver for the MSM Power Manager (MPM) wakeup interrupt
 	  controller on the MSM8x60 family (MSM8260/MSM8660/APQ8060). The
@@ -539,8 +538,8 @@ config QCOM_MSM8660_MPM
 	  SRAM region, an IPCC mailbox, and uses IRQCHIP_DECLARE early-init
 	  that races platform device creation).
 
-	  This driver replicates the legacy 2.6.35-palm arch/arm/mach-msm/
-	  mpm.c mechanism as a regular platform driver, mapping the vMPM
+	  This driver replicates the legacy vendor mpm reference (arch/arm/
+	  mach-msm/mpm.c) as a regular platform driver, mapping the vMPM
 	  request/status windows directly via devm_ioremap() of the 'reg'
 	  property and signaling the MPM via the qcom-apcs-ipc mailbox
 	  (writing to GCC + 0x008 bit 1).
