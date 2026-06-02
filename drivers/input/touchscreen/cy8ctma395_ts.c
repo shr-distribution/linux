@@ -70,6 +70,16 @@
 #define HOVER_DEBOUNCE_DELAY	30
 #define PIXELS_PER_POINT	25
 
+/*
+ * Hard cap on flood-fill recursion depth. Touch regions are bounded by
+ * the matrix (30 x 40 = 1200 cells), but the recursive cy8ctma395_ts_*
+ * helpers below take ~96 bytes of stack each, so a worst-case 1200-deep
+ * call exceeds the 8-16 KiB kernel stack. Realistic finger contacts span
+ * ~5-30 cells; a palm spans ~50; anything past this cap is pathological
+ * UART data we should abandon rather than walk into a stack overflow.
+ */
+#define CY8CTMA395_FLOOD_DEPTH_MAX	64
+
 struct cy8ctma395_touchpoint {
 	int pw;			/* pressure/weight */
 	int i, j;		/* position in matrix */
@@ -203,9 +213,13 @@ static void cy8ctma395_ts_liftoff(struct cy8ctma395_ts_data *ts)
 /* Recursive flood fill for touch area fringe detection */
 static void cy8ctma395_ts_area_fringe(struct cy8ctma395_ts_data *ts,
 				      long *isum, long *jsum, int *tweight,
-				      int i, int j, int cur_touch_id)
+				      int i, int j, int cur_touch_id,
+				      int depth)
 {
 	int powered;
+
+	if (depth-- == 0)
+		return;
 
 	ts->invalid_matrix[i][j] = cur_touch_id;
 
@@ -219,25 +233,25 @@ static void cy8ctma395_ts_area_fringe(struct cy8ctma395_ts_data *ts,
 	    ts->matrix[i-1][j] >= LARGE_AREA_FRINGE &&
 	    ts->matrix[i-1][j] < ts->matrix[i][j])
 		cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-					  i - 1, j, cur_touch_id);
+					  i - 1, j, cur_touch_id, depth);
 
 	if (i < X_AXIS_POINTS - 1 && ts->invalid_matrix[i+1][j] != cur_touch_id &&
 	    ts->matrix[i+1][j] >= LARGE_AREA_FRINGE &&
 	    ts->matrix[i+1][j] < ts->matrix[i][j])
 		cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-					  i + 1, j, cur_touch_id);
+					  i + 1, j, cur_touch_id, depth);
 
 	if (j > 0 && ts->invalid_matrix[i][j-1] != cur_touch_id &&
 	    ts->matrix[i][j-1] >= LARGE_AREA_FRINGE &&
 	    ts->matrix[i][j-1] < ts->matrix[i][j])
 		cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-					  i, j - 1, cur_touch_id);
+					  i, j - 1, cur_touch_id, depth);
 
 	if (j < Y_AXIS_POINTS - 1 && ts->invalid_matrix[i][j+1] != cur_touch_id &&
 	    ts->matrix[i][j+1] >= LARGE_AREA_FRINGE &&
 	    ts->matrix[i][j+1] < ts->matrix[i][j])
 		cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-					  i, j + 1, cur_touch_id);
+					  i, j + 1, cur_touch_id, depth);
 }
 
 /* Recursive flood fill for main touch area detection */
@@ -246,9 +260,13 @@ static void cy8ctma395_ts_determine_area(struct cy8ctma395_ts_data *ts,
 					 int i, int j,
 					 int *mini, int *maxi,
 					 int *minj, int *maxj,
-					 int cur_touch_id, int *highest_val)
+					 int cur_touch_id, int *highest_val,
+					 int depth)
 {
 	int powered;
+
+	if (depth-- == 0)
+		return;
 
 	ts->invalid_matrix[i][j] = cur_touch_id;
 
@@ -272,11 +290,12 @@ static void cy8ctma395_ts_determine_area(struct cy8ctma395_ts_data *ts,
 			cy8ctma395_ts_determine_area(ts, isum, jsum, tweight,
 						     i - 1, j, mini, maxi,
 						     minj, maxj,
-						     cur_touch_id, highest_val);
+						     cur_touch_id, highest_val,
+						     depth);
 		else if (ts->matrix[i-1][j] >= LARGE_AREA_FRINGE &&
 			 ts->matrix[i-1][j] < ts->matrix[i][j])
 			cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-						  i - 1, j, cur_touch_id);
+						  i - 1, j, cur_touch_id, depth);
 	}
 
 	if (i < X_AXIS_POINTS - 1 && ts->invalid_matrix[i+1][j] != cur_touch_id) {
@@ -284,11 +303,12 @@ static void cy8ctma395_ts_determine_area(struct cy8ctma395_ts_data *ts,
 			cy8ctma395_ts_determine_area(ts, isum, jsum, tweight,
 						     i + 1, j, mini, maxi,
 						     minj, maxj,
-						     cur_touch_id, highest_val);
+						     cur_touch_id, highest_val,
+						     depth);
 		else if (ts->matrix[i+1][j] >= LARGE_AREA_FRINGE &&
 			 ts->matrix[i+1][j] < ts->matrix[i][j])
 			cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-						  i + 1, j, cur_touch_id);
+						  i + 1, j, cur_touch_id, depth);
 	}
 
 	if (j > 0 && ts->invalid_matrix[i][j-1] != cur_touch_id) {
@@ -296,11 +316,12 @@ static void cy8ctma395_ts_determine_area(struct cy8ctma395_ts_data *ts,
 			cy8ctma395_ts_determine_area(ts, isum, jsum, tweight,
 						     i, j - 1, mini, maxi,
 						     minj, maxj,
-						     cur_touch_id, highest_val);
+						     cur_touch_id, highest_val,
+						     depth);
 		else if (ts->matrix[i][j-1] >= LARGE_AREA_FRINGE &&
 			 ts->matrix[i][j-1] < ts->matrix[i][j])
 			cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-						  i, j - 1, cur_touch_id);
+						  i, j - 1, cur_touch_id, depth);
 	}
 
 	if (j < Y_AXIS_POINTS - 1 && ts->invalid_matrix[i][j+1] != cur_touch_id) {
@@ -308,11 +329,12 @@ static void cy8ctma395_ts_determine_area(struct cy8ctma395_ts_data *ts,
 			cy8ctma395_ts_determine_area(ts, isum, jsum, tweight,
 						     i, j + 1, mini, maxi,
 						     minj, maxj,
-						     cur_touch_id, highest_val);
+						     cur_touch_id, highest_val,
+						     depth);
 		else if (ts->matrix[i][j+1] >= LARGE_AREA_FRINGE &&
 			 ts->matrix[i][j+1] < ts->matrix[i][j])
 			cy8ctma395_ts_area_fringe(ts, isum, jsum, tweight,
-						  i, j + 1, cur_touch_id);
+						  i, j + 1, cur_touch_id, depth);
 	}
 }
 
@@ -436,7 +458,8 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 							     &mini, &maxi,
 							     &minj, &maxj,
 							     tpc + 1,
-							     &highest_val);
+							     &highest_val,
+							     CY8CTMA395_FLOOD_DEPTH_MAX);
 
 				if (tweight > 0) {
 					t = &ts->tp[tpoint][tpc];
@@ -871,11 +894,23 @@ retry:
 	/* Send I2C initialization sequence */
 	ret = cy8ctma395_ts_i2c_write(ts, 0x08, 0x00);
 	dev_info(dev, "I2C init write 0x08=0x00: ret=%d\n", ret);
-	if (ret != 1 && retry++ < 3) {
+	if (ret != 1) {
+		if (retry++ < 3) {
+			regulator_disable(ts->vdd);
+			usleep_range(10000, 15000);
+			dev_warn(dev, "TS wakeup retry #%d\n", retry);
+			goto retry;
+		}
+		/*
+		 * Wakeup write has failed 3 times in a row. Be consistent
+		 * with the init_seq1 failure handling below and abort
+		 * power-on rather than silently continuing with an
+		 * unresponsive controller.
+		 */
+		dev_err(dev, "TS wakeup write failed after 3 retries: %d\n",
+			ret);
 		regulator_disable(ts->vdd);
-		usleep_range(10000, 15000);
-		dev_warn(dev, "TS wakeup retry #%d\n", retry);
-		goto retry;
+		return ret < 0 ? ret : -EIO;
 	}
 
 	ret = cy8ctma395_ts_i2c_write_multi(ts, init_seq1, sizeof(init_seq1));
@@ -1047,8 +1082,29 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	serdev_device_set_flow_control(serdev, false);
 	{
 		unsigned int actual_baud;
+		unsigned int delta;
+
 		actual_baud = serdev_device_set_baudrate(serdev, 4000000);
-		dev_info(dev, "Requested baud 4000000, actual baud %u\n", actual_baud);
+		/*
+		 * The CY8CTMA395 streams capacitance frames at 4 Mbps over
+		 * UART. If the host controller cannot match that rate (or
+		 * the closest hardware-selectable divisor is too far off),
+		 * the bytestream parser below desynchronises and we report
+		 * spurious touches. Reject anything outside +/- 1 % so a
+		 * silent host-side fallback (e.g. msm_serial picking 921600)
+		 * fails probe rather than producing junk.
+		 */
+		delta = actual_baud > 4000000 ?
+			actual_baud - 4000000 : 4000000 - actual_baud;
+		if (delta > 40000) {
+			dev_err(dev,
+				"UART baud out of tolerance: requested 4000000, got %u\n",
+				actual_baud);
+			ret = -ENODEV;
+			goto err_serdev;
+		}
+		dev_info(dev, "Requested baud 4000000, actual baud %u\n",
+			 actual_baud);
 	}
 
 	/* Initialize state */
@@ -1072,7 +1128,16 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	return 0;
 
 err_power:
+	/*
+	 * Mirror the remove path: close serdev FIRST so no further
+	 * receive_buf callbacks can race the power-off / state-array
+	 * teardown, then take state_lock and power down.
+	 */
+	serdev_device_close(serdev);
+	mutex_lock(&ts->state_lock);
 	cy8ctma395_ts_power_off(ts);
+	mutex_unlock(&ts->state_lock);
+	goto err_i2c;
 err_serdev:
 	serdev_device_close(serdev);
 err_i2c:
