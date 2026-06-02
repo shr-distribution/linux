@@ -100,6 +100,7 @@ static int param_fuzz_st_pressure;
 static unsigned int param_hover_radius = HOVER_DEBOUNCE_RADIUS;
 static unsigned int param_hover_delay = HOVER_DEBOUNCE_DELAY;
 static unsigned int param_single_emit_per_scan;
+static unsigned int param_subcell_precision;
 
 module_param_named(pressure_clamp, param_pressure_clamp, uint, 0644);
 MODULE_PARM_DESC(pressure_clamp,
@@ -138,6 +139,10 @@ MODULE_PARM_DESC(hover_delay,
 module_param_named(single_emit_per_scan, param_single_emit_per_scan, uint, 0644);
 MODULE_PARM_DESC(single_emit_per_scan,
 	"Reset rows_received / matrix inside the FRAME_SCAN_COMPLETE handler so the start-of-next-row-0 path does not re-fire cy8ctma395_ts_calc_point() on the same scan (default 0). On-device evtest shows the current double-fire produces a 1-ms-then-9-ms paired event pattern that breaks slide-to-unlock recognisers; set 1 to emit exactly one report per scan.");
+
+module_param_named(subcell_precision, param_subcell_precision, uint, 0644);
+MODULE_PARM_DESC(subcell_precision,
+	"Compute t->x / t->y directly from the weighted matrix sums (jsum * screen_w / (tweight * (Y_AXIS_POINTS - 1))) instead of via the integer-truncated centroid cell index t->j / t->i (default 0). The current truncation rounds the centroid to one of 30 x 40 integer cells, so a slow finger that moves less than ~26 px stays at the same reported x/y across many scans and then snaps a full cell -- visible to userspace as a stationary touch interrupted by a periodic jump. The ts_srv userspace reference performed this division in float for the same reason. Set 1 to evaluate the higher-precision integer form on hardware.");
 
 
 struct cy8ctma395_touchpoint {
@@ -552,13 +557,53 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 					t->tracking_id = -1;
 					t->prev_loc = -1;
 
-					/* Convert to screen coordinates */
-					t->x = (ts->screen_w - 1) -
-					       (t->j * ts->screen_w /
-						(Y_AXIS_POINTS - 1));
-					t->y = (ts->screen_h - 1) -
-					       (t->i * ts->screen_h /
-						(X_AXIS_POINTS - 1));
+					/*
+					 * Convert to screen coordinates.
+					 *
+					 * Default form preserves the historical
+					 * driver math: divide the weighted sum
+					 * by tweight to get an integer matrix
+					 * cell index (0..29 / 0..39) and then
+					 * map that to screen pixels. This snaps
+					 * x / y to a 26-pixel grid; a slow finger
+					 * that moves less than one matrix cell
+					 * holds the same reported value for many
+					 * scans then jumps a full cell at once.
+					 *
+					 * subcell_precision=1 collapses the two
+					 * divisions into one over the full
+					 * weighted sum:
+					 *   x = (screen_w - 1) -
+					 *       jsum * screen_w
+					 *       / (tweight * (Y_AXIS_POINTS - 1))
+					 * preserving the sub-cell information
+					 * that the centroid-then-quantise form
+					 * threw away. Uses 64-bit intermediates
+					 * because tweight runs into the tens of
+					 * thousands and jsum * screen_w can
+					 * exceed 2^31 on a wide contact. ts_srv
+					 * userspace performed the equivalent in
+					 * float.
+					 */
+					if (param_subcell_precision) {
+						t->x = (int)((ts->screen_w - 1) -
+							     (s64)jsum *
+							     ts->screen_w /
+							     ((s64)tweight *
+							      (Y_AXIS_POINTS - 1)));
+						t->y = (int)((ts->screen_h - 1) -
+							     (s64)isum *
+							     ts->screen_h /
+							     ((s64)tweight *
+							      (X_AXIS_POINTS - 1)));
+					} else {
+						t->x = (ts->screen_w - 1) -
+						       (t->j * ts->screen_w /
+							(Y_AXIS_POINTS - 1));
+						t->y = (ts->screen_h - 1) -
+						       (t->i * ts->screen_h /
+							(X_AXIS_POINTS - 1));
+					}
 
 					t->x = clamp(t->x, 0,
 						     (int)ts->screen_w - 1);
