@@ -9,7 +9,7 @@ Update **the row** when a branch's state changes. Append new findings to
 the **Findings Log** at the bottom. Bump the "Last updated" stamp every
 time you change either.
 
-**Last updated:** 2026-06-02 16:00 CEST
+**Last updated:** 2026-06-02 16:15 CEST
 
 ---
 
@@ -31,7 +31,7 @@ time you change either.
 | # | Branch | Commits | Sent | Last Sashiko | Pending |
 |---|---|---|---|---|---|
 | 0 | `clk-gdsc-msm8x60-legacy` (Set A v2) | 2 | v1 `20260602050840.435933-1` | r3 attempts 2026-06-02 stage-failed (auth) — **re-run needed** | Re-run with Vertex → v2 send |
-| 0b | `clk-gdsc-preexisting-fixes` (Set B) | 3 | not sent | **2026-06-02 15:52 Vertex r1 ✅ 4 findings (all preexisting:true)** | Ship as-is; findings just confirm the bugs we're fixing |
+| 0b | `clk-gdsc-preexisting-fixes` (Set B) | 3 | **ready to send** | 2026-06-02 15:52 Vertex r1 ✅ 4 findings, all `preexisting:true` — confirm Set B fixes (see Findings Log) | Send (keep as 3 patches; 3/3 bundles 2 findings) |
 | 1 | `dt-bindings-gcc-msm8660-cleanup` | 3 | v1 `20260602042747.277270-1` | v4 clean earlier | Wait for maintainer review |
 | 2 | `clk-mmcc-msm8660` | 3 | v1 `20260602043623.285901-1` | r7 clean (10:40, 596 KB log) | v2 reroll drafted (unhalt -EPROBE_DEFER + GFX2D resets); blocked on #0 v2 |
 | 3a | `clk-lcc-msm8960-hardening` | 3 | v1 `20260602045002.290918-1` | v5-r2 clean | Wait for review |
@@ -90,11 +90,20 @@ _(Most recent first. Each entry: date / branch / round / model / outcome.
 For non-empty findings include the count by severity and a one-line summary
 of the most actionable one.)_
 
-### 2026-06-02 15:52 — `clk-gdsc-preexisting-fixes` r1 (Vertex gemini-2.5-pro) — 4 findings, all preexisting:true
+### 2026-06-02 15:52 — `clk-gdsc-preexisting-fixes` r1 (Vertex gemini-2.5-pro) — 4 findings, all preexisting:true ✅
 
-- All 4 findings flag the **same bugs Set B is fixing** (gdsc_poll_status err propagation, ALWAYS_ON retval, gdsc_unregister leak + ordering race). Sashiko correctly tagged them `preexisting: true`, i.e. they were latent in the tree *before* this series and the patches address them. This is the equivalent of a clean review for a "preexisting fixes" series.
-- review_inline produced a maintainer-style reply asking clarifying "did the original do X?" questions — useful for the cover letter or a follow-up if anyone challenges the motivation.
-- 324K tokens in / 10K out / 50K cached, 18 min.
+4 findings, 3 patches in Set B (PATCH 3/3 fixes two distinct adjacent bugs in `gdsc_unregister` — kept as one commit per user decision):
+
+| # | Finding (preexisting:true) | Loc | Set B fix |
+|---|---|---|---|
+| 1 | `gdsc_unregister` missing `pm_genpd_remove` → resource leak; pm_genpd_init re-probe would -EEXIST | gdsc.c:653 | PATCH 3/3 |
+| 2 | `gdsc_unregister` tears down subdomains **before** of_genpd_del_provider → race window where a consumer attaches to a domain mid-removal (UAF risk) | gdsc.c:649 | PATCH 3/3 (same commit, reorder + add pm_genpd_remove loop) |
+| 3 | `gdsc_poll_status` treats negative `gdsc_check_status` errno as boolean true → returns 0 (success) on regmap failure | gdsc.c:109 | PATCH 1/3 |
+| 4 | `gdsc_init` ALWAYS_ON branch discards `gdsc_enable` return value → registers genpd as ON when silicon is OFF | gdsc.c:483 | PATCH 2/3 |
+
+All 4 are flagged `preexisting: true` — equivalent to a clean review for a "preexisting fixes" series. review_inline produced a maintainer-style reply asking clarifying "did the original do X?" questions; useful for the cover letter narrative.
+
+324K tokens in / 10K out / 50K cached, 18 min. Full log: `/tmp/sashiko-gdscB-vertex2.log`.
 
 ### 2026-06-02 12:30-13:00 — multiple branches (claude-cli, both Opus + Sonnet) — Stage N invalid-arrays + 0 tokens
 
@@ -110,9 +119,9 @@ of the most actionable one.)_
 
 ## Next-step backlog
 
-1. Send Set B (`clk-gdsc-preexisting-fixes`) to lkml — sashiko confirmed.
+1. **Send Set B** (`clk-gdsc-preexisting-fixes`) to lkml — sashiko confirmed. 3 patches, keep as-is (per 16:15 decision).
 2. Re-run Set A (`clk-gdsc-msm8x60-legacy`) on Vertex to confirm the 9 maintainer-finding folds are clean → ship v2 reply.
-3. Run Vertex chain on the 7 "never-reviewed-today" branches (interconnect, mpm, pm8901-tm, qce, max8903, phy, mt9m113) → first sashiko clean → send.
+3. Run Vertex chain on the 6 "ready, never-reviewed-today-with-Vertex" branches: interconnect, mpm, pm8901-tm, qce, max8903, phy → first sashiko clean → send.
 4. Address mmcc v2 reroll after Set A ships (cover-letter dep on #0).
 5. Continue A6 5-way split (#131).
 6. LM8502 r2 confirmation (#128).
