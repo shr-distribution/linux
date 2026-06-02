@@ -78,9 +78,22 @@ static void lm8502_haptic_work(struct work_struct *w)
 		 * chip->lock, so we restore that exact value when the
 		 * vibration ends. Done at start (not probe) so concurrent
 		 * sibling writes are not clobbered.
+		 *
+		 * Only snapshot on the *first* magnitude>0 of a sequence
+		 * (d10_saved_valid is false). Userspace can submit a fresh
+		 * ff_effect mid-vibration; without this guard the second
+		 * work invocation would read D10 back as 0 (which we just
+		 * wrote ourselves), overwriting the original sibling value
+		 * and breaking restore when the sequence finally stops.
+		 *
+		 * If the read fails we bail out without touching D10 at all:
+		 * muxing without a valid snapshot would strand D10 in the
+		 * vibrator path indefinitely.
 		 */
-		if (!regmap_read(chip->regmap, LM8502_D10_CURRENT_CTRL,
-				 &val)) {
+		if (!priv->d10_saved_valid) {
+			if (regmap_read(chip->regmap,
+					LM8502_D10_CURRENT_CTRL, &val))
+				goto out;
 			priv->d10_saved = val;
 			priv->d10_saved_valid = true;
 		}

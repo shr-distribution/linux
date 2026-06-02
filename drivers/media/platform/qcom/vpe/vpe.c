@@ -3,7 +3,7 @@
  * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) Video Processing Engine (VPE) V4L2 mem2mem driver
  *
  * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
--2026 Herman van Hazendonk <github.com@herrie.org>
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on the legacy vendor MSM8x60 msm_vpe1 driver.
  * Ported to V4L2 mem2mem framework.
@@ -496,7 +496,7 @@ static int vpe_start_streaming(struct vb2_queue *vq, unsigned int count)
 
 		ret = vpe_hw_reset(vpe->base);
 		if (ret) {
-			pm_runtime_put(vpe->dev);
+			pm_runtime_put_sync(vpe->dev);
 			return ret;
 		}
 	}
@@ -516,8 +516,15 @@ static void vpe_stop_streaming(struct vb2_queue *vq)
 	while ((buf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx)))
 		v4l2_m2m_buf_done(buf, VB2_BUF_STATE_ERROR);
 
+	/*
+	 * Use the synchronous put: stop_streaming may run from the
+	 * teardown path (video_unregister_device() in vpe_remove()), and
+	 * the pm_runtime_disable() that follows would barrier-cancel an
+	 * async suspend, leaving the hardware powered with the driver
+	 * about to vanish. Always run the suspend inline here.
+	 */
 	if (V4L2_TYPE_IS_OUTPUT(vq->type))
-		pm_runtime_put(vpe->dev);
+		pm_runtime_put_sync(vpe->dev);
 }
 
 static const struct vb2_ops vpe_qops = {

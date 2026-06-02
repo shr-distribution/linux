@@ -123,6 +123,16 @@ struct cy8ctma395_ts_data {
 	int touch_delay_count;
 
 	bool powered;
+
+	/*
+	 * Serialises the parser/matrix state between the serdev RX callback
+	 * (cy8ctma395_ts_receive_buf -> process_data) and the suspend / resume
+	 * / remove paths (liftoff / clear_arrays / power on/off). Without this
+	 * a 4 Mbps UART chunk can land mid-suspend, race with liftoff() walking
+	 * tp[][] and corrupt the slot bookkeeping so the next session reports
+	 * stale tracking IDs.
+	 */
+	struct mutex state_lock;
 };
 
 /* Approximate pow(x, 1.5) using integer math: x * sqrt(x) */
@@ -576,11 +586,26 @@ static int cy8ctma395_ts_calc_point(struct cy8ctma395_ts_data *ts)
 						 ABS_MT_POSITION_X, t->x);
 				input_report_abs(ts->input,
 						 ABS_MT_POSITION_Y, t->y);
+				/*
+				 * touch_major is the bounding-box width of the
+				 * contact in pixels (PIXELS_PER_POINT per grid
+				 * cell). A palm covering the full width can
+				 * exceed Y_AXIS_POINTS * PIXELS_PER_POINT;
+				 * clamp to the declared axis maximum so user-
+				 * space readers do not see out-of-range values.
+				 *
+				 * pw is the area-integrated capacitance sum
+				 * (sum of pow_1_5(matrix[i][j])) over the
+				 * contact's bounding cells; for a wide contact
+				 * it can run into the tens of thousands. Clamp
+				 * to the declared ABS_MT_PRESSURE range.
+				 */
 				input_report_abs(ts->input,
 						 ABS_MT_TOUCH_MAJOR,
-						 t->touch_major);
+						 clamp(t->touch_major, 0, 500));
 				input_report_abs(ts->input,
-						 ABS_MT_PRESSURE, t->pw);
+						 ABS_MT_PRESSURE,
+						 clamp(t->pw, 250, 2000));
 			}
 		} else if (t->touch_delay) {
 			t->touch_delay--;
@@ -748,8 +773,13 @@ static size_t cy8ctma395_ts_receive_buf(struct serdev_device *serdev,
 	 * every chunk breaks drag/swipe gestures (taps still register because
 	 * the down+up arrive close in time, but a sustained contact is
 	 * repeatedly torn down before user space can recognise it as motion).
+	 *
+	 * Hold state_lock across the parse so concurrent suspend / resume /
+	 * remove paths cannot walk tp[][] mid-update.
 	 */
+	mutex_lock(&ts->state_lock);
 	cy8ctma395_ts_process_data(ts, data, count);
+	mutex_unlock(&ts->state_lock);
 
 	return count;
 }
@@ -850,8 +880,22 @@ retry:
 
 	ret = cy8ctma395_ts_i2c_write_multi(ts, init_seq1, sizeof(init_seq1));
 	dev_info(dev, "I2C init seq1: ret=%d\n", ret);
-	if (ret != 1)
-		dev_err(dev, "Init seq1 failed: %d\n", ret);
+	if (ret != 1) {
+		/*
+		 * The init_seq1 transaction is what wakes the controller up
+		 * into streaming mode. Earlier revisions of this driver let
+		 * probe continue here on failure, which left ts->powered set
+		 * but the device unconfigured and silent on the UART, hiding
+		 * the real cause and producing a "successfully bound but
+		 * non-functional" touchscreen. Treat any failure as fatal
+		 * and return -EIO so the regulator/GPIO teardown in
+		 * probe's error path runs.
+		 */
+		dev_err(dev, "Init seq1 failed: %d -- aborting power-on\n",
+			ret);
+		regulator_disable(ts->vdd);
+		return ret < 0 ? ret : -EIO;
+	}
 
 	ret = cy8ctma395_ts_i2c_write(ts, 0x30, 0x0F);
 	dev_info(dev, "I2C write 0x30=0x0F: ret=%d\n", ret);
@@ -1008,6 +1052,7 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	}
 
 	/* Initialize state */
+	mutex_init(&ts->state_lock);
 	cy8ctma395_ts_clear_arrays(ts);
 
 	/* Power on touchscreen */
@@ -1016,6 +1061,7 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 		goto err_serdev;
 
 	/* Register input device */
+	input_set_drvdata(ts->input, ts);
 	ret = input_register_device(ts->input);
 	if (ret) {
 		dev_err(dev, "Failed to register input device: %d\n", ret);
@@ -1038,8 +1084,15 @@ static void cy8ctma395_ts_remove(struct serdev_device *serdev)
 {
 	struct cy8ctma395_ts_data *ts = serdev_device_get_drvdata(serdev);
 
-	cy8ctma395_ts_power_off(ts);
+	/*
+	 * Close serdev BEFORE power_off so no further receive_buf callbacks
+	 * can fire and walk tp[][] / matrix[] after the regulator + GPIOs
+	 * have been torn down.
+	 */
 	serdev_device_close(serdev);
+	mutex_lock(&ts->state_lock);
+	cy8ctma395_ts_power_off(ts);
+	mutex_unlock(&ts->state_lock);
 	i2c_unregister_device(ts->i2c);
 }
 
@@ -1047,8 +1100,10 @@ static int cy8ctma395_ts_suspend(struct device *dev)
 {
 	struct cy8ctma395_ts_data *ts = dev_get_drvdata(dev);
 
+	mutex_lock(&ts->state_lock);
 	cy8ctma395_ts_liftoff(ts);
 	cy8ctma395_ts_power_off(ts);
+	mutex_unlock(&ts->state_lock);
 
 	return 0;
 }
@@ -1056,9 +1111,14 @@ static int cy8ctma395_ts_suspend(struct device *dev)
 static int cy8ctma395_ts_resume(struct device *dev)
 {
 	struct cy8ctma395_ts_data *ts = dev_get_drvdata(dev);
+	int ret;
 
+	mutex_lock(&ts->state_lock);
 	cy8ctma395_ts_clear_arrays(ts);
-	return cy8ctma395_ts_power_on(ts);
+	ret = cy8ctma395_ts_power_on(ts);
+	mutex_unlock(&ts->state_lock);
+
+	return ret;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(cy8ctma395_ts_pm_ops,

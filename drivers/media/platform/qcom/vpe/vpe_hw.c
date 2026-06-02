@@ -3,7 +3,7 @@
  * Qualcomm MSM8x60 family (MSM8260/MSM8660/APQ8060) Video Processing Engine (VPE) - Hardware abstraction
  *
  * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
--2026 Herman van Hazendonk <github.com@herrie.org>
+ * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on the legacy vendor MSM8x60 msm_vpe1 driver.
  */
