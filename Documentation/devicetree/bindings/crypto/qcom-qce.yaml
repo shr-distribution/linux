@@ -117,10 +117,10 @@ properties:
       Optional reset controller for the CE2 engine. When provided,
       the driver uses it to recover the engine from the per-op
       wedge that affects MSM8x60 CE2 hardware after ~5 operations
-      (legacy Samsung downstream kernels assert/deassert the same
-      reset once at init; HTC and webOS legacy kernels omit it).
-      Without it the driver still probes and registers algorithms
-      but cannot recover from a wedged engine.
+      (some downstream vendor kernels assert/deassert the same reset
+      once at init; others omit it). Without it the driver still
+      probes and registers algorithms but cannot recover from a
+      wedged engine.
 
   reset-names:
     items:
@@ -190,12 +190,11 @@ allOf:
     then:
       properties:
         clocks:
-          minItems: 2
-          maxItems: 2
+          minItems: 1
+          maxItems: 1
         clock-names:
           items:
             - const: iface
-            - const: core
         dmas:
           items:
             - description: DMA specifiers for rx dma channel (ADM).
@@ -241,8 +240,8 @@ examples:
     crypto-engine@18500000 {
         compatible = "qcom,msm8660-qce";
         reg = <0x18500000 0x10000>;
-        clocks = <&gcc CE2_H_CLK>, <&gcc CE2_P_CLK>;
-        clock-names = "iface", "core";
+        clocks = <&gcc CE2_H_CLK>;
+        clock-names = "iface";
         dmas = <&adm_dma 2>, <&adm_dma 3>;
         dma-names = "rx", "tx";
         qcom,rx-crci = <4>;
