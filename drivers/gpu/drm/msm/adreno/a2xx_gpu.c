@@ -17,19 +17,43 @@ extern bool hang_debug;
 
 /*
  * a2xx_kgsl_boost (module parameter) selects whether the a2xx sub-driver
- * sets gpu->kgsl_style_boost at probe. With this set (default 1, the
- * historic post-rewrite behaviour), msm_devfreq_active() ramps the
- * boost_freq QoS request to MAX OPP on every idle->active transition.
- * Set 0 (kernel cmdline `msm.a2xx_kgsl_boost=0` or sysfs write to
- * /sys/module/msm/parameters/a2xx_kgsl_boost) to leave simple_ondemand
- * alone -- A/B test for whether the boost's async dev_pm_qos clock
- * change vs the synchronous submit() call that follows it is what
- * triggers the QSGRenderThread hangs observed on tenderloin.
+ * enables gpu->kgsl_style_boost. With it true (default, historic post-
+ * rewrite behaviour), msm_devfreq_active() ramps the boost_freq QoS
+ * request to MAX OPP on every idle->active transition. We track a
+ * single GPU pointer here (a2xx has at most one device on msm8660) so
+ * a sysfs write to /sys/module/msm/parameters/a2xx_kgsl_boost propagates
+ * to the live gpu->kgsl_style_boost without a reboot -- crucial for
+ * A/B testing on hardware where the hang appears minutes after boot.
+ *
+ * Hypothesis under test: dev_pm_qos_update_request() in
+ * msm_devfreq_active() is asynchronous against the submit() call that
+ * follows it in msm_gpu.c::msm_submit() -- the GPU starts processing
+ * the command stream at the OLD low clock, then the clock changes
+ * mid-execution, hanging the CP and producing the recurring
+ * QSGRenderThread lockups observed on tenderloin.
  */
 static bool a2xx_kgsl_boost = true;
-module_param_named(a2xx_kgsl_boost, a2xx_kgsl_boost, bool, 0644);
+static struct msm_gpu *a2xx_live_gpu;
+
+static int a2xx_kgsl_boost_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = param_set_bool(val, kp);
+
+	if (!ret && a2xx_live_gpu) {
+		a2xx_live_gpu->kgsl_style_boost = a2xx_kgsl_boost;
+		pr_info("a2xx: kgsl_style_boost runtime-updated to %d\n",
+			a2xx_kgsl_boost);
+	}
+	return ret;
+}
+
+static const struct kernel_param_ops a2xx_kgsl_boost_ops = {
+	.set = a2xx_kgsl_boost_set,
+	.get = param_get_bool,
+};
+module_param_cb(a2xx_kgsl_boost, &a2xx_kgsl_boost_ops, &a2xx_kgsl_boost, 0644);
 MODULE_PARM_DESC(a2xx_kgsl_boost,
-		 "Enable KGSL-style binary boost on idle->active transitions (default 1).");
+		 "Enable KGSL-style binary boost on idle->active transitions (default 1). Toggleable at runtime; the write also updates the live gpu->kgsl_style_boost.");
 
 static void a2xx_dump(struct msm_gpu *gpu);
 static bool a2xx_idle(struct msm_gpu *gpu);
@@ -479,6 +503,9 @@ static void a2xx_destroy(struct msm_gpu *gpu)
 	struct a2xx_gpu *a2xx_gpu = to_a2xx_gpu(adreno_gpu);
 
 	DBG("%s", gpu->name);
+
+	if (READ_ONCE(a2xx_live_gpu) == gpu)
+		WRITE_ONCE(a2xx_live_gpu, NULL);
 
 	adreno_gpu_cleanup(adreno_gpu);
 
@@ -1061,6 +1088,7 @@ static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	 * hangs we see on idle->active transitions.
 	 */
 	gpu->kgsl_style_boost = a2xx_kgsl_boost;
+	WRITE_ONCE(a2xx_live_gpu, gpu); /* publish for sysfs runtime toggle */
 
 	/*
 	 * Optional GFX3D core reset used by a2xx_recover() (see there). Optional
