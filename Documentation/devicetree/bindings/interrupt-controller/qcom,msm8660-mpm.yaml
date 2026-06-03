@@ -118,7 +118,7 @@ examples:
         msm8660_mpm: interrupt-controller@1049d8 {
             compatible = "qcom,msm8660-mpm";
             reg = <0x001049d8 0x440>;
-            interrupts = <GIC_SPI 2 IRQ_TYPE_EDGE_RISING>;
+            interrupts = <GIC_SPI 2 IRQ_TYPE_LEVEL_HIGH>;
             mboxes = <&gcc_ipc 1>;
             interrupt-controller;
             #interrupt-cells = <2>;

@@ -84,6 +84,10 @@
 /* Status registers at +0x420 from vMPM base (== RPM + 0xdf8). */
 #define MSM8660_MPM_STATUS_OFFSET	0x420
 
+/* Minimum mapping size: STATUS regs (two u32s) at 0x420 + 8 bytes. */
+#define MSM8660_MPM_MIN_SIZE		(MSM8660_MPM_STATUS_OFFSET + \
+					 MSM8660_MPM_REG_WIDTH * 4)
+
 #define MSM8660_MPM_PIN_COUNT		64
 #define MSM8660_MPM_REG_WIDTH		2
 
@@ -160,17 +164,18 @@ static void msm8660_mpm_write(struct msm8660_mpm *mpm, unsigned int reg,
  * qcom-apcs-ipc mailbox just does a writel into the IPC trigger
  * register; it is safe under a raw lock.
  */
-static void msm8660_mpm_doorbell(struct msm8660_mpm *mpm)
+static int msm8660_mpm_doorbell(struct msm8660_mpm *mpm)
 {
 	int ret;
 
 	if (!mpm->mbox_chan)
-		return;
+		return 0;
 
 	ret = mbox_send_message(mpm->mbox_chan, NULL);
 	if (ret < 0)
 		dev_warn_ratelimited(mpm->dev,
 				     "RPM doorbell failed: %d\n", ret);
+	return ret < 0 ? ret : 0;
 }
 
 /*
@@ -274,7 +279,7 @@ static irqreturn_t msm8660_mpm_irq(int irq, void *data)
 	 */
 	if (any_cleared) {
 		(void)readl(mpm->base + MSM8660_MPM_REG_CLEAR);
-		msm8660_mpm_doorbell(mpm);
+		(void)msm8660_mpm_doorbell(mpm);
 	}
 
 	mutex_unlock(&mpm->bus_lock);
@@ -373,28 +378,40 @@ static void msm8660_mpm_commit(struct msm8660_mpm *mpm)
 			msm8660_mpm_write(mpm,
 				MSM8660_MPM_REG_ENABLE + i * 4,
 				mpm->enable[i]);
-			mpm->enable_cached[i] = mpm->enable[i];
 			changed = true;
 		}
 		if (mpm->detect[i] != mpm->detect_cached[i]) {
 			msm8660_mpm_write(mpm,
 				MSM8660_MPM_REG_DETECT_CTL + i * 4,
 				mpm->detect[i]);
-			mpm->detect_cached[i] = mpm->detect[i];
 			changed = true;
 		}
 		if (mpm->polarity[i] != mpm->polarity_cached[i]) {
 			msm8660_mpm_write(mpm,
 				MSM8660_MPM_REG_POLARITY + i * 4,
 				mpm->polarity[i]);
-			mpm->polarity_cached[i] = mpm->polarity[i];
 			changed = true;
 		}
 	}
 
 	if (changed) {
+		int ret;
+
 		(void)readl(mpm->base + MSM8660_MPM_REG_ENABLE);
-		msm8660_mpm_doorbell(mpm);
+		ret = msm8660_mpm_doorbell(mpm);
+		/*
+		 * Only promote the shadow cache to match the MMIO writes when
+		 * the doorbell succeeds; if RPM was not notified, the next
+		 * commit will still see pending[i] != cached[i] and retry
+		 * both the MMIO write and the doorbell.
+		 */
+		if (!ret) {
+			for (i = 0; i < MSM8660_MPM_REG_WIDTH; i++) {
+				mpm->enable_cached[i]   = mpm->enable[i];
+				mpm->detect_cached[i]   = mpm->detect[i];
+				mpm->polarity_cached[i] = mpm->polarity[i];
+			}
+		}
 	}
 }
 
@@ -735,6 +752,11 @@ static int msm8660_mpm_probe(struct platform_device *pdev)
 	 * and our vMPM sub-region overlaps that mapping. devm_ioremap()
 	 * does not call request_mem_region() so there is no conflict.
 	 */
+	if (resource_size(res) < MSM8660_MPM_MIN_SIZE)
+		return dev_err_probe(dev, -EINVAL,
+				     "vMPM region %pR too small (need >= 0x%zx)\n",
+				     res, MSM8660_MPM_MIN_SIZE);
+
 	mpm->base = devm_ioremap(dev, res->start, resource_size(res));
 	if (!mpm->base)
 		return dev_err_probe(dev, -ENOMEM,

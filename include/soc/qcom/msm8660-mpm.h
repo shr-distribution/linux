@@ -27,7 +27,7 @@
 
 #define MSM8660_MPM_NR_PINS	64
 
-/* Well-known wake-source pin indices (from the legacy 2.6.35-palm tree). */
+/* Well-known wake-source pin indices (from the legacy vendor tree). */
 #define MSM8660_MPM_PIN_SDC3_DAT1	21
 #define MSM8660_MPM_PIN_SDC3_DAT3	22
 #define MSM8660_MPM_PIN_SDC4_DAT1	23
@@ -43,6 +43,7 @@ struct msm8660_mpm *msm8660_mpm_get(struct device *consumer,
 				    struct device_node *np,
 				    const char *propname);
 
+/* These functions send a mailbox message to the RPM and may sleep. */
 int msm8660_mpm_set_pin_wake(struct msm8660_mpm *mpm, unsigned int pin,
 			     bool on);
 int msm8660_mpm_enable_pin(struct msm8660_mpm *mpm, unsigned int pin,
