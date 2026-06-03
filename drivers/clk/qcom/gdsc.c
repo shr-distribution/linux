@@ -76,9 +76,18 @@ static int gdsc_check_status(struct gdsc *sc, enum gdsc_status status)
 		ret = regmap_read(sc->regmap, sc->gdscr, &val);
 		if (ret)
 			return ret;
+		/*
+		 * A block with ENABLE=1 but CLAMP=1 is electrically isolated:
+		 * the rail is powered but all I/O is clamped. The downstream
+		 * vendor footswitch driver (footswitch-8x60.c) treats the block
+		 * as "ON" only when ENABLE is set AND CLAMP is clear -- mirror
+		 * that convention so callers don't mistake a clamped-but-
+		 * powered block for a fully usable one.
+		 */
 		switch (status) {
 		case GDSC_ON:
-			return !!(val & LEGACY_FS_ENABLE_MASK);
+			return (val & (LEGACY_FS_ENABLE_MASK | LEGACY_FS_CLAMP_MASK))
+			       == LEGACY_FS_ENABLE_MASK;
 		case GDSC_OFF:
 			return !(val & LEGACY_FS_ENABLE_MASK);
 		}
@@ -342,8 +351,15 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 				return ret;
 		}
 
-		if (sc->flags & SW_RESET)
+		if (sc->flags & SW_RESET) {
 			gdsc_assert_reset(sc);
+			/*
+			 * Wait for synchronous resets to propagate before
+			 * raising ENABLE: matches footswitch-8x60.c's
+			 * udelay(RESET_DELAY_US) between assert and enable.
+			 */
+			udelay(1);
+		}
 
 		ret = gdsc_update_collapse_bit(sc, false);
 		if (ret) {
@@ -362,9 +378,13 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 
 		udelay(2);
 
-		if (sc->flags & SW_RESET)
-			gdsc_deassert_reset(sc);
-
+		/*
+		 * Release the I/O clamp BEFORE deasserting resets: the
+		 * downstream vendor footswitch driver (footswitch-8x60.c)
+		 * always clears CLAMP_BIT first, then deasserts per-block
+		 * resets. This lets the block's outputs settle in a known
+		 * reset state before they become visible to consumers.
+		 */
 		ret = legacy_fs_deassert_clamp(sc);
 		if (ret) {
 			/*
@@ -393,6 +413,10 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 			}
 			return ret;
 		}
+
+		/* Deassert resets now that clamp is released (vendor order). */
+		if (sc->flags & SW_RESET)
+			gdsc_deassert_reset(sc);
 
 		udelay(5);
 
@@ -471,8 +495,15 @@ static int gdsc_disable(struct generic_pm_domain *domain)
 	 *   4. drop the parent regulator vote (if any)
 	 */
 	if (sc->flags & LEGACY_FOOTSWITCH) {
-		if (sc->flags & SW_RESET)
+		if (sc->flags & SW_RESET) {
 			gdsc_assert_reset(sc);
+			/*
+			 * Wait for synchronous resets to propagate before
+			 * clamping I/O: footswitch-8x60.c udelay(RESET_DELAY_US)
+			 * between assert and CLAMP_BIT set.
+			 */
+			udelay(1);
+		}
 
 		ret = legacy_fs_assert_clamp(sc);
 		if (ret) {
