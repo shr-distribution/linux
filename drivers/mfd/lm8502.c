@@ -68,7 +68,6 @@ struct lm8502_core {
 	struct lm8502 chip;		/* shared with children via parent drvdata */
 
 	/* Resources only the core touches: */
-	struct i2c_client *client;
 	struct regulator *vcc;
 	struct gpio_desc *enable_gpio;
 };
@@ -109,28 +108,43 @@ static const struct mfd_cell lm8502_devs[] = {
  */
 static int lm8502_wait_for_chip(struct lm8502 *chip)
 {
+	unsigned long deadline = jiffies +
+				 msecs_to_jiffies(LM8502_DETECT_TIMEOUT_MS);
 	unsigned int val;
-	int elapsed = 0;
 	int ret;
 
-	while (elapsed < LM8502_DETECT_TIMEOUT_MS) {
+	/*
+	 * Use a wall-clock deadline rather than counting only sleep time:
+	 * regmap_{write,read}() round trips and any NAK/timeout cost on a
+	 * slow I2C bus can otherwise extend the wall-clock probe time
+	 * beyond LM8502_DETECT_TIMEOUT_MS without the loop noticing.
+	 */
+	do {
 		ret = regmap_write(chip->regmap, LM8502_ENGINE_CNTRL1,
 				   LM8502_CHIP_EN);
-		if (ret)
-			goto sleep;
+		if (!ret) {
+			ret = regmap_read(chip->regmap, LM8502_ENGINE_CNTRL1,
+					  &val);
+			if (ret == 0 && (val & LM8502_CHIP_EN))
+				return 0;
+		}
 
-		ret = regmap_read(chip->regmap, LM8502_ENGINE_CNTRL1, &val);
-		if (ret == 0 && (val & LM8502_CHIP_EN))
-			return 0;
-
-sleep:
 		fsleep(LM8502_DETECT_POLL_MS * USEC_PER_MSEC);
-		elapsed += LM8502_DETECT_POLL_MS;
-	}
+	} while (time_before(jiffies, deadline));
 
 	return -ENODEV;
 }
 
+/*
+ * Bring the chip up: software reset, prove the bus, then program the
+ * baseline ENGINE_CNTRL2 / MISC / per-channel D<n>_CONTROL registers.
+ *
+ * Errors are reported with plain dev_err() rather than dev_err_probe()
+ * because this is also called from the resume path -- using
+ * dev_err_probe() there would pollute the deferred-probe last-failure
+ * tracker for a device that is already bound. Probe callers wrap the
+ * return with dev_err_probe() themselves.
+ */
 static int lm8502_chip_init(struct lm8502_core *core)
 {
 	struct lm8502 *chip = &core->chip;
@@ -147,17 +161,23 @@ static int lm8502_chip_init(struct lm8502_core *core)
 	fsleep(LM8502_RESET_SETTLE_MS * USEC_PER_MSEC);
 
 	ret = lm8502_wait_for_chip(chip);
-	if (ret)
-		return dev_err_probe(dev, ret, "chip did not respond\n");
+	if (ret) {
+		dev_err(dev, "chip did not respond: %d\n", ret);
+		return ret;
+	}
 
 	ret = regmap_write(chip->regmap, LM8502_ENGINE_CNTRL2,
 			   LM8502_ENGINE_CNTRL2_INIT);
-	if (ret)
-		return dev_err_probe(dev, ret, "ENGINE_CNTRL2 write failed\n");
+	if (ret) {
+		dev_err(dev, "ENGINE_CNTRL2 write failed: %d\n", ret);
+		return ret;
+	}
 
 	ret = regmap_write(chip->regmap, LM8502_MISC, LM8502_MISC_INIT);
-	if (ret)
-		return dev_err_probe(dev, ret, "MISC write failed\n");
+	if (ret) {
+		dev_err(dev, "MISC write failed: %d\n", ret);
+		return ret;
+	}
 
 	/*
 	 * Program every D<n>_CONTROL register so the LED child can issue
@@ -168,13 +188,36 @@ static int lm8502_chip_init(struct lm8502_core *core)
 	for (i = 0; i < LM8502_MAX_LEDS; i++) {
 		ret = regmap_write(chip->regmap, LM8502_D1_CONTROL + i,
 				   LM8502_LED_CONTROL_INIT);
-		if (ret)
-			return dev_err_probe(dev, ret,
-					     "D%d_CONTROL write failed\n",
-					     i + 1);
+		if (ret) {
+			dev_err(dev, "D%d_CONTROL write failed: %d\n",
+				i + 1, ret);
+			return ret;
+		}
 	}
 
 	return 0;
+}
+
+/*
+ * devm-registered cleanup callback. Runs at unbind / probe-failure
+ * time AFTER the MFD child platform devices spawned by
+ * devm_mfd_add_devices() have been torn down (LIFO devres ordering --
+ * see lm8502_i2c_probe for the order in which actions and child
+ * devices are registered). This is what makes the children's remove
+ * callbacks issue their final regmap writes against a still-powered
+ * chip rather than a clamped/disabled one.
+ */
+static void lm8502_power_off(void *data)
+{
+	struct lm8502_core *core = data;
+
+	if (core->enable_gpio)
+		gpiod_set_value_cansleep(core->enable_gpio, 0);
+
+	if (core->vcc) {
+		regulator_set_load(core->vcc, 0);
+		regulator_disable(core->vcc);
+	}
 }
 
 static int lm8502_i2c_probe(struct i2c_client *client)
@@ -189,7 +232,6 @@ static int lm8502_i2c_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	chip = &core->chip;
-	core->client = client;
 	chip->dev = dev;
 	mutex_init(&chip->lock);
 
@@ -256,8 +298,27 @@ static int lm8502_i2c_probe(struct i2c_client *client)
 	dev_set_drvdata(dev, chip);
 
 	ret = lm8502_chip_init(core);
-	if (ret)
+	if (ret) {
+		dev_err_probe(dev, ret, "chip init failed\n");
 		goto err_disable_chip;
+	}
+
+	/*
+	 * Register the power-off callback BEFORE devm_mfd_add_devices() so
+	 * devres unwinds LIFO: child platform devices teardown FIRST (their
+	 * .remove callbacks issue final regmap writes against a still-
+	 * powered chip), and lm8502_power_off() runs SECOND. Without this
+	 * ordering, lm8502_i2c_remove() / err_disable_chip would cut
+	 * CHIP_EN and the vcc rail before the children's cleanup writes
+	 * landed -- on MSM8x60 QUP the controller does not surface NAKs in
+	 * that window (see lm8502_wait_for_chip), so the writes are either
+	 * silently dropped or fail with -EREMOTEIO and the haptic motor
+	 * can be left energised.
+	 */
+	ret = devm_add_action_or_reset(dev, lm8502_power_off, core);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to register power-off action\n");
 
 	/*
 	 * Spawn LED and haptic child platform devices. Children retrieve
@@ -267,13 +328,16 @@ static int lm8502_i2c_probe(struct i2c_client *client)
 	 */
 	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE, lm8502_devs,
 				   ARRAY_SIZE(lm8502_devs), NULL, 0, NULL);
-	if (ret) {
-		dev_err_probe(dev, ret, "failed to add child devices\n");
-		goto err_disable_chip;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to add child devices\n");
 
 	return 0;
 
+	/*
+	 * Failure paths below run BEFORE lm8502_power_off() is registered
+	 * via devm, so they must still tear the rail down manually.
+	 */
 err_disable_chip:
 	if (core->enable_gpio)
 		gpiod_set_value_cansleep(core->enable_gpio, 0);
@@ -283,20 +347,6 @@ err_disable_vcc:
 		regulator_disable(core->vcc);
 	}
 	return ret;
-}
-
-static void lm8502_i2c_remove(struct i2c_client *client)
-{
-	struct lm8502 *chip = dev_get_drvdata(&client->dev);
-	struct lm8502_core *core = container_of(chip, struct lm8502_core, chip);
-
-	if (core->enable_gpio)
-		gpiod_set_value_cansleep(core->enable_gpio, 0);
-
-	if (core->vcc) {
-		regulator_set_load(core->vcc, 0);
-		regulator_disable(core->vcc);
-	}
 }
 
 static int lm8502_suspend(struct device *dev)
@@ -310,6 +360,19 @@ static int lm8502_suspend(struct device *dev)
 		mutex_unlock(&chip->lock);
 		return 0;
 	}
+
+	/*
+	 * Mark the chip as suspended UP FRONT, before any register write
+	 * that can fail. The semantic is "system PM committed to suspend
+	 * us"; even if a midway regmap write returns -ENXIO and the rest
+	 * of system suspend continues without us, the resume path must
+	 * still run the full re-init sequence because the rails / GPIO
+	 * may have been power-cycled across S3. Without this, a single
+	 * I2C error during suspend would leave chip->suspended == false,
+	 * lm8502_resume() would early-out, and the children's first
+	 * register access after resume would hit an unconfigured chip.
+	 */
+	chip->suspended = true;
 
 	/* Stop the haptic output in case a child left it running. */
 	ret = regmap_write(chip->regmap, LM8502_HAPTIC_FEEDBACK_CTRL, 0);
@@ -339,7 +402,6 @@ static int lm8502_suspend(struct device *dev)
 	if (core->vcc)
 		regulator_set_load(core->vcc, 0);
 
-	chip->suspended = true;
 	mutex_unlock(&chip->lock);
 
 	return 0;
@@ -388,7 +450,8 @@ static int lm8502_resume(struct device *dev)
 	 * init sequence so ENGINE_CNTRL1/2, MISC and the per-channel
 	 * D<n>_CONTROL registers are restored before any child driver
 	 * touches the chip. lm8502_chip_init() also sets CHIP_EN as a
-	 * side-effect of programming ENGINE_CNTRL1.
+	 * side-effect of programming ENGINE_CNTRL1. Errors are already
+	 * logged with dev_err() inside lm8502_chip_init().
 	 */
 	ret = lm8502_chip_init(core);
 	if (ret)
@@ -436,7 +499,6 @@ static struct i2c_driver lm8502_i2c_driver = {
 		.pm = pm_sleep_ptr(&lm8502_pm_ops),
 	},
 	.probe = lm8502_i2c_probe,
-	.remove = lm8502_i2c_remove,
 	.id_table = lm8502_i2c_id,
 };
 module_i2c_driver(lm8502_i2c_driver);
