@@ -400,16 +400,27 @@ static int gdsc_enable(struct generic_pm_domain *domain)
 			 * and the regulator vote must still be released.
 			 */
 			rc = gdsc_update_collapse_bit(sc, true);
-			if (rc)
-				pr_err("%s: rail collapse rollback failed (%d) after clamp release failure (%d); hw may be in inconsistent state\n",
+			if (rc) {
+				/*
+				 * Collapse also failed: the rail is still ON.
+				 * Do NOT call regulator_disable() -- the rail
+				 * is still drawing from the supply and cutting
+				 * it while ENABLE is set risks hardware damage.
+				 * Mirror gdsc_disable()'s collapse-failure path
+				 * which deliberately skips regulator_disable()
+				 * when the rail did not collapse.
+				 */
+				pr_err("%s: rail collapse rollback failed (%d) after clamp release failure (%d); rail may be ON, regulator vote leaked\n",
 				       sc->pd.name, rc, ret);
-			if (sc->flags & SW_RESET)
-				gdsc_assert_reset(sc);
-			if (sc->rsupply) {
-				rc = regulator_disable(sc->rsupply);
-				if (rc)
-					pr_err("%s: regulator_disable failed (%d) in clamp-release rollback\n",
-					       sc->pd.name, rc);
+			} else {
+				if (sc->flags & SW_RESET)
+					gdsc_assert_reset(sc);
+				if (sc->rsupply) {
+					rc = regulator_disable(sc->rsupply);
+					if (rc)
+						pr_err("%s: regulator_disable failed (%d) in clamp-release rollback\n",
+						       sc->pd.name, rc);
+				}
 			}
 			return ret;
 		}
