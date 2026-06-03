@@ -515,27 +515,22 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	u32 index;
 	u64 ts = ktime_get_ns();
 
+	spin_lock_irqsave(&vfe->output_lock, flags);
+
 	/*
 	 * Some VFE modes route data to secondary WMs that aren't mapped
 	 * to output lines. Silently ignore their IRQs.
 	 *
-	 * vfe->wm_output_map[wm] is written from the stream stop/start
-	 * paths under output_lock held as a mutex; this ISR runs in
-	 * atomic context and cannot take it. Snapshot the value once
-	 * with READ_ONCE() so the check below and the array index that
-	 * follows operate on the same value: otherwise a concurrent
-	 * write of VFE_LINE_NONE (-1) between the two loads would let
-	 * the function pass the check and then dereference
-	 * &vfe->line[-1].
+	 * Read wm_output_map[wm] under the same output_lock that stream
+	 * teardown holds when it resets the map to VFE_LINE_NONE and
+	 * flushes buffers, so the check and the subsequent buffer access
+	 * are atomic with respect to stream stop.
 	 */
-	wm_output = READ_ONCE(vfe->wm_output_map[wm]);
+	wm_output = vfe->wm_output_map[wm];
 	if (wm_output == VFE_LINE_NONE)
-		return;
+		goto out_unlock;
 
 	line = &vfe->line[wm_output];
-
-	spin_lock_irqsave(&vfe->output_lock, flags);
-
 	output = &line->output;
 
 	ready_buf = output->buf[0];
