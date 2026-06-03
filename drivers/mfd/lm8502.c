@@ -132,6 +132,18 @@ static int lm8502_wait_for_chip(struct lm8502 *chip)
 		fsleep(LM8502_DETECT_POLL_MS * USEC_PER_MSEC);
 	} while (time_before(jiffies, deadline));
 
+	/*
+	 * One final attempt after the last sleep: the hardware may have
+	 * responded during the sleep that pushed us past the deadline.
+	 * Matches the readx_poll_timeout() pattern.
+	 */
+	ret = regmap_write(chip->regmap, LM8502_ENGINE_CNTRL1, LM8502_CHIP_EN);
+	if (!ret) {
+		ret = regmap_read(chip->regmap, LM8502_ENGINE_CNTRL1, &val);
+		if (ret == 0 && (val & LM8502_CHIP_EN))
+			return 0;
+	}
+
 	return -ENODEV;
 }
 
@@ -210,6 +222,15 @@ static int lm8502_chip_init(struct lm8502_core *core)
 static void lm8502_power_off(void *data)
 {
 	struct lm8502_core *core = data;
+	struct lm8502 *chip = &core->chip;
+
+	/*
+	 * Clear CHIP_EN before cutting power. Best-effort: if the I2C write
+	 * fails (e.g. bus already gone) we still proceed with GPIO/regulator
+	 * teardown. Needed when enable_gpio is absent and vcc is shared, as
+	 * the regulator_disable() may not actually cut the supply.
+	 */
+	regmap_update_bits(chip->regmap, LM8502_ENGINE_CNTRL1, LM8502_CHIP_EN, 0);
 
 	if (core->enable_gpio)
 		gpiod_set_value_cansleep(core->enable_gpio, 0);
@@ -361,17 +382,6 @@ static int lm8502_suspend(struct device *dev)
 		return 0;
 	}
 
-	/*
-	 * Mark the chip as suspended UP FRONT, before any register write
-	 * that can fail. The semantic is "system PM committed to suspend
-	 * us"; even if a midway regmap write returns -ENXIO and the rest
-	 * of system suspend continues without us, the resume path must
-	 * still run the full re-init sequence because the rails / GPIO
-	 * may have been power-cycled across S3. Without this, a single
-	 * I2C error during suspend would leave chip->suspended == false,
-	 * lm8502_resume() would early-out, and the children's first
-	 * register access after resume would hit an unconfigured chip.
-	 */
 	chip->suspended = true;
 
 	/* Stop the haptic output in case a child left it running. */
@@ -407,6 +417,13 @@ static int lm8502_suspend(struct device *dev)
 	return 0;
 
 unlock:
+	/*
+	 * A .suspend() that returns an error causes the PM core to abort the
+	 * suspend transition; our .resume() is NOT called during the
+	 * subsequent dpm_resume(). Clear chip->suspended so children are not
+	 * permanently locked out.
+	 */
+	chip->suspended = false;
 	mutex_unlock(&chip->lock);
 	return ret;
 }
