@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * TI LM8502 Multi-Function Device core
  *
@@ -465,9 +465,12 @@ static int lm8502_resume(struct device *dev)
 err_disable:
 	/*
 	 * chip_init failed; we already raised enable_gpio and committed
-	 * HPM. Unwind in reverse so the rail is back in a known-off
-	 * state -- otherwise the chip would sit half-initialised with
-	 * the regulator stuck in HPM until the next system suspend.
+	 * HPM. Undo what resume did: de-assert enable_gpio and drop
+	 * the regulator back to Low Power Mode. The vcc regulator is
+	 * intentionally NOT disabled -- it was never disabled during
+	 * the preceding suspend either, so the device returns to the
+	 * same suspended state it was in before resume started rather
+	 * than a fully-off state.
 	 */
 	if (core->enable_gpio)
 		gpiod_set_value_cansleep(core->enable_gpio, 0);
