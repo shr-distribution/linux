@@ -102,6 +102,8 @@ static unsigned int param_hover_radius = HOVER_DEBOUNCE_RADIUS;
 static unsigned int param_hover_delay = HOVER_DEBOUNCE_DELAY;
 static unsigned int param_single_emit_per_scan;
 static unsigned int param_subcell_precision;
+static unsigned int param_fallback_liftoff;
+static unsigned int param_bustype_rs232;
 
 module_param_named(pressure_clamp, param_pressure_clamp, uint, 0644);
 MODULE_PARM_DESC(pressure_clamp,
@@ -144,6 +146,14 @@ MODULE_PARM_DESC(single_emit_per_scan,
 module_param_named(subcell_precision, param_subcell_precision, uint, 0644);
 MODULE_PARM_DESC(subcell_precision,
 	"Compute t->x / t->y directly from the weighted matrix sums (jsum * screen_w / (tweight * (Y_AXIS_POINTS - 1))) instead of via the integer-truncated centroid cell index t->j / t->i (default 0). The current truncation rounds the centroid to one of 30 x 40 integer cells, so a slow finger that moves less than ~26 px stays at the same reported x/y across many scans and then snaps a full cell -- visible to userspace as a stationary touch interrupted by a periodic jump. The ts_srv userspace reference performed this division in float for the same reason. Set 1 to evaluate the higher-precision integer form on hardware.");
+
+module_param_named(fallback_liftoff, param_fallback_liftoff, uint, 0644);
+MODULE_PARM_DESC(fallback_liftoff,
+	"Restore the pre-rewrite hedge in cy8ctma395_ts_receive_buf(): if a serdev RX chunk completed without any cy8ctma395_ts_calc_point() invocation producing a non-zero touch count AND ts->previoustpc > 0, force a cy8ctma395_ts_liftoff() + cy8ctma395_ts_clear_arrays() (default 0). Hypothesised root cause of the post-rewrite \"phantom touch after finger lift\" symptom on LuneOS: if the CY8CTMA395 controller stops streaming frames once the contact disappears, no calc_point fires, the slot_in_use[i] == -1 cleanup never runs, and the previously active MT slot stays alive in userspace indefinitely. Set 1 to re-enable the OLD behaviour and verify on hardware.");
+
+module_param_named(bustype_rs232, param_bustype_rs232, uint, 0644);
+MODULE_PARM_DESC(bustype_rs232,
+	"Register the input device with input->id.bustype == BUS_RS232 instead of BUS_HOST (default 0). Read once at probe; runtime changes are inert until the next module reload / driver reprobe. The pre-rewrite driver used BUS_RS232, which changes the input device's modalias seen by udev rules and userspace input plugins. Set 1 and reboot to test whether a userspace component (a 70-tenderloin.rules entry, Qt's evdevtouch matcher, etc.) is gating on bustype.");
 
 
 struct cy8ctma395_touchpoint {
@@ -947,7 +957,30 @@ static size_t cy8ctma395_ts_receive_buf(struct serdev_device *serdev,
 	 * remove paths cannot walk tp[][] mid-update.
 	 */
 	mutex_lock(&ts->state_lock);
-	cy8ctma395_ts_process_data(ts, data, count);
+	{
+		int touches = cy8ctma395_ts_process_data(ts, data, count);
+
+		/*
+		 * Optional pre-rewrite hedge: if this RX chunk produced no
+		 * touches AND the previous reported scan had at least one,
+		 * force a liftoff + clear state. The pre-rewrite driver did
+		 * this unconditionally; the rewrite assumed that calc_point's
+		 * slot_in_use[i] == -1 cleanup would handle release. Symptom
+		 * on LuneOS suggests the CY8CTMA395 may stop streaming
+		 * frames altogether on finger lift -- in that case calc_point
+		 * never fires post-lift, slot stays active forever, padlock
+		 * never unlocks. Gated behind fallback_liftoff for A/B test;
+		 * note ts->previoustpc is set by calc_point at the end of
+		 * each scan, so this fires correctly only when no calc_point
+		 * ran during this RX chunk.
+		 */
+		if (param_fallback_liftoff && !touches &&
+		    ts->previoustpc > 0) {
+			cy8ctma395_ts_liftoff(ts);
+			cy8ctma395_ts_clear_arrays(ts);
+			ts->previoustpc = 0;
+		}
+	}
 	mutex_unlock(&ts->state_lock);
 
 	return count;
@@ -1270,8 +1303,14 @@ static int cy8ctma395_ts_probe(struct serdev_device *serdev)
 	 * BUS_HOST: the controller talks to us over an on-SoC UART via
 	 * the serdev bus; there is no physical RS-232 connector. Matches
 	 * other serdev-attached input drivers.
+	 *
+	 * bustype_rs232 module parameter overrides this to the pre-
+	 * rewrite BUS_RS232 value for compatibility testing with
+	 * userspace components that may have been keyed on the old
+	 * modalias bus field. Read once at probe; runtime changes are
+	 * inert until the next driver reprobe.
 	 */
-	ts->input->id.bustype = BUS_HOST;
+	ts->input->id.bustype = param_bustype_rs232 ? BUS_RS232 : BUS_HOST;
 	ts->input->id.vendor = 0x04b4;	/* Cypress */
 	ts->input->id.product = 0x0395;
 	ts->input->id.version = 0x0100;
