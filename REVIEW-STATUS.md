@@ -73,7 +73,7 @@ All independent (no cross-series deps).
 | 12 | `input-cy8ctma395` | 2 | — | not sent | r7 stage-failed today; **fuzz fix live + verified on device** | Re-run with Vertex → send |
 | 13 | `power-supply-palm-a6` | 2 | — | not sent | r1 done | A6 split into 5 patches in progress |
 | 14 | `dt-bindings-mfd-lm8502` | 1 | — | not sent | r1 done | Review |
-| 15 | `mfd-lm8502` | 1 | — | not sent | r1 done | LM8502 r2 confirmation pending |
+| 15 | `mfd-lm8502` | 1 | — | **v1 sent 2026-06-03 05:54** `20260603035411.396383-1` (To: Lee Jones) | **Vertex r2 ✅ 3 findings: 2 false positives + 1 SPDX style (fixed)** | Wait for maintainer review |
 
 ### Dependent (LM8502 MFD child drivers)
 
