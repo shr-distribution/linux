@@ -111,7 +111,7 @@ examples:
       cen-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>;
       dcm-gpios = <&gpio2 6 GPIO_ACTIVE_HIGH>;
 
-      /* DC current control via ISET pins */
+      /* DC input current limit via IDC resistor mux */
       dc-current-limit-gpios = <&gpio1 0 GPIO_ACTIVE_HIGH>,
                                <&gpio1 1 GPIO_ACTIVE_HIGH>;
       dc-current-limit-mapping = <750000 0>,  /* GPIO[1:0]=0b00 */
