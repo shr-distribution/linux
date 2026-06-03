@@ -3,6 +3,8 @@
 
 #include <linux/delay.h>
 #include <linux/interconnect.h>
+#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/pm_opp.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
@@ -12,6 +14,22 @@
 #include "msm_mmu.h"
 
 extern bool hang_debug;
+
+/*
+ * a2xx_kgsl_boost (module parameter) selects whether the a2xx sub-driver
+ * sets gpu->kgsl_style_boost at probe. With this set (default 1, the
+ * historic post-rewrite behaviour), msm_devfreq_active() ramps the
+ * boost_freq QoS request to MAX OPP on every idle->active transition.
+ * Set 0 (kernel cmdline `msm.a2xx_kgsl_boost=0` or sysfs write to
+ * /sys/module/msm/parameters/a2xx_kgsl_boost) to leave simple_ondemand
+ * alone -- A/B test for whether the boost's async dev_pm_qos clock
+ * change vs the synchronous submit() call that follows it is what
+ * triggers the QSGRenderThread hangs observed on tenderloin.
+ */
+static bool a2xx_kgsl_boost = true;
+module_param_named(a2xx_kgsl_boost, a2xx_kgsl_boost, bool, 0644);
+MODULE_PARM_DESC(a2xx_kgsl_boost,
+		 "Enable KGSL-style binary boost on idle->active transitions (default 1).");
 
 static void a2xx_dump(struct msm_gpu *gpu);
 static bool a2xx_idle(struct msm_gpu *gpu);
@@ -1030,8 +1048,19 @@ static struct msm_gpu *a2xx_gpu_init(struct drm_device *dev)
 	 * the upthreshold to ramp up. Validated 2026-05-28: binner_test heavy
 	 * stuck at 27MHz (0.94 fps); userspace pinning to 266MHz gave 5.5x
 	 * speedup matching legacy KGSL (5.19 vs 5.45 fps).
+	 *
+	 * Module parameter `kgsl_boost` lets us A/B test this on hardware.
+	 * Default 1 = on (current behaviour). Set 0 in a kernel cmdline or
+	 * /sys/module/msm/parameters/a2xx_kgsl_boost (gated by the
+	 * module_param below) to leave the simple_ondemand governor in
+	 * charge and disable the boost. Hypothesis: dev_pm_qos_update_request
+	 * in msm_devfreq_active() is asynchronous against the submit() call
+	 * that follows it in msm_gpu.c -- the GPU starts processing commands
+	 * at the OLD low clock, then the clock changes mid-execution, hanging
+	 * the CP. Disabling the boost should eliminate the QSGRenderThread
+	 * hangs we see on idle->active transitions.
 	 */
-	gpu->kgsl_style_boost = true;
+	gpu->kgsl_style_boost = a2xx_kgsl_boost;
 
 	/*
 	 * Optional GFX3D core reset used by a2xx_recover() (see there). Optional
