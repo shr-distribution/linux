@@ -4,7 +4,7 @@
  *
  * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
- * Based on webOS kernel msm_bus_board_8660.c
+ * Based on legacy vendor kernel msm_bus_board_8660.c
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  */
 
@@ -79,11 +79,11 @@
  * Daytona Fabric (DFAB) - Peripheral bus
  *
  * DFAB connects slower peripherals (SDCC, ADM DMA) to the system fabric.
- * The webOS kernel managed DFAB bandwidth via voter clocks (dfab_sdc*_clk,
+ * The legacy vendor kernel managed DFAB bandwidth via voter clocks (dfab_sdc*_clk,
  * dfab_usb_hs_clk). In mainline, this is handled by the interconnect framework.
  *
  * USB HS is included as a DFAB voter for compatibility with the legacy clock
- * voting mechanism. The webOS kernel comment said: "if usb link is in sps
+ * voting mechanism. The legacy vendor kernel comment said: "if usb link is in sps
  * there is no need for usb pclk as daytona fabric clock will be used instead".
  * This keeps DFAB clock stable when USB is active.
  */

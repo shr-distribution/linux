@@ -5,7 +5,7 @@
  * Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
  * Based on msm8974.c by Brian Masney <masneyb@onstation.org>
- * and webOS kernel msm_bus_board_8660.c / msm_bus_fabric.c
+ * and legacy vendor kernel msm_bus_board_8660.c / msm_bus_fabric.c
  * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * MSM8x60 has a fabric-based bus architecture:
@@ -31,7 +31,7 @@
  *
  * Each fabric has an RPM arbitration interface that programs per-port
  * bandwidth and priority tier via MM_FABRIC_ARB / SYS_FABRIC_ARB /
- * APPS_FABRIC_ARB registers.  The webOS kernel sent these as packed
+ * APPS_FABRIC_ARB registers.  The legacy vendor kernel sent these as packed
  * u16 arrays (bwsum + arb) through msm_rpm_set().  This driver uses
  * the mainline qcom_rpm_write() interface to do the same.
  */
@@ -39,7 +39,6 @@
 #include <dt-bindings/interconnect/qcom,msm8660.h>
 #include <dt-bindings/mfd/qcom-rpm.h>
 
-#include <linux/args.h>
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/interconnect-provider.h>
@@ -50,80 +49,6 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-
-/* Internal node IDs - these map to the DT binding IDs plus fabric offset */
-enum {
-	/* APPSS Fabric nodes */
-	MSM8660_AFAB_MAS_AMPSS_M0 = 1,
-	MSM8660_AFAB_MAS_AMPSS_M1,
-	MSM8660_AFAB_SLV_EBI_CH0,
-	MSM8660_AFAB_SLV_AMPSS_L2,
-	MSM8660_AFAB_TO_MMSS,
-	MSM8660_AFAB_TO_SYSTEM,
-
-	/* System Fabric nodes */
-	MSM8660_SFAB_MAS_APPSS,
-	MSM8660_SFAB_MAS_SPS,
-	MSM8660_SFAB_MAS_ADM0_PORT0,
-	MSM8660_SFAB_MAS_ADM0_PORT1,
-	MSM8660_SFAB_MAS_ADM1_PORT0,
-	MSM8660_SFAB_MAS_ADM1_PORT1,
-	MSM8660_SFAB_MAS_LPASS_PROC,
-	MSM8660_SFAB_MAS_MSS_PROCI,
-	MSM8660_SFAB_MAS_MSS_PROCD,
-	MSM8660_SFAB_MAS_MSS_MDM_PORT0,
-	MSM8660_SFAB_MAS_LPASS,
-	MSM8660_SFAB_MAS_MMSS_FPB,
-	MSM8660_SFAB_MAS_ADM1_CI,
-	MSM8660_SFAB_MAS_ADM0_CI,
-	MSM8660_SFAB_MAS_MSS_MDM_PORT1,
-	MSM8660_SFAB_MAS_USB_HS,
-	MSM8660_SFAB_TO_APPSS,
-	MSM8660_SFAB_TO_SYSTEM_FPB,
-	MSM8660_SFAB_TO_CPSS_FPB,
-	MSM8660_SFAB_SLV_SPS,
-	MSM8660_SFAB_SLV_SYSTEM_IMEM,
-	MSM8660_SFAB_SLV_AMPSS,
-	MSM8660_SFAB_SLV_MSS,
-	MSM8660_SFAB_SLV_LPASS,
-	MSM8660_SFAB_SLV_MMSS_FPB,
-	MSM8660_SFAB_TO_DFAB,
-
-	/* Daytona Fabric nodes (DFAB) - peripheral bus */
-	MSM8660_DFAB_MAS_SDC1,
-	MSM8660_DFAB_MAS_SDC2,
-	MSM8660_DFAB_MAS_SDC3,
-	MSM8660_DFAB_MAS_SDC4,
-	MSM8660_DFAB_MAS_SDC5,
-	MSM8660_DFAB_MAS_ADM0_MASTER,
-	MSM8660_DFAB_MAS_ADM1_MASTER,
-	MSM8660_DFAB_TO_SFAB,
-	MSM8660_DFAB_SLV_SDC1,
-	MSM8660_DFAB_SLV_SDC2,
-	MSM8660_DFAB_SLV_SDC3,
-	MSM8660_DFAB_SLV_SDC4,
-	MSM8660_DFAB_SLV_SDC5,
-	MSM8660_DFAB_MAS_USB_HS,	/* USB HS DFAB voter */
-	MSM8660_DFAB_MAS_DSPS,		/* DSPS DFAB voter */
-
-	/* MMSS Fabric nodes */
-	MSM8660_MMFAB_MAS_MDP_PORT0,
-	MSM8660_MMFAB_MAS_MDP_PORT1,
-	MSM8660_MMFAB_MAS_ADM1_PORT0,
-	MSM8660_MMFAB_MAS_ROTATOR,
-	MSM8660_MMFAB_MAS_GRAPHICS_3D,
-	MSM8660_MMFAB_MAS_JPEG_DEC,
-	MSM8660_MMFAB_MAS_GRAPHICS_2D_CORE0,
-	MSM8660_MMFAB_MAS_VFE,
-	MSM8660_MMFAB_MAS_VPE,
-	MSM8660_MMFAB_MAS_JPEG_ENC,
-	MSM8660_MMFAB_MAS_GRAPHICS_2D_CORE1,
-	MSM8660_MMFAB_MAS_HD_CODEC_PORT0,
-	MSM8660_MMFAB_MAS_HD_CODEC_PORT1,
-	MSM8660_MMFAB_TO_APPSS,
-	MSM8660_MMFAB_SLV_SMI,
-	MSM8660_MMFAB_SLV_MM_IMEM,
-};
 
 #define to_msm8660_icc_provider(_provider) \
 	container_of(_provider, struct msm8660_icc_provider, provider)
@@ -137,7 +62,7 @@ enum {
  * request bandwidth, slow otherwise.
  *
  * 384 MHz keeps fabric fast during concurrent MDP display scanout
- * and USB gadget traffic. webOS docs: "AXI bus frequency needs to be
+ * and USB gadget traffic. legacy vendor kernel docs: "AXI bus frequency needs to be
  * kept at maximum value while USB data transfers are happening."
  * 266 MHz was insufficient - USB crashed during display activity.
  */
@@ -150,7 +75,7 @@ enum {
 #define MSM8660_MAX_RPM_BUF		23
 
 /*
- * RPM fabric arbitration data format (from webOS msm_bus_fabric.c):
+ * RPM fabric arbitration data format (from legacy vendor kernel msm_bus_fabric.c):
  *
  * Each u16 arb entry: bit 15 = tier (1=TIER1 high priority), bits 14-0 = BW
  * Bandwidth is in 128KB units (bytes >> 17).
@@ -192,25 +117,23 @@ static const struct clk_bulk_data msm8660_dfab_clocks[] = {
 /**
  * struct msm8660_icc_node - MSM8660 specific interconnect nodes
  * @name: the node name used in debugfs
- * @id: a unique node identifier
- * @links: an array of nodes where we can go next while traversing
- * @num_links: the total number of @links
+ * @node: backing icc_node pointer, populated at probe via icc_node_create_dyn()
+ * @num_links: the total number of @link_nodes
  * @buswidth: width of the interconnect between a node and the bus (bytes)
- * @rate: current bus clock rate in Hz
  * @mas_port: master port index for RPM ARB (-1 if not a master)
  * @slv_port: slave port index for RPM bwsum (-1 if not a slave)
  * @mas_tier: master priority tier (ARB_TIER1 or ARB_TIER2, 0 if N/A)
+ * @link_nodes: flexible array of pointers to qnodes reachable from this node
  */
 struct msm8660_icc_node {
-	unsigned char *name;
-	u16 id;
-#define MSM8660_ICC_MAX_LINKS	3
-	u16 links[MSM8660_ICC_MAX_LINKS];
+	const char *name;
+	struct icc_node *node;
 	u16 num_links;
 	u16 buswidth;
 	s8 mas_port;
 	s8 slv_port;
 	u8 mas_tier;
+	struct msm8660_icc_node *link_nodes[];
 };
 
 /**
@@ -271,25 +194,84 @@ struct msm8660_icc_provider {
 };
 
 /*
- * Node definitions with RPM port mapping.
+ * Forward declarations for all qnodes.
  *
- * DEFINE_QNODE(_name, _id, _buswidth, _mas_port, _slv_port, _tier, links...)
- *
- * _mas_port: master port index for RPM ARB array (-1 if not a master)
- * _slv_port: slave port index for RPM bwsum array (-1 if not a slave)
- * _tier: master priority tier (ARB_TIER1=1, ARB_TIER2=2, 0 if N/A)
+ * Because qnode definitions now use pointer-based .link_nodes = { &foo, ... }
+ * with a flexible array member, every qnode that appears as a link target
+ * must be visible at the point of use. Forward-declaring all qnodes up front
+ * keeps the order-of-definition concern out of the per-fabric sections and
+ * mirrors the pattern used by drivers/interconnect/qcom/sa8775p.c.
  */
-#define DEFINE_QNODE(_name, _id, _buswidth, _mas, _slv, _tier, ...)	\
-	static struct msm8660_icc_node _name = {			\
-		.name = #_name,						\
-		.id = _id,						\
-		.buswidth = _buswidth,					\
-		.num_links = COUNT_ARGS(__VA_ARGS__),			\
-		.links = { __VA_ARGS__ },				\
-		.mas_port = _mas,					\
-		.slv_port = _slv,					\
-		.mas_tier = _tier,					\
-	}
+/* APPSS Fabric */
+static struct msm8660_icc_node mas_ampss_m0;
+static struct msm8660_icc_node mas_ampss_m1;
+static struct msm8660_icc_node slv_ebi_ch0;
+static struct msm8660_icc_node slv_ampss_l2;
+static struct msm8660_icc_node afab_to_mmss;
+static struct msm8660_icc_node afab_to_system;
+
+/* System Fabric */
+static struct msm8660_icc_node sfab_mas_appss;
+static struct msm8660_icc_node sfab_mas_sps;
+static struct msm8660_icc_node sfab_mas_adm0_port0;
+static struct msm8660_icc_node sfab_mas_adm0_port1;
+static struct msm8660_icc_node sfab_mas_adm1_port0;
+static struct msm8660_icc_node sfab_mas_adm1_port1;
+static struct msm8660_icc_node sfab_mas_lpass_proc;
+static struct msm8660_icc_node sfab_mas_mss_proci;
+static struct msm8660_icc_node sfab_mas_mss_procd;
+static struct msm8660_icc_node sfab_mas_mss_mdm_port0;
+static struct msm8660_icc_node sfab_mas_lpass;
+static struct msm8660_icc_node sfab_mas_mmss_fpb;
+static struct msm8660_icc_node sfab_mas_adm1_ci;
+static struct msm8660_icc_node sfab_mas_adm0_ci;
+static struct msm8660_icc_node sfab_mas_mss_mdm_port1;
+static struct msm8660_icc_node sfab_mas_usb_hs;
+static struct msm8660_icc_node sfab_to_appss;
+static struct msm8660_icc_node sfab_to_system_fpb;
+static struct msm8660_icc_node sfab_to_cpss_fpb;
+static struct msm8660_icc_node sfab_slv_sps;
+static struct msm8660_icc_node sfab_slv_system_imem;
+static struct msm8660_icc_node sfab_slv_ampss;
+static struct msm8660_icc_node sfab_slv_mss;
+static struct msm8660_icc_node sfab_slv_lpass;
+static struct msm8660_icc_node sfab_slv_mmss_fpb;
+static struct msm8660_icc_node sfab_to_dfab;
+
+/* MMSS Fabric */
+static struct msm8660_icc_node mmfab_mas_mdp_port0;
+static struct msm8660_icc_node mmfab_mas_mdp_port1;
+static struct msm8660_icc_node mmfab_mas_adm1_port0;
+static struct msm8660_icc_node mmfab_mas_rotator;
+static struct msm8660_icc_node mmfab_mas_graphics_3d;
+static struct msm8660_icc_node mmfab_mas_jpeg_dec;
+static struct msm8660_icc_node mmfab_mas_graphics_2d_core0;
+static struct msm8660_icc_node mmfab_mas_vfe;
+static struct msm8660_icc_node mmfab_mas_vpe;
+static struct msm8660_icc_node mmfab_mas_jpeg_enc;
+static struct msm8660_icc_node mmfab_mas_graphics_2d_core1;
+static struct msm8660_icc_node mmfab_mas_hd_codec_port0;
+static struct msm8660_icc_node mmfab_mas_hd_codec_port1;
+static struct msm8660_icc_node mmfab_to_appss;
+static struct msm8660_icc_node mmfab_slv_smi;
+static struct msm8660_icc_node mmfab_slv_mm_imem;
+
+/* Daytona Fabric (DFAB) */
+static struct msm8660_icc_node dfab_mas_sdc1;
+static struct msm8660_icc_node dfab_mas_sdc2;
+static struct msm8660_icc_node dfab_mas_sdc3;
+static struct msm8660_icc_node dfab_mas_sdc4;
+static struct msm8660_icc_node dfab_mas_sdc5;
+static struct msm8660_icc_node dfab_mas_adm0_master;
+static struct msm8660_icc_node dfab_mas_adm1_master;
+static struct msm8660_icc_node dfab_to_sfab;
+static struct msm8660_icc_node dfab_slv_sdc1;
+static struct msm8660_icc_node dfab_slv_sdc2;
+static struct msm8660_icc_node dfab_slv_sdc3;
+static struct msm8660_icc_node dfab_slv_sdc4;
+static struct msm8660_icc_node dfab_slv_sdc5;
+static struct msm8660_icc_node dfab_mas_usb_hs;
+static struct msm8660_icc_node dfab_mas_dsps;
 
 /*
  * =========================================================================
@@ -301,12 +283,44 @@ struct msm8660_icc_provider {
  * Default target: tiered slave 1 (EBI_CH0)
  * =========================================================================
  */
-DEFINE_QNODE(mas_ampss_m0, MSM8660_AFAB_MAS_AMPSS_M0, 8, 0, -1, ARB_TIER2,
-	     MSM8660_AFAB_SLV_EBI_CH0, MSM8660_AFAB_TO_MMSS, MSM8660_AFAB_TO_SYSTEM);
-DEFINE_QNODE(mas_ampss_m1, MSM8660_AFAB_MAS_AMPSS_M1, 8, 1, -1, ARB_TIER2,
-	     MSM8660_AFAB_SLV_EBI_CH0, MSM8660_AFAB_TO_MMSS, MSM8660_AFAB_TO_SYSTEM);
-DEFINE_QNODE(slv_ebi_ch0, MSM8660_AFAB_SLV_EBI_CH0, 8, -1, 0, 0);
-DEFINE_QNODE(slv_ampss_l2, MSM8660_AFAB_SLV_AMPSS_L2, 8, -1, 1, 0);
+static struct msm8660_icc_node mas_ampss_m0 = {
+	.name = "mas_ampss_m0",
+	.num_links = 3,
+	.buswidth = 8,
+	.mas_port = 0,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &slv_ebi_ch0, &afab_to_mmss, &afab_to_system },
+};
+
+static struct msm8660_icc_node mas_ampss_m1 = {
+	.name = "mas_ampss_m1",
+	.num_links = 3,
+	.buswidth = 8,
+	.mas_port = 1,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &slv_ebi_ch0, &afab_to_mmss, &afab_to_system },
+};
+
+static struct msm8660_icc_node slv_ebi_ch0 = {
+	.name = "slv_ebi_ch0",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 0,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node slv_ampss_l2 = {
+	.name = "slv_ampss_l2",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 1,
+	.mas_tier = 0,
+};
+
 /*
  * Gateway nodes need links to both the cross-fabric gateway AND the memory
  * slave to enable cross-fabric paths. Without link to EBI_CH0, path_find()
@@ -319,10 +333,25 @@ DEFINE_QNODE(slv_ampss_l2, MSM8660_AFAB_SLV_AMPSS_L2, 8, -1, 1, 0);
  * earned in MMFAB is dropped at the AFAB boundary and MDP fetches lose
  * arbitration to CPU traffic, producing PRIMARY_INTF_UDERRUN.
  */
-DEFINE_QNODE(afab_to_mmss, MSM8660_AFAB_TO_MMSS, 8, 2, 2, ARB_TIER1,
-	     MSM8660_MMFAB_TO_APPSS, MSM8660_AFAB_SLV_EBI_CH0);
-DEFINE_QNODE(afab_to_system, MSM8660_AFAB_TO_SYSTEM, 8, 3, 3, ARB_TIER2,
-	     MSM8660_SFAB_TO_APPSS, MSM8660_AFAB_SLV_EBI_CH0);
+static struct msm8660_icc_node afab_to_mmss = {
+	.name = "afab_to_mmss",
+	.num_links = 2,
+	.buswidth = 8,
+	.mas_port = 2,
+	.slv_port = 2,
+	.mas_tier = ARB_TIER1,
+	.link_nodes = { &mmfab_to_appss, &slv_ebi_ch0 },
+};
+
+static struct msm8660_icc_node afab_to_system = {
+	.name = "afab_to_system",
+	.num_links = 2,
+	.buswidth = 8,
+	.mas_port = 3,
+	.slv_port = 3,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &sfab_to_appss, &slv_ebi_ch0 },
+};
 
 static struct msm8660_icc_node * const msm8660_afab_nodes[] = {
 	[AFAB_MAS_AMPSS_M0] = &mas_ampss_m0,
@@ -352,58 +381,265 @@ static const struct msm8660_icc_desc msm8660_afab = {
  * System Fabric nodes
  *
  * 17 masters, 9 slaves, 2 tiered slaves
- * Master ports: see enum msm_bus_8660_master_ports_type in webOS
+ * Master ports: see enum msm_bus_8660_master_ports_type in legacy vendor kernel
  * Slave ports:  APPSS_FAB=0, SPS=1, SYSTEM_IMEM=2, SMPSS=3, MSS=4,
  *               LPASS=5, CPSS_FPB=6, SYSTEM_FPB=7, MMSS_FPB=8
  * Default target: tiered slave 1 (APPSS gateway)
  * =========================================================================
  */
-DEFINE_QNODE(sfab_mas_appss, MSM8660_SFAB_MAS_APPSS, 8, 0, -1, ARB_TIER2,
-	     MSM8660_AFAB_TO_SYSTEM);
-DEFINE_QNODE(sfab_mas_sps, MSM8660_SFAB_MAS_SPS, 8, 1, -1, ARB_TIER2,
-	     MSM8660_SFAB_SLV_SPS);
+static struct msm8660_icc_node sfab_mas_appss = {
+	.name = "sfab_mas_appss",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = 0,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &afab_to_system },
+};
+
+static struct msm8660_icc_node sfab_mas_sps = {
+	.name = "sfab_mas_sps",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = 1,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &sfab_slv_sps },
+};
+
 /*
  * ADM DMA masters - route through SFAB_TO_APPSS to reach EBI memory.
  * Path: ADM -> SFAB_TO_APPSS -> AFAB_TO_SYSTEM -> AFAB_SLV_EBI_CH0
  * This enables proper EBI bandwidth voting for DMA operations.
  */
-DEFINE_QNODE(sfab_mas_adm0_port0, MSM8660_SFAB_MAS_ADM0_PORT0, 8, 2, -1, ARB_TIER2,
-	     MSM8660_SFAB_TO_APPSS);
-DEFINE_QNODE(sfab_mas_adm0_port1, MSM8660_SFAB_MAS_ADM0_PORT1, 8, 3, -1, ARB_TIER2,
-	     MSM8660_SFAB_TO_APPSS);
-DEFINE_QNODE(sfab_mas_adm1_port0, MSM8660_SFAB_MAS_ADM1_PORT0, 8, 4, -1, ARB_TIER2,
-	     MSM8660_SFAB_TO_APPSS);
-DEFINE_QNODE(sfab_mas_adm1_port1, MSM8660_SFAB_MAS_ADM1_PORT1, 8, 5, -1, ARB_TIER2,
-	     MSM8660_SFAB_TO_APPSS);
-DEFINE_QNODE(sfab_mas_lpass_proc, MSM8660_SFAB_MAS_LPASS_PROC, 8, 6, -1, ARB_TIER2);
-DEFINE_QNODE(sfab_mas_mss_proci, MSM8660_SFAB_MAS_MSS_PROCI, 8, 7, -1, ARB_TIER2);
-DEFINE_QNODE(sfab_mas_mss_procd, MSM8660_SFAB_MAS_MSS_PROCD, 8, 8, -1, ARB_TIER2);
-DEFINE_QNODE(sfab_mas_mss_mdm_port0, MSM8660_SFAB_MAS_MSS_MDM_PORT0, 8, 9, -1, ARB_TIER2);
-DEFINE_QNODE(sfab_mas_lpass, MSM8660_SFAB_MAS_LPASS, 8, 10, -1, ARB_TIER2);
-DEFINE_QNODE(sfab_mas_mmss_fpb, MSM8660_SFAB_MAS_MMSS_FPB, 8, 13, -1, ARB_TIER2);
-DEFINE_QNODE(sfab_mas_adm1_ci, MSM8660_SFAB_MAS_ADM1_CI, 8, 14, -1, ARB_TIER2);
-DEFINE_QNODE(sfab_mas_adm0_ci, MSM8660_SFAB_MAS_ADM0_CI, 8, 15, -1, ARB_TIER2);
-DEFINE_QNODE(sfab_mas_mss_mdm_port1, MSM8660_SFAB_MAS_MSS_MDM_PORT1, 8, 16, -1, ARB_TIER2);
-/* USB HS has no dedicated master port in webOS SFAB - bandwidth voting only */
-DEFINE_QNODE(sfab_mas_usb_hs, MSM8660_SFAB_MAS_USB_HS, 8, -1, -1, 0,
-	     MSM8660_SFAB_TO_APPSS);
-DEFINE_QNODE(sfab_to_appss, MSM8660_SFAB_TO_APPSS, 8, -1, 0, 0,
-	     MSM8660_AFAB_TO_SYSTEM);
-DEFINE_QNODE(sfab_to_system_fpb, MSM8660_SFAB_TO_SYSTEM_FPB, 4, -1, 7, 0);
-DEFINE_QNODE(sfab_to_cpss_fpb, MSM8660_SFAB_TO_CPSS_FPB, 4, -1, 6, 0);
-DEFINE_QNODE(sfab_slv_sps, MSM8660_SFAB_SLV_SPS, 8, -1, 1, 0);
-DEFINE_QNODE(sfab_slv_system_imem, MSM8660_SFAB_SLV_SYSTEM_IMEM, 8, -1, 2, 0);
-DEFINE_QNODE(sfab_slv_ampss, MSM8660_SFAB_SLV_AMPSS, 8, -1, 3, 0);
-DEFINE_QNODE(sfab_slv_mss, MSM8660_SFAB_SLV_MSS, 8, -1, 4, 0);
-DEFINE_QNODE(sfab_slv_lpass, MSM8660_SFAB_SLV_LPASS, 8, -1, 5, 0);
-DEFINE_QNODE(sfab_slv_mmss_fpb, MSM8660_SFAB_SLV_MMSS_FPB, 8, -1, 8, 0);
+static struct msm8660_icc_node sfab_mas_adm0_port0 = {
+	.name = "sfab_mas_adm0_port0",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = 2,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &sfab_to_appss },
+};
+
+static struct msm8660_icc_node sfab_mas_adm0_port1 = {
+	.name = "sfab_mas_adm0_port1",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = 3,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &sfab_to_appss },
+};
+
+static struct msm8660_icc_node sfab_mas_adm1_port0 = {
+	.name = "sfab_mas_adm1_port0",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = 4,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &sfab_to_appss },
+};
+
+static struct msm8660_icc_node sfab_mas_adm1_port1 = {
+	.name = "sfab_mas_adm1_port1",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = 5,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &sfab_to_appss },
+};
+
+static struct msm8660_icc_node sfab_mas_lpass_proc = {
+	.name = "sfab_mas_lpass_proc",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 6,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node sfab_mas_mss_proci = {
+	.name = "sfab_mas_mss_proci",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 7,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node sfab_mas_mss_procd = {
+	.name = "sfab_mas_mss_procd",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 8,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node sfab_mas_mss_mdm_port0 = {
+	.name = "sfab_mas_mss_mdm_port0",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 9,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node sfab_mas_lpass = {
+	.name = "sfab_mas_lpass",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 10,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node sfab_mas_mmss_fpb = {
+	.name = "sfab_mas_mmss_fpb",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 13,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node sfab_mas_adm1_ci = {
+	.name = "sfab_mas_adm1_ci",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 14,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node sfab_mas_adm0_ci = {
+	.name = "sfab_mas_adm0_ci",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 15,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node sfab_mas_mss_mdm_port1 = {
+	.name = "sfab_mas_mss_mdm_port1",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 16,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+/* USB HS has no dedicated master port in legacy vendor kernel SFAB - bandwidth voting only */
+static struct msm8660_icc_node sfab_mas_usb_hs = {
+	.name = "sfab_mas_usb_hs",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &sfab_to_appss },
+};
+
+static struct msm8660_icc_node sfab_to_appss = {
+	.name = "sfab_to_appss",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 0,
+	.mas_tier = 0,
+	.link_nodes = { &afab_to_system },
+};
+
+static struct msm8660_icc_node sfab_to_system_fpb = {
+	.name = "sfab_to_system_fpb",
+	.num_links = 0,
+	.buswidth = 4,
+	.mas_port = -1,
+	.slv_port = 7,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node sfab_to_cpss_fpb = {
+	.name = "sfab_to_cpss_fpb",
+	.num_links = 0,
+	.buswidth = 4,
+	.mas_port = -1,
+	.slv_port = 6,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node sfab_slv_sps = {
+	.name = "sfab_slv_sps",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 1,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node sfab_slv_system_imem = {
+	.name = "sfab_slv_system_imem",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 2,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node sfab_slv_ampss = {
+	.name = "sfab_slv_ampss",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 3,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node sfab_slv_mss = {
+	.name = "sfab_slv_mss",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 4,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node sfab_slv_lpass = {
+	.name = "sfab_slv_lpass",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 5,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node sfab_slv_mmss_fpb = {
+	.name = "sfab_slv_mmss_fpb",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 8,
+	.mas_tier = 0,
+};
+
 /*
  * Gateway to DFAB: links to DFAB_TO_SFAB for path traversal.
  * Also links to SFAB_TO_APPSS to enable DFAB->SFAB->AFAB->memory paths.
- * No slave port in webOS SFAB config (DFAB is separate fabric).
+ * No slave port in legacy vendor kernel SFAB config (DFAB is separate fabric).
  */
-DEFINE_QNODE(sfab_to_dfab, MSM8660_SFAB_TO_DFAB, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB, MSM8660_SFAB_TO_APPSS);
+static struct msm8660_icc_node sfab_to_dfab = {
+	.name = "sfab_to_dfab",
+	.num_links = 2,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab, &sfab_to_appss },
+};
 
 static struct msm8660_icc_node * const msm8660_sfab_nodes[] = {
 	[SFAB_MAS_APPSS] = &sfab_mas_appss,
@@ -464,35 +700,135 @@ static const struct msm8660_icc_desc msm8660_sfab = {
  * All other masters get TIER2 (default priority).
  * =========================================================================
  */
-DEFINE_QNODE(mmfab_mas_mdp_port0, MSM8660_MMFAB_MAS_MDP_PORT0, 16, 0, -1, ARB_TIER1,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_mdp_port1, MSM8660_MMFAB_MAS_MDP_PORT1, 16, 1, -1, ARB_TIER1,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_adm1_port0, MSM8660_MMFAB_MAS_ADM1_PORT0, 8, 2, -1, ARB_TIER2);
-DEFINE_QNODE(mmfab_mas_rotator, MSM8660_MMFAB_MAS_ROTATOR, 16, 3, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_graphics_3d, MSM8660_MMFAB_MAS_GRAPHICS_3D, 16, 4, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_jpeg_dec, MSM8660_MMFAB_MAS_JPEG_DEC, 16, 5, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_graphics_2d_core0, MSM8660_MMFAB_MAS_GRAPHICS_2D_CORE0, 16,
-	     6, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_vfe, MSM8660_MMFAB_MAS_VFE, 16, 7, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_vpe, MSM8660_MMFAB_MAS_VPE, 16, 8, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_jpeg_enc, MSM8660_MMFAB_MAS_JPEG_ENC, 16, 9, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_graphics_2d_core1, MSM8660_MMFAB_MAS_GRAPHICS_2D_CORE1, 16,
-	     10, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_hd_codec_port0, MSM8660_MMFAB_MAS_HD_CODEC_PORT0, 16,
-	     12, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
-DEFINE_QNODE(mmfab_mas_hd_codec_port1, MSM8660_MMFAB_MAS_HD_CODEC_PORT1, 16,
-	     13, -1, ARB_TIER2,
-	     MSM8660_MMFAB_SLV_SMI, MSM8660_MMFAB_TO_APPSS);
+static struct msm8660_icc_node mmfab_mas_mdp_port0 = {
+	.name = "mmfab_mas_mdp_port0",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 0,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER1,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_mdp_port1 = {
+	.name = "mmfab_mas_mdp_port1",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 1,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER1,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_adm1_port0 = {
+	.name = "mmfab_mas_adm1_port0",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = 2,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+};
+
+static struct msm8660_icc_node mmfab_mas_rotator = {
+	.name = "mmfab_mas_rotator",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 3,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_graphics_3d = {
+	.name = "mmfab_mas_graphics_3d",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 4,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_jpeg_dec = {
+	.name = "mmfab_mas_jpeg_dec",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 5,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_graphics_2d_core0 = {
+	.name = "mmfab_mas_graphics_2d_core0",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 6,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_vfe = {
+	.name = "mmfab_mas_vfe",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 7,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_vpe = {
+	.name = "mmfab_mas_vpe",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 8,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_jpeg_enc = {
+	.name = "mmfab_mas_jpeg_enc",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 9,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_graphics_2d_core1 = {
+	.name = "mmfab_mas_graphics_2d_core1",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 10,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_hd_codec_port0 = {
+	.name = "mmfab_mas_hd_codec_port0",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 12,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
+static struct msm8660_icc_node mmfab_mas_hd_codec_port1 = {
+	.name = "mmfab_mas_hd_codec_port1",
+	.num_links = 2,
+	.buswidth = 16,
+	.mas_port = 13,
+	.slv_port = -1,
+	.mas_tier = ARB_TIER2,
+	.link_nodes = { &mmfab_slv_smi, &mmfab_to_appss },
+};
+
 /*
  * Gateway from APPSS into MMSS: slave (port 1) for outbound traffic
  * leaving MMSS, AND master (port 2) for inbound traffic arriving from
@@ -505,12 +841,33 @@ DEFINE_QNODE(mmfab_mas_hd_codec_port1, MSM8660_MMFAB_MAS_HD_CODEC_PORT1, 16,
  * ARB_TIER1 keeps AMPSS->SMI traffic high-priority within MMFAB so
  * CPU mmap reads/writes to SMI BOs don't get starved by MDP scanout.
  */
-DEFINE_QNODE(mmfab_to_appss, MSM8660_MMFAB_TO_APPSS, 8, 11, 1, ARB_TIER1,
-	     MSM8660_AFAB_TO_MMSS,
-	     MSM8660_MMFAB_SLV_SMI,
-	     MSM8660_MMFAB_SLV_MM_IMEM);
-DEFINE_QNODE(mmfab_slv_smi, MSM8660_MMFAB_SLV_SMI, 16, -1, 0, 0);
-DEFINE_QNODE(mmfab_slv_mm_imem, MSM8660_MMFAB_SLV_MM_IMEM, 8, -1, 3, 0);
+static struct msm8660_icc_node mmfab_to_appss = {
+	.name = "mmfab_to_appss",
+	.num_links = 3,
+	.buswidth = 8,
+	.mas_port = 11,
+	.slv_port = 1,
+	.mas_tier = ARB_TIER1,
+	.link_nodes = { &afab_to_mmss, &mmfab_slv_smi, &mmfab_slv_mm_imem },
+};
+
+static struct msm8660_icc_node mmfab_slv_smi = {
+	.name = "mmfab_slv_smi",
+	.num_links = 0,
+	.buswidth = 16,
+	.mas_port = -1,
+	.slv_port = 0,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node mmfab_slv_mm_imem = {
+	.name = "mmfab_slv_mm_imem",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = 3,
+	.mas_tier = 0,
+};
 
 static struct msm8660_icc_node * const msm8660_mmfab_nodes[] = {
 	[MMFAB_MAS_MDP_PORT0] = &mmfab_mas_mdp_port0,
@@ -555,36 +912,155 @@ static const struct msm8660_icc_desc msm8660_mmfab = {
  * No RPM ARB for DFAB - it's a simple peripheral bus with clock-only control.
  *
  * USB HS is included as a DFAB voter for compatibility with the legacy
- * webOS kernel clock voting mechanism.
+ * legacy vendor kernel clock voting mechanism.
  * =========================================================================
  */
-DEFINE_QNODE(dfab_mas_sdc1, MSM8660_DFAB_MAS_SDC1, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
-DEFINE_QNODE(dfab_mas_sdc2, MSM8660_DFAB_MAS_SDC2, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
-DEFINE_QNODE(dfab_mas_sdc3, MSM8660_DFAB_MAS_SDC3, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
-DEFINE_QNODE(dfab_mas_sdc4, MSM8660_DFAB_MAS_SDC4, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
-DEFINE_QNODE(dfab_mas_sdc5, MSM8660_DFAB_MAS_SDC5, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
-DEFINE_QNODE(dfab_mas_adm0_master, MSM8660_DFAB_MAS_ADM0_MASTER, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
-DEFINE_QNODE(dfab_mas_adm1_master, MSM8660_DFAB_MAS_ADM1_MASTER, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
-DEFINE_QNODE(dfab_to_sfab, MSM8660_DFAB_TO_SFAB, 8, -1, -1, 0,
-	     MSM8660_SFAB_TO_DFAB);
-DEFINE_QNODE(dfab_slv_sdc1, MSM8660_DFAB_SLV_SDC1, 8, -1, -1, 0);
-DEFINE_QNODE(dfab_slv_sdc2, MSM8660_DFAB_SLV_SDC2, 8, -1, -1, 0);
-DEFINE_QNODE(dfab_slv_sdc3, MSM8660_DFAB_SLV_SDC3, 8, -1, -1, 0);
-DEFINE_QNODE(dfab_slv_sdc4, MSM8660_DFAB_SLV_SDC4, 8, -1, -1, 0);
-DEFINE_QNODE(dfab_slv_sdc5, MSM8660_DFAB_SLV_SDC5, 8, -1, -1, 0);
+static struct msm8660_icc_node dfab_mas_sdc1 = {
+	.name = "dfab_mas_sdc1",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
+
+static struct msm8660_icc_node dfab_mas_sdc2 = {
+	.name = "dfab_mas_sdc2",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
+
+static struct msm8660_icc_node dfab_mas_sdc3 = {
+	.name = "dfab_mas_sdc3",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
+
+static struct msm8660_icc_node dfab_mas_sdc4 = {
+	.name = "dfab_mas_sdc4",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
+
+static struct msm8660_icc_node dfab_mas_sdc5 = {
+	.name = "dfab_mas_sdc5",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
+
+static struct msm8660_icc_node dfab_mas_adm0_master = {
+	.name = "dfab_mas_adm0_master",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
+
+static struct msm8660_icc_node dfab_mas_adm1_master = {
+	.name = "dfab_mas_adm1_master",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
+
+static struct msm8660_icc_node dfab_to_sfab = {
+	.name = "dfab_to_sfab",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &sfab_to_dfab },
+};
+
+static struct msm8660_icc_node dfab_slv_sdc1 = {
+	.name = "dfab_slv_sdc1",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node dfab_slv_sdc2 = {
+	.name = "dfab_slv_sdc2",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node dfab_slv_sdc3 = {
+	.name = "dfab_slv_sdc3",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node dfab_slv_sdc4 = {
+	.name = "dfab_slv_sdc4",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+};
+
+static struct msm8660_icc_node dfab_slv_sdc5 = {
+	.name = "dfab_slv_sdc5",
+	.num_links = 0,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+};
+
 /* USB HS DFAB voter - keeps DFAB clock stable during USB activity */
-DEFINE_QNODE(dfab_mas_usb_hs, MSM8660_DFAB_MAS_USB_HS, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
+static struct msm8660_icc_node dfab_mas_usb_hs = {
+	.name = "dfab_mas_usb_hs",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
+
 /* DSPS DFAB voter - keeps DFAB clock stable during sensor activity */
-DEFINE_QNODE(dfab_mas_dsps, MSM8660_DFAB_MAS_DSPS, 8, -1, -1, 0,
-	     MSM8660_DFAB_TO_SFAB);
+static struct msm8660_icc_node dfab_mas_dsps = {
+	.name = "dfab_mas_dsps",
+	.num_links = 1,
+	.buswidth = 8,
+	.mas_port = -1,
+	.slv_port = -1,
+	.mas_tier = 0,
+	.link_nodes = { &dfab_to_sfab },
+};
 
 static struct msm8660_icc_node * const msm8660_dfab_nodes[] = {
 	[DFAB_MAS_SDC1] = &dfab_mas_sdc1,
@@ -619,7 +1095,7 @@ static const struct msm8660_icc_desc msm8660_dfab = {
  * Two u16 values are packed per u32 word: lower 16 bits first, upper 16 next.
  * Layout: [bwsum pairs] then [arb pairs], handling odd boundaries.
  *
- * This matches the webOS msm_bus_fabric_rpm_commit() packing algorithm.
+ * This matches the legacy vendor kernel msm_bus_fabric_rpm_commit() packing algorithm.
  */
 static void msm8660_pack_rpm_data(const u16 *bwsum, int nslaves,
 				  const u16 *arb, int arb_size,
@@ -744,35 +1220,31 @@ static int msm8660_icc_aggregate(struct icc_node *node, u32 tag,
 
 static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 {
-	struct msm8660_icc_node *src_qn;
 	struct msm8660_icc_provider *qp;
-	u64 sum_bw, max_peak_bw, rate;
-	u32 agg_avg = 0, agg_peak = 0;
 	struct icc_provider *provider;
 	struct icc_node *n;
+	u64 rate = 0;
 	int ret, i;
 
-	src_qn = src->data;
 	provider = src->provider;
 	qp = to_msm8660_icc_provider(provider);
 
-	list_for_each_entry(n, &provider->nodes, node_list)
-		provider->aggregate(n, 0, n->avg_bw, n->peak_bw,
-				    &agg_avg, &agg_peak);
-
-	sum_bw = icc_units_to_bps(agg_avg);
-	max_peak_bw = icc_units_to_bps(agg_peak);
-
 	/*
-	 * Divide by the *fabric* bus width, not src_qn->buswidth: every
-	 * master on a given fabric shares the same hardware clock, so the
-	 * required clock rate is a single function of total bandwidth and
-	 * the fabric's bus width. Picking the bus width of whichever node
-	 * happened to trigger this update would make the rate oscillate
-	 * depending on which master called icc_set_bw() last.
+	 * Per icc-rpm.c convention (qcom_icc_bus_aggregate): take the max
+	 * per-node rate across the provider; do not sum, because the framework
+	 * writes each path's bw to every node it traverses, so summing all
+	 * provider nodes overcounts shared-node bandwidth. Taking the max
+	 * gives the hottest single node, which is the correct fabric
+	 * throughput requirement.
 	 */
-	rate = max(sum_bw, max_peak_bw);
-	do_div(rate, qp->desc->bus_width);
+	list_for_each_entry(n, &provider->nodes, node_list) {
+		u64 node_bw = max(icc_units_to_bps(n->avg_bw),
+				  icc_units_to_bps(n->peak_bw));
+		u64 node_rate = div_u64(node_bw, qp->desc->bus_width);
+
+		rate = max(rate, node_rate);
+	}
+
 	/* Apply minimum floor to prevent bus starvation */
 	rate = max_t(u64, rate, MSM8660_FABRIC_MIN_RATE);
 	/*
@@ -861,10 +1333,9 @@ static struct qcom_rpm *msm8660_get_rpm(struct device *dev)
 
 	rpm_pdev = of_find_device_by_node(rpm_np);
 	of_node_put(rpm_np);
-	if (!rpm_pdev) {
-		dev_dbg(dev, "RPM device not found yet, deferring probe\n");
-		return ERR_PTR(-EPROBE_DEFER);
-	}
+	if (!rpm_pdev)
+		return dev_err_ptr_probe(dev, -EPROBE_DEFER,
+					 "RPM device not found yet\n");
 
 	/*
 	 * Pin the supplier BEFORE reading its drvdata. The device link
@@ -878,10 +1349,9 @@ static struct qcom_rpm *msm8660_get_rpm(struct device *dev)
 	link = device_link_add(dev, &rpm_pdev->dev,
 			       DL_FLAG_AUTOREMOVE_CONSUMER);
 	put_device(&rpm_pdev->dev);
-	if (!link) {
-		dev_warn(dev, "failed to add device link to RPM, deferring\n");
-		return ERR_PTR(-EPROBE_DEFER);
-	}
+	if (!link)
+		return dev_err_ptr_probe(dev, -EPROBE_DEFER,
+					 "failed to add device link to RPM\n");
 
 	/*
 	 * Safe to read drvdata now: the device link pins the supplier so
@@ -890,9 +1360,9 @@ static struct qcom_rpm *msm8660_get_rpm(struct device *dev)
 	 */
 	rpm = dev_get_drvdata(&rpm_pdev->dev);
 	if (!rpm) {
-		dev_dbg(dev, "RPM not ready, deferring probe\n");
 		device_link_remove(dev, &rpm_pdev->dev);
-		return ERR_PTR(-EPROBE_DEFER);
+		return dev_err_ptr_probe(dev, -EPROBE_DEFER,
+					 "RPM not ready\n");
 	}
 
 	return rpm;
@@ -939,18 +1409,16 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	 * MSM8660 fabric clocks are managed by RPM firmware and may not be
 	 * available in mainline Linux yet. Once the clock provider exists,
 	 * we want to honour it; until then we run without per-fabric clock
-	 * scaling. The crucial part is that -EPROBE_DEFER means "the
-	 * provider exists but hasn't probed yet" and MUST be propagated so
-	 * we get retried; only other errors (genuine -ENOENT, etc.) get
-	 * downgraded to "no clocks, continue".
+	 * scaling. Only swallow -ENOENT (the clock provider exists but has
+	 * no matching entry); propagate every other error including
+	 * -EPROBE_DEFER (the provider exists but has not finished probing).
 	 */
 	ret = devm_clk_bulk_get_optional(dev, qp->num_clks, qp->bus_clks);
-	if (ret == -EPROBE_DEFER)
-		return ret;
-	if (ret) {
-		dev_warn(dev, "Failed to get bus clocks: %d (continuing without clock scaling)\n",
-			 ret);
+	if (ret == -ENOENT) {
+		dev_warn(dev, "bus clocks not registered, continuing without clock scaling\n");
 		qp->num_clks = 0;
+	} else if (ret) {
+		return ret;
 	}
 
 	if (qp->num_clks) {
@@ -1041,21 +1509,25 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		if (!qnodes[i])
 			continue;
 
-		node = icc_node_create(qnodes[i]->id);
+		if (!qnodes[i]->node)
+			qnodes[i]->node = icc_node_create_dyn();
+		node = qnodes[i]->node;
 		if (IS_ERR(node)) {
 			ret = PTR_ERR(node);
 			goto err_remove_nodes;
 		}
 
-		node->name = qnodes[i]->name;
+		ret = icc_node_set_name(node, provider, qnodes[i]->name);
+		if (ret) {
+			icc_node_destroy(node->id);
+			goto err_remove_nodes;
+		}
+
 		node->data = qnodes[i];
 		icc_node_add(node, provider);
 
-		dev_dbg(dev, "registered node %s\n", node->name);
-
-		/* populate links */
 		for (j = 0; j < qnodes[i]->num_links; j++)
-			icc_link_create(node, qnodes[i]->links[j]);
+			icc_link_nodes(node, &qnodes[i]->link_nodes[j]->node);
 
 		data->nodes[i] = node;
 	}

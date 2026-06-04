@@ -87,7 +87,7 @@ config INTERCONNECT_QCOM_MSM8660
 	# ordering. Build-in only.
 	bool "Qualcomm MSM8x60 interconnect driver"
 	depends on INTERCONNECT_QCOM=y
-	depends on MFD_QCOM_RPM
+	depends on MFD_QCOM_RPM=y
 	help
 	  This is a driver for the Qualcomm fabric-based bus interconnect
 	  on MSM8x60 family (MSM8260/MSM8660/APQ8060) platforms (e.g., HP TouchPad).
