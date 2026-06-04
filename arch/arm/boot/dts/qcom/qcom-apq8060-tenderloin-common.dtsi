@@ -3056,7 +3056,18 @@
 				 */
 				data-lanes = <1>;
 				clock-lanes = <0>;
-				link-frequencies = /bits/ 64 <96000000>;
+				/*
+				 * 384 MHz over one DDR-clocked CSI-2 data lane = 768
+				 * Mb/s, i.e. ~48 Mpx/s at 16 bpp on the bus. The sensor
+				 * runs Context B (1280x1024) at 15 fps, which needs
+				 * ~20 Mpx/s; a previous value of 96 MHz capped the link
+				 * at ~12 Mpx/s and the sensor would back-pressure into
+				 * its internal MIPI FIFO until truncated frames started
+				 * arriving a few seconds in (CAMIF_ERROR lines=961/1024
+				 * and friends). 384 MHz gives ~5x headroom and matches
+				 * the PLL configuration the sensor init table programs.
+				 */
+				link-frequencies = /bits/ 64 <384000000>;
 				remote-endpoint = <&camss_csi1_ep>;
 			};
 		};
