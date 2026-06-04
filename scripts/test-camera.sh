@@ -71,10 +71,10 @@ ensure_camera_ready() {
 echo '=== Checking camera sensor ==='
 
 # Check if sensor is bound
-SENSOR_PATH='/sys/bus/i2c/devices/4-003c'
+SENSOR_PATH='/sys/bus/i2c/devices/3-003c'
 
 if [ ! -d \"\$SENSOR_PATH\" ]; then
-    echo 'ERROR: Sensor device not found at 4-003c'
+    echo 'ERROR: Sensor device not found at 3-003c'
     exit 1
 fi
 
@@ -87,10 +87,10 @@ else
     # Try mt9m113 first (standalone driver), then mt9m114 (combined)
     if [ -d '/sys/bus/i2c/drivers/mt9m113' ]; then
         echo 'Attempting to bind mt9m113 driver...'
-        echo '4-003c' > /sys/bus/i2c/drivers/mt9m113/bind 2>/dev/null
+        echo '3-003c' > /sys/bus/i2c/drivers/mt9m113/bind 2>/dev/null
     elif [ -d '/sys/bus/i2c/drivers/mt9m114' ]; then
         echo 'Attempting to bind mt9m114 driver...'
-        echo '4-003c' > /sys/bus/i2c/drivers/mt9m114/bind 2>/dev/null
+        echo '3-003c' > /sys/bus/i2c/drivers/mt9m114/bind 2>/dev/null
     fi
     sleep 2
     if [ -L \"\$SENSOR_PATH/driver\" ]; then
@@ -245,7 +245,7 @@ media-ctl -d \$MEDIA_DEV -r 2>/dev/null || true
 echo ''
 echo 'Discovering entities...'
 # Try mt9m113 first (standalone driver), then mt9m114 (combined driver)
-# SENSOR_BASE is the direct sensor entity (mt9m113 4-003c or mt9m114 4-003c)
+# SENSOR_BASE is the direct sensor entity (mt9m113 3-003c or mt9m114 3-003c)
 # SENSOR is the entity to use for format configuration (same for mt9m113, or ifp for mt9m114)
 SENSOR_BASE=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
 if [ -n \"\$SENSOR_BASE\" ]; then
@@ -2174,7 +2174,7 @@ main() {
             # RAW-through-PIX via RDI: sensor Bayer in UYVY wrapper
             # Use UYVY output (stride=width*2) to match DEMUX 0xCCCC all-to-Y routing
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
             test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
@@ -2182,7 +2182,7 @@ main() {
         rdi640-raw10)
             ensure_camera_ready
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
             test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
@@ -2191,7 +2191,7 @@ main() {
             ensure_camera_ready
             # RAW-through-PIX via RDI at full resolution
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
@@ -2199,7 +2199,7 @@ main() {
         rdi1280-raw10)
             ensure_camera_ready
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
@@ -2211,7 +2211,7 @@ main() {
             # Y plane of NV12 output contains raw Bayer data.
             run_on_device "
                 # Set sensor pixel array to RAW (triggers MCU RAW mode)
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
             test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12
             check_dmesg
@@ -2220,7 +2220,7 @@ main() {
             ensure_camera_ready
             # RAW-through-PIX: sensor MCU outputs Bayer in UYVY wrapper.
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
             test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12
             check_dmesg
