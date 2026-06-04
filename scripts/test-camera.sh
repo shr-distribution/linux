@@ -49,46 +49,6 @@ run_on_device() {
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=$TIMEOUT -p $SSH_PORT root@$DEVICE_IP "$cmd" 2>/dev/null
 }
 
-# Discover sensor entity names (mt9m113 or mt9m114) once and cache them in
-# host-side bash variables H_SENSOR / H_SENSOR_BASE. Each run_on_device call
-# below opens a fresh shell on the device, so device-side $SENSOR set in one
-# ssh session is NOT visible in the next -- expand the host-cached value at
-# heredoc construction time instead.
-#
-# Run this once near the start of main(), then reference "$H_SENSOR" /
-# "$H_SENSOR_BASE" (unescaped, host-expanded) anywhere a media-ctl heredoc
-# previously used the broken "\$SENSOR" / "\$SENSOR_BASE" pattern.
-H_SENSOR=""
-H_SENSOR_BASE=""
-H_MEDIA_DEV="/dev/media0"
-
-discover_sensor() {
-    local topo
-    topo=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-               -o ConnectTimeout=$TIMEOUT -p $SSH_PORT root@$DEVICE_IP \
-               "media-ctl -d $H_MEDIA_DEV -p 2>/dev/null" 2>/dev/null)
-    if [ -z "$topo" ]; then
-        log_error "discover_sensor: could not read media topology from device"
-        return 1
-    fi
-    # mt9m113 has separate pixel array + ifp sub-devices
-    H_SENSOR_BASE=$(echo "$topo" | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
-    if [ -n "$H_SENSOR_BASE" ]; then
-        H_SENSOR=$(echo "$topo" | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
-        [ -z "$H_SENSOR" ] && H_SENSOR="$H_SENSOR_BASE"
-    else
-        # mt9m114 combined driver
-        H_SENSOR_BASE=$(echo "$topo" | grep -oE 'mt9m114 [0-9]+-[0-9a-f]+' | grep -v ifp | head -1)
-        H_SENSOR=$(echo "$topo" | grep -oE 'mt9m114 ifp [0-9]+-[0-9a-f]+' | head -1)
-        [ -z "$H_SENSOR" ] && H_SENSOR="$H_SENSOR_BASE"
-    fi
-    if [ -z "$H_SENSOR" ]; then
-        log_error "discover_sensor: no mt9m113/mt9m114 entity found in topology"
-        return 1
-    fi
-    log_info "Discovered sensor: $H_SENSOR (base: $H_SENSOR_BASE)"
-}
-
 # Check device connectivity
 check_device() {
     log_step "Checking device connectivity..."
@@ -101,37 +61,6 @@ check_device() {
     fi
 }
 
-# Refuse to run a second camera capture in the same boot.
-#
-# On MSM8660 / APQ8060 the first camera teardown leaves the MMSS fabric
-# and / or VFE_GDSC in an inconsistent state. The next attempt to enable
-# the VFE clock then hangs the SoC hard inside clk_prepare_enable() with
-# no way back except a power-cycle (no Oops, no panic, no watchdog
-# trigger before the entire bus is wedged). The only reliable
-# "graceful failure" here is to refuse to start the second session.
-#
-# Detection: look for "CAMSS ICC: disabling bandwidth" in dmesg, which
-# the camss driver emits at the end of every capture session.
-#
-# Override: set CAMERA_TEST_FORCE=1 to bypass (will likely hang the SoC).
-check_no_prior_camera_session() {
-    local prev
-    prev=$(run_on_device 'dmesg 2>/dev/null | grep -c "CAMSS ICC: disabling bandwidth"' | tr -d '[:space:]')
-    if [ -z "$prev" ] || [ "$prev" = "0" ]; then
-        return 0
-    fi
-    if [ "${CAMERA_TEST_FORCE:-0}" = "1" ]; then
-        log_info "Prior camera session detected ($prev teardown(s) in dmesg) - CAMERA_TEST_FORCE=1, proceeding anyway. SoC may hang."
-        return 0
-    fi
-    log_error "Prior camera session detected ($prev teardown(s) in dmesg)."
-    log_error "Re-running camera capture without rebooting hangs the MSM8660 MMSS"
-    log_error "fabric on the next VFE clock enable (no recovery short of power-cycle)."
-    log_error "Reboot the device and try again."
-    log_error "Override with CAMERA_TEST_FORCE=1 if you accept the SoC-hang risk."
-    return 1
-}
-
 # Check and ensure mt9m113/mt9m114 sensor is powered and bound
 ensure_camera_ready() {
     log_step "Checking camera sensor status..."
@@ -142,10 +71,10 @@ ensure_camera_ready() {
 echo '=== Checking camera sensor ==='
 
 # Check if sensor is bound
-SENSOR_PATH='/sys/bus/i2c/devices/3-003c'
+SENSOR_PATH='/sys/bus/i2c/devices/4-003c'
 
 if [ ! -d \"\$SENSOR_PATH\" ]; then
-    echo 'ERROR: Sensor device not found at 3-003c'
+    echo 'ERROR: Sensor device not found at 4-003c'
     exit 1
 fi
 
@@ -158,10 +87,10 @@ else
     # Try mt9m113 first (standalone driver), then mt9m114 (combined)
     if [ -d '/sys/bus/i2c/drivers/mt9m113' ]; then
         echo 'Attempting to bind mt9m113 driver...'
-        echo '3-003c' > /sys/bus/i2c/drivers/mt9m113/bind 2>/dev/null
+        echo '4-003c' > /sys/bus/i2c/drivers/mt9m113/bind 2>/dev/null
     elif [ -d '/sys/bus/i2c/drivers/mt9m114' ]; then
         echo 'Attempting to bind mt9m114 driver...'
-        echo '3-003c' > /sys/bus/i2c/drivers/mt9m114/bind 2>/dev/null
+        echo '4-003c' > /sys/bus/i2c/drivers/mt9m114/bind 2>/dev/null
     fi
     sleep 2
     if [ -L \"\$SENSOR_PATH/driver\" ]; then
@@ -316,21 +245,21 @@ media-ctl -d \$MEDIA_DEV -r 2>/dev/null || true
 echo ''
 echo 'Discovering entities...'
 # Try mt9m113 first (standalone driver), then mt9m114 (combined driver)
-# SENSOR_BASE is the direct sensor entity (mt9m113 3-003c or mt9m114 3-003c)
+# SENSOR_BASE is the direct sensor entity (mt9m113 4-003c or mt9m114 4-003c)
 # SENSOR is the entity to use for format configuration (same for mt9m113, or ifp for mt9m114)
 SENSOR_BASE=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
-if [ -n \"$H_SENSOR_BASE\" ]; then
+if [ -n \"\$SENSOR_BASE\" ]; then
     # mt9m113 driver with IFP sub-device architecture
     SENSOR=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
-    if [ -z \"$H_SENSOR\" ]; then
-        SENSOR=\"$H_SENSOR_BASE\"
+    if [ -z \"\$SENSOR\" ]; then
+        SENSOR=\"\$SENSOR_BASE\"
     fi
 else
     # mt9m114 combined driver - has separate sensor and IFP entities
     SENSOR_BASE=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'mt9m114 [0-9]+-[0-9a-f]+' | grep -v ifp | head -1)
     SENSOR=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -o 'mt9m114 ifp[^\"]*' | head -1)
-    if [ -z \"$H_SENSOR\" ]; then
-        SENSOR=\"$H_SENSOR_BASE\"
+    if [ -z \"\$SENSOR\" ]; then
+        SENSOR=\"\$SENSOR_BASE\"
     fi
 fi
 echo \"Sensor base: \$SENSOR_BASE\"
@@ -361,7 +290,7 @@ echo \"VFE: \$VFE\"
 VFE_PIX=\$(media-ctl -d \$MEDIA_DEV -p 2>/dev/null | grep -oE 'msm_vfe[0-9]_pix' | head -1)
 echo \"VFE_PIX: \$VFE_PIX\"
 
-if [ -z \"$H_SENSOR\" ] || [ -z \"\$CSIPHY\" ]; then
+if [ -z \"\$SENSOR\" ] || [ -z \"\$CSIPHY\" ]; then
     echo 'ERROR: Could not find required entities'
     echo 'Current topology:'
     media-ctl -d \$MEDIA_DEV -p 2>/dev/null
@@ -601,8 +530,8 @@ test_raw_mode() {
         # Set formats on the RDI path (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
         echo 'Setting formats (1280x1024 Context B capture mode)...'
-        media-ctl -V '\"$H_SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -717,7 +646,7 @@ test_testgen_mode() {
 
         # Enable upstream links (even for testgen, pipeline must be valid)
         echo 'Enabling upstream links...'
-        media-ctl -l '\"$H_SENSOR_BASE\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
+        media-ctl -l '\"\$SENSOR_BASE\":0->\"msm_csiphy1\":0[1]' 2>&1 || echo '  sensor->csiphy link failed'
         media-ctl -l '\"msm_csiphy1\":1->\"msm_csid1\":0[1]' 2>&1 || echo '  csiphy->csid link failed'
 
         # Enable PIX link: CSID pad 4 (PIX) -> VFE PIX pad 0
@@ -726,7 +655,7 @@ test_testgen_mode() {
 
         # Set formats on entire pipeline (1280x1024)
         echo 'Setting formats (1280x1024 UYVY8_2X8)...'
-        media-ctl -V '\"$H_SENSOR_BASE\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR_BASE\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_2X8/1280x1024]' 2>&1 || true
@@ -800,8 +729,8 @@ test_pix_mode() {
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
         echo 'Setting formats (1280x1024 Context B capture mode)...'
-        media-ctl -V '\"$H_SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -875,8 +804,8 @@ test_v4l2_mode() {
         # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024)...'
         echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
-        media-ctl -V '\"$H_SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -910,7 +839,7 @@ test_v4l2_mode() {
             echo 'FAILED: v4l2-ctl capture did not complete'
             echo ''
             echo 'Trying 640x480 mode...'
-            media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
+            media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
             media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
             media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/640x480]' 2>&1 || true
             media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
@@ -964,8 +893,8 @@ test_video_mode() {
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
         echo 'Setting formats (1280x1024 Context B capture mode)...'
-        media-ctl -V '\"$H_SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -1069,8 +998,8 @@ test_video4_mode() {
         # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024 capture mode)...'
         echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
-        media-ctl -V '\"$H_SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -1165,8 +1094,8 @@ test_nv16_mode() {
         # Set formats on entire pipeline (1280x1024 = MT9M113 Context B full capture)
         # IMPORTANT: Set compose rectangle on IFP pad 0 to trigger Context B
         echo 'Setting formats (1280x1024 Context B capture mode)...'
-        media-ctl -V '\"$H_SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -1242,8 +1171,8 @@ capture_frames() {
         media-ctl -l '\"msm_csid1\":4->\"msm_vfe0_pix\":0[1]' 2>&1 || true
 
         # Set formats - set compose first to trigger Context B for 1280x1024
-        media-ctl -V '\"$H_SENSOR\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
-        media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/'$width'x'$height']' 2>&1 || true
@@ -1335,8 +1264,8 @@ test_legacy_mode() {
         # The sensor output format on pad 1 is derived from the compose size
         echo 'Setting formats (1280x1024)...'
         echo 'Setting compose rectangle to 1280x1024 (triggers Context B)...'
-        media-ctl -V '\"$H_SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
-        media-ctl -V '\"$H_SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":0[compose:(0,0)/1280x1024]' 2>&1 || true
+        media-ctl -V '\"\$SENSOR\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csiphy1\":1[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
         media-ctl -V '\"msm_csid1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -1407,12 +1336,22 @@ test_at_resolution() {
         media-ctl -d /dev/media0 -r 2>/dev/null || true
         sleep 0.5
 
-        # Sensor entity name comes pre-resolved from the host-side
-        # discover_sensor() (run once in main); each run_on_device call is a
-        # fresh shell on the device so we cannot rely on a SENSOR variable
-        # set in another ssh session.
-        SENSOR=\"$H_SENSOR\"
-        SENSOR_BASE=\"$H_SENSOR_BASE\"
+        # Detect sensor entity (each run_on_device is a new shell session)
+        SENSOR_BASE=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+        if [ -n \"\$SENSOR_BASE\" ]; then
+            # mt9m113 driver with IFP sub-device - use IFP entity for format config
+            SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+            if [ -z \"\$SENSOR\" ]; then
+                SENSOR=\"\$SENSOR_BASE\"
+            fi
+        else
+            # mt9m114 combined driver
+            SENSOR_BASE=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m114 [0-9]+-[0-9a-f]+' | grep -v ifp | head -1)
+            SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -o 'mt9m114 ifp[^\"]*' | head -1)
+            if [ -z \"\$SENSOR\" ]; then
+                SENSOR=\"\$SENSOR_BASE\"
+            fi
+        fi
         echo \"Using sensor: \$SENSOR\"
 
         # Mode-specific format setup (links will be enabled AFTER formats are set)
@@ -1497,7 +1436,7 @@ test_at_resolution() {
             fi
         fi
 
-        media-ctl -d /dev/media0 -V '\"$H_SENSOR\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
+        media-ctl -d /dev/media0 -V '\"\$SENSOR\":0[compose:(0,0)/'$width'x'$height']' 2>&1 || true
         media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:\${SENSOR_FMT}/${width}x${height}]\" 2>&1 || true
 
         # Set CSIPHY format
@@ -2039,26 +1978,6 @@ main() {
 
     check_device || exit 1
 
-    # Discover sensor entity (mt9m113 / mt9m114) once via SSH so per-test
-    # heredocs can expand $H_SENSOR / $H_SENSOR_BASE at host-side construction
-    # time (each run_on_device call opens a fresh remote shell, so a SENSOR
-    # variable set in one ssh call is NOT visible in the next). Non-fatal:
-    # info/setup/quick modes do not need it, and the per-test failures from
-    # an empty $H_SENSOR are easier to diagnose than a cryptic early exit.
-    discover_sensor || log_info "discover_sensor failed; modes that need a sensor entity will error out"
-
-    # The MSM8660 MMSS / VFE_GDSC cannot survive a second camera session per
-    # boot - the next clk_prepare_enable(vfe) hangs the SoC. Read-only modes
-    # (info / setup / v4l2 / fetch / media topology) are safe; refuse anything
-    # that would touch the streaming pipeline.
-    case $MODE in
-        info|setup|v4l2|fetch|legacy)
-            ;;
-        *)
-            check_no_prior_camera_session || exit 1
-            ;;
-    esac
-
     case $MODE in
         info)
             show_camera_info
@@ -2255,7 +2174,7 @@ main() {
             # RAW-through-PIX via RDI: sensor Bayer in UYVY wrapper
             # Use UYVY output (stride=width*2) to match DEMUX 0xCCCC all-to-Y routing
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
             test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
@@ -2263,7 +2182,7 @@ main() {
         rdi640-raw10)
             ensure_camera_ready
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
             test_at_resolution 640 480 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
@@ -2272,7 +2191,7 @@ main() {
             ensure_camera_ready
             # RAW-through-PIX via RDI at full resolution
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
@@ -2280,7 +2199,7 @@ main() {
         rdi1280-raw10)
             ensure_camera_ready
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
             test_at_resolution 1280 1024 rdi video0 msm_csid1 msm_csiphy1 UYVY
             check_dmesg
@@ -2292,7 +2211,7 @@ main() {
             # Y plane of NV12 output contains raw Bayer data.
             run_on_device "
                 # Set sensor pixel array to RAW (triggers MCU RAW mode)
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/648x488]' 2>/dev/null || true
             "
             test_at_resolution 640 480 pix video3 msm_csid1 msm_csiphy1 NV12
             check_dmesg
@@ -2301,7 +2220,7 @@ main() {
             ensure_camera_ready
             # RAW-through-PIX: sensor MCU outputs Bayer in UYVY wrapper.
             run_on_device "
-                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 3-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
+                media-ctl -d /dev/media0 -V '\"mt9m113 pixel array 4-003c\":0[fmt:SGRBG10_1X10/1288x1032]' 2>/dev/null || true
             "
             test_at_resolution 1280 1024 pix video3 msm_csid1 msm_csiphy1 NV12
             check_dmesg
@@ -2362,8 +2281,10 @@ main() {
                 media-ctl -d /dev/media0 -r 2>/dev/null || true
                 sleep 0.5
 
-                # Use host-discovered sensor (set by discover_sensor in main)
-                SENSOR=\"$H_SENSOR\"
+                SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+                if [ -z \"\$SENSOR\" ]; then
+                    SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+                fi
                 echo \"Using sensor: \$SENSOR\"
 
                 # Configure pipeline
@@ -2426,8 +2347,10 @@ main() {
                 media-ctl -d /dev/media0 -r 2>/dev/null || true
                 sleep 0.5
 
-                # Use host-discovered sensor (set by discover_sensor in main)
-                SENSOR=\"$H_SENSOR\"
+                SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+                if [ -z \"\$SENSOR\" ]; then
+                    SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+                fi
 
                 media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:UYVY8_1X16/1280x1024]\" 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
@@ -2481,8 +2404,10 @@ main() {
                 media-ctl -d /dev/media0 -r 2>/dev/null || true
                 sleep 0.5
 
-                # Use host-discovered sensor (set by discover_sensor in main)
-                SENSOR=\"$H_SENSOR\"
+                SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+                if [ -z \"\$SENSOR\" ]; then
+                    SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+                fi
 
                 media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:UYVY8_1X16/640x480]\" 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/640x480]' 2>&1 || true
@@ -2545,8 +2470,10 @@ main() {
                 media-ctl -d /dev/media0 -r 2>/dev/null || true
                 sleep 0.5
 
-                # Use host-discovered sensor (set by discover_sensor in main)
-                SENSOR=\"$H_SENSOR\"
+                SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 ifp [0-9]+-[0-9a-f]+' | head -1)
+                if [ -z \"\$SENSOR\" ]; then
+                    SENSOR=\$(media-ctl -d /dev/media0 -p 2>/dev/null | grep -oE 'mt9m113 pixel array [0-9]+-[0-9a-f]+' | head -1)
+                fi
 
                 media-ctl -d /dev/media0 -V \"\\\"\$SENSOR\\\":1[fmt:UYVY8_1X16/1280x1024]\" 2>&1 || true
                 media-ctl -d /dev/media0 -V '\"msm_csiphy1\":0[fmt:UYVY8_1X16/1280x1024]' 2>&1 || true
