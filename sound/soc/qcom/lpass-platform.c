@@ -917,12 +917,19 @@ static snd_pcm_uframes_t lpass_platform_pcmops_pointer(
 		return ret;
 	}
 
-	/* Debug: Print DMA position periodically */
+	/*
+	 * Periodic DMA-position trace, off by default. Enable selectively
+	 * via dynamic-debug (e.g.
+	 *   echo 'file lpass-platform.c +p' > /sys/kernel/debug/dynamic_debug/control
+	 * or a CONFIG_DYNAMIC_DEBUG=y boot-time match) instead of leaving
+	 * it as dev_info_ratelimited(), which still printed once a second
+	 * during normal playback and dominated dmesg.
+	 */
 	{
 		static unsigned long last_jiffies;
 		if (time_after(jiffies, last_jiffies + HZ)) {
 			unsigned int offset = curr_addr - base_addr;
-			dev_info_ratelimited(soc_runtime->dev,
+			dev_dbg_ratelimited(soc_runtime->dev,
 				"pointer: base=0x%x curr=0x%x offset=%u bytes (%u frames)\n",
 				base_addr, curr_addr, offset,
 				(unsigned int)bytes_to_frames(substream->runtime, offset));
@@ -1072,7 +1079,7 @@ static irqreturn_t lpass_platform_lpaif_irq(int irq, void *data)
 		return IRQ_NONE;
 	}
 
-	pr_info("lpaif_irq: irqs=0x%08x\n", irqs);
+	pr_debug("lpaif_irq: irqs=0x%08x\n", irqs);
 
 	/* Handle per channel interrupts */
 	for (chan = 0; chan < LPASS_MAX_DMA_CHANNELS; chan++) {
