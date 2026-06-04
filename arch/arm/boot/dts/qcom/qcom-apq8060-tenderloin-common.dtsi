@@ -2964,6 +2964,22 @@
 		vdd-supply = <&pm8058_l15>;   // 2.85V
 		vddio-supply = <&pm8058_s3>;  // 1.8V
 
+		/*
+		 * Select +/-2.5 G initial full-scale to match the legacy
+		 * webOS driver (libusd_drv_lsm303dlh.so initialises CRB_M
+		 * with gain code 3 = +/-2.5 G). The kernel's chip-default
+		 * of +/-1.3 G is too sensitive for this board: the X axis
+		 * picks up enough DC bias from nearby PCB structures (likely
+		 * pm8901 / gsbi power planes) to saturate at the 0xF000
+		 * overflow sentinel as soon as the chip starts converting,
+		 * leaving every X sample stuck at -4096 raw counts.
+		 *
+		 * Empirical scale sweep on this board confirmed that any
+		 * fs_avl >= 1 (+/-1.9 G and up) produces non-saturated X
+		 * readings, while fs_avl[0] (+/-1.3 G) reliably overflows.
+		 */
+		st,fullscale-mg = <2500>;
+
 		/* Identity per legacy usd_topaz-*_default.xml
 		 * <st_magnetometer><rotationMatrix>. */
 		mount-matrix = "1", "0", "0",
