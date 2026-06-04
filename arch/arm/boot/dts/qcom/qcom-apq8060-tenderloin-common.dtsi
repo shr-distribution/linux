@@ -2889,19 +2889,24 @@
 			#size-cells = <0>;
 
 			lsm303dlh_accel: lsm303dlh@18 {
-				/* Accelerometer */
+				/*
+				 * Accelerometer. The G-Sensor INT line
+				 * (TENDERLOIN_GSENS_INT, gpio124) is not
+				 * usable as an interrupt source on either
+				 * tenderloin variant: gpiomux-tenderloin.c
+				 * never wires gpio124 into the WiFi pin
+				 * tables, and on the 3G board gpio124 is
+				 * also an EBI2_A_D line so muxing it as a
+				 * plain gpio input would corrupt the modem
+				 * bus. The st-accel driver falls back to
+				 * polling when no interrupt is declared,
+				 * which is sufficient for orientation use.
+				 */
 				compatible = "st,lsm303dlh-accel";
-				st,drdy-int-pin = <1>;
 				reg = <0x18>;
-
-				interrupt-parent = <&tlmm>;
-				interrupts = <124 IRQ_TYPE_EDGE_RISING>;
 
 				vdd-supply = <&pm8058_l15>;   // 2.85V
 				vddio-supply = <&pm8058_s3>;  // 1.8V s3
-
-				pinctrl-names = "default";
-				pinctrl-0 = <&accel_pins>;
 
 				/* Legacy XML stores the matrix as 10-bit
 				 * fixed-point identity (1024,0,0/0,1024,0/

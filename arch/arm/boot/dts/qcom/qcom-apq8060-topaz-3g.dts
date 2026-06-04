@@ -503,18 +503,6 @@
 	interrupts-extended = <&tlmm 75 IRQ_TYPE_EDGE_FALLING>;	/* GYRO_INT_3G */
 };
 
-/*
- * LSM303DLH accel/magn:
- * Topaz WiFi DTS disables these because gpiomux-tenderloin.c never wires
- * gpio124 (the assumed accel IRQ) into either tenderloin_pins_wifi[] or
- * tenderloin_pins_3g[]. On 3G hardware gpio124 is additionally an
- * EBI2_A_D line, so muxing it as plain GPIO input pull-up would corrupt
- * the modem bus. Disable on 3G until a board with a populated
- * accelerometer is confirmed and a non-EBI2 IRQ line is identified.
- */
-&lsm303dlh_accel { status = "disabled"; };
-&lsm303dlh_magn  { status = "disabled"; };
-
 /* ===========================================================================
  * LED controller
  * ===========================================================================
