@@ -2908,12 +2908,48 @@
 				vdd-supply = <&pm8058_l15>;   // 2.85V
 				vddio-supply = <&pm8058_s3>;  // 1.8V s3
 
-				/* Legacy XML stores the matrix as 10-bit
-				 * fixed-point identity (1024,0,0/0,1024,0/
-				 * 0,0,1024); decoded that's plain identity. */
-				mount-matrix = "1", "0", "0",
-					       "0", "1", "0",
-					       "0", "0", "1";
+				/*
+				 * Empirical calibration: holding the device
+				 * in its natural landscape orientation
+				 * (long edges horizontal, charger / home
+				 * button on the right short edge), the
+				 * chip is soldered with:
+				 *
+				 *   chip +X pointing toward the top long
+				 *           edge      (= device +Y)
+				 *   chip +Y pointing toward the right
+				 *           short edge (= device +X,
+				 *           but inverted: chip Y points
+				 *           toward port,  device X points
+				 *           "right of natural landscape"
+				 *           which is also toward port, so
+				 *           sign is preserved here)
+				 *   chip +Z pointing into the screen
+				 *           (= device -Z)
+				 *
+				 * Sampling four orientations (face-up,
+				 * face-down, port-short-edge-down portrait,
+				 * left-long-edge-down portrait) and solving
+				 * for the matrix that maps chip frame to
+				 * the natural landscape device frame yields:
+				 *
+				 *   [0 -1  0]
+				 *   [1  0  0]
+				 *   [0  0  1]
+				 *
+				 * (Note: this DT property is metadata only;
+				 * IIO does not transform the raw values.
+				 * LunaOS sensorfwd applies its own
+				 * transformation_matrix in
+				 * sensord-tenderloin*.conf which is the
+				 * effective rotation source for screen
+				 * orientation. See the equivalent matrix
+				 * derived there with the iiosensorsadaptor
+				 * pre-negation folded in.)
+				 */
+				mount-matrix = "0", "-1", "0",
+					       "1",  "0", "0",
+					       "0",  "0", "1";
 			};
 		};
 	};
