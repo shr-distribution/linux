@@ -266,7 +266,25 @@ struct vfe31_device {
 	enum vfe31_rec_state recording_state;
 	enum vfe31_rec_state zsl_state;
 	bool pix_wm_pending;
+	/*
+	 * CAMIF error tracking. CAMIF_ERROR commonly fires when the sensor
+	 * drops a MIPI Frame End short packet; the handler clears the status
+	 * and restarts CAMIF so the next frame can proceed. After a sustained
+	 * run of restarts with no recovered data we stop trying to restart -
+	 * each spin around the bad-state loop destabilises the MMSS fabric
+	 * further and eventually hangs the SoC on the next teardown. Fail
+	 * the vb2 queue instead so userspace gets a clean EIO on DQBUF.
+	 */
+	unsigned int camif_error_count;
+	bool stream_failed;
 };
+
+/*
+ * Number of consecutive CAMIF_ERROR events with no recovered frame data
+ * after which the stream is considered unrecoverable and we stop poking
+ * CAMIF / signal the vb2 queue.
+ */
+#define VFE31_CAMIF_ERROR_THRESHOLD	5
 
 #define V31(vfe)	((struct vfe31_device *)(vfe)->priv)
 
@@ -2788,6 +2806,41 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 				     received_lines, expected_lines);
 
 		/*
+		 * Recovered enough lines to consider this a real frame? Reset
+		 * the error counter; otherwise tick it up. A handful of empty
+		 * CAMIF_ERRORs in a row means the sensor is no longer feeding
+		 * us anything and further CAMIF restart attempts only beat on
+		 * a wedged MMSS bus.
+		 */
+		if (received_lines >= expected_lines - 2 && expected_lines > 0)
+			V31(vfe)->camif_error_count = 0;
+		else
+			V31(vfe)->camif_error_count++;
+
+		if (V31(vfe)->camif_error_count > VFE31_CAMIF_ERROR_THRESHOLD &&
+		    !V31(vfe)->stream_failed) {
+			struct vfe_line *pix_line = &vfe->line[VFE_LINE_PIX];
+
+			V31(vfe)->stream_failed = true;
+			dev_err(vfe->camss->dev,
+				"CAMIF_ERROR: %u consecutive empty frames - aborting stream\n",
+				V31(vfe)->camif_error_count);
+			/*
+			 * Stop the bleeding: mask CAMIF in IRQ_MASK_1 so we are
+			 * not called again, and signal the vb2 queue so userspace
+			 * gets EIO on the next DQBUF and tears the stream down
+			 * cleanly instead of waiting forever (which gave the SoC
+			 * time to follow the wedged MMSS fabric into a hard hang).
+			 */
+			V31(vfe)->irq_mask1_shadow &= ~VFE_0_IRQ_MASK_1_CAMIF_ERROR;
+			writel_relaxed(V31(vfe)->irq_mask1_shadow,
+				       vfe->base + VFE_0_IRQ_MASK_1);
+			wmb();
+			vb2_queue_error(&pix_line->video_out.vb2_q);
+			goto camif_error_done;
+		}
+
+		/*
 		 * CAMIF_ERROR typically fires when MIPI Frame End packet is missing.
 		 * The MT9M113 sensor may not send FE packets, causing this error
 		 * on every frame. If we received the expected number of lines,
@@ -2820,6 +2873,8 @@ static irqreturn_t vfe31_isr(int irq, void *dev)
 			for (i = 0; i < vfe->res->line_num; i++)
 				vfe->isr_ops.reg_update(vfe, i);
 		}
+camif_error_done:
+		;
 	}
 
 	/*
@@ -4012,6 +4067,8 @@ static int vfe31_disable(struct vfe_line *line)
 	V31(vfe)->recording_state = VFE31_REC_IDLE;
 	V31(vfe)->zsl_state = VFE31_REC_IDLE;
 	V31(vfe)->pix_wm_pending = false;
+	V31(vfe)->camif_error_count = 0;
+	V31(vfe)->stream_failed = false;
 
 	return 0;
 }
