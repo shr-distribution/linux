@@ -61,9 +61,31 @@ enum msm8660_lpaif_dma_channels {
 };
 
 /*
+ * MSM8x60 LPAIF supports the 48 kHz sample-rate family only.
+ *
+ * The LCC's AIF_OSR clock generator is driven from PLL4 (540.672 MHz on
+ * MSM8x60) through an 8-bit M/N counter. No rational divider can land on
+ * a 256x oversampling clock for 11.025/22.05/44.1/88.2 kHz (which need
+ * 2.8224/5.6448/11.2896/22.5792 MHz). The OSR is therefore fixed at
+ * 12.288 MHz at probe (see msm8660_lpass_init() below), which cleanly
+ * divides for 8/16/32/48/64/96 kHz. Advertising 44.1 kHz here would let
+ * userspace open the DAI at that rate; clk_set_rate() on the bit clock
+ * would then silently round to the nearest reachable rate (~1.365 MHz
+ * instead of 1.4112 MHz) producing a 3.4% pitch error and continuous
+ * drift between LPASS and the codec FLL — i.e. garbled output and
+ * persistent xruns. Constrain the advertised mask so userspace
+ * resamples 44.1 kHz family content (e.g. PulseAudio, PipeWire).
+ *
  * MSM8660 has separate clocks for codec speaker and codec mic I2S ports.
  * We support both playback (speaker) and capture (mic).
  */
+#define MSM8660_LPASS_RATES	(SNDRV_PCM_RATE_8000 |	\
+				 SNDRV_PCM_RATE_16000 |	\
+				 SNDRV_PCM_RATE_32000 |	\
+				 SNDRV_PCM_RATE_48000 |	\
+				 SNDRV_PCM_RATE_64000 |	\
+				 SNDRV_PCM_RATE_96000)
+
 static struct snd_soc_dai_driver msm8660_lpass_cpu_dai_driver[] = {
 	{
 		.id = MSM8660_LPAIF_I2S_PORT_CODEC_SPKR,
@@ -73,7 +95,7 @@ static struct snd_soc_dai_driver msm8660_lpass_cpu_dai_driver[] = {
 			.formats = SNDRV_PCM_FMTBIT_S16_LE |
 				   SNDRV_PCM_FMTBIT_S24_LE |
 				   SNDRV_PCM_FMTBIT_S32_LE,
-			.rates = SNDRV_PCM_RATE_8000_96000,
+			.rates = MSM8660_LPASS_RATES,
 			.rate_min = 8000,
 			.rate_max = 96000,
 			.channels_min = 1,
@@ -89,7 +111,7 @@ static struct snd_soc_dai_driver msm8660_lpass_cpu_dai_driver[] = {
 			.formats = SNDRV_PCM_FMTBIT_S16_LE |
 				   SNDRV_PCM_FMTBIT_S24_LE |
 				   SNDRV_PCM_FMTBIT_S32_LE,
-			.rates = SNDRV_PCM_RATE_8000_96000,
+			.rates = MSM8660_LPASS_RATES,
 			.rate_min = 8000,
 			.rate_max = 96000,
 			.channels_min = 1,
@@ -105,7 +127,7 @@ static struct snd_soc_dai_driver msm8660_lpass_cpu_dai_driver[] = {
 			.formats = SNDRV_PCM_FMTBIT_S16_LE |
 				   SNDRV_PCM_FMTBIT_S24_LE |
 				   SNDRV_PCM_FMTBIT_S32_LE,
-			.rates = SNDRV_PCM_RATE_8000_96000,
+			.rates = MSM8660_LPASS_RATES,
 			.rate_min = 8000,
 			.rate_max = 96000,
 			.channels_min = 1,
@@ -121,7 +143,7 @@ static struct snd_soc_dai_driver msm8660_lpass_cpu_dai_driver[] = {
 			.formats = SNDRV_PCM_FMTBIT_S16_LE |
 				   SNDRV_PCM_FMTBIT_S24_LE |
 				   SNDRV_PCM_FMTBIT_S32_LE,
-			.rates = SNDRV_PCM_RATE_8000_96000,
+			.rates = MSM8660_LPASS_RATES,
 			.rate_min = 8000,
 			.rate_max = 96000,
 			.channels_min = 1,
@@ -228,9 +250,11 @@ static int msm8660_lpass_init(struct platform_device *pdev)
 	}
 
 	/*
-	 * Enable codec speaker OSR clock at 12.288 MHz.
-	 * This is the master clock for audio at 48kHz sample rate.
-	 * 12288000 / 48000 = 256 (standard oversampling ratio)
+	 * Fix the codec-speaker OSR clock at 12.288 MHz: this is the only
+	 * 256x oversampling rate the LCC's PLL4-fed 8-bit M/N counter can
+	 * produce. It cleanly divides for the 48 kHz family advertised on
+	 * the DAIs above (8/16/32/48/64/96 kHz); the 44.1 kHz family is
+	 * unreachable from this PLL and userspace is expected to resample.
 	 */
 	if (drvdata->mi2s_osr_clk[MSM8660_LPAIF_I2S_PORT_CODEC_SPKR]) {
 		ret = clk_set_rate(
