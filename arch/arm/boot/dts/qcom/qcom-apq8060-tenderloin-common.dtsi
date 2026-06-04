@@ -1080,7 +1080,7 @@
 
 			ulpi {
 				usb_hs1_phy: phy {
-					compatible = "qcom,usb-hs-phy-apq8064",
+					compatible = "qcom,usb-hs-phy-msm8660",
 						     "qcom,usb-hs-phy";
 					clocks = <&sleep_clk>, <&cxo_board>;
 					clock-names = "sleep", "ref";
