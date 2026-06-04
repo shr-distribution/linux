@@ -2879,10 +2879,30 @@
 	};
 
 	isl29023@44 {
-		/* Ambient Light Sensor */
+		/*
+		 * Ambient Light Sensor.
+		 *
+		 * The chip sits behind the tinted front cover, so the visible-
+		 * light photodiode reads roughly one hundredth of the actual
+		 * ambient lux while the IR photodiode reads thousands of
+		 * counts. Seed in_illuminance0_calibscale with the cover-glass
+		 * compensation factor empirically determined on 2026-06-04:
+		 *
+		 *   calibscale=1   -> ~2 lux in a normally-lit room (raw ADC
+		 *                     ~130 counts)
+		 *   calibscale=100 -> ~300 lux, matches typical indoor
+		 *                     lighting and puts every downstream
+		 *                     userspace (sensorfwd / Qt / DisplayManager)
+		 *                     into its INDOOR region instead of DARK.
+		 *
+		 * Same value of 100 applies to every tenderloin board because
+		 * the cover glass is identical; userspace can still retune via
+		 * the standard sysfs attribute.
+		 */
 		compatible = "isil,isl29023";
 		reg = <0x44>;
 		vcc-supply = <&pm8058_l15>;   // 2.85V
+		isil,cover-comp-gain = <100>;
 	};
 
 	/*
