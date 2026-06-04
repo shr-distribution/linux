@@ -8,7 +8,7 @@
  *   Context A: 640x480 preview mode (binned)
  *   Context B: 1280x1024 capture mode (full resolution)
  *
- * Ported from webOS kernel mt9m113.c/mt9m113_reg.c.
+ * Ported from legacy vendor kernel mt9m113.c/mt9m113_reg.c.
  * Uses MCU indirect access (0x098C/0x0990) for configuration.
  */
 
@@ -44,16 +44,18 @@
  * 0xa103 timeout, SEQ_STATE never reaching preview 0x04 / capture 0x07).
  * The failures cluster at the start of a run and then clear, so a bounded
  * retry that power-cycles the sensor between attempts reliably gets the
- * stream up. Total attempts (1 initial + retries).
+ * stream up.  3 attempts is enough in practice (with the per-session
+ * runtime-PM re-init as the primary fix); a larger cap would stack
+ * power-cycle + ~600-entry init-table replay into a STREAMON latency
+ * userspace clients treat as a hang.  Total attempts (1 initial + retries).
  */
-#define MT9M113_STREAM_START_RETRIES	5
+#define MT9M113_STREAM_START_RETRIES	3
 
 /* MT9M113 chip ID */
 #define MT9M113_CHIP_ID				CCI_REG16(0x0000)
 #define MT9M113_CHIP_ID_VALUE			0x2480
 
 /* Sysctl registers */
-#define MT9M113_COMMAND_REGISTER		CCI_REG16(0x0080)
 #define MT9M113_PLL_DIVIDERS			CCI_REG16(0x0010)
 #define MT9M113_PLL_P_DIVIDERS			CCI_REG16(0x0012)
 #define MT9M113_PLL_CONTROL			CCI_REG16(0x0014)
@@ -64,8 +66,7 @@
 #define MT9M113_RESET_SOC			BIT(0)
 #define MT9M113_MCU_BOOT_MODE			CCI_REG16(0x001c)
 
-/* XDMA / MCU indirect access registers */
-#define MT9M113_ACCESS_CTL_STAT			CCI_REG16(0x0982)
+/* MCU indirect access registers */
 #define MT9M113_MCU_ADDRESS			CCI_REG16(0x098c)
 #define MT9M113_MCU_DATA			CCI_REG16(0x0990)
 
@@ -81,7 +82,6 @@
 #define MT9M113_SEQ_CAP_MODE			0xa115
 #define MT9M113_SEQ_CAP_MODE_PREVIEW		0x0030	/* continuous preview */
 #define MT9M113_SEQ_CAP_MODE_VIDEO		0x0002	/* stay in Context B */
-#define MT9M113_SEQ_CAP_NUM_FRAMES		0xa116	/* 0 = infinite/continuous */
 
 /* Mode Output dimension/format MCU variables (Driver ID 7) */
 #define MT9M113_MODE_OUTPUT_WIDTH_A		0x2703
@@ -91,7 +91,19 @@
 #define MT9M113_MODE_OUTPUT_FORMAT_A		0x2755
 #define MT9M113_MODE_OUTPUT_FORMAT_B		0x2757
 #define MT9M113_MODE_OUTPUT_FORMAT_YUV		0x0000
-#define MT9M113_MODE_OUTPUT_FORMAT_RGB		BIT(5)
+/*
+ * YUV byte ordering (datasheet table 31 "mode_output_format_a/b"):
+ *   default (0x0000)   = Cb Y0 Cr Y1 = UYVY
+ *   SWAP_LUMA_CHROMA   = Y0 Cb Y1 Cr = YUYV
+ */
+#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_LUMA_CHROMA	BIT(1)
+/*
+ * YUV byte ordering (datasheet table 31 "mode_output_format_a/b"):
+ *   default (0x0000)   = Cb Y0 Cr Y1 = UYVY
+ *   SWAP_LUMA_CHROMA   = Y0 Cb Y1 Cr = YUYV
+ */
+#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_LUMA_CHROMA	BIT(1)
+#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_CB_CR		BIT(0)
 
 /* Special effects MCU variables */
 #define MT9M113_MODE_SPEC_EFFECTS_A		0x2759
@@ -131,7 +143,7 @@
 #define MT9M113_MODE_SENSOR_FRAME_LENGTH_B	0x2735
 #define MT9M113_MODE_SENSOR_LINE_LENGTH_PCK_B	0x2737
 
-/* Context A sensor config values (from webOS driver, 640x480 binned) */
+/* Context A sensor config values (from legacy vendor driver, 640x480 binned) */
 #define MT9M113_CONTEXT_A_ROW_START		0x0000
 #define MT9M113_CONTEXT_A_COL_START		0x0000
 #define MT9M113_CONTEXT_A_ROW_END		0x03CD	/* 973 */
@@ -141,7 +153,7 @@
 #define MT9M113_CONTEXT_A_FRAME_LENGTH		0x032E	/* 814 lines (incl vblank) */
 #define MT9M113_CONTEXT_A_LINE_LENGTH_PCK	0x04CC	/* 1228 pixclks/line */
 
-/* Context B sensor config values (from webOS driver, 1280x1024 full res) */
+/* Context B sensor config values (from legacy vendor driver, 1280x1024 full res) */
 #define MT9M113_CONTEXT_B_ROW_START		0x0004
 #define MT9M113_CONTEXT_B_COL_START		0x0004
 #define MT9M113_CONTEXT_B_ROW_END		0x040B	/* 1035 */
@@ -195,7 +207,6 @@
 /* Sensor core registers */
 #define MT9M113_RESET_REGISTER			CCI_REG16(0x301a)
 #define MT9M113_RESET_REG_STREAMING		0x120C
-#define MT9M113_RESET_REG_SNAPSHOT		0x12CE
 #define MT9M113_OFIFO_CONTROL_STATUS		CCI_REG16(0x321c)
 #define MT9M113_OFIFO_BYPASS			0x0003	/* FIFO bypass (YUV path) */
 
@@ -211,18 +222,9 @@
 #define MT9M113_CUSTOM_SHORT_PKT		CCI_REG16(0x3404)
 #define MT9M113_CUSTOM_SHORT_PKT_FRAME_CNT_EN	0x0080
 
-/* Monitor registers */
-#define MT9M113_MON_MAJOR_VERSION		CCI_REG16(0x8000)
-#define MT9M113_MON_MINOR_VERSION		CCI_REG16(0x8002)
-#define MT9M113_MON_RELEASE_VERSION		CCI_REG16(0x8004)
-#define MT9M113_CUSTOMER_REV			CCI_REG16(0x31fe)
-
 /* Pixel array dimensions */
 #define MT9M113_PIXEL_ARRAY_WIDTH		1296U
 #define MT9M113_PIXEL_ARRAY_HEIGHT		1040U
-
-/* Default blanking */
-#define MT9M113_DEF_FRAME_RATE			30
 
 /* -----------------------------------------------------------------------------
  * Data Structures
@@ -267,10 +269,16 @@ struct mt9m113 {
  * Formats
  */
 
+/*
+ * Source-pad output formats.  Only YUV422 is exposed: MT9M113_OUTPUT_CONTROL
+ * advertises the YUV422 CSI-2 data type (0x1E) unconditionally on the wire,
+ * and adding RGB565 would require also driving the matching CSI-2 dt (0x22)
+ * out of OUTPUT_CONTROL — verifying the exact bit layout for that needs the
+ * sensor datasheet and a hardware re-test, so RGB is deferred to a follow-up.
+ */
 static const struct mt9m113_format_info mt9m113_format_infos[] = {
 	{ .code = MEDIA_BUS_FMT_UYVY8_1X16 },
 	{ .code = MEDIA_BUS_FMT_YUYV8_1X16 },
-	{ .code = MEDIA_BUS_FMT_RGB565_1X16 },
 };
 
 static const struct mt9m113_format_info *
@@ -284,6 +292,23 @@ mt9m113_format_info(u32 code)
 	}
 
 	return &mt9m113_format_infos[0];
+}
+
+/*
+ * Map a V4L2 mbus code to the value programmed into MODE_OUTPUT_FORMAT_{A,B}.
+ * Driving the chroma/luma swap bit is what differentiates UYVY from YUYV;
+ * without it both codes would emit the same bytes on the MIPI bus.
+ */
+static u16 mt9m113_format_val(u32 code)
+{
+	switch (code) {
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+		return MT9M113_MODE_OUTPUT_FORMAT_YUV |
+		       MT9M113_MODE_OUTPUT_FORMAT_SWAP_LUMA_CHROMA;
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	default:
+		return MT9M113_MODE_OUTPUT_FORMAT_YUV;
+	}
 }
 
 /* -----------------------------------------------------------------------------
@@ -313,7 +338,7 @@ static int mt9m113_poll_mcu_var(struct mt9m113 *sensor, u16 addr,
 				u16 expected, unsigned int timeout_ms)
 {
 	unsigned int i;
-	u64 value;
+	u64 value = 0;
 	int ret;
 
 	for (i = 0; i < timeout_ms / 10; i++) {
@@ -394,6 +419,28 @@ static int mt9m113_refresh(struct mt9m113 *sensor)
 	return 0;
 }
 
+/*
+ * Re-program SENSOR_READ_MODE_{A,B} for the context geometry while keeping
+ * the live HFLIP/VFLIP bits, which the V4L2 control handler has already
+ * applied via s_ctrl().  Writing CONTEXT_X_READ_MODE blindly would clear
+ * mirror bits 0/1 and silently undo the user's flip on first stream-start.
+ */
+static int mt9m113_apply_read_mode(struct mt9m113 *sensor, u16 reg, u16 base)
+{
+	const u16 mirror_mask = MT9M113_SENSOR_READ_MODE_HMIRROR |
+				MT9M113_SENSOR_READ_MODE_VMIRROR;
+	u64 cur = 0;
+	int ret;
+
+	ret = mt9m113_read_mcu_var(sensor, reg, &cur);
+	if (ret)
+		return ret;
+
+	return mt9m113_write_mcu_var(sensor, reg,
+				     (base & ~mirror_mask) |
+				     ((u16)cur & mirror_mask));
+}
+
 /**
  * mt9m113_configure_sensor_context - Configure sensor readout parameters
  * @sensor: MT9M113 sensor device
@@ -442,9 +489,9 @@ static int mt9m113_configure_sensor_context(struct mt9m113 *sensor,
 					    MT9M113_CONTEXT_B_ROW_SPEED);
 		if (ret)
 			return ret;
-		ret = mt9m113_write_mcu_var(sensor,
-					    MT9M113_SENSOR_READ_MODE_B,
-					    MT9M113_CONTEXT_B_READ_MODE);
+		ret = mt9m113_apply_read_mode(sensor,
+					      MT9M113_SENSOR_READ_MODE_B,
+					      MT9M113_CONTEXT_B_READ_MODE);
 		if (ret)
 			return ret;
 		/*
@@ -493,9 +540,9 @@ static int mt9m113_configure_sensor_context(struct mt9m113 *sensor,
 					    MT9M113_CONTEXT_A_ROW_SPEED);
 		if (ret)
 			return ret;
-		ret = mt9m113_write_mcu_var(sensor,
-					    MT9M113_SENSOR_READ_MODE_A,
-					    MT9M113_CONTEXT_A_READ_MODE);
+		ret = mt9m113_apply_read_mode(sensor,
+					      MT9M113_SENSOR_READ_MODE_A,
+					      MT9M113_CONTEXT_A_READ_MODE);
 		if (ret)
 			return ret;
 		/* See Context B above: frame period must track the geometry. */
@@ -549,7 +596,7 @@ static int mt9m113_double_buffer_resume(struct mt9m113 *sensor)
 }
 
 /* -----------------------------------------------------------------------------
- * Initialization Table (from webOS mt9m113_reg.c)
+ * Initialization Table (from legacy vendor kernel mt9m113_reg.c)
  */
 
 struct mt9m113_reg_entry {
@@ -580,7 +627,7 @@ static const struct mt9m113_reg_entry mt9m113_init_table[] = {
 	{ 0x098C, 0x270F, 0 },
 	{ 0x0990, 0x0000, 0 },
 	{ 0x098C, 0x2711, 0 },		/* MODE_SENSOR_ROW_END_A */
-	{ 0x0990, 0x03CD, 0 },		/* 973 (from webOS driver) */
+	{ 0x0990, 0x03CD, 0 },		/* 973 (from legacy vendor driver) */
 	{ 0x098C, 0x2713, 0 },
 	{ 0x0990, 0x050D, 0 },
 	{ 0x098C, 0x2715, 0 },
@@ -1097,6 +1144,12 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 	int ret = 0;
 	unsigned int i;
 
+	/* MCU is about to be fully re-initialised, so any prior test-pattern
+	 * override is gone. Clear the bookkeeping so a subsequent
+	 * V4L2_CID_TEST_PATTERN=0 does not re-run the disable sequence.
+	 */
+	sensor->test_pattern_active = false;
+
 	dev_dbg(dev, "MT9M113: applying init table (%zu entries)\n",
 		 ARRAY_SIZE(mt9m113_init_table));
 
@@ -1181,7 +1234,7 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 
 /*
  * Configure AE (Auto Exposure) parameters for preview vs snapshot/video mode.
- * From webOS driver: snapshot mode allows longer exposure for better quality,
+ * From legacy vendor driver: snapshot mode allows longer exposure for better quality,
  * while preview mode optimizes for higher frame rate and lower power.
  */
 static int mt9m113_configure_ae_mode(struct mt9m113 *sensor, bool snapshot_mode)
@@ -1236,7 +1289,7 @@ static int mt9m113_configure_ae_mode(struct mt9m113 *sensor, bool snapshot_mode)
  * latches atomically at the next frame start.
  */
 static int mt9m113_configure_output(struct mt9m113 *sensor, bool use_context_b,
-				    bool rgb)
+				    u32 code)
 {
 	struct device *dev = &sensor->client->dev;
 	u16 width_reg, height_reg, format_reg;
@@ -1257,8 +1310,7 @@ static int mt9m113_configure_output(struct mt9m113 *sensor, bool use_context_b,
 		height_val = 480;
 	}
 
-	format_val = rgb ? MT9M113_MODE_OUTPUT_FORMAT_RGB :
-			   MT9M113_MODE_OUTPUT_FORMAT_YUV;
+	format_val = mt9m113_format_val(code);
 
 	ret = mt9m113_double_buffer_suspend(sensor);
 	if (ret)
@@ -1270,7 +1322,12 @@ static int mt9m113_configure_output(struct mt9m113 *sensor, bool use_context_b,
 	if (!ret)
 		ret = mt9m113_write_mcu_var(sensor, format_reg, format_val);
 
-	mt9m113_double_buffer_resume(sensor);
+	{
+		int resume_ret = mt9m113_double_buffer_resume(sensor);
+
+		if (!ret)
+			ret = resume_ret;
+	}
 	if (ret)
 		return ret;
 
@@ -1295,11 +1352,10 @@ static int mt9m113_configure_output(struct mt9m113 *sensor, bool use_context_b,
  * Best-effort: a failure is logged but does not abort the stream.
  */
 static void mt9m113_reassert_output(struct mt9m113 *sensor, u16 output_ctrl_val,
-				    u16 format_reg, bool rgb)
+				    u16 format_reg, u32 code)
 {
 	struct device *dev = &sensor->client->dev;
-	u16 format_val = rgb ? MT9M113_MODE_OUTPUT_FORMAT_RGB :
-			       MT9M113_MODE_OUTPUT_FORMAT_YUV;
+	u16 format_val = mt9m113_format_val(code);
 
 	if (cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, output_ctrl_val,
 		      NULL))
@@ -1310,7 +1366,7 @@ static void mt9m113_reassert_output(struct mt9m113 *sensor, u16 output_ctrl_val,
 
 /* Context A (640x480 preview): enable output and run the preview sequencer. */
 static int mt9m113_stream_context_a(struct mt9m113 *sensor, u16 output_ctrl_val,
-				    bool rgb)
+				    u32 code)
 {
 	struct device *dev = &sensor->client->dev;
 	int ret;
@@ -1342,7 +1398,7 @@ static int mt9m113_stream_context_a(struct mt9m113 *sensor, u16 output_ctrl_val,
 		dev_warn(dev, "MT9M113: SEQ_CMD_RUN did not complete\n");
 
 	mt9m113_reassert_output(sensor, output_ctrl_val,
-				MT9M113_MODE_OUTPUT_FORMAT_A, rgb);
+				MT9M113_MODE_OUTPUT_FORMAT_A, code);
 	msleep(20);
 	return 0;
 }
@@ -1352,7 +1408,7 @@ static int mt9m113_stream_context_a(struct mt9m113 *sensor, u16 output_ctrl_val,
  * preview, so enter preview first, wait for SEQ_STATE=PREVIEW, then switch.
  */
 static int mt9m113_stream_context_b(struct mt9m113 *sensor, u16 output_ctrl_val,
-				    bool rgb)
+				    u32 code)
 {
 	struct device *dev = &sensor->client->dev;
 	u64 seq_state = 0;
@@ -1434,7 +1490,7 @@ static int mt9m113_stream_context_b(struct mt9m113 *sensor, u16 output_ctrl_val,
 	dev_dbg(dev, "MT9M113: reached capture state\n");
 
 	mt9m113_reassert_output(sensor, output_ctrl_val,
-				MT9M113_MODE_OUTPUT_FORMAT_B, rgb);
+				MT9M113_MODE_OUTPUT_FORMAT_B, code);
 
 	/* The sensor pipeline needs time to reconfigure for 1280x1024. */
 	msleep(200);
@@ -1454,7 +1510,7 @@ static int mt9m113_stream_on(struct mt9m113 *sensor,
 
 	/*
 	 * Wake the MCU out of standby and give it time to settle (50ms matches
-	 * the webOS driver).
+	 * the legacy vendor driver).
 	 */
 	dev_dbg(dev, "MT9M113: start_streaming\n");
 	cci_write(sensor->regmap, MT9M113_STANDBY_CONTROL,
@@ -1526,8 +1582,7 @@ static int mt9m113_stream_on(struct mt9m113 *sensor,
 		return ret;
 	}
 
-	ret = mt9m113_configure_output(sensor, use_context_b,
-				       format->code == MEDIA_BUS_FMT_RGB565_1X16);
+	ret = mt9m113_configure_output(sensor, use_context_b, format->code);
 	if (ret)
 		return ret;
 
@@ -1572,10 +1627,10 @@ static int mt9m113_stream_on(struct mt9m113 *sensor,
 	 */
 	if (use_context_b)
 		ret = mt9m113_stream_context_b(sensor, output_ctrl_val,
-					       format->code == MEDIA_BUS_FMT_RGB565_1X16);
+					       format->code);
 	else
 		ret = mt9m113_stream_context_a(sensor, output_ctrl_val,
-					       format->code == MEDIA_BUS_FMT_RGB565_1X16);
+					       format->code);
 	if (ret)
 		return ret;
 
@@ -1597,6 +1652,15 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	struct device *dev = &sensor->client->dev;
 	unsigned int attempt;
 	int ret = 0;
+
+	/*
+	 * Guard against a redundant s_stream(1): a second
+	 * pm_runtime_resume_and_get() here would leak a PM reference and pin
+	 * the device awake forever, because mt9m113_stop_streaming() only
+	 * drops one reference per stop.
+	 */
+	if (sensor->streaming)
+		return 0;
 
 	for (attempt = 0; attempt < MT9M113_STREAM_START_RETRIES; attempt++) {
 		ret = pm_runtime_resume_and_get(dev);
@@ -1624,10 +1688,17 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 	struct device *dev = &sensor->client->dev;
 	int ret;
 
+	if (!sensor->streaming)
+		return 0;
+
 	sensor->streaming = false;
 
 	/* Disable MIPI output */
-	cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
+	ret = cci_write(sensor->regmap, MT9M113_OUTPUT_CONTROL, 0x0000, NULL);
+	if (ret < 0)
+		dev_warn(dev,
+			 "MT9M113: MIPI output disable failed (%d), receiver may still see traffic\n",
+			 ret);
 
 	/*
 	 * Wait briefly for any pending SEQ_CMD to complete.
@@ -1647,11 +1718,6 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 /* -----------------------------------------------------------------------------
  * V4L2 Subdev Operations
  */
-
-static inline struct mt9m113 *pa_to_mt9m113(struct v4l2_subdev *sd)
-{
-	return container_of(sd, struct mt9m113, pa.sd);
-}
 
 static inline struct mt9m113 *ifp_to_mt9m113(struct v4l2_subdev *sd)
 {
@@ -1850,6 +1916,8 @@ static int mt9m113_ifp_enum_frame_size(struct v4l2_subdev *sd,
 	/* Source pad - Context A (640x480) and Context B (1280x1024) */
 	if (fse->index > 1)
 		return -EINVAL;
+	if (mt9m113_format_info(fse->code)->code != fse->code)
+		return -EINVAL;
 
 	if (fse->index == 0) {
 		fse->min_width = 640;
@@ -1898,6 +1966,10 @@ static int mt9m113_ifp_g_frame_interval(struct v4l2_subdev *sd,
 {
 	struct v4l2_mbus_framefmt *format;
 
+	/* Frame intervals are only defined on the source pad. */
+	if (fi->pad != 1)
+		return -EINVAL;
+
 	format = v4l2_subdev_state_get_format(state, 1);
 
 	/* Return interval based on current resolution */
@@ -1918,9 +1990,19 @@ static int mt9m113_ifp_set_fmt(struct v4l2_subdev *sd,
 			       struct v4l2_subdev_state *state,
 			       struct v4l2_subdev_format *fmt)
 {
+	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *compose;
 	const struct mt9m113_format_info *info;
+
+	/*
+	 * Reject geometry/format changes while the pipeline is live.
+	 * The sensor is only programmed in mt9m113_stream_on(); silently
+	 * updating the active state would let userspace see one format while
+	 * the wire still carries the previous one.
+	 */
+	if (sensor->streaming)
+		return -EBUSY;
 
 	/* Sink pad format is fixed */
 	if (fmt->pad == 0) {
@@ -2076,7 +2158,13 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 					       struct mt9m113, ifp.hdl);
 	int ret = 0;
 
-	if (!pm_runtime_get_if_in_use(&sensor->client->dev))
+	/*
+	 * pm_runtime_get_if_in_use() returns >0 on success, 0 if not active,
+	 * and -EINVAL if runtime PM is disabled.  Both 0 and -EINVAL mean we
+	 * must not touch the hardware (and must not pair with a put), so the
+	 * defensive comparison is "<= 0" rather than the naive "!ret".
+	 */
+	if (pm_runtime_get_if_in_use(&sensor->client->dev) <= 0)
 		return 0;
 
 	switch (ctrl->id) {
@@ -2260,17 +2348,25 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			 * (ctrl_handler_setup default), the MCU is already
 			 * in normal mode - restarting it here would disrupt
 			 * the MCU state and cause REFRESH timeouts.
+			 *
+			 * Keep test_pattern_active set until both writes
+			 * succeed: a half-applied disable leaves the MCU
+			 * halted, and a subsequent CID=0 must be allowed to
+			 * retry the full sequence.
 			 */
 			if (sensor->test_pattern_active) {
 				dev_dbg(&sensor->client->dev,
 					 "MT9M113: Disabling test pattern, restarting MCU\n");
 				cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE,
 					  0x0000, &ret);
-				usleep_range(10000, 15000);
-				ret = mt9m113_write_mcu_var(sensor,
-							    MT9M113_CAM_MODE_SELECT,
-							    MT9M113_CAM_MODE_SELECT_NORMAL);
-				sensor->test_pattern_active = false;
+				if (!ret) {
+					usleep_range(10000, 15000);
+					ret = mt9m113_write_mcu_var(sensor,
+								    MT9M113_CAM_MODE_SELECT,
+								    MT9M113_CAM_MODE_SELECT_NORMAL);
+				}
+				if (!ret)
+					sensor->test_pattern_active = false;
 			}
 		} else {
 			/*
@@ -2281,7 +2377,12 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			 * Sequence:
 			 * 1. Configure test pattern via MCU variables (MCU running)
 			 * 2. Issue refresh to apply settings
-			 * 3. Hold MCU in boot mode to prevent override
+			 * 3. Hold MCU in boot mode to prevent override - but only
+			 *    while streaming.  If the MCU is halted outside of an
+			 *    active session, a STREAMON inside the autosuspend
+			 *    window finds a wedged MCU and the in-flight REFRESH
+			 *    / sequencer commands time out; the next runtime
+			 *    resume's power_on + sensor_init clears it instead.
 			 */
 			sensor->test_pattern_active = true;
 			dev_dbg(&sensor->client->dev,
@@ -2293,11 +2394,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 				ret = mt9m113_write_mcu_var(sensor,
 							    MT9M113_CAM_MODE_SELECT,
 							    MT9M113_CAM_MODE_SELECT_TEST_PATTERN);
-			/* Issue refresh while MCU is still running */
-			if (!ret && sensor->streaming)
+			if (!ret && sensor->streaming) {
 				mt9m113_refresh(sensor);
-			/* Now disable MCU to let test pattern generator run */
-			if (!ret) {
 				dev_dbg(&sensor->client->dev,
 					 "MT9M113: Stopping MCU for test pattern\n");
 				cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE,
@@ -2333,21 +2431,28 @@ static int mt9m113_power_on(struct mt9m113 *sensor)
 	if (ret < 0)
 		return ret;
 
-	if (sensor->powerdown)
-		gpiod_set_value(sensor->powerdown, 0);
-
-	usleep_range(20000, 25000);
-
+	/*
+	 * Aptina/onsemi SOC sensors require EXTCLK to be running before
+	 * STANDBY (powerdown) is released; otherwise the internal
+	 * clock-domain state machines come out of reset non-deterministically
+	 * and the MCU can wedge on SEQ_CMD.  Enable the clock first, let the
+	 * supplies and clock settle, then deassert powerdown.
+	 */
 	ret = clk_prepare_enable(sensor->clk);
 	if (ret < 0)
 		goto error_regulator;
 
+	usleep_range(20000, 25000);
+
+	if (sensor->powerdown)
+		gpiod_set_value_cansleep(sensor->powerdown, 0);
+
 	msleep(20);
 
 	if (sensor->reset) {
-		gpiod_set_value(sensor->reset, 1);
+		gpiod_set_value_cansleep(sensor->reset, 1);
 		usleep_range(1000, 2000);
-		gpiod_set_value(sensor->reset, 0);
+		gpiod_set_value_cansleep(sensor->reset, 0);
 		usleep_range(44500, 50000);
 	} else if (sensor->powerdown) {
 		usleep_range(44500, 50000);
@@ -2360,21 +2465,31 @@ static int mt9m113_power_on(struct mt9m113 *sensor)
 		cci_read(sensor->regmap, MT9M113_CLOCKS_CONTROL, &clocks_val, NULL);
 		if (clocks_val != 0) {
 			u64 seq_cmd = 0;
+			int read_ret;
 
 			/*
 			 * Sensor already has clocks running (warm reboot or
 			 * resume). Check if MCU is responsive by reading
-			 * SEQ_CMD. If stuck (non-zero), do full soft reset
-			 * instead of skipping init.
+			 * SEQ_CMD. If stuck (non-zero) or if the read itself
+			 * failed (I2C error), force the soft-reset path instead
+			 * of silently returning success on an uninitialised
+			 * sensor.
 			 */
-			mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD, &seq_cmd);
-			if (seq_cmd == 0) {
+			read_ret = mt9m113_read_mcu_var(sensor, MT9M113_SEQ_CMD,
+							&seq_cmd);
+			if (read_ret == 0 && seq_cmd == 0) {
 				dev_dbg(dev, "MT9M113 already initialized, MCU OK\n");
 				msleep(50);
 				return 0;
 			}
-			dev_warn(dev, "MT9M113: MCU stuck (SEQ_CMD=0x%llx), forcing soft reset\n",
-				 seq_cmd);
+			if (read_ret < 0)
+				dev_warn(dev,
+					 "MT9M113: SEQ_CMD read failed (%d), forcing soft reset\n",
+					 read_ret);
+			else
+				dev_warn(dev,
+					 "MT9M113: MCU stuck (SEQ_CMD=0x%llx), forcing soft reset\n",
+					 seq_cmd);
 		}
 
 		/* Soft reset */
@@ -2431,7 +2546,9 @@ error_clock:
 	clk_disable_unprepare(sensor->clk);
 error_regulator:
 	if (sensor->powerdown)
-		gpiod_set_value(sensor->powerdown, 1);
+		gpiod_set_value_cansleep(sensor->powerdown, 1);
+	else if (sensor->reset)
+		gpiod_set_value_cansleep(sensor->reset, 1);
 	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
 			       sensor->supplies);
 	return ret;
@@ -2440,18 +2557,28 @@ error_regulator:
 static void mt9m113_power_off(struct mt9m113 *sensor)
 {
 	/*
-	 * Symmetric with mt9m113_power_on(): assert powerdown (if present),
+	 * Symmetric with mt9m113_power_on(): hold the chip in reset, then
 	 * gate the clock and drop the supplies so the enable/disable refcount
 	 * stays balanced across runtime-PM cycles and the MCU is fully reset.
+	 *
+	 * Prefer the powerdown GPIO when available; fall back to driving
+	 * RESET_BAR active so it is not left floating after VDD drops on
+	 * boards that only wire reset-gpios.  Mirror the settling gaps from
+	 * power_on so the MCU sees a clean down-then-up sequence across
+	 * runtime-PM cycles.
 	 */
 	if (sensor->powerdown)
-		gpiod_set_value(sensor->powerdown, 1);
+		gpiod_set_value_cansleep(sensor->powerdown, 1);
+	else if (sensor->reset)
+		gpiod_set_value_cansleep(sensor->reset, 1);
+	usleep_range(1000, 2000);
 	clk_disable_unprepare(sensor->clk);
+	usleep_range(1000, 2000);
 	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
 			       sensor->supplies);
 }
 
-static int __maybe_unused mt9m113_runtime_resume(struct device *dev)
+static int mt9m113_runtime_resume(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
@@ -2462,16 +2589,29 @@ static int __maybe_unused mt9m113_runtime_resume(struct device *dev)
 	 * powerdown GPIO is present. The MT9M113 MCU must be hardware-reset
 	 * (powerdown + clock) and re-initialised on each session, otherwise a
 	 * wedged MCU (SEQ_CMD/0xA103 stuck) is never recovered and only a
-	 * physical power cycle helps - matching the webOS per-open behaviour.
+	 * physical power cycle helps - matching the legacy vendor kernel per-open behaviour.
 	 */
 	ret = mt9m113_power_on(sensor);
 	if (ret)
 		return ret;
 
-	return mt9m113_sensor_init(sensor);
+	ret = mt9m113_sensor_init(sensor);
+	if (ret) {
+		/*
+		 * sensor_init() can fail (-ETIMEDOUT on an MCU lockup, I2C
+		 * errors); on that path the PM core reverts runtime_status to
+		 * SUSPENDED without touching driver-side state, so the
+		 * clk/regulator refcounts taken in power_on() would otherwise
+		 * leak and the next resume would double-enable them.
+		 */
+		mt9m113_power_off(sensor);
+		return ret;
+	}
+
+	return 0;
 }
 
-static int __maybe_unused mt9m113_runtime_suspend(struct device *dev)
+static int mt9m113_runtime_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
@@ -2481,9 +2621,10 @@ static int __maybe_unused mt9m113_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops mt9m113_pm_ops = {
-	SET_RUNTIME_PM_OPS(mt9m113_runtime_suspend, mt9m113_runtime_resume, NULL)
-};
+static DEFINE_RUNTIME_DEV_PM_OPS(mt9m113_pm_ops,
+				 mt9m113_runtime_suspend,
+				 mt9m113_runtime_resume,
+				 NULL);
 
 /* -----------------------------------------------------------------------------
  * Probe & Remove
@@ -2537,6 +2678,19 @@ static int mt9m113_parse_dt(struct mt9m113 *sensor)
 
 	if (sensor->bus_cfg.nr_of_link_frequencies < 1) {
 		dev_err(&sensor->client->dev, "no link-frequencies specified\n");
+		v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
+		return -EINVAL;
+	}
+
+	/*
+	 * data-lanes is required by the binding, but defend against a DTS that
+	 * passes dt_binding_check yet leaves num_data_lanes at zero: the pixel
+	 * rate is derived from it and a zero would be programmed into
+	 * V4L2_CID_PIXEL_RATE, which receivers like camss use to size the
+	 * CSI-2 link budget.
+	 */
+	if (sensor->bus_cfg.bus.mipi_csi2.num_data_lanes < 1) {
+		dev_err(&sensor->client->dev, "data-lanes missing or zero\n");
 		v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
 		return -EINVAL;
 	}
@@ -2631,22 +2785,41 @@ static int mt9m113_probe(struct i2c_client *client)
 	sensor->pa.pad.flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_pads_init(&sensor->pa.sd.entity, 1, &sensor->pa.pad);
 	if (ret < 0)
-		goto error_power_off;
+		goto error_pa_entity;
 
-	/* Initialize PA controls - PIXEL_RATE is needed by camss for link freq */
-	v4l2_ctrl_handler_init(&sensor->pa.hdl, 1);
+	/*
+	 * LINK_FREQ and PIXEL_RATE live on the pixel-array subdev because
+	 * receivers walk the media graph upstream until they reach the
+	 * MEDIA_ENT_F_CAM_SENSOR entity and read these controls from that
+	 * subdev's handler (see camss_find_sensor_pad() / v4l2_get_link_freq()
+	 * in drivers/media/platform/qcom/camss/camss.c). The IFP is a
+	 * MEDIA_ENT_F_PROC_VIDEO_ISP and the walk does not stop there, so
+	 * controls on the IFP alone are invisible to the receiver and the
+	 * pipeline fails at CSIPHY stream-on with -EINVAL.
+	 */
+	v4l2_ctrl_handler_init(&sensor->pa.hdl, 2);
+	{
+		struct v4l2_ctrl *link_freq_ctrl;
+
+		link_freq_ctrl = v4l2_ctrl_new_int_menu(&sensor->pa.hdl, NULL,
+				V4L2_CID_LINK_FREQ,
+				sensor->bus_cfg.nr_of_link_frequencies - 1, 0,
+				sensor->bus_cfg.link_frequencies);
+		if (link_freq_ctrl)
+			link_freq_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	}
 	v4l2_ctrl_new_std(&sensor->pa.hdl, NULL, V4L2_CID_PIXEL_RATE,
 			  sensor->pixrate, sensor->pixrate, 1, sensor->pixrate);
 	if (sensor->pa.hdl.error) {
 		ret = sensor->pa.hdl.error;
-		goto error_pa_hdl;
+		goto error_pa_handler;
 	}
 	sensor->pa.sd.ctrl_handler = &sensor->pa.hdl;
 	sensor->pa.sd.state_lock = sensor->pa.hdl.lock;
 
 	ret = v4l2_subdev_init_finalize(&sensor->pa.sd);
 	if (ret < 0)
-		goto error_pa_hdl;
+		goto error_pa_handler;
 
 	/* Initialize IFP subdev */
 	v4l2_i2c_subdev_init(&sensor->ifp.sd, client, &mt9m113_ifp_ops);
@@ -2658,10 +2831,10 @@ static int mt9m113_probe(struct i2c_client *client)
 	sensor->ifp.pads[1].flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_pads_init(&sensor->ifp.sd.entity, 2, sensor->ifp.pads);
 	if (ret < 0)
-		goto error_pa_subdev;
+		goto error_ifp_entity;
 
 	/* Initialize controls on IFP */
-	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 12);
+	v4l2_ctrl_handler_init(&sensor->ifp.hdl, 10);
 	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
 			  V4L2_CID_HFLIP, 0, 1, 1, 0);
 	v4l2_ctrl_new_std(&sensor->ifp.hdl, &mt9m113_ctrl_ops,
@@ -2692,25 +2865,9 @@ static int mt9m113_probe(struct i2c_client *client)
 				     ARRAY_SIZE(mt9m113_test_pattern_menu) - 1,
 				     0, 0, mt9m113_test_pattern_menu);
 
-	/* Link frequency control (read-only), taken from the DT endpoint. */
-	{
-		struct v4l2_ctrl *link_freq_ctrl;
-
-		link_freq_ctrl = v4l2_ctrl_new_int_menu(&sensor->ifp.hdl, NULL,
-				V4L2_CID_LINK_FREQ,
-				sensor->bus_cfg.nr_of_link_frequencies - 1, 0,
-				sensor->bus_cfg.link_frequencies);
-		if (link_freq_ctrl)
-			link_freq_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
-	}
-
-	/* Pixel rate control */
-	v4l2_ctrl_new_std(&sensor->ifp.hdl, NULL, V4L2_CID_PIXEL_RATE,
-			  sensor->pixrate, sensor->pixrate, 1, sensor->pixrate);
-
 	if (sensor->ifp.hdl.error) {
 		ret = sensor->ifp.hdl.error;
-		goto error_ifp_entity;
+		goto error_ifp_handler;
 	}
 
 	sensor->ifp.sd.ctrl_handler = &sensor->ifp.hdl;
@@ -2720,12 +2877,20 @@ static int mt9m113_probe(struct i2c_client *client)
 	if (ret < 0)
 		goto error_ifp_handler;
 
-	/* Enable runtime PM */
+	/*
+	 * Enable runtime PM.  Configure autosuspend before enabling the
+	 * runtime PM core so a put issued between enable and use_autosuspend
+	 * cannot race with autosuspend being unconfigured.  The 2 s autosuspend
+	 * delay amortises the unconditional power-cycle + full init-table
+	 * replay in runtime_resume over typical preview/snapshot sequences:
+	 * the cold init is load-bearing for MCU-wedge recovery so it cannot
+	 * be conditionalised on health, only amortised.
+	 */
 	pm_runtime_set_active(dev);
 	pm_runtime_get_noresume(dev);
-	pm_runtime_enable(dev);
-	pm_runtime_set_autosuspend_delay(dev, 1000);
+	pm_runtime_set_autosuspend_delay(dev, 2000);
 	pm_runtime_use_autosuspend(dev);
+	pm_runtime_enable(dev);
 
 	/* Register only the IFP - PA will be registered in ifp_registered callback */
 	ret = v4l2_async_register_subdev(&sensor->ifp.sd);
@@ -2739,16 +2904,18 @@ static int mt9m113_probe(struct i2c_client *client)
 
 error_pm:
 	pm_runtime_disable(dev);
+	pm_runtime_set_suspended(dev);
+	pm_runtime_dont_use_autosuspend(dev);
 	pm_runtime_put_noidle(dev);
-	v4l2_subdev_cleanup(&sensor->ifp.sd);
 error_ifp_handler:
+	v4l2_subdev_cleanup(&sensor->ifp.sd);
 	v4l2_ctrl_handler_free(&sensor->ifp.hdl);
 error_ifp_entity:
 	media_entity_cleanup(&sensor->ifp.sd.entity);
-error_pa_subdev:
 	v4l2_subdev_cleanup(&sensor->pa.sd);
-error_pa_hdl:
+error_pa_handler:
 	v4l2_ctrl_handler_free(&sensor->pa.hdl);
+error_pa_entity:
 	media_entity_cleanup(&sensor->pa.sd.entity);
 error_power_off:
 	mt9m113_power_off(sensor);
@@ -2775,6 +2942,7 @@ static void mt9m113_remove(struct i2c_client *client)
 	v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
 
 	pm_runtime_disable(dev);
+	pm_runtime_dont_use_autosuspend(dev);
 	if (!pm_runtime_status_suspended(dev))
 		mt9m113_power_off(sensor);
 	pm_runtime_set_suspended(dev);
@@ -2795,7 +2963,7 @@ MODULE_DEVICE_TABLE(i2c, mt9m113_id);
 static struct i2c_driver mt9m113_driver = {
 	.driver = {
 		.name	= "mt9m113",
-		.pm	= &mt9m113_pm_ops,
+		.pm	= pm_ptr(&mt9m113_pm_ops),
 		.of_match_table = mt9m113_of_ids,
 	},
 	.probe		= mt9m113_probe,
