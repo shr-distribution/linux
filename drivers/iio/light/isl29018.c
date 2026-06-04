@@ -711,10 +711,13 @@ static int isl29018_probe(struct i2c_client *client)
 	struct iio_dev *indio_dev;
 	const void *ddata = NULL;
 	const char *name;
+	struct device *dev;
 	int dev_id;
 	int err;
 
-	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*chip));
+	dev = &client->dev;
+
+	indio_dev = devm_iio_device_alloc(dev, sizeof(*chip));
 	if (!indio_dev)
 		return -ENOMEM;
 
@@ -733,8 +736,16 @@ static int isl29018_probe(struct i2c_client *client)
 	mutex_init(&chip->lock);
 
 	chip->type = dev_id;
-	chip->calibscale = 1;
 	chip->ucalibscale = 0;
+	if (device_property_present(dev, "isil,cover-comp-gain")) {
+		err = device_property_read_u32(dev, "isil,cover-comp-gain",
+					       &chip->calibscale);
+		if (err)
+			return dev_err_probe(dev, err,
+					     "invalid isil,cover-comp-gain\n");
+	} else {
+		chip->calibscale = 1;
+	}
 	chip->int_time = ISL29018_INT_TIME_16;
 	chip->scale = isl29018_scales[chip->int_time][0];
 	chip->suspended = false;
