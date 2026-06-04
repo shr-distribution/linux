@@ -97,13 +97,6 @@
  *   SWAP_LUMA_CHROMA   = Y0 Cb Y1 Cr = YUYV
  */
 #define MT9M113_MODE_OUTPUT_FORMAT_SWAP_LUMA_CHROMA	BIT(1)
-/*
- * YUV byte ordering (datasheet table 31 "mode_output_format_a/b"):
- *   default (0x0000)   = Cb Y0 Cr Y1 = UYVY
- *   SWAP_LUMA_CHROMA   = Y0 Cb Y1 Cr = YUYV
- */
-#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_LUMA_CHROMA	BIT(1)
-#define MT9M113_MODE_OUTPUT_FORMAT_SWAP_CB_CR		BIT(0)
 
 /* Special effects MCU variables */
 #define MT9M113_MODE_SPEC_EFFECTS_A		0x2759
