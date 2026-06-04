@@ -893,6 +893,21 @@ static void a6_i2c_remove(struct i2c_client *client)
 {
 	struct a6_device_state *state = (struct a6_device_state *)i2c_get_clientdata(client);
 
+	/*
+	 * Tear down in reverse of probe order. Until this was complete the
+	 * driver leaked both /sys/devices/virtual/misc/a6_N and the
+	 * misc-device minor number, so a subsequent probe (re-bind via the
+	 * driver-binding sysfs, or unbind/bind cycle from userspace) failed
+	 * inside misc_register() with -EEXIST:
+	 *
+	 *   sysfs: cannot create duplicate filename '/devices/virtual/misc/a6_1'
+	 *   kobject_add_internal failed for a6_1 with -EEXIST
+	 *   a6-battery 2-0032: error -EEXIST: Failed to register misc device
+	 *   a6-battery 2-0032: probe with driver a6-battery failed with error -17
+	 *
+	 * device_init_wakeup() also needs the matching teardown call, or the
+	 * dev's power.can_wakeup flag stays set across rebinds.
+	 */
 	a6_remove_dev_files(state, &client->dev);
 
 	if (state->ka6d_workqueue)
@@ -900,6 +915,11 @@ static void a6_i2c_remove(struct i2c_client *client)
 
 	if (state->ka6d_fw_workqueue)
 		destroy_workqueue(state->ka6d_fw_workqueue);
+
+	misc_deregister(&state->pmem_mdev);
+	misc_deregister(&state->mdev);
+
+	device_init_wakeup(&client->dev, false);
 }
 
 #ifdef CONFIG_PM_SLEEP
