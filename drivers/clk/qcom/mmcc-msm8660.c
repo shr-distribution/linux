@@ -2627,11 +2627,18 @@ static struct gdsc vfe_gdsc = {
 	 * its own software reset via vfe_reset() after enabling clocks, so
 	 * the GDSC-level reset is not strictly required.
 	 *
-	 * Note: VFE is session-scoped (powered at streamon, collapsed at
-	 * streamoff) so it only re-enables once per capture session -- not
-	 * worth RPM_ALWAYS_ON (cf. rot_gdsc, which cycles per m2m job).
+	 * RPM_ALWAYS_ON: VFE is nominally session-scoped (powered at streamon,
+	 * collapsed at streamoff), but on this SoC the legacy-footswitch
+	 * warm-start path -- which has no power-status bit and gates only on
+	 * a fixed udelay() -- is not reliable enough to survive a second
+	 * camera session. The first session's clock-enable always succeeds;
+	 * the next clk_prepare_enable(vfe) after a streamoff hangs the MMSS
+	 * fabric hard (no Oops, no panic, only a power-cycle recovers).
+	 * Keep the rail up across runtime-PM cycles so subsequent sessions
+	 * skip the warm-start path; clocks still gate normally. Same
+	 * approach as rot_gdsc, for similar reasons.
 	 */
-	.flags = LEGACY_FOOTSWITCH,
+	.flags = LEGACY_FOOTSWITCH | RPM_ALWAYS_ON,
 };
 
 static struct gdsc vpe_gdsc = {
