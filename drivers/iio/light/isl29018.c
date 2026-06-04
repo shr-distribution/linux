@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/delay.h>
+#include <linux/math64.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -193,17 +194,22 @@ static int isl29018_read_sensor_input(struct isl29018_chip *chip, int mode)
 static int isl29018_read_lux(struct isl29018_chip *chip, int *lux)
 {
 	int lux_data;
-	unsigned int data_x_range;
+	u32 uscale_rem;
+	u64 uscale_term, data_x_range, result;
 
 	lux_data = isl29018_read_sensor_input(chip,
 					      ISL29018_CMD1_OPMODE_ALS_ONCE);
 	if (lux_data < 0)
 		return lux_data;
 
-	data_x_range = lux_data * chip->scale.scale +
-		       lux_data * chip->scale.uscale / 1000000;
-	*lux = data_x_range * chip->calibscale +
-	       data_x_range * chip->ucalibscale / 1000000;
+	/* Retain the uscale remainder so calibscale captures sub-lux precision. */
+	uscale_term = (u64)lux_data * chip->scale.uscale;
+	data_x_range = (u64)lux_data * chip->scale.scale +
+		       div_u64_rem(uscale_term, 1000000, &uscale_rem);
+	result = data_x_range * chip->calibscale +
+		 div_u64((u64)uscale_rem * chip->calibscale, 1000000) +
+		 div_u64(data_x_range * chip->ucalibscale, 1000000);
+	*lux = (int)min_t(u64, result, INT_MAX);
 
 	return 0;
 }
