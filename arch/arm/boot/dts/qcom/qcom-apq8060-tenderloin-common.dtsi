@@ -2877,6 +2877,13 @@
 		vlogic-supply = <&pm8901_lvs3>; // 1.8V pm8058_l15 type > TOPAZ_DVT
 		vdd-supply = <&pm8058_l15>; // 2.85V
 
+		/* Identity matches the legacy usd_topaz-*_default.xml entry
+		 * for <mpu_gyroscope><rotationMatrix>; the chip axes line up
+		 * with the device frame. */
+		mount-matrix = "1", "0", "0",
+			       "0", "1", "0",
+			       "0", "0", "1";
+
 		i2c-gate {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -2895,6 +2902,13 @@
 
 				pinctrl-names = "default";
 				pinctrl-0 = <&accel_pins>;
+
+				/* Legacy XML stores the matrix as 10-bit
+				 * fixed-point identity (1024,0,0/0,1024,0/
+				 * 0,0,1024); decoded that's plain identity. */
+				mount-matrix = "1", "0", "0",
+					       "0", "1", "0",
+					       "0", "0", "1";
 			};
 		};
 	};
@@ -2908,6 +2922,12 @@
 		reg = <0x1e>;
 		vdd-supply = <&pm8058_l15>;   // 2.85V
 		vddio-supply = <&pm8058_s3>;  // 1.8V
+
+		/* Identity per legacy usd_topaz-*_default.xml
+		 * <st_magnetometer><rotationMatrix>. */
+		mount-matrix = "1", "0", "0",
+			       "0", "1", "0",
+			       "0", "0", "1";
 	};
 
 	isl29023@44 {
