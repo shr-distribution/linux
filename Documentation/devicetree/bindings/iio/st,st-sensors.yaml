@@ -126,6 +126,24 @@ properties:
   mount-matrix:
     description: an optional 3x3 mounting rotation matrix.
 
+  st,fullscale-mg:
+    description: |
+      Selects the initial sensor full-scale at probe time, expressed in
+      milligauss for magnetometers (or analogous engineering units for
+      other sensor families that may grow this property in the future).
+      The value must match one of the sensor-specific full-scale ranges
+      supported by the chip; if the chip does not support the requested
+      range the driver falls back to its built-in default.
+
+      The legacy webOS userspace driver for the LSM303DLH magnetometer
+      on the HP TouchPad (libusd_drv_lsm303dlh.so) initialises CRB_M
+      with gain code 3 (= +/-2.5 G) rather than the +/-1.3 G default
+      hardcoded by the kernel; without this property the same chip
+      saturates its X axis in the presence of small DC fields from
+      nearby PCB structures, returning a stuck overflow sentinel of
+      0xF000.
+    $ref: /schemas/types.yaml#/definitions/uint32
+
 allOf:
   - if:
       properties:
