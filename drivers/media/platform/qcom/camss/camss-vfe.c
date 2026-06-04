@@ -1092,23 +1092,6 @@ void vfe_buf_add_pending(struct vfe_output *output,
 	list_add_tail(&buffer->queue, &output->pending_bufs);
 }
 
-/*
- * vfe_buf_flush_pending - Flush all pending buffers.
- * @output: VFE output
- * @state: vb2 buffer state
- */
-static void vfe_buf_flush_pending(struct vfe_output *output,
-				  enum vb2_buffer_state state)
-{
-	struct camss_buffer *buf;
-	struct camss_buffer *t;
-
-	list_for_each_entry_safe(buf, t, &output->pending_bufs, queue) {
-		vb2_buffer_done(&buf->vb.vb2_buf, state);
-		list_del(&buf->queue);
-	}
-}
-
 int vfe_put_output(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
@@ -1718,31 +1701,45 @@ int vfe_flush_buffers(struct camss_video *vid,
 {
 	struct vfe_line *line = container_of(vid, struct vfe_line, video_out);
 	struct vfe_device *vfe = to_vfe(line);
-	struct vfe_output *output;
+	struct vfe_output *output = &line->output;
+	struct camss_buffer *buf0, *buf1, *last_buf;
+	struct camss_buffer *buf, *tmp;
+	LIST_HEAD(to_release);
 	unsigned long flags;
 
-	output = &line->output;
-
+	/*
+	 * Collect every buffer the driver still owns under the output lock,
+	 * then drop the lock before walking the list and calling
+	 * vb2_buffer_done() - the convention enshrined in the VFE31 ISR is
+	 * that vb2_buffer_done() must not run inside output_lock, both
+	 * because it can wake waiters that take other locks and because
+	 * lockdep covers the ordering in only one direction. Doing it
+	 * outside the spinlock here matches that pattern and avoids any
+	 * future deadlock when vb2 grows additional internal locking.
+	 */
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
-	vfe_buf_flush_pending(output, state);
+	list_splice_tail_init(&output->pending_bufs, &to_release);
 
-	if (output->buf[0]) {
-		vb2_buffer_done(&output->buf[0]->vb.vb2_buf, state);
-		output->buf[0] = NULL;
-	}
-
-	if (output->buf[1]) {
-		vb2_buffer_done(&output->buf[1]->vb.vb2_buf, state);
-		output->buf[1] = NULL;
-	}
-
-	if (output->last_buffer) {
-		vb2_buffer_done(&output->last_buffer->vb.vb2_buf, state);
-		output->last_buffer = NULL;
-	}
+	buf0 = output->buf[0];
+	output->buf[0] = NULL;
+	buf1 = output->buf[1];
+	output->buf[1] = NULL;
+	last_buf = output->last_buffer;
+	output->last_buffer = NULL;
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
+
+	list_for_each_entry_safe(buf, tmp, &to_release, queue) {
+		list_del(&buf->queue);
+		vb2_buffer_done(&buf->vb.vb2_buf, state);
+	}
+	if (buf0)
+		vb2_buffer_done(&buf0->vb.vb2_buf, state);
+	if (buf1)
+		vb2_buffer_done(&buf1->vb.vb2_buf, state);
+	if (last_buf)
+		vb2_buffer_done(&last_buf->vb.vb2_buf, state);
 
 	return 0;
 }
