@@ -2633,8 +2633,26 @@ static int mt9m113_probe(struct i2c_client *client)
 	if (ret < 0)
 		goto error_power_off;
 
-	/* Initialize PA controls - PIXEL_RATE is needed by camss for link freq */
-	v4l2_ctrl_handler_init(&sensor->pa.hdl, 1);
+	/*
+	 * Initialize PA controls. The camss receiver walks the media graph
+	 * upstream looking for MEDIA_ENT_F_CAM_SENSOR and reads V4L2_CID_LINK_FREQ
+	 * (with a PIXEL_RATE fallback) from that subdev's handler. PA is the
+	 * CAM_SENSOR entity here, so both controls must live on PA - exposing
+	 * them only on IFP makes the camss query fall back to PIXEL_RATE * bpp
+	 * / (2 * lanes), which fails with -EINVAL when the CSIPHY sink pad
+	 * format has not been propagated and bpp comes back as 0.
+	 */
+	v4l2_ctrl_handler_init(&sensor->pa.hdl, 2);
+	{
+		struct v4l2_ctrl *link_freq_ctrl;
+
+		link_freq_ctrl = v4l2_ctrl_new_int_menu(&sensor->pa.hdl, NULL,
+				V4L2_CID_LINK_FREQ,
+				sensor->bus_cfg.nr_of_link_frequencies - 1, 0,
+				sensor->bus_cfg.link_frequencies);
+		if (link_freq_ctrl)
+			link_freq_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	}
 	v4l2_ctrl_new_std(&sensor->pa.hdl, NULL, V4L2_CID_PIXEL_RATE,
 			  sensor->pixrate, sensor->pixrate, 1, sensor->pixrate);
 	if (sensor->pa.hdl.error) {
