@@ -2843,6 +2843,29 @@
 	scl-gpios = <&tlmm 43 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	sda-gpios = <&tlmm 44 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
+	/*
+	 * MPU3050 gyroscope. The chip exposes a secondary "aux" I2C
+	 * interface to which the LSM303DLH accelerometer (0x18) is wired.
+	 * The matching LSM303DLH magnetometer (0x1e) is a separate physical
+	 * chip on the host gsbi3 I2C bus, not on the aux bus.
+	 *
+	 * Confirmed 2026-06-04 against both a running mainline LuneOS
+	 * userspace and the legacy webOS sensord (PID with five fds on
+	 * /dev/i2c-0):
+	 *
+	 *   i2c-0 0x68 -> 0x69 (MPU3050 WHO_AM_I)        gyro on host bus
+	 *   i2c-0 0x1e -> 0x48 ('H', IRA_REG_M)          magn on host bus
+	 *   i2c-0 0x18 -> NACK                            accel NOT on host bus
+	 *
+	 *   mux child of mpu3050:
+	 *   0x18 -> ACK (accel only reachable through the MPU's aux bus)
+	 *
+	 * Declare the accelerometer as a child of the MPU3050's "i2c-gate"
+	 * subnode so its driver probes on the aux bus. Keep the magn as a
+	 * direct child of gsbi3_i2c since the chip really does live on the
+	 * host bus; routing it through the mux too would just hide the
+	 * topology and add a needless gate-switch for every read.
+	 */
 	mpu3050: mpu3050@68 {
 		/* Gyrometer */
 		compatible = "invensense,mpu3050";
@@ -2853,25 +2876,34 @@
 		pinctrl-0 = <&mpu3050_gpios>;
 		vlogic-supply = <&pm8901_lvs3>; // 1.8V pm8058_l15 type > TOPAZ_DVT
 		vdd-supply = <&pm8058_l15>; // 2.85V
+
+		i2c-gate {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			lsm303dlh_accel: lsm303dlh@18 {
+				/* Accelerometer */
+				compatible = "st,lsm303dlh-accel";
+				st,drdy-int-pin = <1>;
+				reg = <0x18>;
+
+				interrupt-parent = <&tlmm>;
+				interrupts = <124 IRQ_TYPE_EDGE_RISING>;
+
+				vdd-supply = <&pm8058_l15>;   // 2.85V
+				vddio-supply = <&pm8058_s3>;  // 1.8V s3
+
+				pinctrl-names = "default";
+				pinctrl-0 = <&accel_pins>;
+			};
+		};
 	};
 
-	lsm303dlh_accel: lsm303dlh@18 {
-		/* Accelerometer */
-		compatible = "st,lsm303dlh-accel";
-		st,drdy-int-pin = <1>;
-		reg = <0x18>;
-
-		interrupt-parent = <&tlmm>;
-		interrupts = <124 IRQ_TYPE_EDGE_RISING>;
-
-		vdd-supply = <&pm8058_l15>;   // 2.85V
-		vddio-supply = <&pm8058_s3>;  // 1.8V s3
-
-		pinctrl-names = "default";
-		pinctrl-0 = <&accel_pins>;
-	};
 	lsm303dlh_magn: lsm303dlh@1e {
-		/* Magnetometer */
+		/* Magnetometer — separate chip on the host gsbi3 bus.
+		 * WHO_AM_I (IRA_REG_M) reads back 0x48 'H' under legacy
+		 * webOS sensord, confirming the chip is electrically on
+		 * i2c-0 and not just a passthrough view of the aux bus. */
 		compatible = "st,lsm303dlh-magn";
 		reg = <0x1e>;
 		vdd-supply = <&pm8058_l15>;   // 2.85V
