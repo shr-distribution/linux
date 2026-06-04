@@ -17,6 +17,7 @@
 #include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/firmware.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -24,6 +25,7 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
 #include <linux/interrupt.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
@@ -31,6 +33,10 @@
 #include <linux/slab.h>
 
 #include "mpu3050.h"
+
+#define MPU3050_DMP_FW_NAME	"invensense/mpu3050_dmp.bin"
+#define MPU3050_DMP_FW_SIZE	1024
+#define MPU3050_DMP_CHUNK	64
 
 #define MPU3050_CHIP_ID		0x68
 #define MPU3050_CHIP_ID_MASK	0x7E
@@ -795,6 +801,171 @@ static int mpu3050_read_mem(struct mpu3050 *mpu3050,
 				len);
 }
 
+/**
+ * mpu3050_write_mem() - write MPU-3050 internal memory
+ * @mpu3050: device to write to
+ * @bank: target bank (including any MPU3050_MEM_* flag bits)
+ * @addr: target address within the bank
+ * @len: number of bytes
+ * @buf: the bytes to write
+ *
+ * The MPU-3050 exposes its internal DMP RAM through three registers:
+ * BANK_SEL, MEM_START_ADDR and MEM_R_W. Writes to MEM_R_W auto-
+ * increment the internal pointer, so a multi-byte regmap_raw_write
+ * fills consecutive memory locations.
+ */
+static int mpu3050_write_mem(struct mpu3050 *mpu3050,
+			     u8 bank,
+			     u8 addr,
+			     u8 len,
+			     const u8 *buf)
+{
+	int ret;
+
+	ret = regmap_write(mpu3050->map, MPU3050_BANK_SEL, bank);
+	if (ret)
+		return ret;
+
+	ret = regmap_write(mpu3050->map, MPU3050_MEM_START_ADDR, addr);
+	if (ret)
+		return ret;
+
+	return regmap_raw_write(mpu3050->map, MPU3050_MEM_R_W, buf, len);
+}
+
+/*
+ * Bank 0 offsets 0x00..0x13 are patched by the chip during DMP upload
+ * with the firmware entry point and a small init scratch area, so the
+ * legacy MotionLib reference driver skips them when verifying the
+ * blob. Skip them too rather than rejecting a valid upload.
+ */
+#define MPU3050_DMP_BANK0_PATCH_END	0x14
+
+static bool mpu3050_dmp_verify_skip(unsigned int offset)
+{
+	return offset < MPU3050_DMP_BANK0_PATCH_END;
+}
+
+/**
+ * mpu3050_load_dmp() - upload the DMP firmware blob and verify by readback
+ * @mpu3050: device to upload to
+ *
+ * The MPU-3050 contains a Digital Motion Processor (DMP) with 1 KiB of
+ * RAM organised as four 256-byte banks. The DMP can pack gyro samples
+ * (and optional fusion outputs) into the on-chip FIFO autonomously,
+ * which sidesteps races in the per-sample register read path.
+ *
+ * The firmware blob is optional: when absent the driver continues to
+ * operate using direct gyro register reads as before. The blob is
+ * requested from %MPU3050_DMP_FW_NAME and must be exactly
+ * %MPU3050_DMP_FW_SIZE bytes long. After upload the driver reads each
+ * chunk back and compares it to detect a flaky i2c link.
+ *
+ * For RAM access %BANK_SEL is written with the literal bank index 0..3
+ * and no %MPU3050_MEM_USER_BANK / %MPU3050_MEM_PRFTCH flags, matching
+ * the legacy MotionLib MLSLSerialWriteMem()/MLSLSerialReadMem() helpers.
+ * (Those flags are only relevant for the chip's OTP / one-time-prog
+ * memory, which uses a different bank index space.)
+ *
+ * Before the upload the gyro must be fully clocked: PLL_Z is selected
+ * already by mpu3050_hw_init(); we additionally set %SMPLRT_DIV and
+ * %DLPF_FS_SYNC so the DMP RAM is reachable. Without these the chip's
+ * arbitration leaves the first ~20 bytes of bank 0 unwritable, which
+ * looks like a verify mismatch at offset 0x0000.
+ */
+static int mpu3050_load_dmp(struct mpu3050 *mpu3050)
+{
+	const struct firmware *fw;
+	u8 readback[MPU3050_DMP_CHUNK];
+	unsigned int offset;
+	int ret;
+
+	ret = request_firmware_direct(&fw, MPU3050_DMP_FW_NAME, mpu3050->dev);
+	if (ret) {
+		dev_info(mpu3050->dev,
+			 "no DMP firmware (%s), continuing without DMP\n",
+			 MPU3050_DMP_FW_NAME);
+		return 0;
+	}
+
+	if (fw->size != MPU3050_DMP_FW_SIZE) {
+		dev_warn(mpu3050->dev,
+			 "DMP firmware size %zu != %d, skipping DMP\n",
+			 fw->size, MPU3050_DMP_FW_SIZE);
+		ret = 0;
+		goto out;
+	}
+
+	/*
+	 * Bring the gyro fully online before touching DMP RAM. Default
+	 * full scale 2000 dps + DLPF 20 Hz + sample rate divisor 3 match
+	 * the legacy MotionLib pre-DMP-load configuration.
+	 */
+	ret = regmap_write(mpu3050->map, MPU3050_SMPLRT_DIV, 3);
+	if (ret)
+		goto out;
+
+	ret = regmap_write(mpu3050->map, MPU3050_DLPF_FS_SYNC,
+			   MPU3050_FS_2000DPS | MPU3050_DLPF_CFG_20HZ);
+	if (ret)
+		goto out;
+
+	/* Datasheet: configuration writes settle within a few milliseconds. */
+	usleep_range(5000, 10000);
+
+	for (offset = 0; offset < fw->size; offset += MPU3050_DMP_CHUNK) {
+		u8 bank = offset >> 8;
+		u8 addr = offset & 0xff;
+		size_t n = min_t(size_t, MPU3050_DMP_CHUNK, fw->size - offset);
+
+		ret = mpu3050_write_mem(mpu3050, bank, addr, n,
+					fw->data + offset);
+		if (ret) {
+			dev_err(mpu3050->dev,
+				"DMP upload failed at 0x%04x: %d\n",
+				offset, ret);
+			goto out;
+		}
+	}
+
+	for (offset = 0; offset < fw->size; offset += MPU3050_DMP_CHUNK) {
+		u8 bank = offset >> 8;
+		u8 addr = offset & 0xff;
+		size_t n = min_t(size_t, MPU3050_DMP_CHUNK, fw->size - offset);
+		unsigned int i;
+
+		ret = mpu3050_read_mem(mpu3050, bank, addr, n, readback);
+		if (ret) {
+			dev_err(mpu3050->dev,
+				"DMP readback failed at 0x%04x: %d\n",
+				offset, ret);
+			goto out;
+		}
+
+		for (i = 0; i < n; i++) {
+			unsigned int p = offset + i;
+
+			if (mpu3050_dmp_verify_skip(p))
+				continue;
+			if (readback[i] != fw->data[p]) {
+				dev_warn(mpu3050->dev,
+					 "DMP verify mismatch at 0x%04x: expected 0x%02x got 0x%02x, disabling DMP\n",
+					 p, fw->data[p], readback[i]);
+				ret = 0;
+				goto out;
+			}
+		}
+	}
+
+	dev_info(mpu3050->dev, "DMP firmware loaded and verified (%zu bytes)\n",
+		 fw->size);
+	ret = 0;
+
+out:
+	release_firmware(fw);
+	return ret;
+}
+
 static int mpu3050_hw_init(struct mpu3050 *mpu3050)
 {
 	int ret;
@@ -853,6 +1024,10 @@ static int mpu3050_hw_init(struct mpu3050 *mpu3050)
 		 FIELD_GET(GENMASK_ULL(49, 47), otp),
 		 /* rev ID, bits 50-55 */
 		 FIELD_GET(GENMASK_ULL(55, 50), otp));
+
+	ret = mpu3050_load_dmp(mpu3050);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -1299,3 +1474,4 @@ DEFINE_RUNTIME_DEV_PM_OPS(mpu3050_dev_pm_ops, mpu3050_runtime_suspend,
 MODULE_AUTHOR("Linus Walleij");
 MODULE_DESCRIPTION("MPU3050 gyroscope driver");
 MODULE_LICENSE("GPL");
+MODULE_FIRMWARE(MPU3050_DMP_FW_NAME);
