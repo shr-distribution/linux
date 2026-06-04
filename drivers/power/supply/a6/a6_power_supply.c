@@ -35,6 +35,7 @@ static enum power_supply_property a6_battery_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CHARGE_NOW,
 	POWER_SUPPLY_PROP_HEALTH,
 };
 
@@ -125,6 +126,39 @@ static int a6_battery_get_property(struct power_supply *psy,
 		/* Full capacity in 1.6mAh units, convert to µAh */
 		val->intval = (raw_val * 1600);
 		break;
+
+	case POWER_SUPPLY_PROP_CHARGE_NOW: {
+		/*
+		 * The A6 doesn't expose a coulomb-counter-derived "remaining
+		 * charge" register directly. Synthesize it from the relative
+		 * remaining percentage (RARC, 0-100) and the full-charge
+		 * capacity (FULL, 1.6 mAh units). Userspace expects µAh.
+		 *
+		 * Read both registers fresh in the same call so the result is
+		 * self-consistent — RARC and FULL update on different cadences
+		 * inside the MSP430 firmware, and a stale pair would yield a
+		 * misleading "charge increased while discharging" reading.
+		 *
+		 * Compute (full_uAh / 100) * rarc rather than the algebraically
+		 * cleaner (full_uAh * rarc) / 100 to avoid overflow: full_uAh
+		 * can approach 5.2e7, and 5.2e7 * 100 = 5.2e9 overruns int32_t.
+		 * The divide-first form loses at most 99 uAh of precision per
+		 * read, which is negligible compared to A6 quantization.
+		 */
+		uint8_t rarc_data;
+		int32_t full_uah;
+
+		ret = a6_i2c_read_reg(client, rarc_id, 1, &rarc_data);
+		if (ret < 0)
+			return ret;
+		ret = a6_i2c_read_reg(client, full_ids, 2, data);
+		if (ret < 0)
+			return ret;
+		raw_val = *(int16_t *)data;
+		full_uah = raw_val * 1600;
+		val->intval = (full_uah / 100) * rarc_data;
+		break;
+	}
 
 	case POWER_SUPPLY_PROP_HEALTH:
 		val->intval = POWER_SUPPLY_HEALTH_GOOD;
