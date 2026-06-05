@@ -71,6 +71,31 @@ static uint32_t prop_crtc_x, prop_crtc_y, prop_crtc_w, prop_crtc_h;
 static uint32_t prop_rotation;
 static int      flip_pending;           /* 1 = waiting for page-flip event */
 
+/*
+ * Double-buffered-hold state for V4L2 buffer ownership:
+ *   - displayed_idx: CAPTURE buffer slot currently being scanned by MDP4.
+ *     Must NOT be QBUF'd or the decoder will write into it mid-scan,
+ *     producing torn / blue-banded frames (the artifact the user
+ *     observed before this fix).
+ *   - committed_idx: slot we committed to via atomic+NONBLOCK; it will
+ *     latch at the next vsync, signalled by a DRM_EVENT_FLIP_COMPLETE
+ *     on drm_fd.
+ *
+ * Lifecycle (per new decoded frame X):
+ *   1. If committed_idx is set, block on drm_fd until the flip event
+ *      fires. After that, committed_idx is the new displayed_idx, and
+ *      the old displayed_idx (if any) is no longer scanning -> recycle
+ *      it via VIDIOC_QBUF.
+ *   2. Issue atomic+NONBLOCK commit for X. Now committed_idx = X.
+ *
+ * This matches the canonical V4L2->DRM atomic playback pattern used by
+ * gstreamer kmssink (gst_kms_sink_sync) and weston's drm-backend, and
+ * mirrors the BLOCKING vsync-push of the legacy webOS mdp4_overlay
+ * driver (mdp4_overlay_lcdc_wait4vsync after mdp4_overlay_reg_flush).
+ */
+static int displayed_idx = -1;
+static int committed_idx = -1;
+
 /* Per-CAPTURE-slot DRM state — exported dma-buf, imported handle, FB id. */
 struct cap_slot {
 	int      dmabuf_fd;     /* V4L2 → DRM dma-buf */
@@ -589,8 +614,42 @@ int main(int argc, char **argv)
 				.m.planes = &pl, .length = 1,
 			};
 			if (ioctl(vfd, VIDIOC_DQBUF, &b) == 0 && pl.bytesused) {
+				/*
+				 * Double-buffered hold: before committing the
+				 * new frame, wait for the previous commit to
+				 * latch (= old displayed buffer is no longer
+				 * being scanned out). Then recycle the OLD
+				 * displayed slot to V4L2; the just-committed
+				 * one becomes the new displayed slot; commit
+				 * X as the new pending slot.
+				 */
+				if (committed_idx >= 0) {
+					/* Block on drm_fd until the kernel
+					 * delivers DRM_EVENT_FLIP_COMPLETE
+					 * (one vsync ~16.7ms worst case). */
+					int spins = 0;
+					while (flip_pending && spins++ < 60)
+						drm_drain_flip_event(50);
+					int prev = displayed_idx;
+					displayed_idx = committed_idx;
+					committed_idx = -1;
+					if (prev >= 0) {
+						struct v4l2_plane qp = {0};
+						struct v4l2_buffer rq = {
+							.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+							.memory = V4L2_MEMORY_MMAP,
+							.index = prev,
+							.m.planes = &qp,
+							.length = 1,
+						};
+						ioctl(vfd, VIDIOC_QBUF, &rq);
+					}
+				}
+
 				drm_flip_to(&all_slots[b.index]);
+				committed_idx = b.index;
 				frames_shown++;
+
 				struct timespec tn;
 				clock_gettime(CLOCK_MONOTONIC, &tn);
 				double dt = (tn.tv_sec - t_last.tv_sec) +
@@ -606,17 +665,6 @@ int main(int argc, char **argv)
 					t_last = tn;
 					frames_at_last_report = frames_shown;
 				}
-				/* Re-queue immediately. We're displaying the
-				 * just-dequeued buffer; the firmware may write
-				 * the *next* frame into a different slot. */
-				struct v4l2_plane qp = {0};
-				struct v4l2_buffer rq = {
-					.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
-					.memory = V4L2_MEMORY_MMAP,
-					.index = b.index, .m.planes = &qp,
-					.length = 1,
-				};
-				ioctl(vfd, VIDIOC_QBUF, &rq);
 			}
 		}
 		if (pfd.revents & POLLOUT) {
