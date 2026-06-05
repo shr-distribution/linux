@@ -1781,11 +1781,29 @@
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
 			interconnect-names = "video-smi", "video-ebi";
 			/*
-			 * Video codec bandwidth from webOS vcd_res_tracker.h.
-			 * 164 MB/s average, 1309 MB/s peak for 1080p encode/decode.
+			 * Video codec bandwidth votes. The 1080p decoder reads
+			 * the input bitstream + reference frames and writes
+			 * the decoded NV12 output every frame, so sustained
+			 * throughput per frame is roughly 3x the frame size:
+			 *
+			 *   1080p NV12 = 1920 * 1088 * 1.5 = ~3 MB/frame
+			 *   30 fps decode: ~270 MB/s sustained
+			 *   60 fps decode: ~540 MB/s sustained
+			 *
+			 * The previous avg=164 MB/s vote (from webOS
+			 * vcd_res_tracker.h, which assumed 30 fps and probably
+			 * 720p as the common 1080p-class load) is below 30 fps
+			 * 1080p, so a 1080p stream times out inside the
+			 * firmware CORE during the second frame -- the
+			 * "VIDC_1080P_ERROR_VIDC_CORE_TIME_OUT" (0x58 / 88)
+			 * the qcom-vidc driver logs as "Firmware error: 0x58".
+			 *
+			 * Vote 768 MB/s avg so 60 fps 1080p has ~40% headroom,
+			 * and keep peak at ~1.3 GB/s for burst credit on the
+			 * Port-B AXI DPB writes.
 			 */
-			qcom,icc-bw-avg-kbps = <167936>;   /* 164 * 1024 */
-			qcom,icc-bw-peak-kbps = <1340416>; /* 1309 * 1024 */
+			qcom,icc-bw-avg-kbps  =  <786432>;   /*  768 * 1024 */
+			qcom,icc-bw-peak-kbps = <1340416>;   /* 1309 * 1024 */
 			status = "disabled";
 		};
 	};
