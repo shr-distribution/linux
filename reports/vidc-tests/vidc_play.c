@@ -41,6 +41,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <linux/videodev2.h>
@@ -56,9 +57,19 @@ static int    vfd, drm_fd;
 static unsigned width, height;          /* decoder-reported coded dimensions */
 static unsigned crop_w, crop_h;
 static unsigned dpy_w, dpy_h;           /* CRTC mode size */
+static unsigned dec_bytesperline;       /* decoder-reported pitch */
+static unsigned dec_sizeimage;          /* decoder-reported total buffer size */
+static unsigned dec_chroma_off;         /* derived from sizeimage & geometry */
 static uint32_t crtc_id, plane_id, conn_id;
 static drmModeModeInfo mode;
 static drmModeCrtc *saved_crtc;
+
+/* Atomic-commit plane property IDs (resolved once at init). */
+static uint32_t prop_fb_id, prop_crtc_id;
+static uint32_t prop_src_x, prop_src_y, prop_src_w, prop_src_h;
+static uint32_t prop_crtc_x, prop_crtc_y, prop_crtc_w, prop_crtc_h;
+static uint32_t prop_rotation;
+static int      flip_pending;           /* 1 = waiting for page-flip event */
 
 /* Per-CAPTURE-slot DRM state — exported dma-buf, imported handle, FB id. */
 struct cap_slot {
@@ -142,6 +153,43 @@ static void drm_setup(const char *card)
 	drmModeFreeResources(res);
 	if (!plane_id) die("no NV12-capable plane found");
 	fprintf(stderr, "DRM: using plane %u on CRTC %u\n", plane_id, crtc_id);
+
+	/* Enable atomic modesetting for non-blocking page-flip commits. */
+	if (drmSetClientCap(drm_fd, DRM_CLIENT_CAP_ATOMIC, 1))
+		die("DRM_CLIENT_CAP_ATOMIC");
+
+	/* TouchPad LVDS panel is mounted upside-down — request 180° plane
+	 * rotation so video shows the right way up without a software flip.
+	 * mdp4_plane.c handles this in HW via FLIP_LR|FLIP_UD op_mode.
+	 * Also resolve all the plane property IDs we'll use in atomic commits. */
+	drmModeObjectProperties *props =
+		drmModeObjectGetProperties(drm_fd, plane_id,
+					   DRM_MODE_OBJECT_PLANE);
+	if (!props) die("plane props");
+	for (uint32_t i = 0; i < props->count_props; i++) {
+		drmModePropertyRes *pr = drmModeGetProperty(drm_fd,
+			props->props[i]);
+		if (!pr) continue;
+		#define MAP(s, var) if (!strcmp(pr->name, s)) var = pr->prop_id
+		MAP("FB_ID",   prop_fb_id);
+		MAP("CRTC_ID", prop_crtc_id);
+		MAP("SRC_X",   prop_src_x);
+		MAP("SRC_Y",   prop_src_y);
+		MAP("SRC_W",   prop_src_w);
+		MAP("SRC_H",   prop_src_h);
+		MAP("CRTC_X",  prop_crtc_x);
+		MAP("CRTC_Y",  prop_crtc_y);
+		MAP("CRTC_W",  prop_crtc_w);
+		MAP("CRTC_H",  prop_crtc_h);
+		MAP("rotation",prop_rotation);
+		#undef MAP
+		drmModeFreeProperty(pr);
+	}
+	drmModeFreeObjectProperties(props);
+	if (!prop_fb_id || !prop_crtc_id || !prop_src_w || !prop_crtc_w)
+		die("plane lacks required atomic properties");
+	fprintf(stderr, "DRM: atomic props OK (FB_ID=%u CRTC_ID=%u rotation=%u)\n",
+		prop_fb_id, prop_crtc_id, prop_rotation);
 }
 
 static void drm_restore(void)
@@ -164,12 +212,15 @@ static int drm_register_slot(struct cap_slot *s, unsigned w, unsigned h)
 	}
 
 	/* NV12 layout for the tile path the firmware writes:
-	 *   Y plane offset 0, stride = ALIGN(w, 128)
-	 *   CbCr plane offset = stride * ALIGN(h, 32)
-	 * That's what mdp4_get_frame_format() consumes for the tile modifier.
+	 *   Y plane offset 0, stride = decoder-reported bytesperline
+	 *   CbCr plane offset = y_plane size (each plane 8192-aligned per
+	 *                       vidc_dec_get_framesize / vidc_dpb_calc_sizes)
+	 * Use decoder-reported values so this stays correct at non-1080p
+	 * resolutions where ALIGN(stride*h,8192) != stride*h.
 	 */
-	uint32_t pitch  = (w + 127) & ~127u;
-	uint32_t y_size = pitch * ((h + 31) & ~31u);
+	uint32_t pitch  = dec_bytesperline ? dec_bytesperline
+					   : ((w + 127) & ~127u);
+	uint32_t y_size = dec_chroma_off;
 	uint32_t handles[4]  = { s->gem_handle, s->gem_handle, 0, 0 };
 	uint32_t pitches[4]  = { pitch,   pitch,  0, 0 };
 	uint32_t offsets[4]  = { 0,       y_size, 0, 0 };
@@ -198,14 +249,68 @@ static int drm_register_slot(struct cap_slot *s, unsigned w, unsigned h)
 	return 0;
 }
 
+static void page_flip_cb(int fd, unsigned int seq, unsigned int sec,
+			 unsigned int usec, unsigned int crtc_id_evt,
+			 void *user_data)
+{
+	(void)fd; (void)seq; (void)sec; (void)usec;
+	(void)crtc_id_evt; (void)user_data;
+	flip_pending = 0;
+}
+
+static void drm_drain_flip_event(int timeout_ms)
+{
+	if (!flip_pending) return;
+	struct pollfd pfd = { .fd = drm_fd, .events = POLLIN };
+	if (poll(&pfd, 1, timeout_ms) <= 0) return;
+	drmEventContext ev = {
+		.version = 3,
+		.page_flip_handler2 = page_flip_cb,
+	};
+	drmHandleEvent(drm_fd, &ev);
+}
+
 static void drm_flip_to(struct cap_slot *s)
 {
-	/* SetPlane: crtc dst = entire display (MDP4 scales/tiles), src = full
-	 * frame in 16.16 fixed-point. */
-	if (drmModeSetPlane(drm_fd, plane_id, crtc_id, s->fb_id, 0,
-			    0, 0, dpy_w, dpy_h,
-			    0, 0, width << 16, height << 16))
-		fprintf(stderr, "SetPlane: %s\n", strerror(errno));
+	/* Non-blocking atomic commit: queue the flip, return immediately,
+	 * kernel delivers a DRM_EVENT_FLIP_COMPLETE via drm_fd at next vsync.
+	 * Lets us overlap VIDC decode with MDP4 scanout. */
+
+	/* Wait for the previous flip to complete before issuing a new one
+	 * (kernel rejects overlapping page-flips with -EBUSY). One-vsync
+	 * worst case (~17ms at 60Hz). */
+	drm_drain_flip_event(50);
+
+	drmModeAtomicReq *req = drmModeAtomicAlloc();
+	if (!req) { fprintf(stderr, "AtomicAlloc OOM\n"); return; }
+
+	#define ADD(prop, val) drmModeAtomicAddProperty(req, plane_id, prop, val)
+	ADD(prop_fb_id,   s->fb_id);
+	ADD(prop_crtc_id, crtc_id);
+	ADD(prop_src_x,   0);
+	ADD(prop_src_y,   0);
+	ADD(prop_src_w,   (uint64_t)width  << 16);
+	ADD(prop_src_h,   (uint64_t)height << 16);
+	ADD(prop_crtc_x,  0);
+	ADD(prop_crtc_y,  0);
+	ADD(prop_crtc_w,  dpy_w);
+	ADD(prop_crtc_h,  dpy_h);
+	if (prop_rotation) ADD(prop_rotation, DRM_MODE_ROTATE_180);
+	#undef ADD
+
+	uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT;
+	int ret = drmModeAtomicCommit(drm_fd, req, flags, NULL);
+	if (ret == -EBUSY) {
+		/* Previous flip still pending — drain and retry once. */
+		drm_drain_flip_event(50);
+		ret = drmModeAtomicCommit(drm_fd, req, flags, NULL);
+	}
+	if (ret)
+		fprintf(stderr, "AtomicCommit: %d/%s\n", ret, strerror(-ret));
+	else
+		flip_pending = 1;
+
+	drmModeAtomicFree(req);
 }
 
 /* -------------------------------------------------------------------- V4L2 */
@@ -265,13 +370,26 @@ static void cap_setup_after_src_change(void)
 	height = fc.fmt.pix_mp.height;
 	crop_w = width;
 	crop_h = height;
+	dec_bytesperline = fc.fmt.pix_mp.plane_fmt[0].bytesperline;
+	dec_sizeimage    = fc.fmt.pix_mp.plane_fmt[0].sizeimage;
+	/* Decoder lays out Y then UV each ALIGN(stride*h_planes, 8192).
+	 * Recover the Y-plane size by aligning stride * ALIGN(h, 32) up to
+	 * 8192 — same formula as vidc_dec_get_framesize(). */
+	{
+		unsigned stride = dec_bytesperline ? dec_bytesperline
+						   : ((width + 127) & ~127u);
+		unsigned y = stride * ((height + 31) & ~31u);
+		dec_chroma_off = (y + 8191u) & ~8191u;
+	}
 	struct v4l2_selection sel = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
 	                              .target = V4L2_SEL_TGT_COMPOSE };
 	if (!ioctl(vfd, VIDIOC_G_SELECTION, &sel)) {
 		crop_w = sel.r.width; crop_h = sel.r.height;
 	}
-	fprintf(stderr, "VIDC CAPTURE %ux%u (visible %ux%u)\n",
-		width, height, crop_w, crop_h);
+	fprintf(stderr, "VIDC CAPTURE %ux%u (visible %ux%u) "
+		"bytesperline=%u sizeimage=%u chroma_off=%u\n",
+		width, height, crop_w, crop_h,
+		dec_bytesperline, dec_sizeimage, dec_chroma_off);
 
 	cap_count = 8;
 	struct v4l2_requestbuffers rb = { .count = cap_count,
@@ -312,6 +430,8 @@ static void cap_setup_after_src_change(void)
 				"single-slot reuse\n", i, strerror(errno));
 			break;
 		}
+		fprintf(stderr, "  slot %u: dma_fd=%d gem=0x%x fb=0x%x\n",
+			i, s->dmabuf_fd, s->gem_handle, s->fb_id);
 
 		struct v4l2_plane qp = {0};
 		struct v4l2_buffer q = {
@@ -424,10 +544,35 @@ int main(int argc, char **argv)
 	if (!got_src) die("no SOURCE_CHANGE");
 	cap_setup_after_src_change();
 
+	/* Bootstrap: prefill remaining OUTPUT slots with input bitstream so
+	 * the decoder has continuous work to do. */
+	for (unsigned i = 0; i < MAX_OUT_BUFS && next_au < au_n; i++) {
+		if (!out_avail[i]) continue;
+		size_t s = au_off[next_au];
+		size_t e = (next_au + 1 < au_n) ? au_off[next_au+1] : (size_t)in_total;
+		size_t len = e - s;
+		if (len > out_size[i]) len = out_size[i];
+		memcpy(out_mmap[i], in_data + s, len);
+		struct v4l2_plane qp = { .bytesused = len };
+		struct v4l2_buffer q = { .type=V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
+			.memory=V4L2_MEMORY_MMAP, .index=i,
+			.m.planes=&qp, .length=1 };
+		q.timestamp.tv_usec = (next_au + 1) * 1000;
+		if (ioctl(vfd, VIDIOC_QBUF, &q) == 0) {
+			out_avail[i] = 0;
+			next_au++;
+		}
+	}
+	fprintf(stderr, "bootstrap: queued through AU %zu / %zu\n", next_au, au_n);
+
 	/* Main loop: dispatch OUT/CAP events. Each CAP DQBUF arms a SetPlane
 	 * flip; each OUT DQBUF lets us submit the next AU. */
 	size_t frames_shown = 0;
 	unsigned idle = 0;
+	struct timespec t0, t_last;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	t_last = t0;
+	size_t frames_at_last_report = 0;
 	while (idle < 8) {
 		struct pollfd pfd = { .fd = vfd,
 			.events = POLLIN | POLLOUT | POLLPRI };
@@ -446,6 +591,21 @@ int main(int argc, char **argv)
 			if (ioctl(vfd, VIDIOC_DQBUF, &b) == 0 && pl.bytesused) {
 				drm_flip_to(&all_slots[b.index]);
 				frames_shown++;
+				struct timespec tn;
+				clock_gettime(CLOCK_MONOTONIC, &tn);
+				double dt = (tn.tv_sec - t_last.tv_sec) +
+				            (tn.tv_nsec - t_last.tv_nsec) / 1e9;
+				if (dt >= 1.0) {
+					double inst_fps =
+						(frames_shown - frames_at_last_report) / dt;
+					double total_dt = (tn.tv_sec - t0.tv_sec) +
+					    (tn.tv_nsec - t0.tv_nsec) / 1e9;
+					fprintf(stderr, "  [%.1fs] %.1f fps (avg %.1f)\n",
+						total_dt, inst_fps,
+						frames_shown / total_dt);
+					t_last = tn;
+					frames_at_last_report = frames_shown;
+				}
 				/* Re-queue immediately. We're displaying the
 				 * just-dequeued buffer; the firmware may write
 				 * the *next* frame into a different slot. */
