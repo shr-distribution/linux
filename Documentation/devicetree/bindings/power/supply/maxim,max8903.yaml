@@ -67,17 +67,9 @@ properties:
   usb-current-limit-gpios:
     maxItems: 1
     description:
-      GPIO controlling USB input current limit.
-      Low = usb-current-limit-values[0], High = usb-current-limit-values[1].
-
-  usb-current-limit-values:
-    $ref: /schemas/types.yaml#/definitions/uint32-array
-    minItems: 2
-    maxItems: 2
-    default: [100000, 500000]
-    description:
-      USB current limits in microamps for GPIO low and high states.
-      Default is 100mA (low) and 500mA (high) per USB specification.
+      GPIO driving the MAX8903 IUSB pin. IUSB is a silicon-fixed
+      two-state input - low selects 100 mA, high selects 500 mA.
+      Only the GPIO mapping is board-specific.
 
 required:
   - compatible
@@ -119,7 +111,6 @@ examples:
                                  <1400000 3>, /* GPIO[1:0]=0b11 */
                                  <2000000 2>; /* GPIO[1:0]=0b10 */
 
-      /* USB current control */
+      /* USB current limit: IUSB pin, 100 mA (low) / 500 mA (high) */
       usb-current-limit-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
-      usb-current-limit-values = <100000 500000>; /* 100mA / 500mA */
     };

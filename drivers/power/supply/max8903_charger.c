@@ -16,6 +16,17 @@
 #include <linux/power_supply.h>
 #include <linux/platform_device.h>
 
+/*
+ * IUSB pin: hardcoded by silicon to 100 mA (low) / 500 mA (high).
+ * MAX8903A/B/C/D/E/F/G/H/I datasheet, "Pin Description" table:
+ *   "USB Current-Limit Set Input. Drive IUSB logic-low to set the
+ *    USB current limit to 100mA. Drive IUSB logic-high to set the
+ *    USB current limit to 500mA."
+ * Not a board parameter - never DT-configurable.
+ */
+#define MAX8903_USB_CURRENT_LIMIT_LOW_UA	100000
+#define MAX8903_USB_CURRENT_LIMIT_HIGH_UA	500000
+
 struct max8903_current_limit_mapping {
 	u32 limit_ua;		/* Current limit in microamps */
 	u32 gpio_value;		/* GPIO bit pattern */
@@ -47,8 +58,6 @@ struct max8903_data {
 
 	/* USB current limit control (IUSB pin) */
 	struct gpio_desc *usb_current_limit_gpio;
-	u32 usb_current_limit_low_ua;	/* Current when GPIO low */
-	u32 usb_current_limit_high_ua;	/* Current when GPIO high */
 	u32 usb_current_limit_ua;	/* Current setting in uA */
 
 	/*
@@ -191,17 +200,16 @@ static int max8903_set_usb_current_limit(struct max8903_data *data, u32 limit_ua
 		return -EOPNOTSUPP;
 
 	/*
-	 * Pick the highest of the two configured limits that does not
-	 * exceed the requested cap. Mirror the DC path's policy: if
-	 * neither value fits (the request is below even the low limit),
-	 * refuse the request rather than silently program a higher
-	 * current that violates the system power budget.
+	 * IUSB is a single-bit input with two silicon-fixed settings;
+	 * pick HIGH (500 mA) iff the caller's cap can absorb it, else
+	 * LOW (100 mA), else refuse rather than program a higher current
+	 * than the request allows.
 	 */
-	if (limit_ua >= data->usb_current_limit_high_ua) {
-		selected = data->usb_current_limit_high_ua;
+	if (limit_ua >= MAX8903_USB_CURRENT_LIMIT_HIGH_UA) {
+		selected = MAX8903_USB_CURRENT_LIMIT_HIGH_UA;
 		gpio_val = 1;
-	} else if (limit_ua >= data->usb_current_limit_low_ua) {
-		selected = data->usb_current_limit_low_ua;
+	} else if (limit_ua >= MAX8903_USB_CURRENT_LIMIT_LOW_UA) {
+		selected = MAX8903_USB_CURRENT_LIMIT_LOW_UA;
 		gpio_val = 0;
 	} else {
 		return -EINVAL;
@@ -509,8 +517,6 @@ static int max8903_parse_usb_current_limit(struct platform_device *pdev,
 					   struct max8903_data *data)
 {
 	struct device *dev = &pdev->dev;
-	u32 limits[2];
-	int ret;
 
 	data->usb_current_limit_gpio = devm_gpiod_get_optional(dev,
 					"usb-current-limit", GPIOD_OUT_LOW);
@@ -521,38 +527,8 @@ static int max8903_parse_usb_current_limit(struct platform_device *pdev,
 	if (!data->usb_current_limit_gpio)
 		return 0;	/* Optional feature not present */
 
-	/* Parse [low_ua, high_ua] values, default to USB spec values */
-	ret = device_property_read_u32_array(dev, "usb-current-limit-values",
-					     limits, 2);
-	if (ret) {
-		/* Default to USB spec values */
-		data->usb_current_limit_low_ua = 100000;   /* 100mA */
-		data->usb_current_limit_high_ua = 500000;  /* 500mA */
-	} else {
-		data->usb_current_limit_low_ua = limits[0];
-		data->usb_current_limit_high_ua = limits[1];
-	}
-
-	/*
-	 * max8903_set_usb_current_limit() picks the highest cap that
-	 * doesn't exceed the request by checking >=high first then
-	 * >=low; that policy only works when high > low. Reject DTs
-	 * that hand the property in the wrong order rather than
-	 * silently program a sub-optimal current limit.
-	 */
-	if (data->usb_current_limit_high_ua <= data->usb_current_limit_low_ua) {
-		dev_err(dev,
-			"usb-current-limit-values must be [low, high] with high > low (got low=%u uA, high=%u uA)\n",
-			data->usb_current_limit_low_ua,
-			data->usb_current_limit_high_ua);
-		return -EINVAL;
-	}
-
-	/* Start at low current for safety */
-	data->usb_current_limit_ua = data->usb_current_limit_low_ua;
-
-	dev_dbg(dev, "USB current limit control: %u/%u uA\n",
-		data->usb_current_limit_low_ua, data->usb_current_limit_high_ua);
+	/* Start at low current (IUSB low = 100 mA) for safety */
+	data->usb_current_limit_ua = MAX8903_USB_CURRENT_LIMIT_LOW_UA;
 
 	return 0;
 }
