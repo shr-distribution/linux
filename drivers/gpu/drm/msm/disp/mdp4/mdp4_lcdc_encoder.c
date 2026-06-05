@@ -278,9 +278,23 @@ static void mdp4_lcdc_encoder_mode_set(struct drm_encoder *encoder,
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_DISPLAY_VSTART, display_v_start);
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_DISPLAY_VEND, display_v_end);
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_BORDER_CLR, 0);
+	/*
+	 * Underflow colour: COLOR is a 24-bit RGB value clamped to bits[23:0]
+	 * of LCDC_UNDERFLOW_CLR. Mainline historically chose 0x0000ff (blue)
+	 * as a visible "something starved the FIFO" hint, but on
+	 * resolution-mismatched video overlay (e.g. VG-pipe NV12 1080p source
+	 * downscaled to a 1024x768 LCDC panel via the FIR scaler) the FIR
+	 * fetch budget produces intermittent ~2/s underruns that flash as
+	 * visible blue bands. Black is what the user expects to see during a
+	 * one-line miss — invisible at viewing distance, identical to the
+	 * "no pixels available" state of the panel between frames. Legacy
+	 * Qualcomm/CAF Android stacks shipped 0xff because the OEM panel
+	 * configs (lcdc_*.c) all defaulted to that constant; nothing in the
+	 * SoC requires it.
+	 */
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_UNDERFLOW_CLR,
 			MDP4_LCDC_UNDERFLOW_CLR_ENABLE_RECOVERY |
-			MDP4_LCDC_UNDERFLOW_CLR_COLOR(0xff));
+			MDP4_LCDC_UNDERFLOW_CLR_COLOR(0x000000));
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_HSYNC_SKEW, lcdc_hsync_skew);
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_CTRL_POLARITY, ctrl_pol);
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ACTIVE_HCTL,
