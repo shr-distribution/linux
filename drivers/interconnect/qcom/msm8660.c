@@ -1357,15 +1357,41 @@ static struct qcom_rpm *msm8660_get_rpm(struct device *dev)
 	 * Safe to read drvdata now: the device link pins the supplier so
 	 * it cannot be unbound until our consumer (this interconnect
 	 * provider) is unbound first.
+	 *
+	 * On the deferred-probe path below we don't (and must not) call
+	 * device_link_remove(): the link is MANAGED with
+	 * DL_FLAG_AUTOREMOVE_CONSUMER, so the driver core releases its
+	 * reference automatically when our probe returns the error and the
+	 * consumer device is unbound. A manual remove would drop an extra
+	 * kref on the link kobject and risk a use-after-free.
 	 */
 	rpm = dev_get_drvdata(&rpm_pdev->dev);
-	if (!rpm) {
-		device_link_remove(dev, &rpm_pdev->dev);
+	if (!rpm)
 		return dev_err_ptr_probe(dev, -EPROBE_DEFER,
 					 "RPM not ready\n");
-	}
 
 	return rpm;
+}
+
+/*
+ * Drop cached icc_node * pointers stored in the static qnode templates.
+ * icc_nodes_remove() / icc_node_destroy() frees the icc_node memory, but
+ * because @qnodes is a const array of pointers into long-lived static
+ * storage, the ->node field outlives a probe failure and a subsequent
+ * unbind/rebind cycle. Without this clear, the next probe's
+ * "if (!qn->node) icc_node_create_dyn();" check sees the dangling cached
+ * pointer, skips re-allocation and hands the freed pointer back to the
+ * interconnect core -- use-after-free. icc_link_nodes() can also populate
+ * a target qnode's ->node mid-loop, so we always walk the full array.
+ */
+static void msm8660_clear_node_cache(struct msm8660_icc_node * const *qnodes,
+				     size_t num_nodes)
+{
+	size_t i;
+
+	for (i = 0; i < num_nodes; i++)
+		if (qnodes[i])
+			qnodes[i]->node = NULL;
 }
 
 static int msm8660_icc_probe(struct platform_device *pdev)
@@ -1406,20 +1432,15 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	qp->num_clks = desc->num_clks;
 
 	/*
-	 * MSM8660 fabric clocks are managed by RPM firmware and may not be
-	 * available in mainline Linux yet. Once the clock provider exists,
-	 * we want to honour it; until then we run without per-fabric clock
-	 * scaling. Only swallow -ENOENT (the clock provider exists but has
-	 * no matching entry); propagate every other error including
-	 * -EPROBE_DEFER (the provider exists but has not finished probing).
+	 * Per-clock -ENOENT is silently masked to a NULL handle by
+	 * clk_bulk_get_optional(); clk_*() then no-op on those entries.
+	 * The aggregate return is therefore only non-zero on real errors
+	 * (most commonly -EPROBE_DEFER while the mmcc-msm8660 clock
+	 * controller is still binding); propagate them.
 	 */
 	ret = devm_clk_bulk_get_optional(dev, qp->num_clks, qp->bus_clks);
-	if (ret == -ENOENT) {
-		dev_warn(dev, "bus clocks not registered, continuing without clock scaling\n");
-		qp->num_clks = 0;
-	} else if (ret) {
+	if (ret)
 		return ret;
-	}
 
 	if (qp->num_clks) {
 		ret = clk_bulk_prepare_enable(qp->num_clks, qp->bus_clks);
@@ -1526,8 +1547,12 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		node->data = qnodes[i];
 		icc_node_add(node, provider);
 
-		for (j = 0; j < qnodes[i]->num_links; j++)
-			icc_link_nodes(node, &qnodes[i]->link_nodes[j]->node);
+		for (j = 0; j < qnodes[i]->num_links; j++) {
+			ret = icc_link_nodes(node,
+					     &qnodes[i]->link_nodes[j]->node);
+			if (ret)
+				goto err_remove_nodes;
+		}
 
 		data->nodes[i] = node;
 	}
@@ -1544,6 +1569,7 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 
 err_remove_nodes:
 	icc_nodes_remove(provider);
+	msm8660_clear_node_cache(qnodes, num_nodes);
 	/*
 	 * Do NOT call clk_bulk_disable_unprepare() here: the devm cleanup
 	 * action registered after clk_bulk_prepare_enable() will run
@@ -1557,9 +1583,12 @@ err_remove_nodes:
 static void msm8660_icc_remove(struct platform_device *pdev)
 {
 	struct msm8660_icc_provider *qp = platform_get_drvdata(pdev);
+	const struct msm8660_icc_desc *desc = of_device_get_match_data(&pdev->dev);
 
 	icc_provider_deregister(&qp->provider);
 	icc_nodes_remove(&qp->provider);
+	if (desc)
+		msm8660_clear_node_cache(desc->nodes, desc->num_nodes);
 	/* clk cleanup happens via devm_add_action_or_reset on remove. */
 }
 
