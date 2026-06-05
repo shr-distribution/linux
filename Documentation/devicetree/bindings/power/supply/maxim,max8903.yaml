@@ -74,6 +74,10 @@ properties:
 required:
   - compatible
 
+dependentRequired:
+  dc-current-limit-gpios: [dc-current-limit-mapping]
+  dc-current-limit-mapping: [dc-current-limit-gpios]
+
 anyOf:
   - required:
       - dok-gpios
@@ -95,7 +99,7 @@ examples:
   - |
     /* Example with DC and USB current limit control */
     #include <dt-bindings/gpio/gpio.h>
-    charger-with-current-limit {
+    charger {
       compatible = "maxim,max8903";
       dok-gpios = <&gpio2 3 GPIO_ACTIVE_LOW>;
       flt-gpios = <&gpio2 2 GPIO_ACTIVE_LOW>;
