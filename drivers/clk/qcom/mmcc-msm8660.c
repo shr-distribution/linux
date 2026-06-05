@@ -2609,7 +2609,25 @@ static struct gdsc ved_gdsc = {
 		.name = "ved",
 	},
 	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	/*
+	 * Drop SW_RESET: asserting VCODEC_AHB_RESET during GDSC enable
+	 * glitches other MMSS peripherals (same problem documented on the
+	 * VFE GDSC above, observed here as a hard hang inside
+	 * vidc_runtime_resume() between "video-smi bandwidth vote ok" and
+	 * the next dev_dbg). The qcom-vidc driver issues its own SW reset
+	 * after enabling clocks, so the GDSC-level reset is redundant.
+	 *
+	 * RPM_ALWAYS_ON: VED is session-scoped (collapsed at every
+	 * vidc_runtime_suspend()) and the legacy-footswitch warm-start
+	 * sequence -- regulator on -> resets -> ENABLE -> 2 us settle ->
+	 * clear CLAMP -> 5 us settle, with no power-status bit to poll on
+	 * -- is not deterministic enough on this silicon for a real
+	 * OFF -> ON transition. Same treatment as vfe_gdsc; keep the
+	 * footswitch up across runtime PM cycles so only the boot-time
+	 * cold enable runs the legacy sequence. Clocks still gate
+	 * normally. Collapses on system suspend.
+	 */
+	.flags = LEGACY_FOOTSWITCH | RPM_ALWAYS_ON,
 };
 
 static struct gdsc vfe_gdsc = {
