@@ -1849,6 +1849,13 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 		}
 	}
 
+	/*
+	 * Every break above leaves the chip powered off (the final attempt
+	 * branch, the power_on failure branch and the sensor_init failure
+	 * branch each call mt9m113_power_off before breaking). Just sync the
+	 * PM core to SUSPENDED so a later resume re-invokes power_on, and
+	 * drop the reference taken at the top of this function.
+	 */
 	pm_runtime_set_suspended(dev);
 	pm_runtime_put_noidle(dev);
 	return ret;
