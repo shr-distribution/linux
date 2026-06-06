@@ -367,6 +367,8 @@ patternProperties:
               - const: arm,idle-state
           - enum:
               - arm,idle-state
+              - qcom,idle-state-pc
+              - qcom,idle-state-spc
               - riscv,idle-state
 
       arm,psci-suspend-param:

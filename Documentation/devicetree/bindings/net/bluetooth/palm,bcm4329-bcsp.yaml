@@ -38,6 +38,14 @@ properties:
     maxItems: 1
     description: BT_RST_N GPIO (active low).
 
+  interrupts:
+    maxItems: 1
+    description: Host-wake interrupt from the BCM4329 (HOST_WAKE_BT).
+
+  interrupt-names:
+    items:
+      - const: host-wakeup
+
   vddio-supply: true
   vbat-supply: true
 

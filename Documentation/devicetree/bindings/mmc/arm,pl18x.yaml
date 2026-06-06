@@ -167,19 +167,13 @@ properties:
     description:
       The GPIO matching the CKIN pin.
 
-dependencies:
-  st,cmd-gpios: [ "st,use-ckin" ]
-  st,ck-gpios: [ "st,use-ckin" ]
-  st,ckin-gpios: [ "st,use-ckin" ]
-
-
   interconnects:
     maxItems: 2
 
   interconnect-names:
     maxItems: 2
     items:
-      enum: [mmc-mem, mmc-cfg]
+      enum: [mmc-mem, mmc-cfg, sdc]
 
   qcom,sdcc-crci:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -198,6 +192,11 @@ dependencies:
     description:
       Send the dummy 52 cycles required by certain BSP-derived SDCC4
       controllers before issuing commands.
+
+dependencies:
+  st,cmd-gpios: [ "st,use-ckin" ]
+  st,ck-gpios: [ "st,use-ckin" ]
+  st,ckin-gpios: [ "st,use-ckin" ]
 
 unevaluatedProperties: false
 

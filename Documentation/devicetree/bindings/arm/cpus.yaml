@@ -504,7 +504,9 @@ allOf:
         not:
           properties:
             compatible:
-              const: arm,cortex-a53
+              enum:
+                - arm,cortex-a53
+                - qcom,scorpion
       then:
         properties:
           qcom,acc: false

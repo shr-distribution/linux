@@ -33,7 +33,7 @@ properties:
 
   clock-names:
     items:
-      - const: extclk
+      - const: xvclk
 
   vdd-supply:
     description:
