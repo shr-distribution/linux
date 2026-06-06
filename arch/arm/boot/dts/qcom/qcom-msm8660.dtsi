@@ -409,9 +409,16 @@
 		};
 	};
 
-	memory {
+	memory@40200000 {
 		device_type = "memory";
-		reg = <0x0 0x0>;
+		/*
+		 * Two non-contiguous banks separated by a 24 MiB hardware
+		 * hole at 0x46700000. moboot emits these as ATAG_MEM and the
+		 * zImage decompressor (atags_to_fdt) overwrites this reg
+		 * property with the same values at boot.
+		 */
+		reg = <0x40200000 0x06500000>,	/* low bank: 101 MiB */
+		      <0x48000000 0x37600000>;	/* high bank: 886 MiB */
 	};
 
 	cpu-pmu {

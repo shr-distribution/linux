@@ -37,7 +37,7 @@
 
 / {
 	model = "HP TouchPad Go (Opal WiFi)";
-	compatible = "hp,opal", "qcom,apq8060", "qcom,msm8660";
+	compatible = "hp,apq8060-opal", "qcom,msm8660";
 };
 
 /*

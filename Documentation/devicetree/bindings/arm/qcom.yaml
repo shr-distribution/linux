@@ -51,6 +51,9 @@ properties:
 
       - items:
           - enum:
+              - hp,apq8060-opal
+              - hp,apq8060-topaz
+              - hp,apq8060-topaz-3g
               - qcom,apq8060-dragonboard
               - qcom,msm8660-surf
           - const: qcom,msm8660

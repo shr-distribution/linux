@@ -16,7 +16,7 @@
 
 / {
 	model = "APQ8060 HP TouchPad (Topaz WiFi)";
-	compatible = "hp,topaz", "qcom,apq8060", "qcom,msm8660";
+	compatible = "hp,apq8060-topaz", "qcom,msm8660";
 };
 
 /* Topaz WiFi has no GPS hardware - disable GSBI5 UART */

@@ -119,7 +119,7 @@
 
 / {
 	model = "HP TouchPad (Topaz 3G)";
-	compatible = "hp,topaz-3g", "qcom,apq8060", "qcom,msm8660";
+	compatible = "hp,apq8060-topaz-3g", "qcom,msm8660";
 };
 
 /* ===========================================================================
