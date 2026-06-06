@@ -39,6 +39,11 @@ patternProperties:
             $ref: "#/$defs/qcom-msm8660-tlmm-state"
         additionalProperties: false
 
+  "-hog(-[0-9]+)?$":
+    type: object
+    required:
+      - gpio-hog
+
 $defs:
   qcom-msm8660-tlmm-state:
     type: object

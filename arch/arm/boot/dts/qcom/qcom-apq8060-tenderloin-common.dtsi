@@ -1981,7 +1981,6 @@
 			function = "gpio";
 			drive-strength = <2>;
 			bias-pull-up;
-			input-enable;
 		};
 	};
 
@@ -2224,7 +2223,6 @@
 			function = "gpio";
 			drive-strength = <2>;
 			bias-pull-up;
-			input-enable;
 		};
 
 		ldo1-pins {
@@ -2358,7 +2356,6 @@
 			pins = "gpio35", "gpio36", "gpio140";
 			function = "gpio";
 			drive-strength = <2>;
-			input-enable;
 			bias-pull-up;
 		};
 		/* Control outputs */
@@ -2441,7 +2438,6 @@
 			function = "gpio";
 			drive-strength = <2>;
 			bias-pull-down;
-			input-enable;
 		};
 
 		/*

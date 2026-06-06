@@ -51,9 +51,13 @@ properties:
 
   pinctrl-names:
     minItems: 1
+    maxItems: 3
     items:
-      - const: default
-      - const: sleep
+      enum: [default, sleep, gpio]
+    description:
+      Any combination of "default" (active pin-mux), "sleep" (low-power
+      mux), and "gpio" (TLMM/gpio mux used by i2c-core generic bus
+      recovery via pinctrl_lookup_state(pinctrl, "gpio")).
 
   power-domains:
     maxItems: 1

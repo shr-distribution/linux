@@ -41,12 +41,14 @@ properties:
       - const: iface
 
   dmas:
+    minItems: 1
     maxItems: 2
 
   dma-names:
+    minItems: 1
+    maxItems: 2
     items:
-      - const: tx
-      - const: rx
+      enum: [tx, rx]
 
   interconnects:
     maxItems: 1
@@ -73,11 +75,30 @@ properties:
       channel. Required when using DMA for transmission with UARTDM v1.3 and
       below.
 
+  qcom,startup-mux-glitch:
+    type: boolean
+    description:
+      At port-open, briefly flip the UART pins to a "gpio" pinctrl state and
+      back. Used to wake a power-gated peer's UART RX (e.g. CSR BlueCore
+      Bluetooth chips on HP TouchPad). Requires a "gpio" pinctrl state on
+      the same UART node.
+
   reg:
     minItems: 1
     items:
       - description: Main control registers
       - description: An optional second register location shall specify the GSBI control region.
+
+patternProperties:
+  "^touchscreen$":
+    type: object
+    description:
+      Serdev-attached touchscreen child. Used on platforms where the touch
+      controller streams data over UART rather than a dedicated bus
+      (e.g. Cypress CY8CTMA395 on HP TouchPad).
+    additionalProperties: true
+    required:
+      - compatible
 
 required:
   - compatible
