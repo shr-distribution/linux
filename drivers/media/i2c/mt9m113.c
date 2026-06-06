@@ -77,8 +77,16 @@
 #define MT9M113_SEQ_CMD_REFRESH			0x0005
 #define MT9M113_SEQ_CMD_REFRESH_MODE		0x0006
 #define MT9M113_SEQ_STATE			0xa104
-#define MT9M113_SEQ_STATE_PREVIEW		0x04	/* stable Context A preview */
-#define MT9M113_SEQ_STATE_CAPTURE		0x07	/* Context B capture */
+/*
+ * Per datasheet R0x0004 seq_state values: 0x02 = Enter preview, 0x03 =
+ * Preview (stable), 0x04 = Leave preview (transient, only seen while
+ * exiting preview for a context switch). 0x07 is stable Capture
+ * (Context B). The Context-B preview-first step must wait for the
+ * stable 0x03, not the transient 0x04 - waiting for 0x04 here misses
+ * the window and times out on every Context B stream-start.
+ */
+#define MT9M113_SEQ_STATE_PREVIEW		0x03
+#define MT9M113_SEQ_STATE_CAPTURE		0x07
 #define MT9M113_SEQ_CAP_MODE			0xa115
 #define MT9M113_SEQ_CAP_MODE_PREVIEW		0x0030	/* continuous preview */
 #define MT9M113_SEQ_CAP_MODE_VIDEO		0x0002	/* stay in Context B */
@@ -177,11 +185,52 @@
 /* Test pattern MCU variables (mode_common_mode_settings) */
 #define MT9M113_CAM_MODE_SELECT			0xc84c
 #define MT9M113_CAM_MODE_SELECT_NORMAL		0x00
-#define MT9M113_CAM_MODE_SELECT_TEST_PATTERN	0x02
-#define MT9M113_CAM_MODE_TEST_PATTERN_SELECT	0xc84d
-#define MT9M113_TEST_PATTERN_SOLID_COLOR	0x01
-#define MT9M113_TEST_PATTERN_COLOR_BARS		0x04
-#define MT9M113_TEST_PATTERN_FADE_TO_GRAY	0x08
+
+/*
+ * Test pattern register (Driver 7 R0x0066 mode_common_mode_settings_test_mode,
+ * MT9M113 datasheet "Table 31: Driver ID = 7: Mode Variables"). MCU logical
+ * addresses are NOT a clean (driver_id << 12) | offset encoding - each
+ * driver has its own hardcoded base page set by the chip firmware. Driver 7
+ * Mode variables share base 0x2700 (see MT9M113_MODE_OUTPUT_WIDTH_A = 0x2703
+ * for R0x0003, MT9M113_MODE_SPEC_EFFECTS_A = 0x2759 for R0x0059, etc.), so
+ * R0x0066 maps to 0x2766.
+ *
+ * Per the datasheet "Test Pattern Generator. Changes take effect only
+ * after REFRESH command", so writes are paired with mt9m113_refresh()
+ * when streaming. The datasheet also recommends disabling the MCU before
+ * enabling test patterns (BOOT_MODE=1 halt), which
+ * mt9m113_apply_test_pattern() performs after the REFRESH succeeds.
+ *
+ * Do NOT go via the CAM_MODE driver's test-pattern knob (CAM_MODE_SELECT =
+ * 0x02 TEST_PATTERN + CAM_MODE_TEST_PATTERN_SELECT in Driver 8): switching
+ * CAM_MODE into TEST_PATTERN mode wedges the sequencer so SEQ_CMD never
+ * processes REFRESH and stream_on() hangs.
+ *
+ * NOTE: forensic investigation on observed silicon shows the IFP TPG MUX
+ * does NOT actually engage despite mode_test_mode accepting every value:
+ *
+ *   - R0x2766 (mode_test_mode) is a read/write logical variable, but the
+ *     MCU firmware resets it to a default (0x8e8e) on every standby wake.
+ *   - Hardware registers associated with the TPG MUX (R0x3246-R0x3252)
+ *     are non-responsive dead zones, and bit 4 of R0x321C is hardwired
+ *     to 0 - both classic Aptina foundry-removal fingerprints.
+ *   - No raw sensor-core TPG (R0x3070-R0x3071) is present.
+ *   - Confirmed by stripping the color pipeline (R0x3210=0) and
+ *     verifying that even in a "naked" IFP state the live sensor data
+ *     persists without any pattern injection.
+ *
+ * The V4L2_CID_TEST_PATTERN plumbing below is intentionally retained on
+ * the (faint) chance a different silicon variant or vendor SROM patch
+ * actually wires up the TPG block. Setting test_pattern > 0 on the
+ * current die is harmless - the writes succeed but no pattern appears.
+ */
+#define MT9M113_MODE_TEST_MODE			0x2766
+#define MT9M113_TEST_MODE_DISABLED		0x00
+#define MT9M113_TEST_MODE_SOLID_WHITE		0x01
+#define MT9M113_TEST_MODE_GREY_RAMP		0x02
+#define MT9M113_TEST_MODE_COLOR_BAR_RAMP	0x03
+#define MT9M113_TEST_MODE_SOLID_WHITE_COLOR_BARS 0x04
+#define MT9M113_TEST_MODE_NOISE			0x05
 
 /* Double buffer control register */
 #define MT9M113_DOUBLE_BUFFER_CONTROL		CCI_REG16(0x0248)
@@ -241,6 +290,7 @@ struct mt9m113 {
 	s64 link_freq;
 	bool streaming;
 	bool test_pattern_active;
+	u8 test_pattern_value;	/* last V4L2_CID_TEST_PATTERN menu index */
 
 	/* Pixel Array sub-device */
 	struct {
@@ -1139,9 +1189,13 @@ static int mt9m113_sensor_init(struct mt9m113 *sensor)
 
 	/* MCU is about to be fully re-initialised, so any prior test-pattern
 	 * override is gone. Clear the bookkeeping so a subsequent
-	 * V4L2_CID_TEST_PATTERN=0 does not re-run the disable sequence.
+	 * V4L2_CID_TEST_PATTERN=0 does not re-run the disable sequence;
+	 * also drop the cached pattern value so stream_on() doesn't
+	 * replay the apply after a runtime suspend/resume cycle that
+	 * already reset MCU state.
 	 */
 	sensor->test_pattern_active = false;
+	sensor->test_pattern_value = 0;
 
 	dev_dbg(dev, "MT9M113: applying init table (%zu entries)\n",
 		 ARRAY_SIZE(mt9m113_init_table));
@@ -1490,6 +1544,52 @@ static int mt9m113_stream_context_b(struct mt9m113 *sensor, u16 output_ctrl_val,
 	return 0;
 }
 
+/*
+ * Apply the MCU-side test-pattern config and freeze the MCU in boot mode
+ * so the normal sequencer cannot overwrite it. Per the MT9M113 datasheet
+ * R0x0066 (mode_common_mode_settings_test_mode) "Test Pattern Generator.
+ * Changes take effect only after REFRESH command", and "Disabling the MCU
+ * is recommended before enabling test patterns."
+ *
+ * The pattern index is written verbatim to the Driver-7 R0x0066 register
+ * (encoded as MT9M113_MODE_TEST_MODE = 0x2766) - menu items already match
+ * the datasheet's value table 1..5. NOTE: do NOT switch CAM_MODE_SELECT
+ * into a "test pattern" state - that puts the camera-mode driver into a
+ * mode where the sequencer no longer processes SEQ_CMD, and the REFRESH
+ * below hangs.
+ *
+ * Called from two places:
+ *
+ *   1. mt9m113_s_ctrl(V4L2_CID_TEST_PATTERN > 0) while streaming - apply
+ *      immediately.
+ *
+ *   2. mt9m113_stream_on(), after stream_context_{a,b}() has brought the
+ *      pipeline up - re-apply when the test pattern was selected before
+ *      streaming started. __v4l2_ctrl_handler_setup() in stream_on runs
+ *      with sensor->streaming still false, so the in-handler halt is
+ *      skipped; replaying here makes the "set test pattern, then STREAMON"
+ *      sequence work.
+ *
+ * Caller must hold the same context as mt9m113_s_ctrl() (an active PM
+ * reference); we touch MCU vars + BOOT_MODE.
+ */
+static int mt9m113_apply_test_pattern(struct mt9m113 *sensor, u8 pattern_idx)
+{
+	int ret;
+
+	ret = mt9m113_write_mcu_var(sensor, MT9M113_MODE_TEST_MODE, pattern_idx);
+	if (ret)
+		return ret;
+	ret = mt9m113_refresh(sensor);
+	if (ret)
+		return ret;
+
+	dev_dbg(&sensor->client->dev,
+		"MT9M113: Halting MCU to lock test pattern %u\n", pattern_idx);
+	cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE, 0x0001, &ret);
+	return ret;
+}
+
 static int mt9m113_stream_on(struct mt9m113 *sensor,
 			     struct v4l2_subdev_state *state)
 {
@@ -1626,6 +1726,24 @@ static int mt9m113_stream_on(struct mt9m113 *sensor,
 					       format->code);
 	if (ret)
 		return ret;
+
+	/*
+	 * If V4L2_CID_TEST_PATTERN was set to a non-zero value before the
+	 * stream started, mt9m113_s_ctrl() noted it on test_pattern_{active,
+	 * value} but couldn't commit the MCU writes (the normal stream init
+	 * below would have overwritten MODE_SELECT). Replay the apply now
+	 * that the pipeline is up so STREAMON ends with the test pattern
+	 * visible. Read the cached value directly - do NOT call
+	 * v4l2_ctrl_find() here, the ctrl-handler mutex is already held by
+	 * the V4L2 core for the duration of this s_stream callback, so a
+	 * lookup would self-deadlock.
+	 */
+	if (sensor->test_pattern_active && sensor->test_pattern_value > 0) {
+		ret = mt9m113_apply_test_pattern(sensor,
+						 sensor->test_pattern_value);
+		if (ret)
+			return ret;
+	}
 
 	dev_dbg(dev, "MT9M113: streaming started\n");
 	return 0;
@@ -2131,33 +2249,36 @@ static const struct v4l2_subdev_internal_ops mt9m113_ifp_internal_ops = {
  * Controls
  */
 
+/*
+ * Menu items map directly to MT9M113_TEST_MODE_* values in datasheet order
+ * (MT9M113 datasheet R0x0066 "Test Pattern Generator"). The driver writes
+ * the menu index unchanged to MT9M113_MODE_TEST_MODE; no value translation
+ * is needed.
+ */
 static const char * const mt9m113_test_pattern_menu[] = {
 	"Disabled",
-	"Solid Color",
-	"Color Bars",
-	"Fade to Gray",
-};
-
-static const u8 mt9m113_test_pattern_value[] = {
-	/* Values written to CAM_MODE_TEST_PATTERN_SELECT (indexed by menu - 1) */
-	MT9M113_TEST_PATTERN_SOLID_COLOR,
-	MT9M113_TEST_PATTERN_COLOR_BARS,
-	MT9M113_TEST_PATTERN_FADE_TO_GRAY,
+	"Solid White",
+	"Grey Ramp",
+	"Color Bar Ramp",
+	"Solid White (Color Bars)",
+	"Noise",
 };
 
 static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct mt9m113 *sensor = container_of(ctrl->handler,
 					       struct mt9m113, ifp.hdl);
-	int ret = 0;
+	int pm_ret, ret = 0;
 
 	/*
-	 * pm_runtime_get_if_in_use() returns >0 on success, 0 if not active,
-	 * and -EINVAL if runtime PM is disabled.  Both 0 and -EINVAL mean we
-	 * must not touch the hardware (and must not pair with a put), so the
-	 * defensive comparison is "<= 0" rather than the naive "!ret".
+	 * pm_runtime_get_if_in_use() returns >0 on success (HW active, kref
+	 * incremented), 0 if the device is suspended, and -EINVAL when
+	 * CONFIG_PM is disabled. Treat -EINVAL as "PM core is absent, HW is
+	 * always on" and proceed without taking a kref (the matching put at
+	 * the tail must then be skipped). Only 0 means "skip silently".
 	 */
-	if (pm_runtime_get_if_in_use(&sensor->client->dev) <= 0)
+	pm_ret = pm_runtime_get_if_in_use(&sensor->client->dev);
+	if (pm_ret == 0)
 		return 0;
 
 	switch (ctrl->id) {
@@ -2187,8 +2308,13 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			ret = mt9m113_write_mcu_var(sensor,
 						    MT9M113_SENSOR_READ_MODE_B,
 						    mode_b);
-		/* Only refresh if streaming - otherwise MCU may not be ready */
-		if (!ret && sensor->streaming)
+		/*
+		 * Only refresh if streaming and the MCU is not held in boot
+		 * mode for the test pattern - calling REFRESH while the MCU
+		 * is halted (test_pattern_active) blocks for two 500 ms
+		 * SEQ_CMD timeouts and never applies the new control.
+		 */
+		if (!ret && sensor->streaming && !sensor->test_pattern_active)
 			mt9m113_refresh(sensor);
 		break;
 	}
@@ -2219,8 +2345,13 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			ret = mt9m113_write_mcu_var(sensor,
 						    MT9M113_SENSOR_READ_MODE_B,
 						    mode_b);
-		/* Only refresh if streaming - otherwise MCU may not be ready */
-		if (!ret && sensor->streaming)
+		/*
+		 * Only refresh if streaming and the MCU is not held in boot
+		 * mode for the test pattern - calling REFRESH while the MCU
+		 * is halted (test_pattern_active) blocks for two 500 ms
+		 * SEQ_CMD timeouts and never applies the new control.
+		 */
+		if (!ret && sensor->streaming && !sensor->test_pattern_active)
 			mt9m113_refresh(sensor);
 		break;
 	}
@@ -2260,8 +2391,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 							    MT9M113_MODE_SPEC_EFFECTS_B,
 							    effect);
 
-			/* Only refresh if streaming - otherwise MCU may not be ready */
-			if (!ret && sensor->streaming)
+			/* See HFLIP/VFLIP: skip refresh while test_pattern halts MCU. */
+			if (!ret && sensor->streaming && !sensor->test_pattern_active)
 				mt9m113_refresh(sensor);
 		}
 		break;
@@ -2297,8 +2428,13 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_SATURATION:
 		ret = mt9m113_write_mcu_var(sensor, MT9M113_AWB_SATURATION,
 					    ctrl->val);
-		/* Only refresh if streaming - otherwise MCU may not be ready */
-		if (!ret && sensor->streaming)
+		/*
+		 * Only refresh if streaming and the MCU is not held in boot
+		 * mode for the test pattern - calling REFRESH while the MCU
+		 * is halted (test_pattern_active) blocks for two 500 ms
+		 * SEQ_CMD timeouts and never applies the new control.
+		 */
+		if (!ret && sensor->streaming && !sensor->test_pattern_active)
 			mt9m113_refresh(sensor);
 		break;
 
@@ -2350,50 +2486,50 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			if (sensor->test_pattern_active) {
 				dev_dbg(&sensor->client->dev,
 					 "MT9M113: Disabling test pattern, restarting MCU\n");
+				/*
+				 * Reverse of mt9m113_apply_test_pattern(): release
+				 * the MCU from halt, write MODE_TEST_MODE=0, and
+				 * REFRESH if streaming so the sequencer reverts to
+				 * the normal sensor stream and frames resume.
+				 */
 				cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE,
 					  0x0000, &ret);
 				if (!ret) {
 					usleep_range(10000, 15000);
 					ret = mt9m113_write_mcu_var(sensor,
-								    MT9M113_CAM_MODE_SELECT,
-								    MT9M113_CAM_MODE_SELECT_NORMAL);
+								    MT9M113_MODE_TEST_MODE,
+								    MT9M113_TEST_MODE_DISABLED);
 				}
-				if (!ret)
+				if (!ret && sensor->streaming)
+					ret = mt9m113_refresh(sensor);
+				if (!ret) {
 					sensor->test_pattern_active = false;
+					sensor->test_pattern_value = 0;
+				}
 			}
 		} else {
 			/*
 			 * Enable test pattern mode.
-			 * Per datasheet: "Disabling the MCU is recommended
-			 * before enabling test patterns."
 			 *
-			 * Sequence:
-			 * 1. Configure test pattern via MCU variables (MCU running)
-			 * 2. Issue refresh to apply settings
-			 * 3. Hold MCU in boot mode to prevent override - but only
-			 *    while streaming.  If the MCU is halted outside of an
-			 *    active session, a STREAMON inside the autosuspend
-			 *    window finds a wedged MCU and the in-flight REFRESH
-			 *    / sequencer commands time out; the next runtime
-			 *    resume's power_on + sensor_init clears it instead.
+			 * Only commit the MCU vars + halt here while we're
+			 * already streaming. Otherwise the MCU is asleep
+			 * (autosuspend) or not yet running the sequencer,
+			 * and either the writes would race a power_on or
+			 * the subsequent normal stream init would overwrite
+			 * MODE_SELECT. Cache the requested pattern in
+			 * test_pattern_value so mt9m113_stream_on() can
+			 * replay the apply at the end of its normal-init
+			 * sequence without doing a v4l2_ctrl_find() lookup
+			 * (which would self-deadlock on the ctrl-handler
+			 * mutex that the V4L2 core holds across s_stream).
 			 */
 			sensor->test_pattern_active = true;
+			sensor->test_pattern_value = ctrl->val;
 			dev_dbg(&sensor->client->dev,
 				 "MT9M113: Enabling test pattern %d\n", ctrl->val);
-			ret = mt9m113_write_mcu_var(sensor,
-						    MT9M113_CAM_MODE_TEST_PATTERN_SELECT,
-						    mt9m113_test_pattern_value[ctrl->val - 1]);
-			if (!ret)
-				ret = mt9m113_write_mcu_var(sensor,
-							    MT9M113_CAM_MODE_SELECT,
-							    MT9M113_CAM_MODE_SELECT_TEST_PATTERN);
-			if (!ret && sensor->streaming) {
-				mt9m113_refresh(sensor);
-				dev_dbg(&sensor->client->dev,
-					 "MT9M113: Stopping MCU for test pattern\n");
-				cci_write(sensor->regmap, MT9M113_MCU_BOOT_MODE,
-					  0x0001, &ret);
-			}
+			if (sensor->streaming)
+				ret = mt9m113_apply_test_pattern(sensor,
+								 ctrl->val);
 		}
 		break;
 
@@ -2402,7 +2538,8 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
-	pm_runtime_put_autosuspend(&sensor->client->dev);
+	if (pm_ret > 0)
+		pm_runtime_put_autosuspend(&sensor->client->dev);
 	return ret;
 }
 
@@ -2676,14 +2813,20 @@ static int mt9m113_parse_dt(struct mt9m113 *sensor)
 	}
 
 	/*
-	 * data-lanes is required by the binding, but defend against a DTS that
-	 * passes dt_binding_check yet leaves num_data_lanes at zero: the pixel
-	 * rate is derived from it and a zero would be programmed into
-	 * V4L2_CID_PIXEL_RATE, which receivers like camss use to size the
-	 * CSI-2 link budget.
+	 * The MT9M113 has a single-lane MIPI CSI-2 D-PHY interface, so the
+	 * binding no longer advertises data-lanes (a maxItems=1 array adds no
+	 * information). v4l2_fwnode_endpoint_parse() therefore leaves
+	 * num_data_lanes at 0; force it to 1 so the pixrate calculation
+	 * below has a non-zero multiplier and receivers like camss size the
+	 * CSI-2 link budget correctly.
 	 */
-	if (sensor->bus_cfg.bus.mipi_csi2.num_data_lanes < 1) {
-		dev_err(&sensor->client->dev, "data-lanes missing or zero\n");
+	if (sensor->bus_cfg.bus.mipi_csi2.num_data_lanes == 0)
+		sensor->bus_cfg.bus.mipi_csi2.num_data_lanes = 1;
+
+	if (sensor->bus_cfg.bus.mipi_csi2.num_data_lanes != 1) {
+		dev_err(&sensor->client->dev,
+			"unsupported data-lanes count %u (must be 1)\n",
+			sensor->bus_cfg.bus.mipi_csi2.num_data_lanes);
 		v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
 		return -EINVAL;
 	}
