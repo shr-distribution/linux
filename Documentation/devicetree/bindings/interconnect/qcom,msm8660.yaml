@@ -37,9 +37,8 @@ properties:
     description:
       Each consumer phandle takes the form <provider node-id> where node-id
       indexes the per-fabric ID array in
-      <dt-bindings/interconnect/qcom,msm8660.h>.  qcom,rpm-common.yaml
-      permissively allows 2 cells (and 1 marked deprecated); pin this
-      provider to 1, which is what of_icc_xlate_onecell strictly expects.
+      <dt-bindings/interconnect/qcom,msm8660.h>.  Pinned to 1 because the
+      driver uses of_icc_xlate_onecell, which strictly requires a single cell.
 
   clocks:
     minItems: 2
@@ -64,7 +63,6 @@ required:
   - '#interconnect-cells'
 
 allOf:
-  - $ref: qcom,rpm-common.yaml#
   - if:
       properties:
         compatible:

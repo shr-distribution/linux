@@ -1247,9 +1247,24 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 	 * throughput requirement.
 	 */
 	list_for_each_entry(n, &provider->nodes, node_list) {
-		u64 node_bw = max(icc_units_to_bps(n->avg_bw),
-				  icc_units_to_bps(n->peak_bw));
-		u64 node_rate = div_u64(node_bw, qp->desc->bus_width);
+		struct msm8660_icc_node *qn = n->data;
+		u32 buswidth;
+		u64 node_bw, node_rate;
+
+		/*
+		 * Use the per-node bus width rather than the fabric-global
+		 * qp->desc->bus_width: narrow links (e.g. sfab_to_system_fpb
+		 * @ 4 bytes) would otherwise have their requested clock rate
+		 * halved -- the framework writes path bw to every traversed
+		 * node, so a 4-byte node carrying X bytes/s needs a clk rate
+		 * of X/4, not X/8, to actually push X bytes/s. Fall back to
+		 * the fabric width if data is somehow NULL (defensive only;
+		 * probe always sets node->data).
+		 */
+		buswidth = qn ? qn->buswidth : qp->desc->bus_width;
+		node_bw = max(icc_units_to_bps(n->avg_bw),
+			      icc_units_to_bps(n->peak_bw));
+		node_rate = div_u64(node_bw, buswidth);
 
 		rate = max(rate, node_rate);
 	}
@@ -1539,9 +1554,20 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 
 	icc_provider_init(provider);
 
+	/*
+	 * Two-pass init.
+	 *
+	 * Pass 1 creates and adds every qnode to provider->nodes so that
+	 * Pass 2's icc_link_nodes() never has to forward-allocate a target.
+	 * If we created + linked in a single pass, a mid-loop probe failure
+	 * could leave nodes that icc_link_nodes() allocated for a still-
+	 * unprocessed qnode pointed-to only by the static qnodes[].node
+	 * cache; the err_remove_nodes path's icc_nodes_remove() would not
+	 * see them (they're not in provider->nodes yet), and
+	 * msm8660_clear_node_cache() would then drop the only reference
+	 * to that allocation -- leaking it.
+	 */
 	for (i = 0; i < num_nodes; i++) {
-		size_t j;
-
 		if (!qnodes[i])
 			continue;
 
@@ -1556,11 +1582,29 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		ret = icc_node_set_name(node, provider, qnodes[i]->name);
 		if (ret) {
 			icc_node_destroy(node->id);
+			qnodes[i]->node = NULL;
 			goto err_remove_nodes;
 		}
 
 		node->data = qnodes[i];
 		icc_node_add(node, provider);
+		data->nodes[i] = node;
+	}
+
+	/*
+	 * Pass 2 links the nodes. Every target node already exists in
+	 * provider->nodes from Pass 1, so icc_link_nodes() only ever
+	 * extends the source's links[] array and never allocates a node;
+	 * any failure here is cleanly caught by err_remove_nodes ->
+	 * icc_nodes_remove which iterates provider->nodes.
+	 */
+	for (i = 0; i < num_nodes; i++) {
+		size_t j;
+
+		if (!qnodes[i])
+			continue;
+
+		node = qnodes[i]->node;
 
 		for (j = 0; j < qnodes[i]->num_links; j++) {
 			ret = icc_link_nodes(node,
@@ -1568,8 +1612,6 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 			if (ret)
 				goto err_remove_nodes;
 		}
-
-		data->nodes[i] = node;
 	}
 
 	ret = icc_provider_register(provider);
@@ -1623,6 +1665,17 @@ static struct platform_driver msm8660_noc_driver = {
 		.name = "qnoc-msm8660",
 		.of_match_table = msm8660_noc_of_match,
 		.sync_state = icc_sync_state,
+		/*
+		 * The four fabrics register as independent platform devices
+		 * but link to each other via raw struct icc_node * pointers.
+		 * Allowing individual sysfs unbind would let a target fabric
+		 * free its nodes while a still-bound source fabric still holds
+		 * pointers to them, dereferenced during path finding ->
+		 * use-after-free. Suppress the sysfs bind/unbind attrs so the
+		 * only way to unload is module removal, which unbinds all
+		 * fabrics together.
+		 */
+		.suppress_bind_attrs = true,
 	},
 };
 /*
