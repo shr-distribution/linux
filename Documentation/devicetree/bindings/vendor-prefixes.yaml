@@ -1263,6 +1263,8 @@ patternProperties:
     description: Oxford Semiconductor, Ltd.
   "^ozzmaker,.*":
     description: OzzMaker
+  "^palm,.*":
+    description: HP/Palm (legacy webOS hardware)
   "^panasonic,.*":
     description: Panasonic Corporation
   "^parade,.*":

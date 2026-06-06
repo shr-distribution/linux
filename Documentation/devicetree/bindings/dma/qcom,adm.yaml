@@ -68,7 +68,7 @@ properties:
   interconnect-names:
     maxItems: 1
     items:
-      - const: adm-mem
+      - enum: [memory, adm-mem]
 
 required:
   - compatible
