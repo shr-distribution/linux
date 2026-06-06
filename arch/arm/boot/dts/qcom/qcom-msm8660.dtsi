@@ -157,7 +157,7 @@
 	 * `opp-microvolt` value is already the safest across all PVS tables.
 	 */
 	cpu_opp_table: opp-table-cpu {
-		compatible = "operating-points-v2", "operating-points-v2-krait-cpu";
+		compatible = "operating-points-v2-krait-cpu";
 		nvmem-cells = <&speedbin_efuse>;
 		nvmem-cell-names = "speedbin";
 		opp-shared;
@@ -1404,7 +1404,7 @@
 			clock-names = "bus", "bus_a";
 		};
 
-		amba {
+		amba-bus {
 			compatible = "simple-bus";
 			#address-cells = <1>;
 			#size-cells = <1>;

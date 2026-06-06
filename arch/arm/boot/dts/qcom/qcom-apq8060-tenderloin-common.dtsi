@@ -161,7 +161,7 @@
 			 * the thermal core walk the full OPP range as needed.
 			 */
 			cooling-maps {
-				gpu-throttle {
+				map-gpu-throttle {
 					trip = <&pm8058_alert0>;
 					cooling-device = <&gpu THERMAL_NO_LIMIT
 								THERMAL_NO_LIMIT>;
@@ -208,74 +208,70 @@
 		};
 	};
 
-	regulators {
-		compatible = "simple-bus";
-
-		/* Main power of the board: 3.7V */
-		vph: regulator-fixed {
-			compatible = "regulator-fixed";
-			regulator-min-microvolt = <3700000>;
-			regulator-max-microvolt = <3700000>;
-			regulator-name = "VPH";
-			regulator-always-on;
-			regulator-boot-on;
-		};
-
-		/* 5v bias */
-		vdd50_boost: vdd50 {
-			compatible = "regulator-fixed";
-
-			regulator-name = "vdd50_boost";
-			regulator-min-microvolt = <5000000>;
-			regulator-max-microvolt = <5000000>;
-
-			gpio = <&tlmm 102 GPIO_ACTIVE_HIGH>;
-			enable-active-high;
-
-			regulator-always-on;
-			regulator-boot-on;
-		};
-
-		dummy0: regulator-fixed0 {
-			compatible = "regulator-fixed";
-			regulator-min-microvolt = <3000000>;
-			regulator-max-microvolt = <3000000>;
-			regulator-name = "dummy0";
-		};
-
-		dummy1: regulator-fixed1 {
-			compatible = "regulator-fixed";
-			regulator-min-microvolt = <3000000>;
-			regulator-max-microvolt = <3000000>;
-			regulator-name = "dummy1";
-		};
-
-		/*
-		 * Audio LDO regulators for WM8958 codec
-		 * NOTE: Disabled - WM8994 driver controls LDO1 GPIO directly
-		 * via wlf,ldo1ena-gpios property. Having both causes a GPIO
-		 * conflict (-EBUSY) that breaks runtime PM suspend/resume.
-		 */
-		aud_ldo1: regulator-fixed-aud-ldo1 {
-			compatible = "regulator-fixed";
-			regulator-name = "aud_ldo1";
-			regulator-min-microvolt = <2850000>;
-			regulator-max-microvolt = <2850000>;
-			status = "disabled";
-
-			gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
-			enable-active-high;
-
-			pinctrl-names = "default";
-			pinctrl-0 = <&aud_ldo1_pins>;
-		};
-
-		/*
-		 * Note: aud_ldo2 regulator removed - GPIO 108 is now used for
-		 * Primary I2S clock signal. DCVDD is supplied directly by
-		 * pm8058_s3, so the WM8958's internal LDO2 is not needed.
-		 */
+	/* Main power of the board: 3.7V */
+	vph: regulator-fixed {
+		compatible = "regulator-fixed";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+		regulator-name = "VPH";
+		regulator-always-on;
+		regulator-boot-on;
 	};
+
+	/* 5v bias */
+	vdd50_boost: regulator-vdd50 {
+		compatible = "regulator-fixed";
+
+		regulator-name = "vdd50_boost";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+
+		gpio = <&tlmm 102 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	dummy0: regulator-fixed0 {
+		compatible = "regulator-fixed";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-name = "dummy0";
+	};
+
+	dummy1: regulator-fixed1 {
+		compatible = "regulator-fixed";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-name = "dummy1";
+	};
+
+	/*
+	 * Audio LDO regulators for WM8958 codec
+	 * NOTE: Disabled - WM8994 driver controls LDO1 GPIO directly
+	 * via wlf,ldo1ena-gpios property. Having both causes a GPIO
+	 * conflict (-EBUSY) that breaks runtime PM suspend/resume.
+	 */
+	aud_ldo1: regulator-fixed-aud-ldo1 {
+		compatible = "regulator-fixed";
+		regulator-name = "aud_ldo1";
+		regulator-min-microvolt = <2850000>;
+		regulator-max-microvolt = <2850000>;
+		status = "disabled";
+
+		gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&aud_ldo1_pins>;
+	};
+
+	/*
+	 * Note: aud_ldo2 regulator removed - GPIO 108 is now used for
+	 * Primary I2S clock signal. DCVDD is supplied directly by
+	 * pm8058_s3, so the WM8958's internal LDO2 is not needed.
+	 */
 
 	/*
 	 * WiFi Power Sequence for Atheros AR6003 (WCN1314)
@@ -529,12 +525,12 @@
 			};
 		};
 
-		qcom,ssbi@C00000 {
+		ssbi@c00000 {
 			compatible = "qcom,ssbi";
-			reg = <0xC00000 0x1000>;
+			reg = <0xc00000 0x1000>;
 			qcom,controller-type = "pmic-arbiter";
 
-			pm8901: pmic8901 {
+			pm8901: pmic {
 				compatible = "qcom,pm8901";
 				interrupts-extended = <&tlmm 91 IRQ_TYPE_LEVEL_LOW>;
 				#interrupt-cells = <2>;
@@ -1237,7 +1233,7 @@
 			#cooling-cells = <2>;
 		};
 
-		gpu_opp_table: gpu-opp-table {
+		gpu_opp_table: opp-table-gpu {
 			compatible = "operating-points-v2";
 
 			/*
