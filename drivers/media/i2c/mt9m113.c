@@ -293,6 +293,15 @@ struct mt9m113 {
 	u8 test_pattern_value;	/* last V4L2_CID_TEST_PATTERN menu index */
 
 	/*
+	 * Set true after a manual mt9m113_power_off() inside the
+	 * start_streaming retry loop so the next runtime_suspend skips
+	 * its own power_off (which would underflow clk / regulator
+	 * refcounts). Cleared by runtime_suspend (consumed) or by a
+	 * successful runtime_resume.
+	 */
+	bool chip_off;
+
+	/*
 	 * Decremented by each subdev's release callback; sensor struct is
 	 * freed once both /dev/v4l-subdev* nodes have no open fds left.
 	 */
@@ -1850,13 +1859,21 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	}
 
 	/*
-	 * Every break above leaves the chip powered off (the final attempt
-	 * branch, the power_on failure branch and the sensor_init failure
-	 * branch each call mt9m113_power_off before breaking). Just sync the
-	 * PM core to SUSPENDED so a later resume re-invokes power_on, and
-	 * drop the reference taken at the top of this function.
+	 * Every break above leaves the chip powered off. The PM core is still
+	 * in RPM_ACTIVE (we bypassed the suspend callback all the way through),
+	 * and calling pm_runtime_set_suspended() here would fail with -EAGAIN
+	 * while pm_runtime is enabled -- leaving PM ACTIVE while the chip is
+	 * off. The next autosuspend would then fire mt9m113_runtime_suspend()
+	 * and call mt9m113_power_off() a second time, underflowing the clk
+	 * and regulator refcounts.
+	 *
+	 * Record the chip-off fact on the sensor; runtime_suspend consumes it
+	 * to skip its own power_off, keeping clk / regulator refcounts
+	 * balanced. Drop the PM reference via put_noidle so we don't kick an
+	 * autosuspend immediately; the bridge consumer's device-link reference
+	 * will keep PM ACTIVE anyway until the bridge tears down.
 	 */
-	pm_runtime_set_suspended(dev);
+	sensor->chip_off = true;
 	pm_runtime_put_noidle(dev);
 	return ret;
 }
@@ -2026,8 +2043,16 @@ static const struct v4l2_subdev_ops mt9m113_pa_ops = {
  */
 static void mt9m113_release_sensor(struct mt9m113 *sensor)
 {
-	if (atomic_dec_and_test(&sensor->release_count))
+	if (atomic_dec_and_test(&sensor->release_count)) {
+		/*
+		 * link_frequencies in bus_cfg is referenced by the IFP control
+		 * handler's qmenu_int (V4L2_CID_LINK_FREQ menu). Only safe to
+		 * free here, after both subdev .release callbacks have freed
+		 * their respective ctrl handlers.
+		 */
+		v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
 		kfree(sensor);
+	}
 }
 
 static void mt9m113_pa_release(struct v4l2_subdev *sd)
@@ -2207,12 +2232,13 @@ static int mt9m113_ifp_set_fmt(struct v4l2_subdev *sd,
 	const struct mt9m113_format_info *info;
 
 	/*
-	 * Reject geometry/format changes while the pipeline is live.
+	 * Reject ACTIVE geometry/format changes while the pipeline is live.
 	 * The sensor is only programmed in mt9m113_stream_on(); silently
 	 * updating the active state would let userspace see one format while
-	 * the wire still carries the previous one.
+	 * the wire still carries the previous one. TRY queries are read-only
+	 * scratchpad probes and are always safe.
 	 */
-	if (sensor->streaming)
+	if (sensor->streaming && fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE)
 		return -EBUSY;
 
 	/* Sink pad format is fixed */
@@ -2384,13 +2410,17 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 
 	/*
 	 * pm_runtime_get_if_in_use() returns >0 on success (HW active, kref
-	 * incremented), 0 if the device is suspended, and -EINVAL when
-	 * CONFIG_PM is disabled. Treat -EINVAL as "PM core is absent, HW is
-	 * always on" and proceed without taking a kref (the matching put at
-	 * the tail must then be skipped). Only 0 means "skip silently".
+	 * incremented), 0 if the device is suspended, and <0 on any other
+	 * condition (CONFIG_PM=n, or pm_runtime_disable() has been called
+	 * during unbind). Treat any non-positive return as "skip" so that
+	 * a control set issued after mt9m113_remove() called
+	 * pm_runtime_disable() does NOT proceed to dereference the
+	 * possibly-freed regmap. Requiring PM rather than gracefully
+	 * faking it for CONFIG_PM=n is acceptable -- the Kconfig already
+	 * implies regulator + clk which themselves depend on PM.
 	 */
 	pm_ret = pm_runtime_get_if_in_use(&sensor->client->dev);
-	if (pm_ret == 0)
+	if (pm_ret <= 0)
 		return 0;
 
 	switch (ctrl->id) {
@@ -2867,6 +2897,9 @@ static int mt9m113_runtime_resume(struct device *dev)
 		return ret;
 	}
 
+	/* Resume succeeded; clear any stale chip_off bookkeeping from a
+	 * prior failed start_streaming retry loop. */
+	sensor->chip_off = false;
 	return 0;
 }
 
@@ -2874,6 +2907,16 @@ static int mt9m113_runtime_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
+
+	/*
+	 * If start_streaming's retry loop already powered the chip down
+	 * (clk + regulator refcounts already balanced to zero), skip our
+	 * own power_off to avoid underflowing them. Consume the flag.
+	 */
+	if (sensor->chip_off) {
+		sensor->chip_off = false;
+		return 0;
+	}
 
 	/* Power down (powerdown GPIO + clock off) so the MCU is reset next resume. */
 	mt9m113_power_off(sensor);
@@ -2982,12 +3025,14 @@ static int mt9m113_probe(struct i2c_client *client)
 	atomic_set(&sensor->release_count, 2);
 
 	sensor->regmap = devm_cci_regmap_init_i2c(client, 16);
-	if (IS_ERR(sensor->regmap))
-		return PTR_ERR(sensor->regmap);
+	if (IS_ERR(sensor->regmap)) {
+		ret = PTR_ERR(sensor->regmap);
+		goto error_kfree;
+	}
 
 	ret = mt9m113_parse_dt(sensor);
 	if (ret < 0)
-		return ret;
+		goto error_kfree;
 
 	sensor->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(sensor->clk)) {
@@ -3192,6 +3237,7 @@ error_power_off:
 	mt9m113_power_off(sensor);
 error_ep_free:
 	v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
+error_kfree:
 	kfree(sensor);
 	return ret;
 }
@@ -3203,23 +3249,30 @@ static void mt9m113_remove(struct i2c_client *client)
 	struct device *dev = &client->dev;
 
 	/*
-	 * v4l2_async_unregister_subdev() detaches IFP from the async pool and,
-	 * via ifp_unregistered(), drops PA too. Per-subdev cleanup of the
-	 * control handlers, media entities and subdev state - plus the kfree
-	 * of this sensor struct - is deferred to mt9m113_{ifp,pa}_release(),
-	 * which the v4l2 framework only invokes after the last fd on each
-	 * /dev/v4l-subdev* node has been closed. Touching that state here
-	 * would race in-flight ioctls.
+	 * Tear down PM and power the chip off BEFORE calling
+	 * v4l2_async_unregister_subdev(). When no fds are open on the
+	 * /dev/v4l-subdev* nodes, async_unregister may synchronously
+	 * fire the per-subdev .release callbacks, the last of which
+	 * runs kfree(sensor); touching @sensor or @dev after that
+	 * would be a use-after-free.
+	 *
+	 * v4l2_fwnode_endpoint_free(&sensor->bus_cfg) is *deferred* to
+	 * mt9m113_release_sensor() (the release_count==0 finalizer)
+	 * because the link-frequencies array embedded in bus_cfg is
+	 * still referenced by the IFP control handler's qmenu_int
+	 * (set up via v4l2_ctrl_new_int_menu in probe). The ctrl
+	 * handler outlives remove() under the deferred-release model;
+	 * freeing the endpoint here would leave qmenu_int dangling
+	 * and turn a later VIDIOC_QUERYMENU into a UAF.
 	 */
-	v4l2_async_unregister_subdev(&sensor->ifp.sd);
-
-	v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
-
 	pm_runtime_disable(dev);
 	pm_runtime_dont_use_autosuspend(dev);
 	if (!pm_runtime_status_suspended(dev))
 		mt9m113_power_off(sensor);
 	pm_runtime_set_suspended(dev);
+
+	v4l2_async_unregister_subdev(&sensor->ifp.sd);
+	/* @sensor may already be freed here; do not dereference it. */
 }
 
 static const struct of_device_id mt9m113_of_ids[] = {
