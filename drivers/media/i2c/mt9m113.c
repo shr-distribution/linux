@@ -292,6 +292,12 @@ struct mt9m113 {
 	bool test_pattern_active;
 	u8 test_pattern_value;	/* last V4L2_CID_TEST_PATTERN menu index */
 
+	/*
+	 * Decremented by each subdev's release callback; sensor struct is
+	 * freed once both /dev/v4l-subdev* nodes have no open fds left.
+	 */
+	atomic_t release_count;
+
 	/* Pixel Array sub-device */
 	struct {
 		struct v4l2_subdev sd;
@@ -1440,9 +1446,20 @@ static int mt9m113_stream_context_a(struct mt9m113 *sensor, u16 output_ctrl_val,
 	if (ret)
 		return ret;
 
+	/*
+	 * Wait for the sequencer to ack SEQ_CMD_RUN by clearing SEQ_CMD.
+	 * A timeout here means the MCU is wedged (probably stuck in the
+	 * intermittent stream-start wedge described in the comment above
+	 * mt9m113_start_streaming); propagate the error so the retry loop
+	 * actually triggers a power-cycle. Silently returning 0 would
+	 * leave the caller thinking the stream came up cleanly and the
+	 * wedge would persist until userspace gives up.
+	 */
 	ret = mt9m113_poll_mcu_var(sensor, MT9M113_SEQ_CMD, 0x0000, 500);
-	if (ret < 0)
+	if (ret < 0) {
 		dev_warn(dev, "MT9M113: SEQ_CMD_RUN did not complete\n");
+		return ret;
+	}
 
 	mt9m113_reassert_output(sensor, output_ctrl_val,
 				MT9M113_MODE_OUTPUT_FORMAT_A, code);
@@ -1741,28 +1758,49 @@ static int mt9m113_stream_on(struct mt9m113 *sensor,
 	if (sensor->test_pattern_active && sensor->test_pattern_value > 0) {
 		ret = mt9m113_apply_test_pattern(sensor,
 						 sensor->test_pattern_value);
-		if (ret)
+		if (ret) {
+			/*
+			 * Replay failed - the chip is still in its normal
+			 * streaming state. Clear the cached test-pattern
+			 * flags so the !test_pattern_active guards in
+			 * subsequent s_ctrl() refresh paths do not get
+			 * stuck thinking the MCU is halted.
+			 */
+			sensor->test_pattern_active = false;
+			sensor->test_pattern_value = 0;
 			return ret;
+		}
 	}
 
 	dev_dbg(dev, "MT9M113: streaming started\n");
 	return 0;
 }
 
+static int mt9m113_power_on(struct mt9m113 *sensor);
+static void mt9m113_power_off(struct mt9m113 *sensor);
+
 /*
  * The MT9M113 MCU intermittently wedges on stream start; the failures cluster
- * at the start of a run and then clear. Retry a bounded number of times, fully
- * power-cycling the sensor (runtime-PM suspend -> resume = power_off + power_on
- * + sensor_init) between attempts. Exactly one pm_runtime get/put pair runs per
- * attempt; on success the reference is held for the streaming session and
- * released by mt9m113_stop_streaming().
+ * at the start of a run and then clear. Retry a bounded number of times,
+ * power-cycling the sensor (power_off + power_on + sensor_init) between
+ * attempts.
+ *
+ * The V4L2 bridge consumer holds a managed PM device-link reference
+ * (DL_FLAG_PM_RUNTIME) on this sensor for the duration of s_stream, so a
+ * pm_runtime_suspend() between attempts would be rejected with -EBUSY and the
+ * MCU could never actually power-cycle through the standard runtime-PM path.
+ * Take exactly one PM reference for the whole retry loop and toggle
+ * power_off/power_on directly between attempts; on success the reference is
+ * held for the streaming session and released by mt9m113_stop_streaming().
+ * On terminal failure sync the PM state to SUSPENDED so a future resume
+ * re-runs power_on instead of skipping it.
  */
 static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				   struct v4l2_subdev_state *state)
 {
 	struct device *dev = &sensor->client->dev;
 	unsigned int attempt;
-	int ret = 0;
+	int ret;
 
 	/*
 	 * Guard against a redundant s_stream(1): a second
@@ -1773,24 +1811,46 @@ static int mt9m113_start_streaming(struct mt9m113 *sensor,
 	if (sensor->streaming)
 		return 0;
 
-	for (attempt = 0; attempt < MT9M113_STREAM_START_RETRIES; attempt++) {
-		ret = pm_runtime_resume_and_get(dev);
-		if (ret)
-			return ret;
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret)
+		return ret;
 
+	for (attempt = 0; attempt < MT9M113_STREAM_START_RETRIES; attempt++) {
 		ret = mt9m113_stream_on(sensor, state);
 		if (!ret) {
 			sensor->streaming = true;
 			return 0;
 		}
 
-		pm_runtime_put_sync_suspend(dev);
-		if (attempt + 1 < MT9M113_STREAM_START_RETRIES)
-			dev_warn(dev,
-				 "MT9M113: stream start failed (%d), power-cycle + retry %u/%u\n",
-				 ret, attempt + 1, MT9M113_STREAM_START_RETRIES - 1);
+		if (attempt + 1 >= MT9M113_STREAM_START_RETRIES) {
+			/*
+			 * Final attempt failed with the chip still powered up
+			 * from mt9m113_stream_on(). Bring it down once before
+			 * syncing PM state so the runtime_status=SUSPENDED
+			 * below matches the hardware.
+			 */
+			mt9m113_power_off(sensor);
+			break;
+		}
+
+		dev_warn(dev,
+			 "MT9M113: stream start failed (%d), power-cycle + retry %u/%u\n",
+			 ret, attempt + 1, MT9M113_STREAM_START_RETRIES - 1);
+
+		mt9m113_power_off(sensor);
+		ret = mt9m113_power_on(sensor);
+		if (ret)
+			/* chip is already off after the failed power_on */
+			break;
+		ret = mt9m113_sensor_init(sensor);
+		if (ret) {
+			mt9m113_power_off(sensor);
+			break;
+		}
 	}
 
+	pm_runtime_set_suspended(dev);
+	pm_runtime_put_noidle(dev);
 	return ret;
 }
 
@@ -1833,6 +1893,11 @@ static int mt9m113_stop_streaming(struct mt9m113 *sensor)
 static inline struct mt9m113 *ifp_to_mt9m113(struct v4l2_subdev *sd)
 {
 	return container_of(sd, struct mt9m113, ifp.sd);
+}
+
+static inline struct mt9m113 *pa_to_mt9m113(struct v4l2_subdev *sd)
+{
+	return container_of(sd, struct mt9m113, pa.sd);
 }
 
 static int mt9m113_ifp_s_stream(struct v4l2_subdev *sd, int enable)
@@ -1941,8 +2006,36 @@ static const struct v4l2_subdev_ops mt9m113_pa_ops = {
 	.pad = &mt9m113_pa_pad_ops,
 };
 
+/*
+ * v4l2_async_unregister_subdev() removes the /dev/v4l-subdev* node but does
+ * NOT block waiting for in-flight ioctls to complete; freeing the control
+ * handler (whose mutex an in-flight VIDIOC_S_CTRL may be holding) or kfree'ing
+ * the sensor struct directly from remove() would leave that ioctl unlocking
+ * freed memory. Defer per-subdev cleanup (subdev state, ctrl handler, media
+ * entity) and the kfree of the surrounding sensor struct until the v4l2
+ * framework fires the per-subdev release callback after the last fd on that
+ * devnode closes. release_count gates the kfree until BOTH subdevs' release
+ * callbacks have run, since PA and IFP both publish HAS_DEVNODE.
+ */
+static void mt9m113_release_sensor(struct mt9m113 *sensor)
+{
+	if (atomic_dec_and_test(&sensor->release_count))
+		kfree(sensor);
+}
+
+static void mt9m113_pa_release(struct v4l2_subdev *sd)
+{
+	struct mt9m113 *sensor = pa_to_mt9m113(sd);
+
+	v4l2_subdev_cleanup(&sensor->pa.sd);
+	v4l2_ctrl_handler_free(&sensor->pa.hdl);
+	media_entity_cleanup(&sensor->pa.sd.entity);
+	mt9m113_release_sensor(sensor);
+}
+
 static const struct v4l2_subdev_internal_ops mt9m113_pa_internal_ops = {
 	.init_state = mt9m113_pa_init_state,
+	.release = mt9m113_pa_release,
 };
 
 /* -----------------------------------------------------------------------------
@@ -2239,10 +2332,22 @@ static const struct v4l2_subdev_ops mt9m113_ifp_ops = {
 	.pad = &mt9m113_ifp_pad_ops,
 };
 
+/* See mt9m113_pa_release() above for why per-subdev cleanup is deferred. */
+static void mt9m113_ifp_release(struct v4l2_subdev *sd)
+{
+	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
+
+	v4l2_subdev_cleanup(&sensor->ifp.sd);
+	v4l2_ctrl_handler_free(&sensor->ifp.hdl);
+	media_entity_cleanup(&sensor->ifp.sd.entity);
+	mt9m113_release_sensor(sensor);
+}
+
 static const struct v4l2_subdev_internal_ops mt9m113_ifp_internal_ops = {
 	.init_state = mt9m113_ifp_init_state,
 	.registered = mt9m113_ifp_registered,
 	.unregistered = mt9m113_ifp_unregistered,
+	.release = mt9m113_ifp_release,
 };
 
 /* -----------------------------------------------------------------------------
@@ -2523,13 +2628,30 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 			 * (which would self-deadlock on the ctrl-handler
 			 * mutex that the V4L2 core holds across s_stream).
 			 */
-			sensor->test_pattern_active = true;
-			sensor->test_pattern_value = ctrl->val;
 			dev_dbg(&sensor->client->dev,
 				 "MT9M113: Enabling test pattern %d\n", ctrl->val);
-			if (sensor->streaming)
+			/*
+			 * Only flip the bookkeeping flags after the MCU
+			 * writes actually succeed. If apply_test_pattern()
+			 * fails mid-sequence the chip is still in its normal
+			 * streaming mode, and leaving test_pattern_active
+			 * set would make every subsequent control (HFLIP,
+			 * VFLIP, COLORFX, SATURATION) skip its REFRESH
+			 * forever because they think the MCU is halted.
+			 *
+			 * When not streaming, no MCU write happens here -
+			 * stream_on() replays apply_test_pattern() once the
+			 * pipeline is up. In that case there is nothing to
+			 * fail, so caching the requested value is safe.
+			 */
+			if (sensor->streaming) {
 				ret = mt9m113_apply_test_pattern(sensor,
 								 ctrl->val);
+				if (ret)
+					break;
+			}
+			sensor->test_pattern_active = true;
+			sensor->test_pattern_value = ctrl->val;
 		}
 		break;
 
@@ -2840,11 +2962,17 @@ static int mt9m113_probe(struct i2c_client *client)
 	struct mt9m113 *sensor;
 	int ret;
 
-	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
+	sensor = kzalloc(sizeof(*sensor), GFP_KERNEL);
 	if (!sensor)
 		return -ENOMEM;
 
 	sensor->client = client;
+	/*
+	 * Initialise to 2 so kfree(sensor) only runs after both the PA and IFP
+	 * release callbacks have fired (i.e. all open /dev/v4l-subdev* fds have
+	 * been closed). See mt9m113_pa_release() for the full rationale.
+	 */
+	atomic_set(&sensor->release_count, 2);
 
 	sensor->regmap = devm_cci_regmap_init_i2c(client, 16);
 	if (IS_ERR(sensor->regmap))
@@ -3057,6 +3185,7 @@ error_power_off:
 	mt9m113_power_off(sensor);
 error_ep_free:
 	v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
+	kfree(sensor);
 	return ret;
 }
 
@@ -3066,14 +3195,16 @@ static void mt9m113_remove(struct i2c_client *client)
 	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 	struct device *dev = &client->dev;
 
+	/*
+	 * v4l2_async_unregister_subdev() detaches IFP from the async pool and,
+	 * via ifp_unregistered(), drops PA too. Per-subdev cleanup of the
+	 * control handlers, media entities and subdev state - plus the kfree
+	 * of this sensor struct - is deferred to mt9m113_{ifp,pa}_release(),
+	 * which the v4l2 framework only invokes after the last fd on each
+	 * /dev/v4l-subdev* node has been closed. Touching that state here
+	 * would race in-flight ioctls.
+	 */
 	v4l2_async_unregister_subdev(&sensor->ifp.sd);
-	v4l2_subdev_cleanup(&sensor->ifp.sd);
-	v4l2_ctrl_handler_free(&sensor->ifp.hdl);
-	media_entity_cleanup(&sensor->ifp.sd.entity);
-
-	v4l2_subdev_cleanup(&sensor->pa.sd);
-	v4l2_ctrl_handler_free(&sensor->pa.hdl);
-	media_entity_cleanup(&sensor->pa.sd.entity);
 
 	v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
 
