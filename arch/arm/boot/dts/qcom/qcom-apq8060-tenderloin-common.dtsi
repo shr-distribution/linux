@@ -1047,9 +1047,15 @@
 			/* MPM pin 25 routes to USB1_HS GIC SPI 100 via qcom,mpm-pin-map */
 			interrupts = <25 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&gcc USB_HS1_XCVR_CLK>,
-				 <&gcc USB_HS1_H_CLK>,
-				 <&rpmcc RPM_DAYTONA_FABRIC_CLK>;
-			clock-names = "core", "iface", "dfab";
+				 <&gcc USB_HS1_H_CLK>;
+			clock-names = "core", "iface";
+			/*
+			 * DFAB voting is handled via the "usb-dfab" interconnect
+			 * path (interconnects below). The legacy DFAB clock
+			 * voter ("dfab" / RPM_DAYTONA_FABRIC_CLK) is left out
+			 * since ci_hdrc_msm uses devm_clk_get_optional for it
+			 * and the interconnect framework keeps the fabric live.
+			 */
 			assigned-clocks = <&gcc USB_HS1_XCVR_CLK>;
 			assigned-clock-rates = <60000000>;
 			resets = <&gcc USB_HS1_RESET>;

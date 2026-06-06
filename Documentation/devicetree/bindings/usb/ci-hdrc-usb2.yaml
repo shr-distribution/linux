@@ -75,6 +75,39 @@ properties:
     type: boolean
     deprecated: true
 
+  interconnects:
+    maxItems: 2
+
+  interconnect-names:
+    maxItems: 2
+    items:
+      enum: [usb-mem, usb-dfab]
+
+  wakeup-source: true
+
+  qcom,charger-detect:
+    type: boolean
+    description:
+      Enable optional BC 1.2 charger detection in the chipidea USB
+      controller. When absent, the entire detection path is skipped.
+
+  qcom,hp-charger-detect:
+    type: boolean
+    description:
+      Extend BC 1.2 charger detection to recognise HP/Palm vendor
+      charger variants. Implies qcom,charger-detect.
+
+  qcom,phy-settle-seq:
+    $ref: /schemas/types.yaml#/definitions/uint8-matrix
+    description:
+      Sequence of ULPI offset/value pairs written to the PHY after the
+      controller-level link reset, to apply signal-quality (eye-diagram)
+      tuning that earlier hardware revisions need before USB enumeration.
+    items:
+      items:
+        - description: ULPI register offset
+        - description: register value
+
   ulpi:
     type: object
     additionalProperties: false

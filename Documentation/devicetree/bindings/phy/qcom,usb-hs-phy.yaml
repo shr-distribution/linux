@@ -9,32 +9,42 @@ title: Qualcomm's USB HS PHY
 maintainers:
   - Bjorn Andersson <bjorn.andersson@linaro.org>
 
-if:
-  properties:
-    compatible:
-      contains:
-        enum:
-          - qcom,usb-hs-phy-apq8064
-          - qcom,usb-hs-phy-msm8660
-          - qcom,usb-hs-phy-msm8960
-then:
-  properties:
-    resets:
-      maxItems: 1
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - qcom,usb-hs-phy-apq8064
+              - qcom,usb-hs-phy-msm8660
+              - qcom,usb-hs-phy-msm8960
+    then:
+      # On these older parts the PHY POR reset is optional: chipidea
+      # ci_hdrc_msm currently lacks the full controller-level link-reset
+      # sequence (USBCMD_RESET + PORTSC=0x80000000) that must surround
+      # the PHY POR + settle to keep ULPI vendor writes from landing on
+      # a re-syncing link. Boards may therefore omit resets entirely and
+      # rely on bootloader/state-machine initialization. When present,
+      # only the POR reset is wired.
+      properties:
+        resets:
+          maxItems: 1
 
-    reset-names:
-      const: por
+        reset-names:
+          const: por
+    else:
+      properties:
+        resets:
+          minItems: 2
+          maxItems: 2
 
-else:
-  properties:
-    resets:
-      minItems: 2
-      maxItems: 2
-
-    reset-names:
-      items:
-        - const: phy
-        - const: por
+        reset-names:
+          items:
+            - const: phy
+            - const: por
+      required:
+        - resets
+        - reset-names
 
 properties:
   compatible:
@@ -88,8 +98,6 @@ properties:
 required:
   - clocks
   - clock-names
-  - resets
-  - reset-names
   - "#phy-cells"
 
 additionalProperties: false
