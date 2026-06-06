@@ -37,6 +37,10 @@ properties:
       speedbin that is used to select the right frequency/voltage
       value pair.
 
+  nvmem-cell-names:
+    items:
+      - const: speedbin
+
   opp-shared: true
 
 patternProperties:

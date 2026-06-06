@@ -97,7 +97,7 @@ properties:
 patternProperties:
   "^brcm,pskey-[0-9a-f]{4}$":
     $ref: /schemas/types.yaml#/definitions/uint16-array
-    description: PSKEY value as 16-bit words (per TouchPad RF calibration).
+    description: PSKEY value as 16-bit words.
 
 required:
   - compatible

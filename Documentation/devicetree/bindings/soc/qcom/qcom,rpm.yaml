@@ -80,10 +80,12 @@ patternProperties:
 
   "^pm8901-regulators$":
     type: object
+    additionalProperties: true
     description: PM8901 regulators reachable through RPM (MSM8x60).
 
   "^rpm-sleep-set$":
     type: object
+    additionalProperties: true
     description: RPM sleep-set regulator configuration (MSM8x60).
     unevaluatedProperties: false
 
