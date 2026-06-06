@@ -131,6 +131,14 @@ properties:
     description:
       Enable the internal pull-down resistor on the CS/ADDR pin.
 
+  wlf,disable-irq:
+    type: boolean
+    description:
+      Skip registering the codec's internal IRQ chip. Set when the board
+      handles relevant codec events (headset detect, button press, etc.)
+      through other paths and does not want the kernel to claim the
+      codec's interrupt line.
+
 required:
   - compatible
   - reg

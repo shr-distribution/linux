@@ -1692,9 +1692,12 @@
 					   <1400000 3>,
 					   <2000000 2>;
 
-		/* USB current control via IUSB pin */
+		/*
+		 * USB current control via IUSB pin. The MAX8903 IUSB pin is
+		 * silicon-fixed to 100 mA (low) / 500 mA (high) per datasheet,
+		 * so only the GPIO direction is configurable.
+		 */
 		usb-current-limit-gpios = <&tlmm 133 GPIO_ACTIVE_HIGH>;
-		usb-current-limit-values = <100000 500000>;  /* 100mA / 500mA */
 	};
 
 	/*
@@ -3714,7 +3717,6 @@
 		SPKVDD1-supply = <&pm8058_l4>;    // 2.85V
 		SPKVDD2-supply = <&pm8058_l4>;    // 2.85V
 		LDO1VDD-supply = <&pm8058_l4>;    // 2.85V supply for internal LDO1
-		LDO2VDD-supply = <&pm8058_s3>;    // 1.8V supply for internal LDO2
 
 		/*
 		 * LDO enable GPIO control.
@@ -3801,10 +3803,6 @@
 
 		/* MICBIAS configuration */
 		wlf,micbias-cfg = <0x0029 0x002d>;
-
-		/* Line outputs in differential mode */
-		wlf,lineout1-diff;
-		wlf,lineout2-diff;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&wm8958_pins>;
