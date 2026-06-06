@@ -39,12 +39,14 @@
 #include <dt-bindings/interconnect/qcom,msm8660.h>
 #include <dt-bindings/mfd/qcom-rpm.h>
 
+#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/interconnect-provider.h>
 #include <linux/io.h>
 #include <linux/mfd/qcom_rpm.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -180,6 +182,12 @@ struct msm8660_icc_desc {
  *        single source of truth for whether the rate actually needs to
  *        be reprogrammed (per-node caching would desync when different
  *        masters update at different times)
+ * @commit_lock: serialises msm8660_rpm_commit(). The ICC core can dispatch
+ *        provider->set concurrently from different CPUs; without this lock
+ *        the shared @arb / @bwsum / @rpm_buf scratch buffers would race
+ *        (interleaved memset() and overlapping per-node writes), corrupting
+ *        the packet handed to qcom_rpm_write() and producing malformed
+ *        fabric arbitration on the wire.
  */
 struct msm8660_icc_provider {
 	struct icc_provider provider;
@@ -191,6 +199,7 @@ struct msm8660_icc_provider {
 	u16 *bwsum;
 	u32 *rpm_buf;
 	u32 rate;
+	struct mutex commit_lock;
 };
 
 /*
@@ -1275,8 +1284,10 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 	}
 
 	/* Send RPM fabric arbitration if available */
-	if (qp->rpm && qp->desc->rpm_resource >= 0)
+	if (qp->rpm && qp->desc->rpm_resource >= 0) {
+		guard(mutex)(&qp->commit_lock);
 		msm8660_rpm_commit(qp);
+	}
 
 	return 0;
 }
@@ -1416,6 +1427,10 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	qp = devm_kzalloc(dev, sizeof(*qp), GFP_KERNEL);
 	if (!qp)
 		return -ENOMEM;
+
+	ret = devm_mutex_init(dev, &qp->commit_lock);
+	if (ret)
+		return ret;
 
 	data = devm_kzalloc(dev, struct_size(data, nodes, num_nodes),
 			    GFP_KERNEL);
