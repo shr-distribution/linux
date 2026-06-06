@@ -737,8 +737,16 @@ skip_wait_config:
 		 * Sync the kernel regulator state only if the GDSC was
 		 * already on at probe; if we just enabled it above, the
 		 * vote was taken inside gdsc_enable() / gdsc_toggle_logic().
+		 *
+		 * Special case: PWRSTS_ON + LEGACY_FOOTSWITCH always routes
+		 * through gdsc_enable() above (lines around the PWRSTS_ON
+		 * block), which calls regulator_enable() unconditionally on
+		 * the legacy path. Skip the sync vote in that case to avoid
+		 * a double-vote that gdsc_disable() only unwinds once.
 		 */
-		if (sc->rsupply && initial_on) {
+		if (sc->rsupply && initial_on &&
+		    !(sc->pwrsts == PWRSTS_ON &&
+		      (sc->flags & LEGACY_FOOTSWITCH))) {
 			ret = regulator_enable(sc->rsupply);
 			if (ret < 0)
 				return ret;
@@ -776,8 +784,15 @@ skip_wait_config:
 		 * the framework rejects registration otherwise. Bring up
 		 * any such GDSC that is currently off so the genpd flags
 		 * we set below match the silicon state.
+		 *
+		 * Propagate the gdsc_enable() return so a failure here does
+		 * not silently set on=true and leak a vote through the
+		 * err_disable_supply path (which would unwind a vote that
+		 * was never actually taken).
 		 */
-		gdsc_enable(&sc->pd);
+		ret = gdsc_enable(&sc->pd);
+		if (ret)
+			return ret;
 		on = true;
 	}
 
