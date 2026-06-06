@@ -27,9 +27,11 @@ properties:
       - qcom,gcc-msm8660
 
   clocks:
+    minItems: 2
     maxItems: 3
 
   clock-names:
+    minItems: 2
     items:
       - const: pxo
       - const: cxo

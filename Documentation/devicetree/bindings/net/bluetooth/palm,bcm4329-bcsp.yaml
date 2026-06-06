@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/palm,bcm4329-bcsp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: HP/Palm BCM4329 Bluetooth (BCSP protocol)
+
+maintainers:
+  - Herman van Hazendonk <github.com@herrie.org>
+
+description: |
+  HP TouchPad / Pre family BCM4329 Bluetooth chip wired to a UART and
+  driven by the hci_bcsp line-discipline / serdev (BCSP, not standard
+  H4 / BCM, so a palm-specific compatible is required).
+
+  The block consumes a long list of PSKEY (Persistent-Store Key) values
+  that the driver injects into the chip during link bring-up; they are
+  declared here as 16-bit /bits/ 16 arrays.
+
+allOf:
+  - $ref: /schemas/serial/serial-peripheral-props.yaml#
+  - $ref: bluetooth-controller.yaml#
+
+properties:
+  compatible:
+    const: palm,bcm4329-bcsp
+
+  shutdown-gpios:
+    maxItems: 1
+    description: BT_POWER GPIO (active high).
+
+  device-wakeup-gpios:
+    maxItems: 1
+    description: BT_WAKE GPIO (active high).
+
+  reset-gpios:
+    maxItems: 1
+    description: BT_RST_N GPIO (active low).
+
+  vddio-supply: true
+  vbat-supply: true
+
+  clocks:
+    maxItems: 1
+    description: 32 kHz sleep clock for the BCM4329 lpo input.
+
+  clock-names:
+    items:
+      - const: lpo
+
+  init-speed:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Bring-up UART speed before reconfiguration (baud).
+
+  max-speed: true
+
+  local-bd-address:
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+    maxItems: 6
+
+  brcm,bt-pcm-int-params:
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+    description: BT PCM interface configuration bytes.
+
+  # 16-bit configuration scalars (PSKEY 0x000e .. 0x025d).
+  brcm,ana-freq: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,ana-ftrim: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,deep-sleep: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,default-tx-power: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,default-tx-power-no-rssi: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,enc-key-min: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,hci-max-acl: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,hci-max-sco: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,host-interface: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,max-tx-power: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,max-tx-power-no-rssi: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,uart-baudrate: { $ref: /schemas/types.yaml#/definitions/uint16 }
+
+  # TouchPad-specific 16-bit PSKEYs (single-value)
+  brcm,pskey-00f6: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,pskey-0394: { $ref: /schemas/types.yaml#/definitions/uint16 }
+  brcm,pskey-03d4: { $ref: /schemas/types.yaml#/definitions/uint16 }
+
+  # PSKEY arrays (16-bit words).
+  brcm,tx-power-table:
+    $ref: /schemas/types.yaml#/definitions/uint16-array
+
+patternProperties:
+  "^brcm,pskey-[0-9a-f]{4}$":
+    $ref: /schemas/types.yaml#/definitions/uint16-array
+    description: PSKEY value as 16-bit words (per TouchPad RF calibration).
+
+required:
+  - compatible
+
+unevaluatedProperties: false

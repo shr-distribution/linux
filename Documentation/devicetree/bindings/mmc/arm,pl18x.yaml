@@ -172,6 +172,33 @@ dependencies:
   st,ck-gpios: [ "st,use-ckin" ]
   st,ckin-gpios: [ "st,use-ckin" ]
 
+
+  interconnects:
+    maxItems: 2
+
+  interconnect-names:
+    maxItems: 2
+    items:
+      enum: [mmc-mem, mmc-cfg]
+
+  qcom,sdcc-crci:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Client Rate Control Interface identifier for the SDCC FIFO when
+      driven by qcom_adm DMA (MSM8x60-class boards).
+
+  qcom,datactrl-first:
+    type: boolean
+    description:
+      Quirk to write DATACTRL before issuing the data command, matching
+      legacy webOS hsmmc on MSM8x60.
+
+  qcom,dummy52-required:
+    type: boolean
+    description:
+      Send the dummy 52 cycles required by certain BSP-derived SDCC4
+      controllers before issuing commands.
+
 unevaluatedProperties: false
 
 required:

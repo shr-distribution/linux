@@ -31,6 +31,10 @@ properties:
     description: EXTCLK clock signal (24 MHz typical)
     maxItems: 1
 
+  clock-names:
+    items:
+      - const: extclk
+
   vdd-supply:
     description:
       Core digital voltage supply, 1.8V
