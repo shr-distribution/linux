@@ -80,6 +80,13 @@ patternProperties:
     type: object
     $ref: /schemas/iio/adc/qcom,pm8018-adc.yaml#
 
+  "pwm@[0-9a-f]+$":
+    type: object
+    description:
+      PM8058 Light Pulse Generator (LPG) channel exposed as a PWM
+      controller. Bound by drivers/pwm/pwm-pm8058.c on the
+      "qcom,pm8058-lpg" compatible.
+
 required:
   - compatible
   - '#address-cells'

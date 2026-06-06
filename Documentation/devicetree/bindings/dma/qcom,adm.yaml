@@ -59,6 +59,17 @@ properties:
     minimum: 0
     maximum: 255
 
+  interconnects:
+    maxItems: 1
+    description:
+      Interconnect path the ADM uses to reach DRAM. Used on MSM8x60-class
+      boards to keep the bus master vote alive while the ADM is active.
+
+  interconnect-names:
+    maxItems: 1
+    items:
+      - const: adm-mem
+
 required:
   - compatible
   - reg

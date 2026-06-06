@@ -140,7 +140,6 @@ allOf:
               - qcom,scm-apq8084
               - qcom,scm-mdm9607
               - qcom,scm-msm8226
-              - qcom,scm-msm8660
               - qcom,scm-msm8916
               - qcom,scm-msm8937
               - qcom,scm-msm8953
@@ -154,9 +153,26 @@ allOf:
         - clocks
         - clock-names
     else:
-      properties:
-        clock-names: false
-        clocks: false
+      # msm8660 falls through to the else branch but qcom_scm.c reads
+      # all SCM clocks via devm_clk_get_optional, so both are accepted
+      # *and* optional on this generation. Other compatibles that did
+      # not match either if/then keep the strict "no clocks" rule.
+      if:
+        properties:
+          compatible:
+            contains:
+              const: qcom,scm-msm8660
+      then:
+        properties:
+          clock-names:
+            items:
+              - const: core
+          clocks:
+            maxItems: 1
+      else:
+        properties:
+          clock-names: false
+          clocks: false
 
   - if:
       properties:

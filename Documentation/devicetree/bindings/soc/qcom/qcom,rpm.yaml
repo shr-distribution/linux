@@ -17,12 +17,21 @@ maintainers:
 
 properties:
   compatible:
-    enum:
-      - qcom,rpm-apq8064
-      - qcom,rpm-msm8660
-      - qcom,rpm-msm8960
-      - qcom,rpm-ipq8064
-      - qcom,rpm-mdm9615
+    oneOf:
+      - enum:
+          - qcom,rpm-apq8064
+          - qcom,rpm-msm8660
+          - qcom,rpm-msm8960
+          - qcom,rpm-ipq8064
+          - qcom,rpm-mdm9615
+      - items:
+          - enum:
+              - qcom,rpm-apq8064
+              - qcom,rpm-msm8660
+              - qcom,rpm-msm8960
+              - qcom,rpm-ipq8064
+              - qcom,rpm-mdm9615
+          - const: syscon
 
   reg:
     maxItems: 1

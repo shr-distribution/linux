@@ -28,6 +28,7 @@ properties:
           - qcom,ipq9574-qfprom
           - qcom,kaanapali-qfprom
           - qcom,msm8226-qfprom
+          - qcom,msm8660-qfprom
           - qcom,msm8916-qfprom
           - qcom,msm8917-qfprom
           - qcom,msm8937-qfprom
