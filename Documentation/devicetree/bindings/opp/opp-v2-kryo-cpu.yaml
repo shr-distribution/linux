@@ -98,6 +98,16 @@ then:
       required:
         - opp-supported-hw
 
+  nvmem-cells:
+    description:
+      Phandle to efuse cells from which the bootloader provisioned the
+      speed-bin code that selects this OPP table.
+    maxItems: 1
+
+  nvmem-cell-names:
+    items:
+      - const: speedbin
+
 additionalProperties: false
 
 examples:

@@ -18,6 +18,14 @@ description: |
   the register region and interrupt of the matching CSIPHY; only the CSIPHY
   exposes an interrupt. There is no ISPIF block.
 
+select:
+  properties:
+    compatible:
+      contains:
+        const: qcom,msm8660-camss
+  required:
+    - compatible
+
 properties:
   compatible:
     enum:

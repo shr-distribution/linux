@@ -59,7 +59,6 @@ required:
   - clocks
   - clock-names
   - power-domains
-  - iommus
 
 additionalProperties: false
 

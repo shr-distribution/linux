@@ -1573,7 +1573,7 @@
 	 * Since EVT1, the 5V boost (vdd50_boost) is always on.
 	 */
 	lg_panel: panel {
-		compatible = "panel-lvds";
+		compatible = "hp,topaz-lvds", "panel-lvds";
 		status = "okay";
 
 		/* Panel power control GPIOs */

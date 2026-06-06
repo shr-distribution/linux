@@ -31,11 +31,11 @@ properties:
       - qcom,mmcc-sdm660
 
   clocks:
-    minItems: 7
+    minItems: 3
     maxItems: 13
 
   clock-names:
-    minItems: 7
+    minItems: 3
     maxItems: 13
 
   vdd-gfx-supply:

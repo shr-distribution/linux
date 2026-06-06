@@ -24,6 +24,18 @@ description: |
   per-slave bandwidth vote) through RPM firmware via the qcom,rpm parent
   controller, in addition to scaling its bus clocks via clk_set_rate.
 
+select:
+  properties:
+    compatible:
+      contains:
+        enum:
+          - qcom,msm8660-apps-fabric
+          - qcom,msm8660-system-fabric
+          - qcom,msm8660-mmss-fabric
+          - qcom,msm8660-daytona-fabric
+  required:
+    - compatible
+
 properties:
   compatible:
     enum:
@@ -59,7 +71,6 @@ required:
   - compatible
   - clocks
   - clock-names
-  - qcom,rpm
   - '#interconnect-cells'
 
 allOf:

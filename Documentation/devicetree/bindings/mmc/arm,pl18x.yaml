@@ -168,9 +168,11 @@ properties:
       The GPIO matching the CKIN pin.
 
   interconnects:
+    minItems: 1
     maxItems: 2
 
   interconnect-names:
+    minItems: 1
     maxItems: 2
     items:
       enum: [mmc-mem, mmc-cfg, sdc]

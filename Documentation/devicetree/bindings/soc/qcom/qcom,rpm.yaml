@@ -74,6 +74,17 @@ patternProperties:
   "^regulators(-[01])?$":
     type: object
     $ref: /schemas/regulator/qcom,rpm-regulator.yaml#
+  "^pm8058-regulators$":
+    type: object
+    description: PM8058 regulators reachable through RPM (MSM8x60).
+
+  "^pm8901-regulators$":
+    type: object
+    description: PM8901 regulators reachable through RPM (MSM8x60).
+
+  "^rpm-sleep-set$":
+    type: object
+    description: RPM sleep-set regulator configuration (MSM8x60).
     unevaluatedProperties: false
 
 required:

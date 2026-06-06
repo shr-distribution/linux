@@ -15,6 +15,14 @@ description:
   reserved-memory used to share data between various subsystems and OSes in
   Qualcomm platforms.
 
+select:
+  properties:
+    compatible:
+      contains:
+        const: qcom,smem
+  required:
+    - compatible
+
 properties:
   compatible:
     const: qcom,smem
