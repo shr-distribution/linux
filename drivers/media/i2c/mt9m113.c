@@ -1806,6 +1806,7 @@ static void mt9m113_power_off(struct mt9m113 *sensor);
  */
 static int mt9m113_start_streaming(struct mt9m113 *sensor,
 				   struct v4l2_subdev_state *state)
+	__must_hold(state->lock)
 {
 	struct device *dev = &sensor->client->dev;
 	unsigned int attempt;
