@@ -21,17 +21,32 @@ properties:
     maxItems: 8
 
   clock-names:
-    minItems: 6
-    items:
-      - const: core_clk
-      - const: iface_clk
-      - const: bus_clk
-      - const: lut_clk
-      - const: hdmi_clk
-      - const: tv_clk
-      - const: lcdc_clk
-      - const: pxo
-        description: XO used to drive the internal LVDS PLL
+    oneOf:
+      # MSM8660 / APQ8060 MDP4 variant: no LUT clock, vsync_clk in
+      # place of the MSM8960+ pxo. The 7th position can be omitted.
+      - items:
+          - const: core_clk
+          - const: iface_clk
+          - const: bus_clk
+          - const: hdmi_clk
+          - const: tv_clk
+          - const: lcdc_clk
+          - const: vsync_clk
+        minItems: 6
+        maxItems: 7
+      # MSM8960 / APQ8064+ MDP4 variant.
+      - items:
+          - const: core_clk
+          - const: iface_clk
+          - const: bus_clk
+          - const: lut_clk
+          - const: hdmi_clk
+          - const: tv_clk
+          - const: lcdc_clk
+          - const: pxo
+            description: XO used to drive the internal LVDS PLL
+        minItems: 6
+        maxItems: 8
 
   '#clock-cells':
     const: 0
@@ -43,7 +58,42 @@ properties:
     maxItems: 1
 
   iommus:
+    minItems: 1
+    maxItems: 32
+
+  interconnects:
+    minItems: 1
     maxItems: 4
+    description:
+      Up to four interconnect paths: per-port (mdp0/mdp1) votes on
+      SMI (system MMU framebuffer pool) and/or EBI (DRAM scanout).
+
+  interconnect-names:
+    minItems: 1
+    maxItems: 4
+    items:
+      enum: [mdp0-mem, mdp1-mem, mdp0-smi, mdp1-smi, mdp0-ebi, mdp1-ebi]
+
+  lvds-vccs-3p3v-supply:
+    description: Supply driving the LVDS-VCCS pin on LCD-attached MDP4.
+
+  memory-region:
+    maxItems: 1
+    description:
+      Reserved-memory phandle for a dedicated scanout pool. Used on
+      systems where the bootloader stages a framebuffer in a fixed
+      address and the kernel hands the same pages to KMS.
+
+  power-domains:
+    maxItems: 1
+
+  qcom,icc-bw-avg-kbps:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Average MDP/MDSS interconnect bandwidth vote (kBps).
+
+  qcom,icc-bw-peak-kbps:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Peak MDP/MDSS interconnect bandwidth vote (kBps).
 
   ports:
     $ref: /schemas/graph.yaml#/properties/ports

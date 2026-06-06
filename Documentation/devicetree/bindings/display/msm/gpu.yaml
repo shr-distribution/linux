@@ -33,9 +33,11 @@ properties:
           - const: qcom,adreno
       - description: |
           The driver is parsing the compat string for Adreno to
-          figure out the gpu-id and patch level.
+          figure out the gpu-id and patch level. The [2-7]xx range
+          covers A2xx (e.g. A220 on MSM8660), A3xx, A4xx, A5xx, A6xx,
+          and A7xx parts.
         items:
-          - pattern: '^qcom,adreno-[3-7][0-9][0-9]\.[0-9]+$'
+          - pattern: '^qcom,adreno-[2-7][0-9][0-9]\.[0-9]+$'
           - const: qcom,adreno
       - description: |
           The driver is parsing the compat string for Imageon to
@@ -132,6 +134,37 @@ properties:
     description: |
       For GMU attached devices a phandle to the GMU device that will
       control the power for the GPU.
+
+  gpu-supply:
+    description:
+      Supply driving the GPU rail (e.g. PMIC switching rail). Used on
+      Adreno A2xx/A3xx where the rail is exposed as a regulator and
+      not (yet) handled through a power-domain.
+
+  power-domain-names:
+    description:
+      Names matching power-domains, e.g. "gfx3d" on Adreno A2xx where
+      a single GFX3D_GDSC domain is wired.
+    maxItems: 1
+    items:
+      enum: [gfx3d]
+
+  qcom,gpu-idle-timeout-ms:
+    maxItems: 1
+    description:
+      Idle timeout in milliseconds before the GPU runtime PM autosuspend
+      kicks in. Used on Adreno A2xx to match legacy KGSL behaviour where
+      the kernel pulled GFX3D_GDSC after a stable period of no jobs.
+
+  resets:
+    description:
+      Optional GFX3D core reset, pulsed during recovery to clear a hung
+      SQ / parameter-cache that RBBM_SOFT_RESET cannot recover (A2xx).
+    maxItems: 1
+
+  reset-names:
+    items:
+      - const: core
 
 required:
   - compatible
