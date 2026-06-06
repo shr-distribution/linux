@@ -11,6 +11,7 @@ struct qcom_reset_map;
 struct regmap;
 struct freq_tbl;
 struct clk_hw;
+struct footswitch;
 
 #define PLL_LOCK_COUNT_SHIFT	8
 #define PLL_LOCK_COUNT_MASK	0x3f
@@ -43,6 +44,8 @@ struct qcom_cc_desc {
 	size_t num_resets;
 	struct gdsc **gdscs;
 	size_t num_gdscs;
+	struct footswitch **fs;
+	size_t num_fs;
 	struct clk_hw **clk_hws;
 	size_t num_clk_hws;
 	const struct qcom_icc_hws_data *icc_hws;

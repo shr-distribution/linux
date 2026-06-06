@@ -33,7 +33,7 @@
 #include "clk-rcg.h"
 #include "clk-branch.h"
 #include "reset.h"
-#include "gdsc.h"
+#include "footswitch.h"
 
 enum {
 	P_PXO,
@@ -2467,29 +2467,29 @@ static const struct qcom_reset_map mmcc_msm8660_resets[] = {
  * - Bit 5: CLAMP (set to clamp I/O)
  * - No status bit, requires timed delays
  */
-static struct gdsc gfx2d0_gdsc = {
+static struct footswitch gfx2d0_gdsc = {
 	.gdscr = 0x0180,
 	.resets = (unsigned int []){ GFX2D0_AHB_RESET },
 	.reset_count = 1,
 	.pd = {
 		.name = "gfx2d0",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
+	.flags = FOOTSWITCH_SW_RESET,
 };
 
-static struct gdsc gfx2d1_gdsc = {
+static struct footswitch gfx2d1_gdsc = {
 	.gdscr = 0x0184,
 	.resets = (unsigned int []){ GFX2D1_AHB_RESET },
 	.reset_count = 1,
 	.pd = {
 		.name = "gfx2d1",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
+	.flags = FOOTSWITCH_SW_RESET,
 };
 
-static struct gdsc gfx3d_gdsc = {
+static struct footswitch gfx3d_gdsc = {
 	.gdscr = 0x0188,
 	/*
 	 * GFX3D (Adreno 220) requires the core reset to be toggled on every
@@ -2508,7 +2508,7 @@ static struct gdsc gfx3d_gdsc = {
 	.pd = {
 		.name = "gfx3d",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
 	/*
 	 * RPM_ALWAYS_ON: keep the GFX3D footswitch powered across runtime PM
 	 * idle (clocks still gate), collapsing it only on system suspend. The
@@ -2519,10 +2519,10 @@ static struct gdsc gfx3d_gdsc = {
 	 * Mirrors legacy KGSL, which parked the GPU in SLEEP (rail up, clocks
 	 * gated) during use and only power-collapsed (SLUMBER) on suspend.
 	 */
-	.flags = LEGACY_FOOTSWITCH | SW_RESET | RPM_ALWAYS_ON,
+	.flags = FOOTSWITCH_SW_RESET | FOOTSWITCH_RPM_ALWAYS_ON,
 };
 
-static struct gdsc ijpeg_gdsc = {
+static struct footswitch ijpeg_gdsc = {
 	.gdscr = 0x01a0,
 	/*
 	 * IJPEG (Gemini) requires the AXI and CORE resets to be toggled on
@@ -2565,29 +2565,29 @@ static struct gdsc ijpeg_gdsc = {
 	.pd = {
 		.name = "ijpeg",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
+	.flags = FOOTSWITCH_SW_RESET,
 };
 
-static struct gdsc mdp_gdsc = {
+static struct footswitch mdp_gdsc = {
 	.gdscr = 0x0190,
 	.resets = (unsigned int []){ MDP_AHB_RESET },
 	.reset_count = 1,
 	.pd = {
 		.name = "mdp",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
-	.flags = LEGACY_FOOTSWITCH | SW_RESET,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
+	.flags = FOOTSWITCH_SW_RESET,
 };
 
-static struct gdsc rot_gdsc = {
+static struct footswitch rot_gdsc = {
 	.gdscr = 0x018c,
 	.resets = (unsigned int []){ ROT_AHB_RESET },
 	.reset_count = 1,
 	.pd = {
 		.name = "rot",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
 	/*
 	 * Skip SW_RESET during power domain enable, similar to VFE_GDSC.
 	 * Asserting ROT_AHB_RESET during GDSC enable may cause a glitch
@@ -2598,17 +2598,17 @@ static struct gdsc rot_gdsc = {
 	 * on every rotation burst, glitching MDP scanout. Keep it powered across
 	 * runtime idle (clocks still gate); collapse only on system suspend.
 	 */
-	.flags = LEGACY_FOOTSWITCH | RPM_ALWAYS_ON,
+	.flags = FOOTSWITCH_RPM_ALWAYS_ON,
 };
 
-static struct gdsc ved_gdsc = {
+static struct footswitch ved_gdsc = {
 	.gdscr = 0x0194,
 	.resets = (unsigned int []){ VCODEC_AHB_RESET },
 	.reset_count = 1,
 	.pd = {
 		.name = "ved",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
 	/*
 	 * Drop SW_RESET: asserting VCODEC_AHB_RESET during GDSC enable
 	 * glitches other MMSS peripherals (same problem documented on the
@@ -2627,17 +2627,17 @@ static struct gdsc ved_gdsc = {
 	 * cold enable runs the legacy sequence. Clocks still gate
 	 * normally. Collapses on system suspend.
 	 */
-	.flags = LEGACY_FOOTSWITCH | RPM_ALWAYS_ON,
+	.flags = FOOTSWITCH_RPM_ALWAYS_ON,
 };
 
-static struct gdsc vfe_gdsc = {
+static struct footswitch vfe_gdsc = {
 	.gdscr = 0x0198,
 	.resets = (unsigned int []){ VFE_AHB_RESET },
 	.reset_count = 1,
 	.pd = {
 		.name = "vfe",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
 	/*
 	 * Skip SW_RESET during power domain enable. Asserting VFE_AHB_RESET
 	 * during GDSC enable appears to cause a glitch that affects other
@@ -2656,17 +2656,17 @@ static struct gdsc vfe_gdsc = {
 	 * skip the warm-start path; clocks still gate normally. Same
 	 * approach as rot_gdsc, for similar reasons.
 	 */
-	.flags = LEGACY_FOOTSWITCH | RPM_ALWAYS_ON,
+	.flags = FOOTSWITCH_RPM_ALWAYS_ON,
 };
 
-static struct gdsc vpe_gdsc = {
+static struct footswitch vpe_gdsc = {
 	.gdscr = 0x019c,
 	.resets = (unsigned int []){ VPE_AHB_RESET },
 	.reset_count = 1,
 	.pd = {
 		.name = "vpe",
 	},
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
 	/*
 	 * Skip SW_RESET during power domain enable, similar to VFE_GDSC.
 	 * Asserting VPE_AHB_RESET during GDSC enable may cause a glitch
@@ -2676,10 +2676,10 @@ static struct gdsc vpe_gdsc = {
 	 * streamoff) so it only re-enables once per session -- not worth
 	 * RPM_ALWAYS_ON (cf. rot_gdsc, which cycles per m2m job).
 	 */
-	.flags = LEGACY_FOOTSWITCH,
+	.flags = 0,
 };
 
-static struct gdsc *mmcc_msm8660_gdscs[] = {
+static struct footswitch *mmcc_msm8660_fs[] = {
 	[GFX2D0_GDSC] = &gfx2d0_gdsc,
 	[GFX2D1_GDSC] = &gfx2d1_gdsc,
 	[GFX3D_GDSC] = &gfx3d_gdsc,
@@ -2705,8 +2705,14 @@ static const struct qcom_cc_desc mmcc_msm8660_desc = {
 	.num_clks = ARRAY_SIZE(mmcc_msm8660_clks),
 	.resets = mmcc_msm8660_resets,
 	.num_resets = ARRAY_SIZE(mmcc_msm8660_resets),
-	.gdscs = mmcc_msm8660_gdscs,
-	.num_gdscs = ARRAY_SIZE(mmcc_msm8660_gdscs),
+	/*
+	 * All MMCC power domains on the MSM8x60 family are legacy
+	 * single-register footswitches (GFS), not modern GDSCs. They are
+	 * registered through qcom_cc_really_probe's footswitch_register
+	 * dispatch; see drivers/clk/qcom/footswitch.c.
+	 */
+	.fs = mmcc_msm8660_fs,
+	.num_fs = ARRAY_SIZE(mmcc_msm8660_fs),
 };
 
 static const struct of_device_id mmcc_msm8660_match_table[] = {

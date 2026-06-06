@@ -20,6 +20,7 @@
 #include "clk-regmap.h"
 #include "reset.h"
 #include "gdsc.h"
+#include "footswitch.h"
 
 struct qcom_cc {
 	struct qcom_reset_controller reset;
@@ -142,6 +143,11 @@ EXPORT_SYMBOL_GPL(qcom_pll_set_fsm_mode);
 static void qcom_cc_gdsc_unregister(void *data)
 {
 	gdsc_unregister(data);
+}
+
+static void qcom_cc_footswitch_unregister(void *data)
+{
+	footswitch_unregister(data);
 }
 
 /*
@@ -386,6 +392,27 @@ int qcom_cc_really_probe(struct device *dev,
 			goto put_rpm;
 		ret = devm_add_action_or_reset(dev, qcom_cc_gdsc_unregister,
 					       scd);
+		if (ret)
+			goto put_rpm;
+	}
+
+	if (desc->fs && desc->num_fs) {
+		struct footswitch_desc *fsd;
+
+		fsd = devm_kzalloc(dev, sizeof(*fsd), GFP_KERNEL);
+		if (!fsd) {
+			ret = -ENOMEM;
+			goto put_rpm;
+		}
+		fsd->dev = dev;
+		fsd->fs = desc->fs;
+		fsd->num = desc->num_fs;
+		ret = footswitch_register(fsd, &reset->rcdev, regmap);
+		if (ret)
+			goto put_rpm;
+		ret = devm_add_action_or_reset(dev,
+					       qcom_cc_footswitch_unregister,
+					       fsd);
 		if (ret)
 			goto put_rpm;
 	}
