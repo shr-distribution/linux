@@ -747,7 +747,7 @@ u16 TTFExtractAllSections_430Xv2(void)
 
 int TTFImageRead_430Xv2(char *buf, size_t count, loff_t *ppos)
 {
-	int idx, s_off, b_off = 0, ret;
+	int idx, s_off, b_off = 0;
 	unsigned int accum_size = 0, copy_size = 0, rem_count = count;
 	loff_t offset = *ppos;
 
@@ -756,9 +756,10 @@ int TTFImageRead_430Xv2(char *buf, size_t count, loff_t *ppos)
 			s_off = offset - accum_size;
 			copy_size = ((ttf_extract_smap.sec_fmt_len[idx] - s_off) > rem_count) ?
 					rem_count : (ttf_extract_smap.sec_fmt_len[idx] - s_off);
-			ret = copy_to_user(buf + b_off,
-					   ((char *)ttf_extract_smap.sec_databuf[idx]) + s_off,
-					   copy_size);
+			if (copy_to_user(buf + b_off,
+					 ((char *)ttf_extract_smap.sec_databuf[idx]) + s_off,
+					 copy_size))
+				return -EFAULT;
 			rem_count -= copy_size;
 			offset += copy_size;
 			b_off += copy_size;

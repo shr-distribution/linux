@@ -19,6 +19,7 @@
 #include <linux/device.h>
 #include <linux/file.h>
 #include <linux/fs.h>
+#include <linux/hex.h>
 #include <linux/i2c.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
@@ -546,7 +547,15 @@ static ssize_t a6_write(struct file *file, const char __user *buf, size_t count,
 		if (!elt_bufsize) {
 			if (a6_t2s_dup_correct) {
 				elt_bufsize = 2;
-				sprintf(elt_buf, "%02x", *state->a2a_wp);
+				/*
+				 * The A6 protocol encodes one register value as
+				 * two ASCII-hex digits with the sync bit (0x80)
+				 * OR'd into the first digit. Use hex_byte_pack()
+				 * instead of sprintf("%02x") because elt_buf is
+				 * exactly 2 bytes -- sprintf would write a third
+				 * NUL terminator past the end of the buffer.
+				 */
+				hex_byte_pack(elt_buf, *state->a2a_wp);
 				elt_buf[0] |= 0x80;
 			} else {
 				elt_bufsize = 1;
@@ -645,20 +654,10 @@ static int a6_pmem_close(struct inode *inode, struct file *file)
 
 static ssize_t a6_pmem_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
-
-	ssize_t rc = 0;
-	struct a6_device_state *state;
-
-
-	/* input validations */
 	if (!count)
 		return -EINVAL;
 
-	/* get state */
-	state = file->private_data;
-	rc = ttf_image_read(buf, count, ppos);
-
-	return rc;
+	return ttf_image_read(buf, count, ppos);
 }
 
 const struct file_operations a6_pmem_fops = {
