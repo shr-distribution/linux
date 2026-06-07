@@ -190,11 +190,19 @@ allOf:
     then:
       properties:
         clocks:
-          minItems: 1
-          maxItems: 1
+          oneOf:
+            - minItems: 1
+              maxItems: 1
+            - minItems: 3
+              maxItems: 3
         clock-names:
-          items:
-            - const: iface
+          oneOf:
+            - items:
+                - const: iface
+            - items:
+                - const: core
+                - const: iface
+                - const: bus
         dmas:
           items:
             - description: DMA specifiers for rx dma channel (ADM).

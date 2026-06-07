@@ -16,6 +16,13 @@ properties:
   compatible:
     const: operating-points-v2
 
+  ranges:
+    type: boolean
+    description: |
+      Empty `ranges` flag accepted when the OPP table is a direct child
+      of a simple-bus node and would otherwise fail the parent's child
+      schema "must have reg or ranges" requirement.
+
 unevaluatedProperties: false
 
 examples:
