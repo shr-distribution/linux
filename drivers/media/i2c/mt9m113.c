@@ -2919,6 +2919,26 @@ static void mt9m113_power_off(struct mt9m113 *sensor)
 	usleep_range(1000, 2000);
 	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies),
 			       sensor->supplies);
+	/*
+	 * Hold off until the camera rails have actually drained before
+	 * letting a back-to-back power_on() run. The HP TouchPad's front-
+	 * camera supplies have tens of microfarads of bulk capacitance;
+	 * without this delay a rapid runtime_suspend -> runtime_resume
+	 * (or sysfs unbind -> bind) cycle sees a brown-out instead of a
+	 * clean 0 -> 1.2 V / 0 -> 2.8 V ramp on the next enable, and the
+	 * MT9M113 MCU comes up in an undefined state -- SEQ_CMD then
+	 * sticks at 0x0001/0x0006 and every later REFRESH/RUN times out.
+	 * Soft reset (RESET_AND_MISC_CONTROL.RESET_SOC) cannot recover
+	 * from this; only a real off-time clears the analog state.
+	 *
+	 * 50 ms is conservative for the discharge time of the typical
+	 * 4.7 uF bulk cap on each rail at sensor idle current. PM
+	 * autosuspend delays are hundreds of ms anyway, so this is
+	 * invisible to normal use, and it guarantees back-to-back
+	 * power cycles (eg. start_streaming retry loop, sysfs unbind/
+	 * rebind) are race-free.
+	 */
+	msleep(50);
 }
 
 static int mt9m113_runtime_resume(struct device *dev)
