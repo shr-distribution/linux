@@ -2708,11 +2708,23 @@
 	bus-width = <4>;
 
 	/*
-	 * Limit clock to 24MHz for SDIO stability.
-	 * Legacy kernel used msmsdcc_fmid=24000000 for intermediate operations.
-	 * Higher clocks (48MHz) can cause CRC errors with AR6003.
+	 * Cap clock at 48 MHz, matching legacy webOS
+	 * (board-tenderloin.c:5465: msmsdcc_fmax = 48000000). The legacy
+	 * kernel ran the AR6003 SDIO bus at 48 MHz routinely. Other mainline
+	 * AR6003 boards (at91-wb50n, at91-wb45n, omap3-echo) don't cap the
+	 * controller at all and let the SoC's SDIO host pick its own max.
+	 *
+	 * An earlier comment here recommended 24 MHz citing "CRC errors at
+	 * 48 MHz." Those errors were a symptom of the buggy upstream PL18x
+	 * RXDATAAVLBL drain check (mmci_dmae_finalize) tripping on AR6003
+	 * byte-mode FIXED reads and permanently disabling DMA, not of the
+	 * chip mis-CRCing at 48 MHz. With the qcom variant gated off that
+	 * check ("mmc: mmci: qcom: skip RX-FIFO drain check on
+	 * dma_finalize") and the ADM dmaengine read-callback completion
+	 * wired up, the AR6003 runs cleanly at 48 MHz, doubling SDIO
+	 * throughput.
 	 */
-	max-frequency = <24000000>;
+	max-frequency = <48000000>;
 
 	/*
 	 * SDIO requires data registers to be set up before command is sent.
