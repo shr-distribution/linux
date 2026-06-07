@@ -87,7 +87,6 @@ patternProperties:
     type: object
     additionalProperties: true
     description: RPM sleep-set regulator configuration (MSM8x60).
-    unevaluatedProperties: false
 
 required:
   - compatible
