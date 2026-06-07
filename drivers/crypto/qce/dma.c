@@ -247,6 +247,18 @@ int qce_dma_terminate_all(struct qce_dma_data *dma)
 {
 	int ret;
 
-	ret = dmaengine_terminate_all(dma->rxchan);
-	return ret ?: dmaengine_terminate_all(dma->txchan);
+	/*
+	 * Wait for any in-flight DMA callbacks to drain before returning.
+	 * Both qce_aead_done (success) and qce_aead_async_req_handle's
+	 * error paths call us, and both proceed to dma_unmap_sg() / free
+	 * the original aead_request immediately after this returns. If a
+	 * callback is still queued in the hardware (the request had
+	 * already been issued before the error path ran), it will fire
+	 * later against a freed aead_request and crash in qce_aead_done
+	 * with a NULL pointer dereference at qce_aead_done+0x40.
+	 * dmaengine_terminate_sync waits for the callbacks to drain so
+	 * we cannot leave dangling work behind.
+	 */
+	ret = dmaengine_terminate_sync(dma->rxchan);
+	return ret ?: dmaengine_terminate_sync(dma->txchan);
 }
