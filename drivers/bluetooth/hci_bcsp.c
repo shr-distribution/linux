@@ -2458,26 +2458,50 @@ static void bcsp_timed_event(struct timer_list *t)
 static void bcsp_init_pskey_defaults(struct bcsp_struct *bcsp)
 {
 	/*
-	 * webOS defaults verified from libPmBtBsaif.so .data at vma 0xe415c.
-	 * See [[project_bcsp_webos_pskey_values_extracted.md]] for the raw
-	 * 64-byte dump and field-by-field decode.
+	 * webOS defaults verified byte-for-byte from libPmBtBsaif.so .data at
+	 * vma 0xe415c (the bootstrap struct). The rodata symbolic-name table
+	 * at 0x10AF1C lists the struct field names in offset order; the BCCMD
+	 * PsSet loop in CsrTmBlueCoreGetBootstrap reads each PSKEY value from
+	 * a fixed offset in that struct.
+	 *
+	 * The PSKEY-NAME assignments in this firmware do NOT match the public
+	 * CSR PRM IDs we'd previously assumed. Per the rodata-symbol order:
+	 *
+	 *   Struct  Symbolic field            PSKEY  Default
+	 *   offset  name                      ID     value
+	 *   ------  ----------------------    -----  ----------
+	 *   +2      mhz (crystal freq)        0x01FE 0x6590 (26000)
+	 *   +4      ana_ftrim                 0x01F6 0x0025 (37)
+	 *   +6      host_interface            0x01F9 0x0001 default — override to 2 = BCSP
+	 *   +8      hostio_map_sco_pcm        0x01AB 0x0001
+	 *   +10     hostio_map_sco_codec      0x01B0 0x0001
+	 *   +12     codec_pio                 0x01B9 0x0008
+	 *   +14     h_hc_fc_max_acl_pkt_len   0x0011 0x0154 (340)
+	 *   +16     h_hc_fc_max_acl_pkts      0x0013 0x000B (11)
+	 *   +18     vm_disable / max_scos     0x000E 0x0001
+	 *   +20     (next field)              0x025D 0x0001
+	 *
+	 * Field-name semantics inside struct bcsp_struct keep the lexical
+	 * naming we already had so unrelated call sites don't churn; the
+	 * comment after each line documents which PSKEY ID and webOS
+	 * symbolic-name this default actually corresponds to.
 	 */
-	bcsp->pskey_ana_freq = 26000;			/* 0x6590 — 26 MHz crystal */
-	bcsp->pskey_pskey0013 = 0x000B;
-	bcsp->pskey_enc_key_min = 0x0001;
+	bcsp->pskey_ana_freq = 0x0154;			/* PSKEY 0x0011 = h_hc_fc_max_acl_pkt_len (340) */
+	bcsp->pskey_pskey0013 = 0x000B;			/* PSKEY 0x0013 = h_hc_fc_max_acl_pkts (11) */
+	bcsp->pskey_enc_key_min = 0x0001;		/* PSKEY 0x000E = vm_disable */
 	bcsp->pskey_max_tx_power = 0x0004;
 	bcsp->pskey_default_tx_power = 0x0004;
-	bcsp->pskey_h_hc_fc_max_acl_pkt_len = 0x01D8;
-	bcsp->pskey_h_hc_fc_max_acl_pkts = 0x0001;
-	bcsp->pskey_pcm_config32 = 0x0008;
-	bcsp->pskey_pcm_min_cpu_clock = 0x0000;
-	bcsp->pskey_pcm_format = 0x0001;
-	bcsp->pskey_ana_ftrim = 0x0025;			/* 37 */
-	bcsp->pskey_uart_baudrate = bcsp_baud_to_pskey_divisor(115200);  /* 0x01D8 */
-	bcsp->pskey_uart_config_bcsp = 0x0001;
-	bcsp->pskey_host_interface = HOST_INTERFACE_BCSP;  /* 2 (overrides chip ROM default H4 = 1) */
-	bcsp->pskey_max_tx_power_no_rssi = 0x0004;
-	bcsp->pskey_default_tx_power_no_rssi = 0x0001;
+	bcsp->pskey_h_hc_fc_max_acl_pkt_len = 0x0001;	/* PSKEY 0x01AB = hostio_map_sco_pcm */
+	bcsp->pskey_h_hc_fc_max_acl_pkts = 0x0001;	/* PSKEY 0x01B0 = hostio_map_sco_codec */
+	bcsp->pskey_pcm_config32 = 0x0008;		/* PSKEY 0x01B9 = codec_pio */
+	bcsp->pskey_pcm_min_cpu_clock = 0x0000;		/* PSKEY 0x01BE */
+	bcsp->pskey_pcm_format = 0x0025;		/* PSKEY 0x01F6 = ana_ftrim (37) */
+	bcsp->pskey_ana_ftrim = 0x0025;			/* PSKEY 0x01F7 = ana_ftrim (paired w/ 0x01F6) */
+	bcsp->pskey_uart_baudrate = bcsp_baud_to_pskey_divisor(115200);  /* PSKEY 0x01F8 = 0x01D8 */
+	bcsp->pskey_uart_config_bcsp = HOST_INTERFACE_BCSP;  /* PSKEY 0x01F9 = host_interface = 2 (BCSP, overrides ROM H4=1) */
+	bcsp->pskey_host_interface = 0x6590;		/* PSKEY 0x01FE = mhz (crystal freq, 26000) */
+	bcsp->pskey_max_tx_power_no_rssi = 0x0004;	/* PSKEY 0x024D */
+	bcsp->pskey_default_tx_power_no_rssi = 0x0001;	/* PSKEY 0x025D */
 
 	/* Palm Platform PSKEYs - use static defaults */
 	bcsp->pskey_palm_01b3 = palm_pskey_01b3;
