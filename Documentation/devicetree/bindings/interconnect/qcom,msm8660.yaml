@@ -46,6 +46,12 @@ properties:
 
   '#interconnect-cells':
     const: 1
+
+  ranges:
+    type: boolean
+    description: |
+      Empty `ranges` flag accepted as a noop, allowing the node to sit
+      directly under simple-bus.
     description:
       Each consumer phandle takes the form <provider node-id> where node-id
       indexes the per-fabric ID array in
