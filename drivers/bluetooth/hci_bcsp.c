@@ -392,20 +392,34 @@ struct bcsp_struct {
 	 */
 	bool	pskeys_from_dt;		/* True if PSKEYs loaded from DT */
 
-	/* Common PSKEYs */
-	u16	pskey_ana_freq;		/* 0x0011: Crystal frequency (default: 26000) */
-	u16	pskey_ana_ftrim;	/* 0x0013: Crystal fine trim (default: 0x19) */
-	u16	pskey_host_interface;	/* 0x01FE: Host interface (default: 0x0001) */
-	u16	pskey_deep_sleep;	/* 0x01BE: Deep sleep config (default: 0x0000) */
-	u16	pskey_hci_max_acl;	/* 0x01AB: HCI FC max ACL (default: 0x03ec) */
-	u16	pskey_hci_max_sco;	/* 0x01B0: HCI FC max SCO (default: 0x0000) */
-	u16	pskey_uart_baudrate;	/* 0x01B9: UART baudrate (default: 0x01d8) */
-	u16	pskey_enc_key_min;	/* 0x000E: Enc key min len (default: 0x0001) */
-	u16	pskey_unknown_01f9;	/* 0x01F9: Unknown (default: 0x0001) */
+	/*
+	 * Common PSKEYs — IDs corrected against full PIC decompile of
+	 * libPmBtBsaif.so's CsrTmBlueCoreGetBootstrap(). Default values
+	 * come from the bootstrap struct at libPmBtBsaif.so .data vma
+	 * 0xe415c (verified bytes documented in
+	 * [[project_bcsp_webos_pskey_values_extracted.md]]).
+	 *
+	 * Field naming uses the symbolic names from the rodata table at
+	 * 0x10AF1C: pskey_<symbolic name>. Old field names (uart_baudrate
+	 * on PSKEY 0x01B9, ana_ftrim on PSKEY 0x0013) were wrong both in
+	 * name and in PSKEY ID — they're renamed to the correct IDs here.
+	 */
+	u16	pskey_ana_freq;			/* 0x0011: ANA_FREQ — crystal frequency (default: 0x6590 = 26000) */
+	u16	pskey_pskey0013;		/* 0x0013: unknown (default: 0x000B from .data) */
+	u16	pskey_enc_key_min;		/* 0x000E: ENC_KEY_LMIN (default: 0x0001) */
+	u16	pskey_max_tx_power;		/* 0x0017: LC_MAX_TX_POWER (default: 0x0004) */
+	u16	pskey_default_tx_power;		/* 0x0021: LC_DEFAULT_TX_POWER (default: 0x0004) */
+	u16	pskey_h_hc_fc_max_acl_pkt_len;	/* 0x01AB (default: 0x01D8) */
+	u16	pskey_h_hc_fc_max_acl_pkts;	/* 0x01B0 (default: 0x0001) */
+	u16	pskey_pcm_config32;		/* 0x01B9 (default: 0x0008) */
+	u16	pskey_pcm_min_cpu_clock;	/* 0x01BE — sent only when host_iface != H4/H5 */
+	u16	pskey_pcm_format;		/* 0x01F6 (default: 0x0001) */
+	u16	pskey_ana_ftrim;		/* 0x01F7: ANA_FTRIM crystal fine trim (default: 0x0025 = 37) */
+	u16	pskey_uart_baudrate;		/* 0x01F8: UART baudrate divisor (default: 0x01D8 for 115200) */
+	u16	pskey_uart_config_bcsp;		/* 0x01F9: BCSP UART config (default: 0x0001) */
+	u16	pskey_host_interface;		/* 0x01FE: HOST_INTERFACE bundle, low u16 = transport (HOST_INTERFACE_BCSP = 2) */
 	u16	pskey_max_tx_power_no_rssi;	/* 0x024D (default: 0x0004) */
 	u16	pskey_default_tx_power_no_rssi;	/* 0x025D (default: 0x0001) */
-	u16	pskey_max_tx_power;	/* 0x0017: Max TX power (default: 0x0004) */
-	u16	pskey_default_tx_power;	/* 0x0021: Default TX power (default: 0x0004) */
 
 	/* Palm Platform PSKEYs (multi-word, stored as pointers) */
 	const u16 *pskey_palm_01b3;	/* 4 words */
@@ -1121,29 +1135,63 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 			 */
 			BT_INFO("BCSP: Serdev link up, sending full PSKEYs + WARM_RESET");
 
-			/* === Common PSKEYs === */
-			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
-					     bcsp->pskey_ana_freq);
-			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
-					     bcsp->pskey_ana_ftrim);
+			/*
+			 * BCCMD PsSet sequence reproducing the 13-base-PSKEY
+			 * order observed in webOS CsrTmBlueCoreGetBootstrap
+			 * (libPmBtBsaif.so offset 0x6960c). Per
+			 * [[project_bcsp_webos_pskey_values_extracted.md]]:
+			 *   1.  0x01FE HOST_INTERFACE
+			 *   2.  0x01BE PCM_MIN_CPU_CLOCK — only when not H4/H5
+			 *   3.  0x01AB H_HC_FC_MAX_ACL_PKT_LEN
+			 *   4.  0x01B0 H_HC_FC_MAX_ACL_PKTS
+			 *   5.  0x01B9 PCM_CONFIG32
+			 *   6.  0x01F6 PCM_FORMAT
+			 *   7.  0x0011 ANA_FREQ
+			 *   8.  0x0013 (unknown)
+			 *   9.  0x024D LC_MAX_TX_POWER_NO_RSSI
+			 *   10. 0x000E ENC_KEY_LMIN
+			 *   11. 0x01F9 UART_CONFIG_BCSP
+			 *   12. 0x025D LC_DEFAULT_TX_POWER_NO_RSSI
+			 *   13. 0x0001 BDADDR (sent via bcsp_send_bdaddr_bccmd
+			 *       below at the start of the per-buildId block)
+			 * Plus PSKEY 0x01F7 ANA_FTRIM and 0x01F8 UART_BAUDRATE
+			 * which the bootstrap struct holds at +4 and +0 — the
+			 * decompile shows them set by setBootstrap* but they
+			 * are written as part of the 0x01FE HOST_INTERFACE
+			 * bundle in webOS (8-byte composite PSKEY). For now we
+			 * send them as separate single-word writes which is
+			 * functionally equivalent for chip configuration.
+			 */
 			bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
 					     bcsp->pskey_host_interface);
-			bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
-					     bcsp->pskey_deep_sleep);
+			if (bcsp->pskey_host_interface != HOST_INTERFACE_H4 &&
+			    bcsp->pskey_host_interface != HOST_INTERFACE_H5)
+				bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+						     bcsp->pskey_pcm_min_cpu_clock);
 			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
-					     bcsp->pskey_hci_max_acl);
+					     bcsp->pskey_h_hc_fc_max_acl_pkt_len);
 			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
-					     bcsp->pskey_hci_max_sco);
+					     bcsp->pskey_h_hc_fc_max_acl_pkts);
 			bcsp_send_pskey_word(hu, PSKEY_PCM_CONFIG32,
-					     bcsp->pskey_uart_baudrate);
+					     bcsp->pskey_pcm_config32);
+			bcsp_send_pskey_word(hu, PSKEY_PCM_FORMAT,
+					     bcsp->pskey_pcm_format);
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+					     bcsp->pskey_ana_freq);
+			bcsp_send_pskey_word(hu, 0x0013, bcsp->pskey_pskey0013);
+			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
+					     bcsp->pskey_max_tx_power_no_rssi);
 			bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
 					     bcsp->pskey_enc_key_min);
 			bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
-					     bcsp->pskey_unknown_01f9);
-			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
-					     bcsp->pskey_max_tx_power_no_rssi);
+					     bcsp->pskey_uart_config_bcsp);
 			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
 					     bcsp->pskey_default_tx_power_no_rssi);
+			/* The actual ANA_FTRIM + UART_BAUDRATE PSKEYs */
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
+					     bcsp->pskey_ana_ftrim);
+			bcsp_send_pskey_word(hu, PSKEY_UART_BAUDRATE,
+					     bcsp->pskey_uart_baudrate);
 
 			/* === Palm Platform PSKEYs === */
 			bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
@@ -1941,17 +1989,17 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/* Deep sleep config */
 		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
-				     bcsp->pskey_deep_sleep);
+				     bcsp->pskey_pcm_min_cpu_clock);
 		msleep(20);
 
 		/* HCI FC max ACL packets */
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
-				     bcsp->pskey_hci_max_acl);
+				     bcsp->pskey_h_hc_fc_max_acl_pkt_len);
 		msleep(20);
 
 		/* HCI FC max SCO packets */
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
-				     bcsp->pskey_hci_max_sco);
+				     bcsp->pskey_h_hc_fc_max_acl_pkts);
 		msleep(20);
 
 		/* UART baudrate divisor */
@@ -1966,7 +2014,7 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/* Unknown 0x01F9 */
 		bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
-				     bcsp->pskey_unknown_01f9);
+				     bcsp->pskey_uart_config_bcsp);
 		msleep(20);
 
 		/* Max TX power without RSSI */
@@ -2172,13 +2220,13 @@ static int bcsp_setup(struct hci_uart *hu)
 				     bcsp->pskey_host_interface);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
-				     bcsp->pskey_deep_sleep);
+				     bcsp->pskey_pcm_min_cpu_clock);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
-				     bcsp->pskey_hci_max_acl);
+				     bcsp->pskey_h_hc_fc_max_acl_pkt_len);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
-				     bcsp->pskey_hci_max_sco);
+				     bcsp->pskey_h_hc_fc_max_acl_pkts);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_PCM_CONFIG32,
 				     bcsp->pskey_uart_baudrate);
@@ -2187,7 +2235,7 @@ static int bcsp_setup(struct hci_uart *hu)
 				     bcsp->pskey_enc_key_min);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
-				     bcsp->pskey_unknown_01f9);
+				     bcsp->pskey_uart_config_bcsp);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
 				     bcsp->pskey_max_tx_power_no_rssi);
@@ -2399,20 +2447,27 @@ static void bcsp_timed_event(struct timer_list *t)
  */
 static void bcsp_init_pskey_defaults(struct bcsp_struct *bcsp)
 {
-	/* Common PSKEYs - webOS defaults */
-	bcsp->pskey_ana_freq = 26000;		/* 26 MHz crystal */
-	bcsp->pskey_ana_ftrim = 0x19;		/* Crystal fine trim */
-	bcsp->pskey_host_interface = 0x0001;	/* BCSP mode */
-	bcsp->pskey_deep_sleep = 0x0000;	/* Deep sleep config */
-	bcsp->pskey_hci_max_acl = 0x03ec;	/* HCI FC max ACL */
-	bcsp->pskey_hci_max_sco = 0x0000;	/* HCI FC max SCO */
-	bcsp->pskey_uart_baudrate = 0x01d8;	/* 115200 baud */
-	bcsp->pskey_enc_key_min = 0x0001;	/* Encryption key min */
-	bcsp->pskey_unknown_01f9 = 0x0001;	/* Unknown */
+	/*
+	 * webOS defaults verified from libPmBtBsaif.so .data at vma 0xe415c.
+	 * See [[project_bcsp_webos_pskey_values_extracted.md]] for the raw
+	 * 64-byte dump and field-by-field decode.
+	 */
+	bcsp->pskey_ana_freq = 26000;			/* 0x6590 — 26 MHz crystal */
+	bcsp->pskey_pskey0013 = 0x000B;
+	bcsp->pskey_enc_key_min = 0x0001;
+	bcsp->pskey_max_tx_power = 0x0004;
+	bcsp->pskey_default_tx_power = 0x0004;
+	bcsp->pskey_h_hc_fc_max_acl_pkt_len = 0x01D8;
+	bcsp->pskey_h_hc_fc_max_acl_pkts = 0x0001;
+	bcsp->pskey_pcm_config32 = 0x0008;
+	bcsp->pskey_pcm_min_cpu_clock = 0x0000;
+	bcsp->pskey_pcm_format = 0x0001;
+	bcsp->pskey_ana_ftrim = 0x0025;			/* 37 */
+	bcsp->pskey_uart_baudrate = bcsp_baud_to_pskey_divisor(115200);  /* 0x01D8 */
+	bcsp->pskey_uart_config_bcsp = 0x0001;
+	bcsp->pskey_host_interface = HOST_INTERFACE_BCSP;  /* 2 (overrides chip ROM default H4 = 1) */
 	bcsp->pskey_max_tx_power_no_rssi = 0x0004;
 	bcsp->pskey_default_tx_power_no_rssi = 0x0001;
-	bcsp->pskey_max_tx_power = 0x0004;	/* Max TX power */
-	bcsp->pskey_default_tx_power = 0x0004;	/* Default TX power */
 
 	/* Palm Platform PSKEYs - use static defaults */
 	bcsp->pskey_palm_01b3 = palm_pskey_01b3;
@@ -2506,13 +2561,13 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 				  &bcsp->pskey_host_interface))
 		pskeys_read++;
 	if (!of_property_read_u16(np, "brcm,deep-sleep",
-				  &bcsp->pskey_deep_sleep))
+				  &bcsp->pskey_pcm_min_cpu_clock))
 		pskeys_read++;
 	if (!of_property_read_u16(np, "brcm,hci-max-acl",
-				  &bcsp->pskey_hci_max_acl))
+				  &bcsp->pskey_h_hc_fc_max_acl_pkt_len))
 		pskeys_read++;
 	if (!of_property_read_u16(np, "brcm,hci-max-sco",
-				  &bcsp->pskey_hci_max_sco))
+				  &bcsp->pskey_h_hc_fc_max_acl_pkts))
 		pskeys_read++;
 	if (!of_property_read_u16(np, "brcm,uart-baudrate",
 				  &bcsp->pskey_uart_baudrate))
