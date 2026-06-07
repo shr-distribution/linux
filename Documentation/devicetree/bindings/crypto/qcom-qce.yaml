@@ -75,6 +75,11 @@ properties:
     minItems: 1
     maxItems: 3
 
+  interrupts:
+    maxItems: 1
+    description:
+      Crypto Engine interrupt for completion.
+
   iommus:
     minItems: 1
     maxItems: 8
