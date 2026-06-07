@@ -276,17 +276,27 @@ static inline u16 bcsp_baud_to_pskey_divisor(unsigned int baud)
  * These are the exact values sent by webOS for BCM4329 on HP TouchPad.
  */
 
+/*
+ * palmPlatformCommonPskeys + palmPlatformSpecificPskeys
+ *
+ * Values verified byte-for-byte against libPmBtBsaif.so .data at vma
+ * 0xe42c4..0xe42cc (palmPlatformCommonPskeys entries) and 0xe4274..0xe42c2
+ * (palmPlatformSpecificPskeys entries). The previous values in this
+ * driver included trailing neighbour-PSKEY words — every key was sent
+ * with ~double the actual length, leaking the next PSKEY's value into
+ * the previous one. See [[project_bcsp_webos_pskey_values_extracted.md]]
+ * for the raw .data dump.
+ */
 /* palmPlatformCommonPskeys */
-static const u16 palm_pskey_01b3[] = { 0x08a0, 0x0016, 0x0060, 0x082e };
-static const u16 palm_pskey_01b6[] = { 0x0060, 0x082e };
-static const u16 palm_pskey_01bf[] = { 0x082e, 0x0000 };
+static const u16 palm_pskey_01b3[] = { 0x08a0, 0x0016 };		/* 4 bytes */
+static const u16 palm_pskey_01b6[] = { 0x0060 };			/* 2 bytes */
+static const u16 palm_pskey_01bf[] = { 0x082e };			/* 2 bytes */
 
 /* palmPlatformSpecificPskeys */
-static const u16 palm_pskey_01ba[] = { 0x1002, 0x0177, 0x0001, 0x03e8 };
-static const u16 palm_pskey_01c7[] = { 0x0001, 0x03e8, 0x000a, 0x0064,
-				       0x0031, 0x0004, 0x0004, 0x2200 };
-static const u16 palm_pskey_01ca[] = { 0x0031, 0x0004 };
-static const u16 palm_pskey_001d[] = { 0x2410, 0x08a0 };
+static const u16 palm_pskey_01ba[] = { 0x1002, 0x0177 };		/* 4 bytes */
+static const u16 palm_pskey_01c7[] = { 0x0001, 0x03e8, 0x000a, 0x0064 };/* 8 bytes */
+static const u16 palm_pskey_01ca[] = { 0x0031 };			/* 2 bytes */
+static const u16 palm_pskey_001d[] = { 0x2410 };			/* 2 bytes */
 
 /* TX Power Table (PSKEY 0x0031) - 30 entries for RF calibration */
 static const u16 palm_tx_power_table[] = {
