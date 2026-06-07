@@ -1802,6 +1802,39 @@
 		line-name = "AUD_LDO1_EN";
 	};
 
+	/*
+	 * WL_HOST_WAKE (GPIO 93) — AR6003 SDIO out-of-band wake.
+	 *
+	 * This pin is the chip's WAKE-to-HOST OUTPUT: the AR6003 drives it
+	 * to interrupt the SoC when it has something to say (e.g. SDIO data
+	 * ready while the bus is suspended). The SoC side MUST sit in input
+	 * mode.
+	 *
+	 * moboot inherits webOS's gpiomux setup, which configures this pin
+	 * as a driven OUTPUT (8 mA, high). pinctrl-msm does not change pin
+	 * direction for `function = "gpio"` groups — `input-enable;` in such
+	 * a group is silently a no-op (direction is owned by the gpio
+	 * framework, not pinconf). Without an explicit gpio framework
+	 * direction call, the pin therefore stays in moboot's "output high"
+	 * state.
+	 *
+	 * Result: the SoC drives 1.8 V into the chip's WL_HOST_WAKE output
+	 * pin, shorting against the chip's internal driver. The internal
+	 * logic browns out enough that the AR6003 fails to answer ANY SDIO
+	 * command — CMD52, CMD5, CMD8 all CMDTIMEOUT before mmc_attach_sdio
+	 * can read the CIS. The whole bus looks dead.
+	 *
+	 * Hog the pin as input at probe so the gpio framework actively
+	 * de-asserts the output enable bit. After this fix, mmc_attach_sdio
+	 * succeeds (SDIO_ID 0271:0301 = AR6003) and ath6kl loads firmware.
+	 */
+	wl-host-wake-hog {
+		gpio-hog;
+		gpios = <93 GPIO_ACTIVE_HIGH>;
+		input;
+		line-name = "WL_HOST_WAKE";
+	};
+
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
 	/* eMMC pins, all 8 data lines connected */
