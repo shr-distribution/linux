@@ -9,7 +9,7 @@ Update **the row** when a branch's state changes. Append new findings to
 the **Findings Log** at the bottom. Bump the "Last updated" stamp every
 time you change either.
 
-**Last updated:** 2026-06-07 14:00 CEST
+**Last updated:** 2026-06-07 18:00 CEST
 
 ---
 
@@ -18,11 +18,10 @@ time you change either.
 | Component | State | Note |
 |---|---|---|
 | `claude-cli` (Opus 4.7) | working | Used for ad-hoc reviews when rate window is fresh |
-| `claude-cli` (Sonnet 4.6) | **in flight on mt9m113 v8** | Background task `b1yqrbht0`, 1h25min elapsed, sashiko-preflight wrapper bumped to 2h cap |
-| Vertex (Gemini 2.5 Pro) | working | `region = "global"`, project `project-1e644f1f-f7f1-43b2-848` |
-| Vertex (Gemini 3.1 Pro Preview) | **working after fix** | Model is allow-listed at `global` only (us-central1 returns 404). Sashiko's `vertex.rs` was emitting bogus `global-aiplatform.googleapis.com` host — patched 2026-06-07 to drop the prefix |
-| Sashiko `prompts.rs` retry loop | **fixed** | Inner loop now bails on Fatal `ClaudeError` (404/401/400) with the real error instead of burying it under a generic "stage failed after 3 attempts" message. RECITATION still routes to prompt-perturbation as before |
-| `sashiko-preflight.sh` | working | `--repo` points at integration tree; wrapper timeout = 7200s |
+| `claude-cli` (Sonnet 4.6) | working but **slow on 3000+ line drivers** | Two mt9m113 v8 escalation runs on 2026-06-07 both timed out — once at 60min, once at 2h wrapper cap. Use Haiku or split work for big drivers |
+| Vertex (Gemini 2.5 Pro / 3.1 Pro Preview) | **BLOCKED — Google account `qcomapq8060@gmail.com` restricted 2026-06-07** | Sashiko fan-spawn burst on v8 escalation tripped Google abuse-detection. `project-1e644f1f-...` got CONSUMER_SUSPENDED first; then the parent account got `access_denied: Account Restricted`. Recovery: user re-auth flow at accounts.google.com/info/servicerestricted. See [[feedback-vertex-burst-suspension]]. Other project (`project-fbffa5c0-...`) + account (`denisedcruz42@`) are inactive backups at the same risk |
+| Sashiko reliability fixes (this session) | **shipped to `~/.cargo/bin/`** | 5 fixes committed to local `~/webos/sashiko` main as `b49af62`: vertex.rs global-host hostname; prompts.rs Fatal short-circuit + RateLimit retry-after sleep + markdown-fence stripping; sashiko-cli stderr-dump on stage-failure exit. Not pushed to sashiko-dev upstream — held local |
+| `sashiko-preflight.sh` | working | `--repo` points at integration tree; wrapper timeout = 7200s; diagnostic strings on lines 221/234 correctly say "2h" not "60 min" |
 | `pre-send-check.sh` / `send-series.sh` | working | sparse-strict + kernel cocci + smatch + clang-analyzer + .config-built-check; mandatory before `git send-email` |
 | Device 172.16.42.2:22 | **tenderloin/linux-next with mt9m113 v7 + KFENCE on-device verified** | KASAN added to tenderloin_debug_defconfig; v7 brownout / race / stream sweeps clean |
 
@@ -118,7 +117,7 @@ Sashiko or sent.
 
 _(Things actively running right now. Move to a Stage row when done.)_
 
-- **mt9m113 v8 Sashiko escalation** — Sonnet (`claude-sonnet-4-6`) preflight via wrapper, task `b1yqrbht0`, log `/tmp/sashiko-preflight-media-mt9m113-20260607-134054-v8-sonnet-7200.log`. After Sonnet, switch Settings.toml to `gemini-3.1-pro-preview` (region=global already set) and run second-opinion pass.
+- _(none — mt9m113 v8 escalation closed 2026-06-07 17:50 after seven attempts; see Findings Log)_
 
 ---
 
@@ -139,6 +138,31 @@ _(Things actively running right now. Move to a Stage row when done.)_
 _(Most recent first. Each entry: date / branch / round / model / outcome.
 For non-empty findings include the count by severity and a one-line summary
 of the most actionable one.)_
+
+### 2026-06-07 17:50 — mt9m113 v8 escalation review CLOSED after 7 attempts — partial clean verdict, Google account restricted
+
+Seven escalation attempts to second-opinion-review the v8 driver, all blocked by infrastructure (not driver issues):
+
+| # | Provider/Model | Outcome |
+|---|---|---|
+| 1 | claude-sonnet-4-6 | TIMED OUT 60min (initial wrapper cap) |
+| 2 | claude-sonnet-4-6 | TIMED OUT 2h (raised cap) — model too slow for 3000-line driver |
+| 3 | Vertex gemini-3.1-pro-preview, us-central1 | 404 model-not-found; routing investigation found `vertex.rs` was emitting bogus host `global-aiplatform.googleapis.com`. Patched. |
+| 4 | Vertex gemini-3.1-pro-preview, global | rc=101 panic "vertex provider requires the 'vertex' feature" — Cargo features default to `bedrock` only; rebuilt with `--features vertex` |
+| 5 | Vertex gemini-3.1-pro-preview, global | All stages 429 rate-limited (preview-model quota); `review` worker fan-spawns 7 stages × 3 inner × 3 outer = burst |
+| 6 | Vertex gemini-2.5-pro, project-1e644f1f-... | 429 spread → 403 `CONSUMER_SUSPENDED` mid-run. Switched to project-fbffa5c0-... |
+| 7 | Vertex gemini-2.5-pro, project-fbffa5c0-... | Stage 1 returned `{"concerns":[],"dismissed_concerns":[]}` = **clean partial verdict**. Then `access_denied: Account Restricted` killed all subsequent stages |
+
+**Result for mt9m113 v8:** held local. v7 already on lkml; v8 has 8 driver + 1 binding gemini-3.1 findings already folded (earlier round); on-device sweeps clean; gemini-2.5-pro found nothing in the one stage that ran before account restriction. Send when maintainer v7 feedback arrives.
+
+**Sashiko fixes shipped** during the debug saga (committed `b49af62` on local `~/webos/sashiko` main, installed in `~/.cargo/bin/`):
+1. `ai/vertex.rs` global-region hostname (drop `global-` prefix)
+2. `worker/prompts.rs` short-circuit Fatal upstream ClaudeError before retry
+3. `worker/prompts.rs` honor RateLimit retry-after (sleep before next inner attempt)
+4. `worker/prompts.rs` strip markdown ```...``` fences before strict JSON parse
+5. `bin/sashiko-cli.rs` dump captured review stderr on stage-failure exit so root cause is visible
+
+**Saved memory entries:** [[feedback-sashiko-rebuild-install]] (`cargo install --path . --force --features vertex` — no `--bin` filter, must include vertex feature), [[feedback-vertex-burst-suspension]] (Sashiko fan-spawn burst trips Google abuse-detection in hours; suspends project, then account).
 
 ### 2026-06-07 13:18 — Sashiko vertex.rs + prompts.rs (Sashiko internal) — two bugs fixed
 
@@ -199,8 +223,8 @@ All 4 are flagged `preexisting: true` — equivalent to a clean review for a "pr
 
 ## Next-step backlog
 
-1. **Sonnet retry verdict** for mt9m113 v8 (in flight). After it finishes, run Gemini-3.1-pro-preview second-opinion via the now-fixed Vertex global routing.
-2. **Sashiko sweep for the 8 newly-tracked branches** (Stage 4: camss/rotator/vpe/vidc; Stage 5: 4 IIO). At least one of (camss-msm8660, rotator, vidc, vpe) has never been reviewed since the most recent fold.
+1. ~~Sonnet retry verdict for mt9m113 v8~~ — CLOSED. See Findings Log 2026-06-07 17:50.
+2. **Sashiko sweep for the 8 newly-tracked branches** (Stage 4: camss/rotator/vpe/vidc; Stage 5: 4 IIO). At least one of (camss-msm8660, rotator, vidc, vpe) has never been reviewed since the most recent fold. **Use `claude-cli` not Vertex** — see [[feedback-vertex-burst-suspension]]; Vertex is dead until Google account un-restricted.
 3. **Stage 1 final sends** (rows 4, 5, 6) — interconnect, mpm, pm8901-tm — all Sashiko-clean, just pending send.
 4. **gcc-cleanup v2 (#149)** — fold YAML pll4 + clk-pll NULL-check separate, then hold for lkml v1 feedback before send.
 5. **qce-msm8660 r2 (#114)** — 3 Criticals + 4 High to address before send.
