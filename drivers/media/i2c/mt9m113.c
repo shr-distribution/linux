@@ -298,12 +298,42 @@ struct mt9m113 {
 	 * its own power_off (which would underflow clk / regulator
 	 * refcounts). Cleared by runtime_suspend (consumed) or by a
 	 * successful runtime_resume.
+	 *
+	 * Also re-checked by hardware-touching ioctls (s_ctrl, ...) after
+	 * the pm_runtime gate: when the retry loop exhausted all attempts,
+	 * the chip is physically off even though runtime PM still thinks
+	 * it is ACTIVE (we cannot pm_runtime_set_suspended() inside the
+	 * retry path because it returns -EAGAIN while PM is enabled).
+	 * Treat chip_off as "skip" rather than driving cci_writes into a
+	 * dead I2C bus.
 	 */
 	bool chip_off;
 
 	/*
+	 * Set true in mt9m113_remove() before any teardown so concurrent
+	 * ioctls released by sysfs unbind (with an fd still open on a
+	 * /dev/v4l-subdev* node) bail before touching @regmap, which is
+	 * devm-managed and freed when remove() returns.
+	 */
+	bool dying;
+
+	/*
+	 * Serialises hardware-touching ioctl entry points (s_ctrl,
+	 * set_fmt(ACTIVE), ...) with mt9m113_remove(). remove() takes the
+	 * lock, sets ->dying, and only then proceeds to disable PM and
+	 * unwind devres; in-flight ioctls run to completion holding the
+	 * lock, and new ones see ->dying and return -ENODEV.
+	 */
+	struct mutex lock;
+
+	/*
 	 * Decremented by each subdev's release callback; sensor struct is
-	 * freed once both /dev/v4l-subdev* nodes have no open fds left.
+	 * freed once all currently-registered subdevs have no open fds
+	 * left. Initialised to 1 for ifp.sd (always async-registered in
+	 * probe); incremented to 2 in mt9m113_ifp_registered() after the
+	 * pa.sd v4l2_device_register_subdev() succeeds. If the bridge
+	 * driver never attaches we stay at 1 and the single ifp.sd
+	 * release callback is enough to free the sensor struct.
 	 */
 	atomic_t release_count;
 
@@ -2052,6 +2082,7 @@ static void mt9m113_release_sensor(struct mt9m113 *sensor)
 		 * their respective ctrl handlers.
 		 */
 		v4l2_fwnode_endpoint_free(&sensor->bus_cfg);
+		mutex_destroy(&sensor->lock);
 		kfree(sensor);
 	}
 }
@@ -2344,6 +2375,12 @@ static int mt9m113_ifp_registered(struct v4l2_subdev *sd)
 		return ret;
 	}
 
+	/*
+	 * pa.sd is now bound to a v4l2_device and will run
+	 * mt9m113_pa_release() when it (eventually) gets unregistered.
+	 * Account for its pending decrement.
+	 */
+	atomic_inc(&sensor->release_count);
 	return 0;
 }
 
@@ -2423,6 +2460,21 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 	pm_ret = pm_runtime_get_if_in_use(&sensor->client->dev);
 	if (pm_ret <= 0)
 		return 0;
+
+	/*
+	 * Serialise with mt9m113_remove() so devres-managed @regmap stays
+	 * valid for the duration of this control op, and so a stream_on
+	 * retry-loop that exhausted all attempts (chip_off==true, PM
+	 * still ACTIVE) does not drive cci_writes into a dead I2C bus.
+	 * mt9m113_remove() takes the same lock and sets ->dying before
+	 * pm_runtime_disable() + devres unwind.
+	 */
+	mutex_lock(&sensor->lock);
+	if (sensor->dying || sensor->chip_off) {
+		mutex_unlock(&sensor->lock);
+		pm_runtime_put_autosuspend(&sensor->client->dev);
+		return 0;
+	}
 
 	switch (ctrl->id) {
 	case V4L2_CID_HFLIP: {
@@ -2698,6 +2750,7 @@ static int mt9m113_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
+	mutex_unlock(&sensor->lock);
 	if (pm_ret > 0)
 		pm_runtime_put_autosuspend(&sensor->client->dev);
 	return ret;
@@ -3018,12 +3071,15 @@ static int mt9m113_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	sensor->client = client;
+	mutex_init(&sensor->lock);
 	/*
-	 * Initialise to 2 so kfree(sensor) only runs after both the PA and IFP
-	 * release callbacks have fired (i.e. all open /dev/v4l-subdev* fds have
-	 * been closed). See mt9m113_pa_release() for the full rationale.
+	 * Initialise to 1 for ifp.sd (always async-registered in this probe).
+	 * mt9m113_ifp_registered() increments to 2 after pa.sd is bound to a
+	 * v4l2_device by an attaching bridge driver; if no bridge ever attaches,
+	 * the single ifp.sd release callback is enough to free the sensor
+	 * struct. See mt9m113_pa_release() for the full rationale.
 	 */
-	atomic_set(&sensor->release_count, 2);
+	atomic_set(&sensor->release_count, 1);
 
 	sensor->regmap = devm_cci_regmap_init_i2c(client, 16);
 	if (IS_ERR(sensor->regmap)) {
@@ -3248,6 +3304,18 @@ static void mt9m113_remove(struct i2c_client *client)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct mt9m113 *sensor = ifp_to_mt9m113(sd);
 	struct device *dev = &client->dev;
+
+	/*
+	 * Close the regmap-UAF race against in-flight ioctls: take the
+	 * lock, raise ->dying, drop the lock. Any concurrent s_ctrl()
+	 * already past its pm_runtime_get_if_in_use() blocks here until
+	 * we release, then sees ->dying and bails before touching
+	 * @regmap (which is devm-managed and freed when this function
+	 * returns).
+	 */
+	mutex_lock(&sensor->lock);
+	sensor->dying = true;
+	mutex_unlock(&sensor->lock);
 
 	/*
 	 * Tear down PM and power the chip off BEFORE calling

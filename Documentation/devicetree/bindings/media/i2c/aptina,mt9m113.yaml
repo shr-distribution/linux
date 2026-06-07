@@ -9,9 +9,9 @@ title: Aptina MT9M113 1.3 Megapixel CMOS Digital Image Sensor
 maintainers:
   - Herman van Hazendonk <github.com@herrie.org>
 
-description: |-
+description:
   The Aptina MT9M113 is a 1.3 Megapixel CMOS digital image sensor with
-  1280x1024 active pixels. It supports dual context operation:
+  1280x1024 active pixels. It supports dual context operation
   Context A (640x480 preview mode with binning) and Context B (1280x1024
   capture mode). It is programmable through an I2C interface and outputs
   image data over a 1-lane MIPI CSI-2 connection.
@@ -31,10 +31,6 @@ properties:
     description: EXTCLK clock signal (24 MHz typical)
     maxItems: 1
 
-  clock-names:
-    items:
-      - const: xvclk
-
   vdd-supply:
     description:
       Core digital voltage supply, 1.8V
@@ -48,14 +44,17 @@ properties:
       Analog voltage supply, 2.8V
 
   reset-gpios:
-    description: |-
-      Reference to the GPIO connected to the RESET_BAR pin, if any (active
-      low).
+    maxItems: 1
+    description:
+      GPIO connected to the RESET_BAR pin, if any (active low). The MT9M113
+      has a single RESET_BAR pin.
 
   powerdown-gpios:
-    description: |-
-      Reference to the GPIO connected to the STANDBY/PWDN pin, if any (active
-      high). When asserted, the sensor enters low-power standby mode.
+    maxItems: 1
+    description:
+      GPIO connected to the STANDBY/PWDN pin, if any (active high). When
+      asserted, the sensor enters low-power standby mode. The MT9M113 has
+      a single STANDBY/PWDN pin.
 
   port:
     $ref: /schemas/graph.yaml#/$defs/port-base
@@ -71,16 +70,17 @@ properties:
             const: 4
             description: MIPI CSI-2 D-PHY
 
-          link-frequencies: true
-          remote-endpoint: true
           data-lanes:
-            minItems: 1
+            description:
+              The MT9M113 has a single CSI-2 data lane. Reject DT entries
+              that try to assign more than one lane so a misconfiguration
+              is caught at schema-validation time rather than at runtime
+              when the driver enforces num_data_lanes == 1.
             maxItems: 1
 
         required:
           - bus-type
           - link-frequencies
-          - data-lanes
 
     required:
       - endpoint
@@ -101,7 +101,7 @@ examples:
     #include <dt-bindings/gpio/gpio.h>
     #include <dt-bindings/media/video-interfaces.h>
 
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
@@ -122,7 +122,6 @@ examples:
                 mt9m113_ep: endpoint {
                     bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
                     link-frequencies = /bits/ 64 <384000000>;
-                    data-lanes = <1>;
                     remote-endpoint = <&csiphy1_ep>;
                 };
             };
