@@ -60,16 +60,39 @@ Camss first, then mem2mem siblings in parallel. Sent ~Day 14 as Stage 1
 
 | # | Bundle | `submit/*` branch | Subsystem | Note |
 |---|---|---|---|---|
-| 13 | camss-msm8660 (largest, 16 files) | `submit/media-camss-msm8660` | media | send after Stage 2 #7 lands in -next to avoid conflict |
-| 14 | msm8660 rotator | `submit/media-msm8660-rotator` | media | mem2mem |
-| 15 | msm8660 vpe | `submit/media-msm8660-vpe` | media | mem2mem |
-| 16 | msm8660 vidc | `submit/media-msm8660-vidc` | media | mem2mem, largest of the three (1080p codec) |
+| 18 | camss-msm8660 (largest, 16 files) | `submit/media-camss-msm8660` | media | send after Stage 2 #7 lands in -next to avoid conflict |
+| 19 | msm8660 rotator | `submit/media-msm8660-rotator` | media | mem2mem |
+| 20 | msm8660 vpe | `submit/media-msm8660-vpe` | media | mem2mem |
+| 21 | msm8660 vidc | `submit/media-msm8660-vidc` | media | mem2mem, largest of the three (1080p codec) |
+
+## Stage 5 — Tenderloin sensor enablement (IIO)
+
+Independent IIO patches needed for the TouchPad's sensor stack
+(sensorfw via iio-sensors-adaptor). All standalone — no cross-deps within
+the stage. Most extend existing bindings/drivers (no new compatible
+strings); rotator/vidc-style "new driver" patches do not appear here.
+
+Two of these are pure bugfixes applicable to ALL users of the driver
+(isl29018 overflow + st-sensors endianness) — consider splitting them off
+as `Fixes:`-tagged fix-only patches if maintainer pushback on the combined
+series is likely. Held grouped for now.
+
+Can be sent in parallel with Stage 1+2 (Day 1) since they touch unrelated
+subsystems, but holding until first Stage 1/2 round settles to keep the
+maintainer overhead bounded.
+
+| # | Bundle | `submit/*` branch | Subsystem | Note |
+|---|---|---|---|---|
+| 22 | isl29018 cover-glass gain compensation + lux overflow fix (3 patches) | `submit/iio-isl29018-cover-comp` | iio (light) | extends `isil,isl29018`; first patch is standalone `Fixes:` for `isl29018_read_lux()` overflow + precision |
+| 23 | lsm303dlh magn full-scale + endianness (3 patches) | `submit/iio-lsm303dlh-magn-fixes` | iio (magnetometer) | extends st-sensors with `st,fullscale-mg`; ≥±2.5G needed on tenderloin to avoid X saturation per [[lsm303dlh-be-and-bias]]; magn registers are BE at 0x03/0x05/0x07 |
+| 24 | mpu3050 gyro FIFO raw-read (1 patch) | `submit/iio-mpu3050-fifo-raw-read` | iio (gyro) | reads gyro samples via FIFO in `IIO_CHAN_INFO_RAW`; driver-only |
+| 25 | mpu3050 PM resume restores sample rate (1 patch) | `submit/iio-mpu3050-pm-resume-restore-state` | iio (gyro) | restores cached sample rate on runtime resume; driver-only |
 
 ## Capstone — board DTS
 
-`arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin.dts`. Sent ~Day 30 once all
-16 series above are in linux-next (or at least queued in their respective
-`-next` branches).
+`arch/arm/boot/dts/qcom/qcom-apq8060-tenderloin.dts`. Sent ~Day 30 once
+all 21 series above are in linux-next (or at least queued in their
+respective `-next` branches).
 
 Cross-tree references the board DTS depends on:
 
@@ -80,16 +103,20 @@ Cross-tree references the board DTS depends on:
 - `qcom,pm8901-temp-alarm` (#6)
 - `cypress,cy8ctma395-ts` (#12)
 - `aptina,mt9m113` (#11)
-- `qcom,msm8660-camss` / `qcom,msm8660-rotator` / `qcom,msm8660-vpe` / `qcom,msm8660-vidc` (#13–#16)
+- `qcom,msm8660-camss` / `qcom,msm8660-rotator` / `qcom,msm8660-vpe` / `qcom,msm8660-vidc` (#18–#21)
 - `qcom,msm8660-qce` (#10), `qcom,vendor-init-seq` USB phy (#8), max8903 DC/USB limit (#9)
+- `isil,cover-comp-gain` extension on `isil,isl29018` (#22)
+- `st,fullscale-mg` extension on st-sensors magn binding (#23)
 
 ## Cadence
 
 - **Day 1** — fire Stages 1 + 2 in parallel (10 emails to ~6 subsystems).
 - **Day ~7** — address first round of review feedback; send Stage 3 (#11, #12).
+- **Day ~10** — send Stage 5 (sensors). Independent of multimedia; spacing
+  it after Stage 3 keeps per-subsystem inbox load reasonable.
 - **Day ~14** — send Stage 4 multimedia stack as it stabilises.
   Optionally a single cover-letter "MSM8x60 multimedia stack" referencing all four.
-- **Day ~30** — send board DTS with a cover-letter listing all 16 series as prerequisites.
+- **Day ~30** — send board DTS with a cover-letter listing all 21 series as prerequisites.
 
 Each bundle is 1–3 commits and goes to its own subsystem tree; send each
 bundle as its own `git format-patch --cover-letter` series. Do **not**
