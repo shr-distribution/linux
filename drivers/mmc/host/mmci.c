@@ -1269,6 +1269,42 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 	if (!dma_inprogress(host))
 		return;
 
+	/*
+	 * Skip the post-DMA RX-FIFO drain check for the qcom variant.
+	 *
+	 * The original check is a heuristic for PrimeCell-class DMA glue that
+	 * can't monitor DMALBREQ/DMALSREQ: it polls MMCISTATUS for up to 1 ms
+	 * waiting for MCI_RXDATAAVLBL to clear, and on failure calls
+	 * mmci_dma_release() which disables DMA *for the rest of the session*.
+	 *
+	 * On MSM8660 / APQ8060 paired with the qcom_adm DMA engine, a SDIO
+	 * byte-mode FIXED-address CMD53 read at the AR6003 mailbox (mbox
+	 * 0x800, 128 B, blksz=128 blkcnt=1) finishes with status 0x0062a400 —
+	 * MCI_RXDATAAVLBL stays asserted because SDCC clocks more bytes into
+	 * the RX FIFO than ADM was asked to consume; the residue never drains
+	 * within 1 ms and is also harmless (the next CMD53 setup clears the
+	 * data path). Determinism: 15/15 modprobe iterations hit this exact
+	 * status, then mmci_dma_release() permanently disables DMA, which
+	 * fails the very next ath6kl HTC read with -EIO -> -ENOMEM.
+	 *
+	 * mmci_qcom_dma_complete() — the ADM dmaengine callback — already
+	 * samples MMCISTATUS and honors any real SDCC errors (DATACRCFAIL,
+	 * DATATIMEOUT, RXOVERRUN, STARTBITERR). The dmaengine RESULT path is
+	 * authoritative that the requested bytes are in memory, so we don't
+	 * lose error coverage by skipping this check.
+	 *
+	 * eMMC traffic on the same variant is unaffected: SDCC block-mode
+	 * multi-block reads always finish with RXDATAAVLBL already clear, so
+	 * the original loop would exit at i == 0 and the buggy-DMA branch
+	 * would never trigger. We are removing a check that was already
+	 * inactive on the eMMC path.
+	 */
+	if (host->variant->qcom_dml) {
+		if (!data->host_cookie)
+			mmci_dma_unmap(host, data);
+		goto out;
+	}
+
 	/* Wait up to 1ms for the DMA to complete */
 	for (i = 0; ; i++) {
 		status = readl(host->base + MMCISTATUS);
@@ -1304,6 +1340,7 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 		mmci_dma_release(host);
 	}
 
+out:
 	host->dma_in_progress = false;
 	dmae->cur = NULL;
 	dmae->desc_current = NULL;
