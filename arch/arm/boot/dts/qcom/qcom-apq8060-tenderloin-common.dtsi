@@ -3779,6 +3779,7 @@
 		SPKVDD1-supply = <&pm8058_l4>;    // 2.85V
 		SPKVDD2-supply = <&pm8058_l4>;    // 2.85V
 		LDO1VDD-supply = <&pm8058_l4>;    // 2.85V supply for internal LDO1
+		LDO2VDD-supply = <&pm8058_s3>;    // 1.8V supply for internal LDO2
 
 		/*
 		 * LDO enable GPIO control.
