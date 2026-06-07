@@ -148,23 +148,74 @@ static inline void msm_serial_bt_wake_glitch(void) { }
  * - WARM_RESET (0x4002) must be sent after PSKEYs to apply config
  */
 
-/* Common PSKEYs (sent for all BlueCore devices) */
-#define PSKEY_BDADDR			0x0001	/* Bluetooth device address */
+/*
+ * Common PSKEYs (sent for all BlueCore devices)
+ *
+ * IDs and semantic names are derived from a full disassembly of
+ * libPmBtBsaif.so's CsrTmBlueCoreGetBootstrap (0x6960c) — the symbolic
+ * name table at .rodata 0x10AF1C lists 27 names that map 1:1 to the
+ * PSKEY IDs the BCCMD PsSet loop sends. The previous PSKEY_PCM_FORMAT
+ * = 0x01F6 (pcmFormat) and PSKEY_ANA_FTRIM = 0x0013 (does not exist on
+ * BlueCore at this ID) and PSKEY_UART_CONFIG_BCSP (actually uartConfigBcsp)
+ * mappings were wrong and have been corrected.
+ */
+#define PSKEY_BDADDR			0x0001	/* Bluetooth device address (BToADDR token) */
 #define PSKEY_ENC_KEY_LMIN		0x000E	/* Min encryption key length */
-#define PSKEY_ANA_FREQ			0x0011	/* Crystal frequency (26 MHz = 26000) */
-#define PSKEY_ANA_FTRIM			0x0013	/* Crystal fine trim (0x19) */
+#define PSKEY_ANA_FREQ			0x0011	/* Crystal frequency (26000 = 26 MHz) */
 #define PSKEY_LC_MAX_TX_POWER		0x0017	/* Maximum TX power level */
 #define PSKEY_LC_DEFAULT_TX_POWER	0x0021	/* Default TX power level */
-#define PSKEY_TX_POWER_LEVEL		0x0031	/* TX power level table */
-#define PSKEY_H_HC_FC_MAX_ACL		0x01AB	/* HCI FC max ACL packets */
-#define PSKEY_H_HC_FC_MAX_SCO		0x01B0	/* HCI FC max SCO packets */
-#define PSKEY_PCM_SAMPLE_SIZE		0x01B9	/* PCM sample size / UART config */
-#define PSKEY_PCM_MIN_CPU_CLOCK		0x01BE	/* Deep sleep config */
-#define PSKEY_BAUDRATE_CONFIG		0x01F6	/* UART baudrate */
-#define PSKEY_UNKNOWN_01F9		0x01F9	/* Unknown (0x0001) */
-#define PSKEY_HOST_INTERFACE		0x01FE	/* Host interface config */
+#define PSKEY_TX_POWER_LEVEL		0x0031	/* TX power level table (15 entries) */
+#define PSKEY_H_HC_FC_MAX_ACL_PKT_LEN	0x01AB	/* HCI FC max ACL pkt length */
+#define PSKEY_H_HC_FC_MAX_ACL_PKTS	0x01B0	/* HCI FC max ACL packets */
+#define PSKEY_PCM_CONFIG32		0x01B9	/* pcmConfig32 (PCM sample size etc.) */
+#define PSKEY_PCM_MIN_CPU_CLOCK		0x01BE	/* deep-sleep PCM CPU clock (sent only when host_interface in {BCSP, USB}) */
+#define PSKEY_PCM_FORMAT		0x01F6	/* pcmFormat (NOT baudrate!) */
+#define PSKEY_ANA_FTRIM			0x01F7	/* Crystal fine trim (ana_ftrim) - populated by setBootstrapFtrim */
+#define PSKEY_UART_BAUDRATE		0x01F8	/* UART baudrate divisor: (500000+baud*4096)/1000000; 0x01D8 for 115200 */
+#define PSKEY_UART_CONFIG_BCSP		0x01F9	/* uartConfigBcsp (BCSP-specific UART config) */
+#define PSKEY_HOST_INTERFACE		0x01FE	/* Host interface bundle (8 bytes: ftrim+freq+host_iface+...) */
 #define PSKEY_LC_MAX_TX_POWER_NO_RSSI	0x024D	/* Max TX power without RSSI */
 #define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI 0x025D /* Default TX power without RSSI */
+
+/*
+ * CSR BlueCore HOST_INTERFACE values written via PSKEY_HOST_INTERFACE
+ * (0x01FE). Verified from setBootStrapHostInterface() at libPmBtBsaif.so
+ * offset 0x6a1e8: input value -> written value mapping is
+ *   1 -> 1 (H4)
+ *   2 -> 2 (BCSP)        ← what webOS uses on the TouchPad
+ *   8 -> 7 (H5 / 3-Wire UART)
+ *   9 -> 9 (USB)
+ * any other input -> printf + exit(1) (no-op).
+ */
+#define HOST_INTERFACE_H4		1
+#define HOST_INTERFACE_BCSP		2
+#define HOST_INTERFACE_H5		7
+#define HOST_INTERFACE_USB		9
+
+/*
+ * Compute the CSR BlueCore PSKEY_UART_BAUDRATE (0x01F8) divisor for a
+ * target line rate. Formula reverse-engineered from setBootstrapBaudrate
+ * at libPmBtBsaif.so offset 0x69030 — the hot path is a switch with
+ * hardcoded constants for the common rates, falling through to this
+ * floating-point computation for arbitrary inputs:
+ *
+ *   divisor = round_down((500000 + baud * 4096) / 1000000)
+ *
+ * Verified divisors:
+ *   9600     -> 39    (0x27)
+ *   19200    -> 79    (0x4F)
+ *   38400    -> 157   (0x9D)
+ *   57600    -> 236   (0xEC)
+ *   115200   -> 472   (0x1D8)
+ *   230400   -> 944   (0x3B0)
+ *   460800   -> 1887  (0x75F)
+ *   921600   -> 3775  (0xEBF)
+ *   3686400  -> 15100 (0x3AFC)
+ */
+static inline u16 bcsp_baud_to_pskey_divisor(unsigned int baud)
+{
+	return (u16)((500000U + baud * 4096ULL) / 1000000U);
+}
 
 /* Palm Platform PSKEYs (12 entries from webOS) */
 #define PSKEY_PALM_01B3			0x01B3	/* Palm config (4 words) */
@@ -1079,15 +1130,15 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 					     bcsp->pskey_host_interface);
 			bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
 					     bcsp->pskey_deep_sleep);
-			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
 					     bcsp->pskey_hci_max_acl);
-			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
 					     bcsp->pskey_hci_max_sco);
-			bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+			bcsp_send_pskey_word(hu, PSKEY_PCM_CONFIG32,
 					     bcsp->pskey_uart_baudrate);
 			bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
 					     bcsp->pskey_enc_key_min);
-			bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+			bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
 					     bcsp->pskey_unknown_01f9);
 			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
 					     bcsp->pskey_max_tx_power_no_rssi);
@@ -1894,17 +1945,17 @@ static int bcsp_setup(struct hci_uart *hu)
 		msleep(20);
 
 		/* HCI FC max ACL packets */
-		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
 				     bcsp->pskey_hci_max_acl);
 		msleep(20);
 
 		/* HCI FC max SCO packets */
-		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
 				     bcsp->pskey_hci_max_sco);
 		msleep(20);
 
 		/* UART baudrate divisor */
-		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+		bcsp_send_pskey_word(hu, PSKEY_PCM_CONFIG32,
 				     bcsp->pskey_uart_baudrate);
 		msleep(20);
 
@@ -1914,7 +1965,7 @@ static int bcsp_setup(struct hci_uart *hu)
 		msleep(20);
 
 		/* Unknown 0x01F9 */
-		bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+		bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
 				     bcsp->pskey_unknown_01f9);
 		msleep(20);
 
@@ -2123,19 +2174,19 @@ static int bcsp_setup(struct hci_uart *hu)
 		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
 				     bcsp->pskey_deep_sleep);
 		msleep(20);
-		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL,
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
 				     bcsp->pskey_hci_max_acl);
 		msleep(20);
-		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_SCO,
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
 				     bcsp->pskey_hci_max_sco);
 		msleep(20);
-		bcsp_send_pskey_word(hu, PSKEY_PCM_SAMPLE_SIZE,
+		bcsp_send_pskey_word(hu, PSKEY_PCM_CONFIG32,
 				     bcsp->pskey_uart_baudrate);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
 				     bcsp->pskey_enc_key_min);
 		msleep(20);
-		bcsp_send_pskey_word(hu, PSKEY_UNKNOWN_01F9,
+		bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
 				     bcsp->pskey_unknown_01f9);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
