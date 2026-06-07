@@ -3705,7 +3705,21 @@
 
 		reset-gpios = <&tlmm 138 GPIO_ACTIVE_LOW>;
 		shutdown-gpios = <&tlmm 130 GPIO_ACTIVE_HIGH>;
-		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_HIGH>;
+		/*
+		 * BT_WAKE is active LOW on the CSR BlueCore chip on this board.
+		 * Legacy webOS gpiomux (arch/arm/mach-msm/gpiomux-tenderloin.c
+		 * #defines BT_WAKE_ACTIVE_CFG = GPIO_OUTL_8M_PN — drive LOW
+		 * 8 mA, no pull) keeps the line LOW in both ACTIVE and SUSPENDED
+		 * states, asserting BT_WAKE continuously. Driving HIGH (via the
+		 * previous GPIO_ACTIVE_HIGH binding) put the chip into a sleep
+		 * state BCSP could never escape: host TX streamed but chip RX
+		 * came back as framing-error BREAKs at a ~1:12 byte ratio and
+		 * BCSP SYNC never completed (HCI Reset -110).
+		 *
+		 * Switching the binding to GPIO_ACTIVE_LOW makes the BCSP driver
+		 * "assert" BT_WAKE by driving the line LOW, matching legacy.
+		 */
+		device-wakeup-gpios = <&tlmm 131 GPIO_ACTIVE_LOW>;
 
 		interrupt-parent = <&tlmm>;
 		interrupts = <129 IRQ_TYPE_EDGE_RISING>;
