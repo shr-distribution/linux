@@ -2239,29 +2239,56 @@ int qce_check_status(struct qce_device *qce, u32 *status)
 {
 	int ret = 0;
 
+	if (qce_is_ce2(qce)) {
+		int timeout;
+
+		/*
+		 * CE2 (MSM8x60) STATUS bits transition one cycle before the
+		 * engine's final write to its register bank commits — the
+		 * same characteristic the cipher chunk loop already mitigates
+		 * with poll-and-udelay for CTR-mode CNTR readbacks (see the
+		 * comments at common.c:~2110 and the CBC dst_copy bypass at
+		 * ~2165).
+		 *
+		 * The AEAD completion path is affected because the ADM/CRCI
+		 * DMA controller signals descriptor completion as soon as it
+		 * has moved the last byte, but AUTH_DONE in CE2_REG_STATUS
+		 * can lag the DMA callback by tens of µs while the engine
+		 * finalises the MAC. Without this poll the first STATUS read
+		 * sees AUTH_DONE=0 and we mis-classify a perfectly successful
+		 * AEAD operation as -ENXIO with a status word like 0x10200004
+		 * (DOUT_SIZE_AVAIL=4, DIN_SIZE_AVAIL=1, DIN_RDY=1, every
+		 * error bit clear) — observed on tenderloin every ~95 s under
+		 * normal TLS/AEAD traffic.
+		 *
+		 * Bounded poll: 50 iterations × 10 µs upper bound, matching
+		 * the existing pattern in the cipher chunk loop. In the
+		 * common case AUTH_DONE is already asserted on the first
+		 * read and the loop exits with zero added latency.
+		 */
+		for (timeout = 50; timeout > 0; timeout--) {
+			*status = qce_read(qce, qce_reg_status(qce));
+			if (*status & STATUS_ERRORS_CE2)
+				return -ENXIO;
+			if (*status & BIT(CE2_AUTH_DONE_SHIFT))
+				return 0;
+			udelay(10);
+		}
+		return -ENXIO;
+	}
+
 	*status = qce_read(qce, qce_reg_status(qce));
 
-	if (qce_is_ce2(qce)) {
-		/*
-		 * CE2 status register has different bit layout.
-		 * Check for errors and auth done status.
-		 */
-		if (*status & STATUS_ERRORS_CE2)
-			ret = -ENXIO;
-		else if (!(*status & BIT(CE2_AUTH_DONE_SHIFT)))
-			ret = -ENXIO;
-	} else {
-		/*
-		 * Don't use result dump status. The operation may not be complete.
-		 * Instead, use the status we just read from device. In case, we need to
-		 * use result_status from result dump the result_status needs to be byte
-		 * swapped, since we set the device to little endian.
-		 */
-		if (*status & STATUS_ERRORS_V5 || !(*status & BIT(OPERATION_DONE_SHIFT)))
-			ret = -ENXIO;
-		else if (*status & BIT(MAC_FAILED_SHIFT))
-			ret = -EBADMSG;
-	}
+	/*
+	 * Don't use result dump status. The operation may not be complete.
+	 * Instead, use the status we just read from device. In case, we need to
+	 * use result_status from result dump the result_status needs to be byte
+	 * swapped, since we set the device to little endian.
+	 */
+	if (*status & STATUS_ERRORS_V5 || !(*status & BIT(OPERATION_DONE_SHIFT)))
+		ret = -ENXIO;
+	else if (*status & BIT(MAC_FAILED_SHIFT))
+		ret = -EBADMSG;
 
 	return ret;
 }
