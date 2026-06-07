@@ -707,6 +707,7 @@
 			compatible = "qcom,smem";
 			memory-region = <&smem_region>;
 			hwlocks = <&sfpb_mutex 3>;
+			ranges;
 		};
 
 		gcc: clock-controller@900000 {
@@ -1525,7 +1526,7 @@
 		 * The CSI controller has a unified CSIPHY+CSID architecture at
 		 * CSI_0 (0x04800000) and CSI_1 (0x04900000).
 		 */
-		camss: camss@04500000 {
+		camss: camss@4500000 {
 			compatible = "qcom,msm8660-camss";
 			reg = <0x04500000 0x1000>,
 			      <0x04800000 0x0400>,
