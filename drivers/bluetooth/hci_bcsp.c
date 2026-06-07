@@ -103,9 +103,19 @@ MODULE_PARM_DESC(bt_rx_wake, "Pulse RTS before link-est TX to wake the BT chip R
  * 115200 TX budget (~115 B / 10 ms). 0 = legacy one-frame-per-250 ms.
  * Reverts to idle once the link reaches ACTIVE.
  */
-static int bt_linkest_burst = 6;
+/*
+ * Default to 0 (legacy: one frame per 250 ms). The wire trace captured
+ * from the working webOS hsuart driver
+ * (reports/bt-trace/webos-cold-handshake-2026-05-22.log) shows ONE SYNC
+ * TX, then a long quiet window of ~270 ms before the chip's first SYNC
+ * arrives in RX, then ONE SYNC-RSP — never a burst. Hammering the chip
+ * with 6 SYNCs + 3 SYNC-RSPs per 10 ms tick pollutes the BCSP state
+ * machine and prevents the chip from latching any single frame cleanly.
+ * Keep the knob available for experimentation but ship the safe default.
+ */
+static int bt_linkest_burst;
 module_param(bt_linkest_burst, int, 0644);
-MODULE_PARM_DESC(bt_linkest_burst, "BCSP link-est frames per fast (10ms) tick (0=legacy 250ms)");
+MODULE_PARM_DESC(bt_linkest_burst, "BCSP link-est frames per fast (10ms) tick (0=legacy 250ms — webOS-faithful, default)");
 
 /*
  * Synchronous TX/RFR pin-mux wake glitch, provided by the msm_serial UART
