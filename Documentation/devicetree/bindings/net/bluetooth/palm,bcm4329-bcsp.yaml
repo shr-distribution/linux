@@ -96,8 +96,10 @@ properties:
 
 patternProperties:
   "^brcm,pskey-[0-9a-f]{4}$":
-    $ref: /schemas/types.yaml#/definitions/uint16-array
-    description: PSKEY value as 16-bit words.
+    oneOf:
+      - $ref: /schemas/types.yaml#/definitions/uint16
+      - $ref: /schemas/types.yaml#/definitions/uint16-array
+    description: PSKEY value (single 16-bit word or array of them).
 
 required:
   - compatible

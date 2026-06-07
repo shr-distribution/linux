@@ -37,6 +37,12 @@ properties:
   hwlocks:
     maxItems: 1
 
+  ranges:
+    type: boolean
+    description: |
+      Empty flag set by the simple-bus parent's child schema; smem has
+      no MMIO of its own.
+
   qcom,rpm-msg-ram:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: handle to RPM message memory resource
