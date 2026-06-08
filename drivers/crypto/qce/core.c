@@ -32,9 +32,6 @@
 
 #define QCE_DEFAULT_MEM_BANDWIDTH	393600
 
-/* CE2 uses ADM DMA with smaller burst size than BAM */
-#define CE2_ADM_BURST_SIZE	64
-
 /* Driver data for different CE versions */
 struct qce_driver_data {
 	enum qce_version version;
@@ -285,7 +282,7 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	if (qce->version == QCE_VERSION_CE2) {
 		u32 val, status;
 
-		dev_info(dev, "CE2: Verifying hardware initialization\n");
+		dev_dbg(dev, "CE2: Verifying hardware initialization\n");
 
 		/*
 		 * Verify CE2 MMIO is accessible. If all registers read as zero,
@@ -295,16 +292,16 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		 * 0x10 contains status, and 0x20 contains hardware capabilities.
 		 */
 		val = readl_relaxed(qce->base + 0x00);
-		dev_info(dev, "CE2: Version register (0x00): 0x%08x\n", val);
+		dev_dbg(dev, "CE2: Version register (0x00): 0x%08x\n", val);
 
 		if (val == 0) {
-			dev_info(dev, "CE2: Version register is zero, checking other registers...\n");
+			dev_dbg(dev, "CE2: Version register is zero, checking other registers...\n");
 
 			val = readl_relaxed(qce->base + 0x10);
-			dev_info(dev, "CE2: Status register (0x10): 0x%08x\n", val);
+			dev_dbg(dev, "CE2: Status register (0x10): 0x%08x\n", val);
 
 			val = readl_relaxed(qce->base + 0x20);
-			dev_info(dev, "CE2: Capabilities register (0x20): 0x%08x\n", val);
+			dev_dbg(dev, "CE2: Capabilities register (0x20): 0x%08x\n", val);
 
 			if (readl_relaxed(qce->base + 0x00) == 0 &&
 			    readl_relaxed(qce->base + 0x10) == 0 &&
@@ -315,7 +312,7 @@ static int qce_crypto_probe(struct platform_device *pdev)
 				return -EIO;
 			}
 
-			dev_info(dev, "CE2: Hardware accessible despite zero version register\n");
+			dev_dbg(dev, "CE2: Hardware accessible despite zero version register\n");
 		}
 
 		/*
@@ -334,15 +331,15 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		usleep_range(10, 20);
 
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		dev_info(dev, "CE2: STATUS after SW_RST: 0x%08x (SW_ERR=%d)\n",
-			 status, !!(status & BIT(CE2_SW_ERR_SHIFT)));
+		dev_dbg(dev, "CE2: STATUS after SW_RST: 0x%08x (SW_ERR=%d)\n",
+			status, !!(status & BIT(CE2_SW_ERR_SHIFT)));
 
 		/* ENGINES_AVAIL @ +0x044: which crypto engines are physically
 		 * implemented on this die. Log each engine so we know what's
 		 * usable on this specific MSM8x60 silicon.
 		 */
 		val = readl_relaxed(qce->base + CE2_REG_ENGINES_AVAIL);
-		dev_info(dev, "CE2: ENGINES_AVAIL=0x%08x:%s%s%s%s%s%s%s%s\n",
+		dev_dbg(dev, "CE2: ENGINES_AVAIL=0x%08x:%s%s%s%s%s%s%s%s\n",
 			 val,
 			 (val & CE2_AES_SEL_MASK) == CE2_AES_SEL_FAST ? " AES(fast)" :
 			   (val & CE2_AES_SEL_MASK) == CE2_AES_SEL_SLOW ? " AES(slow)" :

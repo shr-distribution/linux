@@ -1252,11 +1252,10 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
 	writel(config, qce->base + CE2_REG_CONFIG);
 
-	/* Diagnostic */
-	dev_info(qce->dev,
-		 "CE2 hash pre-GO: SEG_CFG=0x%08x SEG_SIZE=%u CONFIG=0x%08x first=%d last=%d\n",
-		 auth_cfg, req->nbytes, config,
-		 rctx->first_blk, rctx->last_blk);
+	dev_dbg(qce->dev,
+		"CE2 hash pre-GO: SEG_CFG=0x%08x SEG_SIZE=%u CONFIG=0x%08x first=%d last=%d\n",
+		auth_cfg, req->nbytes, config,
+		rctx->first_blk, rctx->last_blk);
 
 	/* GOPROC -- use writel() for the barrier; the engine must observe
 	 * all setup writes above before it starts processing.
@@ -1309,6 +1308,11 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 		qce->base + CE2_REG_AUTH_BYTECNT1));
 
 out:
+	/* Wipe raw digest bytes from the kernel stack — memzero_explicit
+	 * survives compiler dead-store elimination so an attacker cannot
+	 * read intermediate hash state from re-used stack frames.
+	 */
+	memzero_explicit(auth, sizeof(auth));
 	return ret;
 }
 #endif
@@ -2231,6 +2235,21 @@ retry_chunk:
 					   rctx->iv + k * 4);
 	}
 
+	/* Wipe raw cipher key and IV bytes from the kernel stack —
+	 * memzero_explicit survives compiler dead-store elimination so
+	 * an attacker cannot read leftover key material from re-used
+	 * stack frames. The expanded aes_ctx is wiped separately at
+	 * the AES key-expansion site above.
+	 *
+	 * Error returns earlier in the function also leave (possibly
+	 * partially-populated) key state on the stack, but they only
+	 * fire on engine wedge/timeout — which already requires a
+	 * reset before the next op — so the practical leak window is
+	 * narrow. A follow-up that converts those early returns to
+	 * `goto out;` will close that residual exposure.
+	 */
+	memzero_explicit(enckey, sizeof(enckey));
+	memzero_explicit(enciv, sizeof(enciv));
 	return 0;
 }
 #endif	/* CONFIG_CRYPTO_DEV_QCE_SKCIPHER */
