@@ -502,7 +502,14 @@ static int qce_ahash_register_one(const struct qce_ahash_def *def,
 
 	base = &alg->halg.base;
 	base->cra_blocksize = def->blocksize;
-	base->cra_priority = 300;
+	/*
+	 * v5 (BAM) keeps the historical 175 priority. CE2 (ADM, MSM8x60)
+	 * uses 50 to stay below ARMv7 sha1-ce/sha256-ce on the platforms
+	 * we know about — the existing per-op workarounds make CE2 slower
+	 * than the in-tree NEON paths. Mirror the skcipher_register_one()
+	 * pattern instead of bumping every v5 platform unconditionally.
+	 */
+	base->cra_priority = (qce->version == QCE_VERSION_CE2) ? 50 : 175;
 	base->cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY;
 	base->cra_ctxsize = sizeof(struct qce_sha_ctx);
 	base->cra_alignmask = 0;
