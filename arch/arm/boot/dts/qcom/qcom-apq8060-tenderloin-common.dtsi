@@ -3735,7 +3735,20 @@
 		clocks = <&sleep_clk>;
 		clock-names = "lpo";
 
-		init-speed = <115200>;
+		/*
+		 * With qcom,bcsp-skip-sync the chip is in operational PSRAM at
+		 * 3.6864 Mbps 8-E-1 (retained from a prior webOS session).  Open
+		 * the UART at that baud directly so msm_set_baud_rate picks the
+		 * 58.9824 MHz parent rate up front; opening at 115200 first leads
+		 * msm_find_best_baud to pin the parent at 7.3728 MHz (clk_mult=4
+		 * workaround for low-baud BT) and the framework then refuses to
+		 * raise the rate at runtime while the UART is active.
+		 *
+		 * If we ever return to the SHY-handshake path (cold-boot chip in
+		 * ROM/SHY at 115200 8-N-1), remove qcom,bcsp-skip-sync and revert
+		 * init-speed to 115200.
+		 */
+		init-speed = <3686400>;
 		max-speed = <3686400>;
 
 		brcm,bt-pcm-int-params = [00 02 00 01 01];
