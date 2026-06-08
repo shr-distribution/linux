@@ -1422,6 +1422,23 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 	int pass_up = 0;
 
 	/*
+	 * Close-race guard.  bcsp_close() sets hu->priv = NULL, and the HCI
+	 * core can clear hu->hdev mid-unregister.  If a queued flush_to_ldisc
+	 * work item lands here after that, hci_recv_frame(hu->hdev, ...) will
+	 * NULL-deref deep inside hci_recv_frame's hdev access (crash address
+	 * 0x50 = a small hci_dev field offset).  Reproduced 2026-06-08 with
+	 * a tight rmmod/modprobe sweep loop.  Drop the in-flight RX rather
+	 * than risk the deref; bcsp_close has already started tearing down.
+	 */
+	if (!bcsp || !hu->hdev) {
+		if (bcsp && bcsp->rx_skb) {
+			kfree_skb(bcsp->rx_skb);
+			bcsp->rx_skb = NULL;
+		}
+		return;
+	}
+
+	/*
 	 * Debug: dump every decoded RX packet's header + payload (post-SLIP,
 	 * post-CRC-strip) so we can see exactly what the chip sends back —
 	 * in particular whether it ever sends a reliable HCI event/ack in
