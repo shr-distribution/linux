@@ -487,6 +487,11 @@ static void *adm_process_fc_descriptors(struct adm_chan *achan, void *desc,
 		dst = &achan->slave.dst_addr;
 	}
 
+	dev_info(achan->adev->dev,
+		 "ADM fc_desc dbg: chan=%d dir=%d crci=%d swap_bytes=%d swap_shorts=%d -> crci_cmd=0x%08x\n",
+		 achan->id, direction, crci, achan->swap_bytes,
+		 achan->swap_shorts, crci_cmd);
+
 	while (remainder >= burst) {
 		box_desc = desc;
 		box_desc->cmd = ADM_CMD_TYPE_BOX | crci_cmd;
@@ -853,6 +858,12 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 		achan->swap_shorts = config->swap_shorts;
 	}
 	spin_unlock_irqrestore(&achan->vc.lock, flag);
+
+	dev_info(achan->adev->dev,
+		 "ADM slave_config dbg: chan=%d periph_size=%zu sizeof(cfg)=%zu  swap_bytes=%d swap_shorts=%d size_match=%d\n",
+		 achan->id, cfg->peripheral_size, sizeof(*config),
+		 achan->swap_bytes, achan->swap_shorts,
+		 cfg->peripheral_size == sizeof(*config));
 
 	dev_dbg(achan->adev->dev,
 		"ADM slave_config: chan=%d device_fc=%d crci=%d "
