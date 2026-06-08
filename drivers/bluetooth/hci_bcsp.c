@@ -165,10 +165,12 @@ MODULE_PARM_DESC(bt_linkest_burst, "BCSP link-est frames per fast (10ms) tick (0
 extern void msm_serial_bt_wake_glitch(void);
 extern void msm_serial_bt_force_rfr(bool assert_low);
 extern void msm_serial_bt_send_break(unsigned int us);
+extern void msm_serial_bt_dance(void);
 #else
 static inline void msm_serial_bt_wake_glitch(void) { }
 static inline void msm_serial_bt_force_rfr(bool assert_low) { }
 static inline void msm_serial_bt_send_break(unsigned int us) { }
+static inline void msm_serial_bt_dance(void) { }
 #endif
 
 #define BCSP_TXWINSIZE	4
@@ -2878,6 +2880,22 @@ static int bcsp_open(struct hci_uart *hu)
 	if (hu->serdev) {
 		serdev_device_set_flow_control(hu->serdev, false);
 		BT_INFO("BCSP: Hardware flow control disabled (webOS FLOW_CTRL_NONE)");
+
+		/*
+		 * Run the full legacy-webOS BT bring-up dance before the first
+		 * SYNC.  The dance is ~40 ms total with ms-level holds and
+		 * pinctrl-based RFR toggles (UART FUNC_1 ↔ FUNC_GPIO OUT_HIGH).
+		 * Live capture from /var/log/messages on a known-working webOS
+		 * boot showed this exact pattern at each "Powering on BT".  Our
+		 * pre-existing msm_startup glitch is ~1 ms with us-level gaps
+		 * and only toggles pinmux for TX/RFR (no LOW-hold via UART CR),
+		 * which is apparently not enough to wake the CSR BlueCore's RX
+		 * UART — chip emits SYNC but ignores our byte-correct SYNC-RSP.
+		 * No-op when bt_dance_step_ms=0 or on non-msm_serial platforms.
+		 * See [[bt-webos-dance-pattern-60ms]] memory for the capture.
+		 */
+		msm_serial_bt_dance();
+		BT_INFO("BCSP: Ran webOS-faithful bring-up dance");
 
 		/*
 		 * Assert RTS (RFR, gpio56) LOW for BCSP link establishment via

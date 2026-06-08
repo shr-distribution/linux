@@ -387,6 +387,7 @@ static void msm_serial_set_mnd_regs(struct uart_port *port)
 
 static void msm_handle_tx(struct uart_port *port);
 void msm_serial_bt_wake_glitch(void);	/* exported; called by hci_bcsp */
+void msm_serial_bt_dance(void);		/* exported; called by hci_bcsp at probe */
 void msm_serial_bt_force_rfr(bool assert_low);	/* exported; called by hci_bcsp */
 void msm_serial_bt_send_break(unsigned int us);	/* exported; called by hci_bcsp */
 static inline unsigned int msm_apply_bt_imr_override(struct msm_port *msm_port,
@@ -1747,6 +1748,111 @@ void msm_serial_bt_wake_glitch(void)
 		msm_bt_wake_glitch(port);
 }
 EXPORT_SYMBOL_GPL(msm_serial_bt_wake_glitch);
+
+/*
+ * Full BT bring-up dance matching legacy webOS hsuart timing.
+ *
+ * Live capture from /var/log/messages on a working webOS BT bring-up:
+ *
+ *   T+0      btuart_pin_mux: on                   (FUNC_1 UART active)
+ *   T+4ms    btuart_deassert_rts: 0(get)         (RFR LOW via FUNC_1 OUT_LOW)
+ *   T+10ms   btuart_deassert_rts: 1(put)         (RFR HIGH via FUNC_GPIO OUT_HIGH)
+ *   T+19ms   btuart_pin_mux: off                  (release TX/RX/CTS pins)
+ *   T+23ms   btuart_pin_mux: on                   (reacquire UART)
+ *   T+26ms   btuart_deassert_rts: 1(put)
+ *   T+30ms   btuart_deassert_rts: 1(put)
+ *   T+33ms   btuart_deassert_rts: 1(put)
+ *   T+40ms   btuart_deassert_rts: 0(get)         (final ASSERT LOW)
+ *
+ * Total: ~40 ms with ms-level gaps between operations.
+ *
+ * Our pre-existing msm_bt_wake_glitch is ~1 ms total with us-level gaps and
+ * does NOT toggle RFR through pinctrl states — it only switches TX/RFR pins
+ * to GPIO and back.  Our msm_serial_bt_force_rfr touches RFR via UART CR
+ * commands (SET_RFR / RESET_RFR), which keeps the pin in FUNC_1 the whole
+ * time and doesn't reproduce the GPIO-mode HIGH transitions the CSR BlueCore
+ * apparently needs to wake its RX UART.  This helper does the full webOS
+ * pattern: pinctrl-based RFR toggles + ms-level holds.
+ *
+ * Tune via bt_dance_step_ms module param (default 4); set to 0 to disable.
+ * Process context only — sleeps.
+ */
+static unsigned int bt_dance_step_ms = 4;
+module_param(bt_dance_step_ms, uint, 0644);
+MODULE_PARM_DESC(bt_dance_step_ms,
+		 "Per-step delay (ms) for the legacy-webOS BT bring-up dance (default 4, 0=disable dance)");
+
+void msm_serial_bt_dance(void)
+{
+	struct uart_port *port = READ_ONCE(msm_bt_wake_port);
+	struct msm_port *msm_port;
+	struct pinctrl_state *uart_state, *gpio_state;
+	unsigned int step;
+
+	if (!port)
+		return;
+	msm_port = to_msm_port(port);
+	if (!msm_port->pinctrl || !msm_port->pinctrl_default)
+		return;
+
+	step = bt_dance_step_ms;
+	if (!step)
+		return;
+
+	uart_state = msm_port->pinctrl_default;
+	/* "gpio_txrts" state drives only RFR(gpio56)+TX(gpio53) to GPIO OUT_HIGH
+	 * which is the closest mainline equivalent of the legacy SUSPENDED config
+	 * for these pins.  Falls back to the broader "gpio" state if not present. */
+	gpio_state = msm_port->pinctrl_gpio_txrts ?: msm_port->pinctrl_gpio;
+	if (!gpio_state)
+		return;
+
+	mutex_lock(&msm_bt_wake_lock);
+
+	/* T+0:  pin_mux ON (UART active) — already the case in steady state. */
+	pinctrl_select_state(msm_port->pinctrl, uart_state);
+	msleep(step);
+
+	/* T+4ms: ASSERT RFR LOW via UART CR.  Pin stays in FUNC_1, line goes LOW. */
+	msm_write(port,
+		  msm_read(port, MSM_UART_MR1) & ~MSM_UART_MR1_RX_RDY_CTL,
+		  MSM_UART_MR1);
+	msm_write(port, MSM_UART_CR_CMD_SET_RFR, MSM_UART_CR);
+	msleep(step + 2);	/* ~6 ms hold LOW */
+
+	/* T+10ms: DEASSERT HIGH via pin_mux to GPIO (RFR+TX driven HIGH at 2 mA).
+	 * The pinctrl gpio_txrts state should set these pins to OUT_HIGH per the
+	 * device-tree binding. */
+	pinctrl_select_state(msm_port->pinctrl, gpio_state);
+	msleep(step + 1);	/* ~5 ms HIGH */
+
+	/* T+19ms: pin_mux OFF — same gpio state, the legacy log shows two events
+	 * here (off then on); for us a single pinctrl reselect plus a hold is the
+	 * equivalent of the pin tri-state moment legacy creates. */
+	msleep(step);
+
+	/* T+23ms: pin_mux ON — back to UART function with RFR HIGH-stored. */
+	pinctrl_select_state(msm_port->pinctrl, uart_state);
+	msleep(step);
+
+	/* T+26-33ms: deassert HIGH x3 — replicated as three short HIGH pulses. */
+	msm_write(port, MSM_UART_CR_CMD_RESET_RFR, MSM_UART_CR);
+	msleep(step);
+	msm_write(port, MSM_UART_CR_CMD_RESET_RFR, MSM_UART_CR);
+	msleep(step);
+	msm_write(port, MSM_UART_CR_CMD_RESET_RFR, MSM_UART_CR);
+	msleep(step);
+
+	/* T+40ms: final ASSERT LOW. */
+	msm_write(port, MSM_UART_CR_CMD_SET_RFR, MSM_UART_CR);
+
+	mutex_unlock(&msm_bt_wake_lock);
+
+	dev_info(port->dev,
+		 "BT bring-up dance complete (step=%u ms, total ~%u ms)\n",
+		 step, step * 10 + 2);
+}
+EXPORT_SYMBOL_GPL(msm_serial_bt_dance);
 
 /*
  * Manually drive the BT UART RFR (host-side "ready for receiving") signal
