@@ -868,30 +868,6 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 	if (skb != NULL) {
 		struct sk_buff *nskb;
 
-		/*
-		 * Per-LE-packet wake gesture (matches legacy webOS hsuart):
-		 * /var/log/messages.0.gz from a working webOS BCSP boot shows
-		 * pin_mux off/on + RFR cycle IMMEDIATELY before EACH SYNC TX:
-		 *
-		 *   btuart_pin_mux: off
-		 *   btuart_pin_mux: on
-		 *   btuart_deassert_rts: 1(put) x3
-		 *   btuart_deassert_rts: 0(get)   <- RFR LOW, final
-		 *   BTWIRE TX c0 40 41 00 ...    <- 5 ms later, SYNC
-		 *
-		 * Our bcsp_setup() does the dance ONCE at probe.  By the time
-		 * the SHY timer's 250 ms cycle fires its next SYNC, the chip
-		 * has gone back to sleep.  bcsp_send_link_pkt() runs in softirq
-		 * (timer) context and can't sleep; bcsp_dequeue() runs in the
-		 * serdev TX worker (process context) where we *can* sleep.
-		 * Pulse the wake glitch before every LE TX so the chip sees the
-		 * RFR HIGH→LOW edge on each handshake frame.
-		 */
-		if (hci_skb_pkt_type(skb) == BCSP_LE_PKT) {
-			msm_serial_bt_wake_glitch();
-			msm_serial_bt_force_rfr(true);
-		}
-
 		BT_DBG("BCSP: dequeuing unrel pkt type %d len %d",
 		       hci_skb_pkt_type(skb), skb->len);
 		nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len,
