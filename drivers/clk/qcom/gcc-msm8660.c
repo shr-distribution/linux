@@ -99,7 +99,7 @@ static const struct clk_parent_data gcc_pxo_pll8_cxo[] = {
 static const struct freq_tbl clk_tbl_gsbi_uart[] = {
 	{  1843200, P_PLL8, 2,  6, 625 },
 	{  3686400, P_PLL8, 2, 12, 625 },
-	{  7372800, P_PLL8, 2, 24, 625 },
+	{  7372800, P_PLL8, 1, 12, 625 },
 	{ 14745600, P_PLL8, 2, 48, 625 },
 	{ 16000000, P_PLL8, 4,  1,   6 },
 	{ 24000000, P_PLL8, 4,  1,   4 },
