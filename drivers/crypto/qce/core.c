@@ -32,9 +32,18 @@
 
 #define QCE_DEFAULT_MEM_BANDWIDTH	393600
 
-/* Driver data for different CE versions */
+/* Driver data for different CE versions / SoC variants */
 struct qce_driver_data {
 	enum qce_version version;
+	/*
+	 * ADM CRCI numbers for CE2 variants. CE2 is wired through the
+	 * ADM DMA controller which uses CRCI flow control; the assigned
+	 * CRCI numbers are silicon-fixed per-SoC. Zero on v5 (BAM) - no
+	 * CRCI handshake exists.
+	 */
+	u8 adm_crci_in;
+	u8 adm_crci_out;
+	u8 adm_crci_hash;
 };
 
 static const struct qce_algo_ops *qce_ops[] = {
@@ -227,10 +236,14 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	qce->dev = dev;
 	platform_set_drvdata(pdev, qce);
 
-	/* Get version from driver data if available */
+	/* Get version + per-variant constants from driver data if available */
 	drvdata = of_device_get_match_data(dev);
-	if (drvdata)
+	if (drvdata) {
 		qce->version = drvdata->version;
+		qce->adm_crci_in = drvdata->adm_crci_in;
+		qce->adm_crci_out = drvdata->adm_crci_out;
+		qce->adm_crci_hash = drvdata->adm_crci_hash;
+	}
 
 	{
 		struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -402,8 +415,17 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	return devm_qce_register_algs(qce);
 }
 
-static const struct qce_driver_data qce_ce2_data = {
+/*
+ * MSM8x60 CE2: ADM CRCI numbers are silicon-fixed and match Qualcomm's
+ * downstream platform_data plus the HTC/Samsung vendor forks (see
+ * arch/arm/mach-msm/include/mach/dma.h DMOV_CE_*_CRCI for the MSM8x60
+ * #ifdef block).
+ */
+static const struct qce_driver_data qce_msm8660_data = {
 	.version = QCE_VERSION_CE2,
+	.adm_crci_in = 4,
+	.adm_crci_out = 5,
+	.adm_crci_hash = 15,
 };
 
 static const struct qce_driver_data qce_v5_data = {
@@ -411,7 +433,7 @@ static const struct qce_driver_data qce_v5_data = {
 };
 
 static const struct of_device_id qce_crypto_of_match[] = {
-	{ .compatible = "qcom,msm8660-qce", .data = &qce_ce2_data },
+	{ .compatible = "qcom,msm8660-qce", .data = &qce_msm8660_data },
 	{ .compatible = "qcom,crypto-v5.1", .data = &qce_v5_data },
 	{ .compatible = "qcom,crypto-v5.4", .data = &qce_v5_data },
 	{ .compatible = "qcom,qce", .data = &qce_v5_data },

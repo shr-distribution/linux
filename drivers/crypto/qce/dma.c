@@ -70,31 +70,26 @@ static int qce_dma_configure_crci(struct qce_device *qce, struct dma_chan *chan,
 int devm_qce_dma_request(struct qce_device *qce, struct qce_dma_data *dma)
 {
 	struct device *dev = qce->dev;
-	u32 rx_crci = 0, tx_crci = 0;
 	int ret;
 
 	/*
-	 * CE2 (MSM8x60) needs ADM CRCI flow control. The CRCI numbers are
-	 * silicon-fixed per-SoC (see CE2_CRCI_CE_* in regs-ce2.h), so they
-	 * are baked into the driver rather than carried in DT. Seed rxchan
-	 * with CE_IN and txchan with CE_HASH; the cipher and hash paths in
-	 * common.c reprogram both channels per-operation as required.
+	 * CE2 needs ADM CRCI flow control; the CRCI numbers are
+	 * silicon-fixed per-SoC and come in via the of_device_id .data
+	 * variant table (see qce_msm8660_data in core.c). Seed rxchan
+	 * with CE_IN and txchan with CE_HASH; the cipher and hash data
+	 * paths in common.c reprogram both channels per-operation as
+	 * required.
 	 *
-	 * v5 (BAM-based) silicon uses its own peripheral handshake instead
-	 * of CRCI, so leave the slots at 0 - qce_dma_configure_crci() then
-	 * skips the peripheral_config write.
+	 * v5 (BAM-based) silicon uses its own peripheral handshake
+	 * instead of CRCI, so qce->adm_crci_* stays 0 and
+	 * qce_dma_configure_crci() skips the peripheral_config write.
 	 */
-	if (qce->version == QCE_VERSION_CE2) {
-		rx_crci = CE2_CRCI_CE_IN;
-		tx_crci = CE2_CRCI_CE_HASH;
-	}
-
 	dma->txchan = dma_request_chan(dev, "tx");
 	if (IS_ERR(dma->txchan))
 		return dev_err_probe(dev, PTR_ERR(dma->txchan),
 				     "Failed to get TX DMA channel\n");
 
-	ret = qce_dma_configure_crci(qce, dma->txchan, tx_crci);
+	ret = qce_dma_configure_crci(qce, dma->txchan, qce->adm_crci_hash);
 	if (ret) {
 		dev_err(dev, "Failed to configure TX CRCI: %d\n", ret);
 		goto error_tx_config;
@@ -107,7 +102,7 @@ int devm_qce_dma_request(struct qce_device *qce, struct qce_dma_data *dma)
 		goto error_rx;
 	}
 
-	ret = qce_dma_configure_crci(qce, dma->rxchan, rx_crci);
+	ret = qce_dma_configure_crci(qce, dma->rxchan, qce->adm_crci_in);
 	if (ret) {
 		dev_err(dev, "Failed to configure RX CRCI: %d\n", ret);
 		goto error_rx_config;

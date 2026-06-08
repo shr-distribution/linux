@@ -38,6 +38,12 @@ enum qce_version {
  * @burst_size: the crypto burst size
  * @pipe_pair_id: which pipe pair id the device using
  * @version: hardware version (CE2 or v5)
+ * @adm_crci_in: ADM CRCI for the engine input stream (CE_IN) on CE2.
+ *               Zero on QCE_VERSION_5 (BAM, no CRCI handshake).
+ * @adm_crci_out: ADM CRCI for the cipher output stream (CE_OUT) on CE2.
+ *                Zero on QCE_VERSION_5.
+ * @adm_crci_hash: ADM CRCI for the hash output stream (CE_HASH) on CE2.
+ *                 Zero on QCE_VERSION_5.
  * @async_req_enqueue: invoked by every algorithm to enqueue a request
  * @async_req_done: invoked by every algorithm to finish its request
  */
@@ -57,6 +63,9 @@ struct qce_device {
 	int burst_size;
 	unsigned int pipe_pair_id;
 	enum qce_version version;
+	u8 adm_crci_in;
+	u8 adm_crci_out;
+	u8 adm_crci_hash;
 	int (*async_req_enqueue)(struct qce_device *qce,
 				 struct crypto_async_request *req);
 	void (*async_req_done)(struct qce_device *qce, int ret);
