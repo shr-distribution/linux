@@ -228,4 +228,22 @@
 /* CE2 burst size - ADM uses smaller bursts than BAM */
 #define CE2_ADM_BURST_SIZE		64
 
+/*
+ * ADM CRCI (Client Request Control Interface) numbers for the CE2 block on
+ * MSM8x60. These are silicon-fixed per-SoC, not board-configurable, and
+ * match Qualcomm's downstream platform_data as well as the HTC and Samsung
+ * vendor forks for the MSM8x60 family.
+ *
+ *   CE_IN   (4)  - memory -> engine, used for both cipher input and the
+ *                  hash input block (DATA_SHADOW0 writes)
+ *   CE_OUT  (5)  - cipher engine -> memory (DATA_SHADOW0 reads)
+ *   CE_HASH (15) - hash engine   -> memory (AUTH_IV0..N readback)
+ *
+ * The cipher and hash data paths reprogram the rx/tx ADM channels per
+ * operation to pick the correct CRCI for the direction in use.
+ */
+#define CE2_CRCI_CE_IN			4
+#define CE2_CRCI_CE_OUT			5
+#define CE2_CRCI_CE_HASH		15
+
 #endif /* _REGS_CE2_H_ */

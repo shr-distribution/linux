@@ -898,10 +898,10 @@ static int qce_ce2_dma_chain_input_digest(struct qce_device *qce,
 {
 	struct dma_chan *chan = qce->dma.rxchan;
 	struct qcom_adm_peripheral_config in_periph = {
-		.crci = qce->dma.rx_crci,	/* CRCI 4 = CE_IN */
+		.crci = CE2_CRCI_CE_IN,
 	};
 	struct qcom_adm_peripheral_config out_periph = {
-		.crci = qce->dma.tx_crci,	/* CRCI 15 = CE_HASH */
+		.crci = CE2_CRCI_CE_HASH,
 	};
 	struct dma_slave_config in_conf = {
 		.direction = DMA_MEM_TO_DEV,
@@ -1444,10 +1444,10 @@ static int qce_ce2_dma_setup_cipher_chans(struct qce_device *qce,
 					  unsigned int block_dwords)
 {
 	struct qcom_adm_peripheral_config in_periph = {
-		.crci = qce->dma.rx_crci,	/* CRCI 4 = CE_IN */
+		.crci = CE2_CRCI_CE_IN,
 	};
 	struct qcom_adm_peripheral_config out_periph = {
-		.crci = 5,			/* CRCI 5 = CE_OUT */
+		.crci = CE2_CRCI_CE_OUT,
 	};
 	struct dma_slave_config in_conf = {
 		.direction = DMA_MEM_TO_DEV,

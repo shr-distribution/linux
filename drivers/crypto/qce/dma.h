@@ -32,8 +32,6 @@ struct qce_dma_data {
 	struct dma_chan *rxchan;
 	struct qce_result_dump *result_buf;
 	void *ignore_buf;
-	u32 rx_crci;	/* CRCI for RX channel (ADM flow control) */
-	u32 tx_crci;	/* CRCI for TX channel (ADM flow control) */
 
 	/*
 	 * Per-request bookkeeping so qce_dma_*_callback() can fail the

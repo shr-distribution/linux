@@ -452,8 +452,6 @@
 			reset-names = "engine";
 			dmas = <&adm_dma0 2>, <&adm_dma0 3>;
 			dma-names = "rx", "tx";
-			qcom,rx-crci = <4>;
-			qcom,tx-crci = <15>;
 			status = "okay";
 		};
 
