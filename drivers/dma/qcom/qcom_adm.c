@@ -644,20 +644,27 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		}
 
 		/*
-		 * SDCC CRCI block-size override (eMMC=CRCI 1, WiFi=CRCI 5).
+		 * SDCC eMMC CRCI 1 block-size override (half-FIFO).
 		 *
-		 * Legacy webOS msm_dmov adm1_crci_conf[] hardcodes blk_size=1 for
-		 * both SDCC CRCIs: blk_size=1 = half-FIFO (32 B) = the SDCC
+		 * Legacy webOS msm_dmov adm1_crci_conf[] hardcodes blk_size=1
+		 * for the eMMC CRCI: blk_size=1 = half-FIFO (32 B) = the SDCC
 		 * half-full CRCI trigger. adm_get_blksize() instead derives it
 		 * from burst (64 B FIFO -> 2 = full-FIFO), which mis-paces the
-		 * CRCI handshake against the SDCC FIFO. The drift accumulates over
-		 * long transfers and the SDCC latches DATACRCFAIL / RXOVERRUN on
-		 * large multi-block reads (480 KB eMMC reads fail with
-		 * bytes_xfered=0; the 128 B WiFi FIXED mailbox read also errors).
-		 * Replicate the legacy per-CRCI table: force half-FIFO for the two
-		 * SDCC CRCIs only; crypto CE (CRCI 2/3) keeps the computed value.
+		 * CRCI handshake against the SDCC FIFO and causes DATACRCFAIL /
+		 * RXOVERRUN on large eMMC reads.
+		 *
+		 * CRCI 5 is QCE Crypto Engine 2 CE_OUT on MSM8x60 (not the
+		 * "WiFi mailbox" on other platforms). The engine signals
+		 * CE_OUT every 16 B, so blk_size MUST stay at 0 (16 B
+		 * handshake granularity). Forcing blk_size=1 here caused the
+		 * engine's DOUT FIFO to fill faster than ADM drained — engine
+		 * stalled in PROCESSING state with DOUT_AVAIL=4 dwords waiting
+		 * after ~6 AES blocks (STATUS=0x1120120c), DMA timed out, ADM
+		 * channel error-path terminate_sync deadlocked. The
+		 * adm_slave_config override below was already correctly scoped
+		 * to CRCI 1 only; this earlier slave-prep override was missed.
 		 */
-		if (crci == 1 || crci == 5)
+		if (crci == 1)
 			blk_size = 1;
 	}
 
