@@ -108,13 +108,28 @@ MODULE_PARM_DESC(bt_tx_bytegap_us,
  * These knobs let us A/B-test the deltas at runtime without rebuilding:
  *
  *   echo 0x200 > /sys/module/msm_serial/parameters/bt_ipr_override
- *   echo 0x203 > /sys/module/msm_serial/parameters/bt_imr_override
+ *   echo 0x203 > /sys/module/msm_serial/parameters/bt_imr_override   # SEE WARNING
  *
  * Zero = don't override (use the driver-computed value).  Override applies
  * only to the BT UART port (port->mapbase == MSM_BT_UART_MAPBASE).  IPR is
  * re-applied when the param is written; IMR override takes effect on the
  * next IRQ-handler IMR restore (which happens many times a second under
  * any traffic, so updates are near-immediate).
+ *
+ * WARNING — bt_imr_override is a foot-gun.  Mainline's computed IMR
+ * (0x1aa7) enables five bits (2, 5, 7, 11, 12) that mainline's IMR bit
+ * map doesn't define publicly but that the driver's IRQ-handler dispatch
+ * + DMA-RX completion plumbing clearly depend on for forward progress.
+ * Forcing IMR to the webOS value 0x203 (only bits 0, 1, 9) masks those
+ * private bits; on a live BT port that hangs the kernel — first the BCSP
+ * RX path stops getting completion events, then CPU0 has no work to wake
+ * for and stalls in cpuidle while CPU1 spins waiting for an event that
+ * will never come.  Validated 2026-06-08: a ~3 minute soft-lockup
+ * followed every `echo 0x203 > bt_imr_override` test, requiring a power
+ * cycle.  Use this knob only with values that are a SUPERSET of the
+ * driver-computed IMR (e.g. 0x1aa7 | extra_bits), never a subset.
+ * IPR override is safe at any value — it tunes the RX stale timer only
+ * and doesn't affect IRQ dispatch.
  */
 static unsigned int bt_ipr_override;
 static unsigned int bt_imr_override;
@@ -125,10 +140,10 @@ static const struct kernel_param_ops bt_ipr_override_ops = {
 };
 module_param_cb(bt_ipr_override, &bt_ipr_override_ops, &bt_ipr_override, 0644);
 MODULE_PARM_DESC(bt_ipr_override,
-	"BT UART: override IPR (rxstale timeout) — 0=use computed (default)");
+	"BT UART: override IPR (rxstale timeout) — 0=use computed (default). Safe at any value.");
 module_param(bt_imr_override, uint, 0644);
 MODULE_PARM_DESC(bt_imr_override,
-	"BT UART: override IMR (interrupt mask) — 0=use computed (default)");
+	"BT UART: override IMR (interrupt mask) — 0=use computed (default). DANGEROUS: value must be a SUPERSET of mainline's 0x1aa7, else soft-lockup. Use 0 unless you really know what you're doing.");
 #include <linux/wait.h>
 
 #define MSM_UART_MR1			0x0000
