@@ -1744,7 +1744,7 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	__be32 enciv[QCE_MAX_IV_SIZE / sizeof(__be32)] = {0};
 	unsigned int enckey_words = keylen / sizeof(u32);
 	unsigned int enciv_words = 0;
-	u32 encr_cfg, config, status;
+	u32 encr_cfg, status;
 	int timeout, ret;
 	unsigned int k;
 
@@ -1770,18 +1770,18 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		usleep_range(1000, 1500);
 	}
 
-	/* Additional SW_RST pulse via CONFIG register.  GCC_CE2_RESET
-	 * resets the clock domain; SW_RST resets the engine's internal
-	 * state machine.  Probe does both at init time; the per-op path
-	 * needs SW_RST too for 3DES-CBC decrypt cold-start, which
-	 * otherwise returns stale DATA_SHADOW0 bytes (engine not
-	 * processing at all).  Mirrors the probe-time SW_RST pulse
-	 * timing (10 us assert, 10 us deassert).
+	/*
+	 * Drop the per-op SW_RST pulse + writel(0, CONFIG) that the
+	 * scratch-written CE2 path was doing — the Samsung MSM8x60 vendor
+	 * driver (drivers/crypto/msm/qce.c _ce_setup) does NOT touch
+	 * CONFIG per op. SW_RST + MASK_INTR is set ONCE in _init_ce_engine
+	 * and the per-op path only programs SEG_CFG / ENCR_SEG_CFG /
+	 * SEG_SIZE / GOPROC. Writing CONFIG (specifically writing 0 then
+	 * later MASK_INTR) per op appears to clobber the engine's key
+	 * register state — confirmed by NIST AES-128-ECB(2b7e..., 6bc1...)
+	 * producing deterministic non-AES output and RNDKEY0..3 readback
+	 * returning all zeros after our writes.
 	 */
-	writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
-	usleep_range(10, 20);
-	writel_relaxed(0, qce->base + CE2_REG_CONFIG);
-	usleep_range(10, 20);
 
 	/* Wait for IDLE before configuring */
 	/*
@@ -1946,22 +1946,23 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		}
 	}
 
-	if (IS_CTR(flags))
+	/*
+	 * Write CNTR_MASK = 0xffff for ALL AES modes (matches Samsung's
+	 * _ce_setup, which writes it unconditionally in the AES branch
+	 * before any cfg/keys). Previous scratch-driver iteration only
+	 * wrote this for CTR; ECB/CBC may rely on CNTR_MASK initial state
+	 * even though they don't "use" the counter, and Samsung's
+	 * reference always writes it.
+	 */
+	if (IS_AES(flags))
 		writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
 
-	/* CONFIG value computed once.  Engine expects CONFIG written
-	 * AFTER SEG_CFG/SEG_SIZE (webOS order), so the actual writel
-	 * happens inside the loop body before GOPROC.
+	/*
+	 * Samsung MSM8x60 vendor reference does NOT touch CONFIG per op:
+	 * SW_RST + MASK_INTR are set ONCE in _init_ce_engine and the per-op
+	 * path leaves CONFIG alone. Probe-time CE2 init already programmed
+	 * MASK_INTR, so we leave CONFIG alone here.
 	 */
-	config = readl(qce->base + CE2_REG_CONFIG);
-	config |= BIT(CE2_MASK_DOUT_INTR_SHIFT) |
-		  BIT(CE2_MASK_DIN_INTR_SHIFT) |
-		  BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
-		  BIT(CE2_MASK_ERR_INTR_SHIFT);
-	config &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
-		    BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
-		    BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
-	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
 
 	/*
 	 * CE2 cipher path: ONE GOPROC for the entire op (matches the
@@ -2023,16 +2024,13 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		}
 
 		/*
-		 * Vendor register order: SEG_CFG -> ENCR_SEG_CFG -> SEG_SIZE
-		 * -> CONFIG -> GOPROC. Writing CONFIG before SEG_CFG
-		 * empirically breaks 3DES-CBC decrypt (engine returns input
-		 * unchanged).
+		 * Samsung vendor register order: ENCR_SEG_CFG -> SEG_CFG ->
+		 * SEG_SIZE -> GOPROC.  CONFIG is NOT touched per op.
 		 */
-		writel(seg_cfg, qce->base + CE2_REG_SEG_CFG);
 		writel(total << CE2_ENCR_SEG_SIZE_SHIFT,
 		       qce->base + CE2_REG_ENCR_SEG_CFG);
+		writel(seg_cfg, qce->base + CE2_REG_SEG_CFG);
 		writel(total, qce->base + CE2_REG_SEG_SIZE);
-		writel(config, qce->base + CE2_REG_CONFIG);
 
 		dev_dbg(qce->dev, "CE2 skc op len=%u\n", total);
 		QCE_DBG(qce,
