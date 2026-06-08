@@ -1491,6 +1491,7 @@ static int qce_ce2_dma_setup_cipher_chans(struct qce_device *qce,
 	};
 	struct dma_slave_config in_conf = {
 		.direction = DMA_MEM_TO_DEV,
+		.device_fc = true,	/* use CRCI flow control */
 		.dst_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
 		.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
 		.dst_maxburst = block_dwords,
@@ -1499,6 +1500,7 @@ static int qce_ce2_dma_setup_cipher_chans(struct qce_device *qce,
 	};
 	struct dma_slave_config out_conf = {
 		.direction = DMA_DEV_TO_MEM,
+		.device_fc = true,	/* use CRCI flow control */
 		.src_addr = qce->phys_base + CE2_REG_DATA_SHADOW0,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
 		.src_maxburst = block_dwords,
