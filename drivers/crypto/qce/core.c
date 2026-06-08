@@ -259,7 +259,7 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	if (IS_ERR(qce->bus))
 		return PTR_ERR(qce->bus);
 
-	qce->reset = devm_reset_control_get_optional_exclusive(qce->dev, "clk");
+	qce->reset = devm_reset_control_get_optional_exclusive(qce->dev, "engine");
 	if (IS_ERR(qce->reset))
 		return PTR_ERR(qce->reset);
 

@@ -449,7 +449,7 @@
 			clocks = <&gcc CE2_H_CLK>, <&gcc CE2_H_CLK>, <&gcc CE2_H_CLK>;
 			clock-names = "core", "iface", "bus";
 			resets = <&gcc CE2_RESET>;
-			reset-names = "clk";
+			reset-names = "engine";
 			dmas = <&adm_dma0 2>, <&adm_dma0 3>;
 			dma-names = "rx", "tx";
 			qcom,rx-crci = <4>;

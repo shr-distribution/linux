@@ -1119,7 +1119,7 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	 * register state is preserved across a clock gate; only an actual
 	 * hardware reset clears the internal counter / state.
 	 *
-	 * GCC_CE2_RESET (DT: reset-names = "clk") asserts the engine's
+	 * GCC_CE2_RESET (DT: reset-names = "engine") asserts the engine's
 	 * reset line.  10 us is enough for the engine to fully reset (the
 	 * probe-time SW_RST sequence in core.c uses similar timing).
 	 * After deassert the engine is back to power-on state -- our
@@ -1862,6 +1862,27 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				BIT(CE2_LAST_SHIFT);
 		struct qce_ce2_bounce bounce;
 		unsigned int bounce_sz;
+
+		/*
+		 * Cap rctx->cryptlen well below the round_up overflow point.
+		 * The DES/3DES path below uses round_up(total, burst * 4)
+		 * directly as the bounce-buffer size, then issues two
+		 * kzalloc(size) + two dma_alloc_coherent(size) of that size.
+		 * Without a cap an unprivileged AF_ALG user could force a
+		 * single multi-hundred-MiB contiguous coherent DMA
+		 * allocation, putting allocation pressure on unrelated
+		 * drivers sharing the pool. Also block the UINT_MAX corner:
+		 * round_up(near-UINT_MAX, burst*4) wraps to 0, which the
+		 * allocator then accepts and the engine is partially
+		 * programmed before the per-chunk size check catches it.
+		 *
+		 * SZ_1M matches the qce_ce2_dma_chain_input_digest hash
+		 * chunk limit and is well above any realistic single-shot
+		 * skcipher operation. Larger inputs can still be processed
+		 * by chunking at the AF_ALG / skcipher_walk layer above.
+		 */
+		if (total > SZ_1M)
+			return -EMSGSIZE;
 
 		/* Bounce sized to worst case: AES = burst-rounded chunk (256
 		 * B for burst=64dw); DES/3DES = full cryptlen padded up to

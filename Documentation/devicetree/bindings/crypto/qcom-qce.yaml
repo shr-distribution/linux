@@ -119,17 +119,12 @@ properties:
   resets:
     maxItems: 1
     description:
-      Optional reset controller for the CE2 engine. When provided,
-      the driver uses it to recover the engine from the per-op
-      wedge that affects MSM8x60 CE2 hardware after ~5 operations
-      (some downstream vendor kernels assert/deassert the same reset
-      once at init; others omit it). Without it the driver still
-      probes and registers algorithms but cannot recover from a
-      wedged engine.
+      Optional engine reset line for the Crypto Engine. Wired to
+      GCC_CE2_RESET on MSM8x60.
 
   reset-names:
     items:
-      - const: clk
+      - const: engine
 
 allOf:
   - if:
