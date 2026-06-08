@@ -520,6 +520,18 @@ struct bcsp_struct {
 	 */
 	bool	is_serdev;		/* True if operating in serdev mode */
 	bool	warm_reset_sent;	/* WARM_RESET sent, expecting chip restart */
+	bool	chip_sync_seen;		/* RX SYNC arrived; stop sending SYNC.
+					 * webOS abcsp_lm_fsm at PmBtStack.so:0x1cac58
+					 * tracks the same via flag bit 4 of byte
+					 * 0x10d5: once host has acknowledged chip's
+					 * SYNC, host MUST stop sending SYNC otherwise
+					 * the chip — once it advances to CURIOUS —
+					 * sees another SYNC and resets back to SHY
+					 * (per abcsp_lm_fsm state 1 / msg 1 = goto
+					 * abcsp_bcsple_init). Our previous timer
+					 * code sent SYNC every 250 ms in UNINIT
+					 * regardless, which silently looped the
+					 * chip's handshake forever. */
 	void	*serdev_bdev;		/* Pointer to bcsp_serdev for GPIO access */
 
 	/* Link establishment completion for serdev mode */
@@ -1031,6 +1043,20 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		bcsp->msgq_txseq = 0;
 
 		/*
+		 * Latch "we've seen chip's SYNC at least once" — the periodic
+		 * timer below uses this to stop re-emitting SYNC. webOS's
+		 * abcsp_lm_fsm tracks the same bit (byte at 0x10d5 bit 4) and
+		 * its SHY-state timer body suppresses further SYNC TX once
+		 * that bit is set. Without this latch, our timer's next 250 ms
+		 * tick emits another SYNC after the chip has internally
+		 * advanced to CURIOUS — and per webOS FSM that extra SYNC
+		 * forces the chip back to SHY via abcsp_bcsple_init, looping
+		 * the handshake forever (which is exactly the symptom we see
+		 * in /tmp/netconsole.log).
+		 */
+		bcsp->chip_sync_seen = true;
+
+		/*
 		 * Purge the reliable-channel queues to match the chip's fresh
 		 * sequence numbers. Do NOT purge unrel here: this runs on every
 		 * received SYNC (RX context) while the TX workqueue drains unrel,
@@ -1048,6 +1074,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		if (bcsp->warm_reset_sent) {
 			bcsp->link_state = BCSP_LINK_UNINIT;
 			bcsp->link_established = false;
+			bcsp->chip_sync_seen = false;
 			reinit_completion(&bcsp->link_up);
 			BT_INFO("BCSP: post-WARM_RESET sync — link returned to UNINIT");
 		}
@@ -2398,26 +2425,43 @@ static void bcsp_timed_event(struct timer_list *t)
 	BT_DBG("hu %p link_state %d unack %u", hu, bcsp->link_state, bcsp->unack.qlen);
 
 	/*
-	 * BCSP Link Establishment requires both sides to send sync.
-	 * When the chip receives our sync, it responds with sync_rsp.
-	 * When we receive sync_rsp, we move to INIT state.
-	 * Meanwhile, we also respond to chip's sync with our sync_rsp.
+	 * BCSP Link Establishment per webOS's abcsp_lm_fsm
+	 * (PmBtStack.so:0x1cac58):
+	 *
+	 * SHY state — timer body sends SYNC ONLY IF flag bit 4 of byte at
+	 *   ctx+0x10d5 is clear. That bit gets latched once host has TX'd
+	 *   a SYNC-RSP after RX SYNC, and intentionally suppresses further
+	 *   SYNC TX so the chip's CURIOUS-state advance is not interrupted.
+	 *
+	 * SHY state on RX SYNC — TX SYNC-RSP. (No state change; chip is
+	 *   expected to advance to CURIOUS on receiving our SYNC-RSP.)
+	 *
+	 * CURIOUS state — timer body sends CONF.
+	 *
+	 * Our older code violated the SHY-timer rule by re-emitting SYNC
+	 * every 250 ms regardless of `chip_sync_seen`. The chip would
+	 * internally advance to CURIOUS upon RX SYNC-RSP and queue CONF for
+	 * TX, but before it could deliver the CONF our next-tick SYNC
+	 * arrived and forced it back to SHY via abcsp_bcsple_init (state 1
+	 * msg 1 in webOS FSM). That's the exact infinite-SYNC loop we see
+	 * in /tmp/netconsole.log.
+	 *
+	 * We also used to emit SYNC-RSP proactively from the SHY timer body
+	 * "back-to-back, to flood the chip's wake window" — webOS does NOT
+	 * do this. SYNC-RSP is sent ONLY in response to RX SYNC. The extra
+	 * proactive SYNC-RSP transmissions arrive at the chip while it's
+	 * still in SHY waiting to RX SYNC, and the chip discards them.
 	 *
 	 * When skip_sync is in effect, the chip is already in operational
 	 * state; never inject sync/conf frames or the chip will reject them.
 	 */
-	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_UNINIT) {
+	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_UNINIT &&
+	    !bcsp->chip_sync_seen) {
 		int n = bt_linkest_burst > 0 ? bt_linkest_burst : 1;
 
-		BT_DBG("BCSP: timer hammering sync/sync-rsp x%d", n);
-		/* Alternate SYNC (so the chip answers us) and SYNC-RSP (so the
-		 * chip advances), back-to-back, to flood the chip's wake window. */
-		while (n-- > 0) {
+		BT_DBG("BCSP: SHY timer — TX %d SYNC pkt(s)", n);
+		while (n-- > 0)
 			bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
-			if (n-- > 0)
-				bcsp_send_link_pkt(bcsp, sync_rsp_pkt,
-						   sizeof(sync_rsp_pkt));
-		}
 	}
 
 	/* Send conf packets in INIT state */
