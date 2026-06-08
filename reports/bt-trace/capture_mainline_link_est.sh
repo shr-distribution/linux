@@ -15,12 +15,14 @@
 
 set -eu
 DEV=root@172.16.42.2
+SSH="ssh -p 22"
+SCP="scp -P 22"
 
 # Push rdmem_bt to device
-scp /home/herrie/webos/touchpad-kernel/linux-6.18-tenderloin/reports/bt-trace/rdmem_bt $DEV:/tmp/rdmem_bt
-ssh $DEV chmod +x /tmp/rdmem_bt
+$SCP /home/herrie/webos/touchpad-kernel/linux-6.18-tenderloin/reports/bt-trace/rdmem_bt $DEV:/tmp/rdmem_bt
+$SSH $DEV chmod +x /tmp/rdmem_bt
 
-ssh $DEV bash <<'EOF'
+$SSH $DEV bash <<'EOF'
 set -eu
 # Make sure BT modules are NOT already loaded (chip should be cold).
 if lsmod | grep -q hci_uart; then
@@ -65,7 +67,7 @@ wc -l /tmp/mainline_link_est_capture.txt
 EOF
 
 # Pull the capture back
-scp $DEV:/tmp/mainline_link_est_capture.txt \
+$SCP $DEV:/tmp/mainline_link_est_capture.txt \
     /home/herrie/webos/touchpad-kernel/linux-6.18-tenderloin/reports/bt-trace/mainline_link_est_capture_$(date +%Y%m%d_%H%M%S).txt
 
 echo "==> Capture complete. Compare against webOS operational snapshot:"
