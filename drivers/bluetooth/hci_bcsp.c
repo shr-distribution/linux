@@ -2956,10 +2956,38 @@ static int bcsp_open(struct hci_uart *hu)
 
 	if (bcsp->skip_sync) {
 		/*
-		 * Chip is already in BCSP operational state from EEPROM.
+		 * Chip is already in BCSP operational state (PSRAM retained from
+		 * a prior webOS session; CSR BlueCore6 stays GARRULOUS across SoC
+		 * warm reboots because pm8058_s3 + pm8901_l3 keep it powered).
+		 *
+		 * In operational state the chip is at 3.6864 Mbps 8-E-1 expecting
+		 * BCSP-framed HCI/BCCMD traffic, NOT the 115200 8-N-1 SYNC dance.
+		 * Raise the UART to the operational baud + parity BEFORE we let
+		 * HCI core push any commands; otherwise our 115200 8-N-1 frames
+		 * are noise to the chip.
+		 *
+		 * max-speed (bdev->oper_speed) comes from the bluetooth DT node;
+		 * default to 3686400 if missing.  Parity EVEN is mandatory:
+		 * webOS PSKEY uartConfigBcsp=0x082e sets bit2 (even parity) and
+		 * captured webOS UART regs show MR2=0x36 (CS8+EVEN+1stop).
+		 */
+		if (hu->serdev) {
+			struct bcsp_serdev *bdev =
+				container_of(hu, struct bcsp_serdev, serdev_hu);
+			unsigned int op_baud = bdev->oper_speed ?: 3686400;
+			int parity_ret;
+
+			serdev_device_set_baudrate(hu->serdev, op_baud);
+			parity_ret = serdev_device_set_parity(hu->serdev,
+							      SERDEV_PARITY_EVEN);
+			BT_INFO("BCSP: skip-sync — UART set to %u 8-E-1 (parity_ret=%d)",
+				op_baud, parity_ret);
+		}
+
+		/*
 		 * Don't queue a SYNC packet, don't arm the link-establishment
 		 * timer — just signal the link as up so bcsp_setup() can
-		 * proceed straight to PSKEY replay.
+		 * proceed straight to PSKEY replay / HCI commands.
 		 */
 		bcsp->link_state = BCSP_LINK_ACTIVE;
 		bcsp->link_established = true;

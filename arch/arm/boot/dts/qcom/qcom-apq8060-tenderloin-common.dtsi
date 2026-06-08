@@ -3362,19 +3362,30 @@
 		status = "okay";
 
 		/*
-		 * Skip BCSP link-establishment SYNC handshake.
+		 * Skip BCSP link-establishment SYNC handshake — RE-ENABLED 2026-06-08.
 		 *
-		 * NOTE 2026-05-22: The earlier "skip-sync" hypothesis (that the
-		 * chip stays in BCSP-operational state from EEPROM and never
-		 * sends SYNC) was WRONG. On-device test shows the BCM4329 sends
-		 * SYNC packets continuously on fresh power-up AND after every
-		 * WARM_RESET — i.e. it always boots into BCSP link-establishment
-		 * state. webOS only appears not to send SYNC because the wire
-		 * trace was captured after userspace bcattach had already done
-		 * the handshake. We need the full SYNC handshake here.
+		 * Updated theory: the CSR BlueCore6-ROM chip retains its BCSP-operational
+		 * PSRAM state across SoC warm reboots (always-on regulators pm8058_s3 +
+		 * pm8901_l3 keep the chip powered).  After ANY webOS boot the chip is
+		 * left in GARRULOUS at 3.6864 Mbps 8-E-1.  Live data 2026-06-08: webOS
+		 * BT works (headset connects/streams) and on the immediate next mainline
+		 * boot the BT UART shows tx=N rx=0 even after sending byte-correct SYNC —
+		 * the chip is ignoring our 115200 8-N-1 SYNC bytes because it is at
+		 * 3.6864 M 8-E-1 looking for BCCMD/HCI traffic.
 		 *
-		 * qcom,bcsp-skip-sync removed; driver does the normal handshake.
+		 * The earlier (2026-05-22) refutation assumed a fresh-cold-boot ROM-default
+		 * chip.  That holds only after a true battery-out power cycle; after webOS
+		 * has run the chip retains PSRAM and the SHY handshake is the wrong path.
+		 *
+		 * When this property is present, hci_bcsp will raise baud to max-speed,
+		 * switch parity to EVEN, signal the BCSP link as ACTIVE, and skip the
+		 * SHY/CURIOUS/GARRULOUS SYNC dance — letting HCI traffic flow directly.
+		 *
+		 * NOTE: after a true battery-drain cold boot, chip is in ROM/SHY at
+		 * 115200 8-N-1 and this property must be removed (or the SHY handshake
+		 * driven via the normal path).
 		 */
+		qcom,bcsp-skip-sync;
 
 		/*
 		 * Bluetooth Device Address (BD_ADDR)
