@@ -1757,48 +1757,17 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	if (rctx->cryptlen == 0)
 		return 0;
 
-	/* Per-op engine reset: the CE2 power-on op counter is shared
-	 * between AUTH and ENCR blocks -- skipping the cipher reset
-	 * causes the same ~5-op wedge that hash hits.  We need the
-	 * reset.
-	 *
-	 * The first-op-after-reset AES-256-CBC encrypt block-2 passthrough
-	 * symptom is timing-related: the AES core needs more settling
-	 * time after deassert before the round-key expansion is stable
-	 * for the longer (14-round) AES-256 schedule.  100 us after
-	 * deassert (vs 10 us in hash path) gives the core enough time
-	 * for AES-256; AES-128/DES/3DES are faster and tolerate either.
-	 */
 	/*
-	 * Per-op SW_RST + restore MASK_INTR (matches Samsung _init_ce_engine
-	 * but on a per-op basis since our path can wedge — clears engine
-	 * error bits between ops). Cost ~30 µs.
-	 *
-	 * IMPORTANT: do NOT call dmaengine_terminate_sync on the rx/tx
-	 * channels here. On a wedged channel, qcom_adm's terminate_all takes
-	 * the controller submit_lock and waits for the in-flight descriptor
-	 * to drain — which never happens if the engine has stopped firing
-	 * CRCI handshakes. The ADM IRQ handler also takes that lock; with it
-	 * held, the IRQ cannot run, the descriptor cannot complete, and the
-	 * CPU running terminate_sync deadlocks. The error path
-	 * (out_terminate label) calls terminate_sync exactly once after the
-	 * engine has been hardware-reset; that single call is safe because
-	 * the engine is no longer issuing handshakes that the ADM might wait
-	 * on indefinitely.
-	 *
-	 * The GCC CE2 reset_control_assert/deassert was dropped here because
-	 * Samsung never toggles GCC reset per op (only at probe). With the
-	 * SW_RST pulse + MASK_INTR restore below, the engine clears its
-	 * internal state per op without touching the clock/reset framework.
+	 * The engine is reset ONCE at probe (qce_check_version() in core.c
+	 * issues SW_RST + deassert). With the CRCI-5 blk_size bug fixed,
+	 * engine state no longer drifts between ops, so the per-op SW_RST
+	 * + MASK_INTR restore that used to live here is unnecessary
+	 * overhead (~50 µs/op + IDLE poll). Match Samsung's vendor
+	 * _ce_setup pattern: configure-once at init, per-op only writes
+	 * SEG_CFG / ENCR_SEG_CFG / SEG_SIZE / keys / IV / GOPROC. The
+	 * IDLE poll still runs below in case a previous op's STATUS hasn't
+	 * settled — cheap (one or two register reads) and a useful gate.
 	 */
-	writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
-	usleep_range(10, 20);
-	writel_relaxed(BIT(CE2_MASK_DOUT_INTR_SHIFT) |
-		       BIT(CE2_MASK_DIN_INTR_SHIFT) |
-		       BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
-		       BIT(CE2_MASK_ERR_INTR_SHIFT),
-		       qce->base + CE2_REG_CONFIG);
-	usleep_range(10, 20);
 
 	/* Wait for IDLE before configuring */
 	/*
