@@ -1864,78 +1864,43 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	config &= ~(BIT(CE2_CLK_EN_N_SHIFT) | BIT(CE2_SW_RST_SHIFT));
 
 	/*
-	 * Chunked DMA loop.  CE2 AES engine has a ~64 B internal FIFO; ops
-	 * larger than 4 AES blocks (64 B) overflow the FIFO and produce
-	 * silent corruption past block 4.  Split AES > 64 B into 64-byte
-	 * chunks, each driven as an independent FIRST+LAST single-shot op
-	 * with explicit IV chaining via CNTR0..3 between chunks.
+	 * CE2 cipher path: ONE GOPROC for the entire op (matches the
+	 * Qualcomm downstream / HTC / Samsung vendor drivers for MSM8x60
+	 * — see _ce_setup() in their drivers/crypto/msm/qce.c).
 	 *
-	 * Empirically the engine does NOT preserve CNTR state across
-	 * chunks even when SEG_CFG.LAST=0 on the prior chunk -- the
-	 * CTXT_CLEARING stage at op end wipes it regardless.  So we read
-	 * back CNTR0..3 after each chunk (engine has updated them with the
-	 * last ciphertext block for CBC / incremented counter for CTR) and
-	 * write them back as the IV for the next chunk before its GOPROC.
+	 * Earlier iterations split AES into 48-byte chunks because the
+	 * engine appeared to corrupt block 4 of long ops; that symptom was
+	 * an artefact of chunking with FIRST|LAST set on every chunk: the
+	 * engine treated each chunk as a standalone op and leaked DOUT
+	 * FIFO state across "ops". Programming full cryptlen into
+	 * SEG_SIZE, firing GOPROC once, and letting ADM stream the whole
+	 * payload as a single descriptor pair avoids the FIFO leak
+	 * entirely and gives DES/3DES-class throughput for AES too.
 	 *
-	 * Each chunk uses FIRST=1, LAST=1 (single-shot SEG_CFG); the
-	 * software IV-chaining via CNTR readback/restore is what makes the
-	 * stream concatenate correctly.
-	 *
-	 * DES/3DES don't appear to hit the FIFO ceiling -- skip chunking,
-	 * one shot up to SEG_SIZE max (65535 B).
+	 * SEG_SIZE is a 16-bit field; cap cryptlen at 65280 (65535 rounded
+	 * down to a burst*4 = 256 boundary). The skcipher / AF_ALG layer
+	 * above splits longer requests; we never see more than the cap in
+	 * a single call.
 	 */
 	{
-		/* AES chunk size = 48 B (3 blocks).  The silicon FIFO-cap
-		 * symptom is a stochastic ~3-5% per-chunk corruption of the
-		 * LAST AES block when a chunk hits the 4-block (64 B) ceiling
-		 * dead-on.  Empirically observed: with max_chunk=64 we see
-		 * scattered failures at "byte 48 of chunk N" -- exactly the
-		 * 4th block.  Backing off to 3 blocks per chunk keeps the
-		 * engine a safe distance below the cap.  Cost: 33% more
-		 * chunks per stream (more CNTR readback + reset overhead),
-		 * benefit: eliminates the block-3 failure mode.
-		 *
-		 * Burst stays at 64 dw (256 B) so the bounce buffer is sized
-		 * for round_up(48, 256) = 256 B per chunk -- same allocation
-		 * as before.
-		 */
-		unsigned int max_chunk = IS_AES(flags) ? 48 : 65535;
 		unsigned int burst = (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64;
-		unsigned int sg_off = 0;
 		unsigned int total = rctx->cryptlen;
-		u32 chunk_cfg = encr_cfg | BIT(CE2_FIRST_SHIFT) |
-				BIT(CE2_LAST_SHIFT);
+		u32 seg_cfg = encr_cfg | BIT(CE2_FIRST_SHIFT) |
+			      BIT(CE2_LAST_SHIFT);
 		struct qce_ce2_bounce bounce;
 		unsigned int bounce_sz;
 
 		/*
-		 * Cap rctx->cryptlen well below the round_up overflow point.
-		 * The DES/3DES path below uses round_up(total, burst * 4)
-		 * directly as the bounce-buffer size, then issues two
-		 * kzalloc(size) + two dma_alloc_coherent(size) of that size.
-		 * Without a cap an unprivileged AF_ALG user could force a
-		 * single multi-hundred-MiB contiguous coherent DMA
-		 * allocation, putting allocation pressure on unrelated
-		 * drivers sharing the pool. Also block the UINT_MAX corner:
-		 * round_up(near-UINT_MAX, burst*4) wraps to 0, which the
-		 * allocator then accepts and the engine is partially
-		 * programmed before the per-chunk size check catches it.
-		 *
-		 * SZ_1M matches the qce_ce2_dma_chain_input_digest hash
-		 * chunk limit and is well above any realistic single-shot
-		 * skcipher operation. Larger inputs can still be processed
-		 * by chunking at the AF_ALG / skcipher_walk layer above.
+		 * Cap cryptlen at the engine's 16-bit SEG_SIZE limit rounded
+		 * down to a burst-aligned boundary (65535 → 65280). Returning
+		 * -EMSGSIZE for larger inputs lets the skcipher / AF_ALG
+		 * layer above split the request — same pattern as the hash
+		 * path uses for inputs over SZ_1M.
 		 */
-		if (total > SZ_1M)
+		if (total > 65280)
 			return -EMSGSIZE;
 
-		/* Bounce sized to worst case: AES = burst-rounded chunk (256
-		 * B for burst=64dw); DES/3DES = full cryptlen padded up to
-		 * the burst.  Allocate ONCE here; reuse for every chunk.
-		 */
-		bounce_sz = IS_AES(flags) ?
-			    round_up(max_chunk, burst * 4) :
-			    round_up(total, burst * 4);
+		bounce_sz = round_up(total, burst * 4);
 		ret = qce_ce2_alloc_bounce(qce, &bounce, bounce_sz);
 		if (ret) {
 			dev_err(qce->dev,
@@ -1957,250 +1922,64 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			return ret;
 		}
 
-		while (sg_off < total) {
-			unsigned int chunk_len =
-				(total - sg_off > max_chunk) ?
-				max_chunk : (total - sg_off);
-			unsigned int chunk_retries = 0;
+		/*
+		 * Vendor register order: SEG_CFG -> ENCR_SEG_CFG -> SEG_SIZE
+		 * -> CONFIG -> GOPROC. Writing CONFIG before SEG_CFG
+		 * empirically breaks 3DES-CBC decrypt (engine returns input
+		 * unchanged).
+		 */
+		writel(seg_cfg, qce->base + CE2_REG_SEG_CFG);
+		writel(total << CE2_ENCR_SEG_SIZE_SHIFT,
+		       qce->base + CE2_REG_ENCR_SEG_CFG);
+		writel(total, qce->base + CE2_REG_SEG_SIZE);
+		writel(config, qce->base + CE2_REG_CONFIG);
 
-retry_chunk:
-			/*
-			 * Between chunks, the CE2 engine's DOUT FIFO retains
-			 * stale data from the prior chunk -- on next GOPROC
-			 * the engine flushes it as the first 2 blocks of
-			 * "output" without processing the new input.  This
-			 * was confirmed via a deterministic all-zero
-			 * plaintext test: chunk 1 output came back as
-			 * literally blocks 3-4 of chunk 0 repeated.
-			 *
-			 * Re-running the full per-op reset between chunks
-			 * (GCC_CE2_RESET + SW_RST pulse + wait-IDLE) clears
-			 * the FIFO.  Keys + CONFIG survive the reset since
-			 * they live in different register banks; only the
-			 * engine state machine resets.  But we must re-write
-			 * the keys after reset (the register bank IS wiped
-			 * by the reset on this silicon, even though the
-			 * CONFIG bits aren't).
-			 *
-			 * Cost: ~2 ms per reset.  At 4 AES blocks per chunk
-			 * the effective HW throughput is ~30 KB/s -- slow,
-			 * but cra_priority on the qce CE2 cipher is 50
-			 * (below aes-generic's 100), so the kernel uses
-			 * software AES by default; HW path is for explicit-
-			 * driver-name testing.
-			 */
-			if (sg_off != 0 || chunk_retries > 0) {
-				/* Inter-chunk reset: cycle the engine core
-				 * clock (clk_disable / clk_enable) PLUS the
-				 * SW_RST pulse.  webOS qce.c and Samsung
-				 * qce.ko both fully cycle the clock between
-				 * ops -- on this silicon neither
-				 * reset_control_assert (GCC_CE2_RESET) nor
-				 * SW_RST alone clears enough state to keep
-				 * the engine stable across many chunks
-				 * (~5% per-chunk failure rate, always fails
-				 * past ~64 chunks).  The clock cycle
-				 * presumably drains some internal state
-				 * machine that reset signals don't touch.
-				 *
-				 * Note: qce->core was obtained via
-				 * devm_clk_get_optional_enabled at probe,
-				 * which enables the clock and prevents
-				 * auto-disable on remove.  Manual
-				 * clk_disable / clk_enable cycling is still
-				 * permitted -- the devm guard is about
-				 * teardown not runtime usage.
-				 */
-				if (qce->core) {
-					int cerr;
+		dev_dbg(qce->dev, "CE2 skc op len=%u\n", total);
 
-					clk_disable(qce->core);
-					udelay(10);
-					cerr = clk_enable(qce->core);
-					udelay(10);
-					if (cerr) {
-						/*
-						 * On failure the engine is now
-						 * unclocked; subsequent register
-						 * writes either hang or produce
-						 * garbage output. Bail with an
-						 * explicit -EIO so the AF_ALG
-						 * caller sees a failure rather
-						 * than wrong ciphertext from
-						 * later reads.
-						 */
-						dev_err_ratelimited(qce->dev,
-							"CE2 cipher: clk_enable after wedge reset failed (%d)\n",
-							cerr);
-						qce_ce2_free_bounce(qce, &bounce);
-						return -EIO;
-					}
-				}
-				writel_relaxed(BIT(CE2_SW_RST_SHIFT),
-					       qce->base + CE2_REG_CONFIG);
-				usleep_range(10, 20);
-				writel_relaxed(0, qce->base + CE2_REG_CONFIG);
-				usleep_range(10, 20);
-				/* Yield-friendly IDLE wait — see comment at the
-				 * first readl_poll_timeout in qce_ce2_pio_run_hash
-				 * for the per-chunk hot-path rationale.
-				 */
-				readl_poll_timeout(qce->base + CE2_REG_STATUS,
-						   status,
-						   (status & CE2_CRYPTO_STATE_MASK) == 0,
-						   10, 100000);
+		/*
+		 * GOPROC fires inside qce_ce2_dma_inout_cipher via the
+		 * pre_issue callback — after CPU prep (memcpy / byte-swap /
+		 * descriptor submit) but before dma_async_issue_pending().
+		 * That keeps the engine "kicked" only microseconds before
+		 * ADM starts streaming DIN data.
+		 */
+		ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst,
+					       0, total,
+					       burst, &bounce,
+					       qce_ce2_skc_fire_goproc,
+					       NULL);
+		if (ret) {
+			dev_err(qce->dev,
+				"CE2 skc DMA failed: ret=%d STATUS=0x%08x\n",
+				ret,
+				readl_relaxed(qce->base + CE2_REG_STATUS));
+			qce_ce2_free_bounce(qce, &bounce);
+			return ret;
+		}
 
-				/* Re-write AUTH_SEG_CFG (cleared by SW_RST). */
-				writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
-
-				/* Re-write keys (cleared by SW_RST). */
-				if (IS_DES(flags) || IS_3DES(flags)) {
-					for (k = 0; k < enckey_words; k++)
-						writel((__force u32)enckey[k],
-						       qce->base +
-						       CE2_REG_DES_KEY0 + k * 4);
-				} else {
-					struct crypto_aes_ctx aes_ctx = {0};
-
-					if (!aes_expandkey(&aes_ctx,
-							   (const u8 *)enckey,
-							   keylen)) {
-						for (k = 0; k < CE2_AES_RNDKEYS; k++)
-							writel(aes_ctx.key_enc[k],
-							       qce->base +
-							       CE2_REG_AES_RNDKEY0 +
-							       k * 4);
-					}
-					memzero_explicit(&aes_ctx,
-							 sizeof(aes_ctx));
-				}
-
-				if (IS_CTR(flags))
-					writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
-			}
-
-			/* Re-install IV (CNTR0..3) for non-first chunks --
-			 * holds the previous chunk's tail block / next CTR.
-			 * IV for first chunk was already written above.
-			 * Also re-install on retry (engine state was just
-			 * reset, CNTR0..3 wiped).
-			 */
-			if ((sg_off != 0 || chunk_retries > 0) &&
-			    !IS_ECB(flags) && enciv_words) {
+		/*
+		 * Capture next-op IV for chained-mode callers.
+		 *
+		 * For CBC: the IV for op N+1 is mathematically the last
+		 * cipher block of op N — already sitting in bounce.dst_copy
+		 * from the byte-swap step inside qce_ce2_dma_inout_cipher().
+		 * Use that directly instead of reading the engine's CNTR0..3
+		 * registers, which on this silicon update one cycle before
+		 * STATUS goes IDLE and can return stale state.
+		 *
+		 * For CTR: the counter increments inside the engine per AES
+		 * block and the post-op value is NOT derivable from
+		 * ciphertext, so read CNTR0..3 back (with a short wait for
+		 * the register-bank update window).
+		 */
+		if (!IS_ECB(flags) && enciv_words) {
+			if (IS_CBC(flags)) {
+				const u8 *p = bounce.dst_copy + total -
+					      enciv_words * 4;
 				for (k = 0; k < enciv_words; k++)
-					writel((__force u32)enciv[k],
-					       qce->base + CE2_REG_CNTR0_IV0 +
-					       k * 4);
-			}
-
-			/* webOS register write order: SEG_CFG ->
-			 * ENCR_SEG_CFG -> SEG_SIZE -> CONFIG -> GOPROC.
-			 * Writing CONFIG before SEG_CFG empirically breaks
-			 * 3DES-CBC decrypt (engine returns input unchanged).
-			 */
-			writel(chunk_cfg, qce->base + CE2_REG_SEG_CFG);
-			writel(chunk_len << CE2_ENCR_SEG_SIZE_SHIFT,
-			       qce->base + CE2_REG_ENCR_SEG_CFG);
-			writel(chunk_len, qce->base + CE2_REG_SEG_SIZE);
-			writel(config, qce->base + CE2_REG_CONFIG);
-
-			dev_dbg(qce->dev, "CE2 skc chunk off=%u len=%u\n",
-				sg_off, chunk_len);
-
-			/* GOPROC now fires inside qce_ce2_dma_inout_cipher
-			 * via the pre_issue callback -- AFTER memcpy /
-			 * byte-swap / prep / submit, but BEFORE
-			 * dma_async_issue_pending.  That keeps the engine
-			 * "kicked" only microseconds before ADM starts
-			 * streaming DIN data, instead of the hundreds of
-			 * microseconds the original layout produced when
-			 * GOPROC fired in the cipher loop and the CPU then
-			 * did the DMA prep work.  Closing that window
-			 * should eliminate the ~1.5%-per-chunk "engine
-			 * no-op" stochastic failure.
-			 */
-			ret = qce_ce2_dma_inout_cipher(qce, req->src, req->dst,
-						       sg_off, chunk_len,
-						       burst, &bounce,
-						       qce_ce2_skc_fire_goproc,
-						       NULL);
-			if (ret) {
-				dev_err(qce->dev,
-					"CE2 skc DMA failed at off=%u: ret=%d STATUS=0x%08x\n",
-					sg_off, ret,
-					readl_relaxed(qce->base + CE2_REG_STATUS));
-				qce_ce2_free_bounce(qce, &bounce);
-				return ret;
-			}
-
-			{
-				u32 st_post_dma = readl_relaxed(qce->base +
-								CE2_REG_STATUS);
-				unsigned int dout_avail =
-					(st_post_dma & CE2_DOUT_SIZE_AVAIL_MASK) >>
-					CE2_DOUT_SIZE_AVAIL_SHIFT;
-
-				/* Engine no-op detection: on healthy chunks
-				 * the engine has produced all output and DOUT
-				 * FIFO is drained (DOUT_SIZE_AVAIL=0).  On the
-				 * ~1.5% stochastic no-op chunks, the engine
-				 * never produced anything; DMA in non-FC BOX
-				 * mode pulled 12 stale DATA_SHADOW0 dwords and
-				 * the engine still has 4 dwords sitting in
-				 * its DOUT FIFO (DOUT_SIZE_AVAIL=4).  Use that
-				 * as the retry trigger -- the heavy
-				 * inter-chunk reset (clk cycle + SW_RST + key
-				 * re-write) above clears the wedge state and
-				 * a re-run normally succeeds.
-				 *
-				 * Retry up to a small bound; if we exceed it
-				 * the engine is in a deeper wedge and the
-				 * outer DMA layer or a higher-level reset
-				 * needs to recover.
-				 */
-				if (dout_avail != 0 &&
-				    chunk_retries < 4) {
-					chunk_retries++;
-					dev_warn_ratelimited(qce->dev,
-						"CE2 skc no-op chunk at off=%u (DOUT_AVAIL=%u STATUS=0x%08x), retry %u\n",
-						sg_off, dout_avail,
-						st_post_dma, chunk_retries);
-					goto retry_chunk;
-				}
-				if (dout_avail != 0) {
-					dev_err(qce->dev,
-						"CE2 skc chunk wedged after %u retries at off=%u STATUS=0x%08x\n",
-						chunk_retries, sg_off,
-						st_post_dma);
-					qce_ce2_free_bounce(qce, &bounce);
-					return -EIO;
-				}
-			}
-
-			/* Wait for engine to drop back to IDLE -- but ONLY if
-			 * the next-chunk IV comes from a CNTR readback (i.e.
-			 * NOT CBC; CBC derives the next IV from dst_copy now).
-			 *
-			 * On this silicon the engine never actually returns
-			 * to IDLE after a chunk -- it sits in PROCESSING with
-			 * DIN_ERR/DOUT_ERR/SW_ERR set indefinitely.  The
-			 * inter-chunk reset (clk cycle + SW_RST) brings it
-			 * back to IDLE for the next chunk; we don't need the
-			 * engine to self-settle here.
-			 *
-			 * For CBC the wait was pure overhead -- 1000 polls *
-			 * 10 us = ~10 ms per chunk burned waiting for an
-			 * event that never fires (~83 % of total time at
-			 * 256 KB).  Skip it.
-			 *
-			 * For CTR (and any future mode that reads CNTR back),
-			 * the wait + udelay(5) still matters: STATUS goes
-			 * "IDLE" one cycle before the engine's final write to
-			 * CNTR commits, so an immediate readl can return
-			 * stale state.  Short timeout (50 polls = 500 us) is
-			 * enough; the inter-chunk reset covers the long tail.
-			 */
-			if (!IS_ECB(flags) && !IS_CBC(flags) && enciv_words) {
+					enciv[k] = (__force __be32)
+						get_unaligned_be32(p + k * 4);
+			} else {
 				for (timeout = 50; timeout > 0; timeout--) {
 					status = readl_relaxed(qce->base +
 							       CE2_REG_STATUS);
@@ -2209,100 +1988,11 @@ retry_chunk:
 					udelay(10);
 				}
 				udelay(5);
+				for (k = 0; k < enciv_words; k++)
+					enciv[k] = (__force __be32)readl(
+						qce->base + CE2_REG_CNTR0_IV0 +
+						k * 4);
 			}
-
-			/* Drain any residual DOUT FIFO dwords.  If even one
-			 * dword leaks across the chunk boundary, the engine's
-			 * internal block pointer slips relative to the data
-			 * it sees on the next chunk, producing the random
-			 * mid-stream divergence we observe past ~64 chunks.
-			 *
-			 * DATA_OUT (0x010) is the direct PIO drain port --
-			 * distinct from DATA_SHADOW0 (0x8000) which bypasses
-			 * the FIFO pointer logic.  Cap the drain count at 8
-			 * since DOUT_SIZE_AVAIL is a 3-bit field (max 7).
-			 */
-			{
-				int drain;
-
-				for (drain = 0; drain < 8; drain++) {
-					u32 s = readl_relaxed(qce->base +
-							      CE2_REG_STATUS);
-					u32 avail = (s >> CE2_DOUT_SIZE_AVAIL_SHIFT)
-						    & 0x7;
-					if (avail == 0)
-						break;
-					readl_relaxed(qce->base +
-						      CE2_REG_DATA_OUT);
-				}
-				if (drain > 0)
-					dev_dbg(qce->dev,
-						"CE2 skc DOUT drained %d dword(s) post-chunk off=%u\n",
-						drain, sg_off);
-			}
-
-			/* Capture next-chunk IV.
-			 *
-			 * For CBC: the IV for chunk N+1 is mathematically the
-			 * last cipher block of chunk N -- we already have that
-			 * sitting in bounce.dst_copy from the byte-swap step
-			 * inside qce_ce2_dma_inout_cipher().  Use the buffer
-			 * directly instead of reading the engine's CNTR0..3
-			 * registers.  This eliminates a delicate timing
-			 * window: STATUS goes IDLE one cycle before the
-			 * engine's final write to CNTR fully commits to the
-			 * readable bank on this silicon, so an occasional
-			 * CNTR read returns stale state and corrupts block 0
-			 * of the next chunk.  Empirically observed:
-			 *   - 256 B chunk 4 block 0 failure (byte 192)
-			 *   - 8 KB chunk 26 block 0 failure (byte 1248)
-			 *   - 32 KB chunks 149 & 465 block 0 failures
-			 * All exactly at chunk boundary block 0 -- the
-			 * signature of stale CNTR readback.
-			 *
-			 * For CTR: the counter increments inside the engine
-			 * per AES block and the post-chunk value is NOT
-			 * derivable from ciphertext, so we still need the
-			 * CNTR readback (and tolerate the rare timing race
-			 * for CTR mode -- not used by the kernel CBC paths
-			 * we care about).
-			 *
-			 * dst_copy holds post-byte-swap output in big-endian
-			 * byte order, which is the same byte order CNTR
-			 * readback would produce (cast to __be32).  memcpy
-			 * preserves byte order; the next chunk's writel
-			 * loop above does the same cast we used originally.
-			 */
-			if (!IS_ECB(flags) && enciv_words) {
-				if (IS_CBC(flags)) {
-					/* dst_copy holds BE-byte ciphertext.
-					 * Chip's CNTR0..3 are u32 with the
-					 * cipher block's first byte at MSB
-					 * (BE-packed); the existing readback
-					 * stores chip's u32 verbatim into
-					 * enciv[] (raw u32 on LE memory).
-					 * Reproduce that layout: read each
-					 * 4-byte BE chunk of dst_copy as a
-					 * u32 and store it as the BE-packed
-					 * value chip would have produced.
-					 */
-					const u8 *p = bounce.dst_copy +
-						      chunk_len -
-						      enciv_words * 4;
-					for (k = 0; k < enciv_words; k++)
-						enciv[k] = (__force __be32)
-							get_unaligned_be32(
-								p + k * 4);
-				} else {
-					for (k = 0; k < enciv_words; k++)
-						enciv[k] = (__force __be32)readl(
-							qce->base +
-							CE2_REG_CNTR0_IV0 +
-							k * 4);
-				}
-			}
-
-			sg_off += chunk_len;
 		}
 
 		qce_ce2_free_bounce(qce, &bounce);
