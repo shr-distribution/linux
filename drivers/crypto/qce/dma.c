@@ -228,6 +228,20 @@ int qce_dma_prep_sgs(struct qce_dma_data *dma, struct scatterlist *rx_sg,
 	dma->user_cb = cb;
 	dma->user_cb_param = cb_param;
 
+	/*
+	 * Make the user_cb / user_cb_param / completion_done writes
+	 * above globally visible before we hand the descriptor to the
+	 * dmaengine. The dmaengine_terminate_sync() in qce_dma_terminate_all
+	 * already prevents stale callbacks from previous descriptors firing
+	 * here, but the rx/tx callbacks run on the dmaengine tasklet which
+	 * can be on a different CPU than the submitter — without an
+	 * explicit barrier weakly-ordered ARMv7/v8 can deliver the
+	 * callback with a stale user_cb_param. dmaengine_submit()'s
+	 * internal ordering provides the matching acquire on the engine
+	 * side, but only for state observed after submit.
+	 */
+	smp_wmb();
+
 	ret = qce_dma_prep_sg(rxchan, rx_sg, rx_nents, flags, DMA_MEM_TO_DEV,
 			      qce_dma_rx_callback, dma, &dma->rx_cookie);
 	if (ret)

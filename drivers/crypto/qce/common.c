@@ -11,6 +11,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
+#include <linux/iopoll.h>
 #include <linux/reset.h>
 #include <linux/sizes.h>
 #include <linux/types.h>
@@ -1160,12 +1161,18 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	 * Wait up to 100 ms (vs the previous 10 ms) to give the engine the
 	 * full state-machine settling time.
 	 */
-	for (timeout = 10000; timeout > 0; timeout--) {
-		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		if ((status & CE2_CRYPTO_STATE_MASK) == 0)
-			break;
-		udelay(10);
-	}
+	/*
+	 * Yield-friendly equivalent of the previous open-coded
+	 * 10000 × udelay(10) busy-spin (~100 ms hard CPU monopolise per
+	 * call). readl_poll_timeout uses usleep_range(sleep_us, 2*sleep_us)
+	 * between reads, which yields the CPU. The total wall-time bound
+	 * is the same (10 µs × 10 000 = 100 ms), but other tasks can now
+	 * run, preventing soft-lockup / RCU-stall warnings under
+	 * sustained AF_ALG load.
+	 */
+	readl_poll_timeout(qce->base + CE2_REG_STATUS, status,
+			   (status & CE2_CRYPTO_STATE_MASK) == 0,
+			   10, 100000);
 
 	/* Exact mirror of the working qce_test_pio_mode() diagnostic in
 	 * core.c. Uses writel_relaxed throughout (no memory barriers
@@ -1710,12 +1717,18 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	usleep_range(10, 20);
 
 	/* Wait for IDLE before configuring */
-	for (timeout = 10000; timeout > 0; timeout--) {
-		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		if ((status & CE2_CRYPTO_STATE_MASK) == 0)
-			break;
-		udelay(10);
-	}
+	/*
+	 * Yield-friendly equivalent of the previous open-coded
+	 * 10000 × udelay(10) busy-spin (~100 ms hard CPU monopolise per
+	 * call). readl_poll_timeout uses usleep_range(sleep_us, 2*sleep_us)
+	 * between reads, which yields the CPU. The total wall-time bound
+	 * is the same (10 µs × 10 000 = 100 ms), but other tasks can now
+	 * run, preventing soft-lockup / RCU-stall warnings under
+	 * sustained AF_ALG load.
+	 */
+	readl_poll_timeout(qce->base + CE2_REG_STATUS, status,
+			   (status & CE2_CRYPTO_STATE_MASK) == 0,
+			   10, 100000);
 
 	encr_cfg = qce_encr_cfg_ce2(flags, keylen);
 	if (encr_cfg == ~0U) {
@@ -1978,23 +1991,43 @@ retry_chunk:
 				 * teardown not runtime usage.
 				 */
 				if (qce->core) {
+					int cerr;
+
 					clk_disable(qce->core);
 					udelay(10);
-					clk_enable(qce->core);
+					cerr = clk_enable(qce->core);
 					udelay(10);
+					if (cerr) {
+						/*
+						 * On failure the engine is now
+						 * unclocked; subsequent register
+						 * writes either hang or produce
+						 * garbage output. Bail with an
+						 * explicit -EIO so the AF_ALG
+						 * caller sees a failure rather
+						 * than wrong ciphertext from
+						 * later reads.
+						 */
+						dev_err_ratelimited(qce->dev,
+							"CE2 cipher: clk_enable after wedge reset failed (%d)\n",
+							cerr);
+						qce_ce2_free_bounce(qce, &bounce);
+						return -EIO;
+					}
 				}
 				writel_relaxed(BIT(CE2_SW_RST_SHIFT),
 					       qce->base + CE2_REG_CONFIG);
 				usleep_range(10, 20);
 				writel_relaxed(0, qce->base + CE2_REG_CONFIG);
 				usleep_range(10, 20);
-				for (timeout = 10000; timeout > 0; timeout--) {
-					status = readl_relaxed(qce->base +
-							       CE2_REG_STATUS);
-					if ((status & CE2_CRYPTO_STATE_MASK) == 0)
-						break;
-					udelay(10);
-				}
+				/* Yield-friendly IDLE wait — see comment at the
+				 * first readl_poll_timeout in qce_ce2_pio_run_hash
+				 * for the per-chunk hot-path rationale.
+				 */
+				readl_poll_timeout(qce->base + CE2_REG_STATUS,
+						   status,
+						   (status & CE2_CRYPTO_STATE_MASK) == 0,
+						   10, 100000);
 
 				/* Re-write AUTH_SEG_CFG (cleared by SW_RST). */
 				writel(0, qce->base + CE2_REG_AUTH_SEG_CFG);
