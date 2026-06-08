@@ -1914,8 +1914,29 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 * comment warned), we'll cap there and fix the slow-path
 		 * byte order separately.
 		 */
+		/*
+		 * BYTE-ORDER HYPOTHESIS: DES NIST vector passes through
+		 * QCE correctly (cbc-des-qce / ecb-des-qce match software
+		 * DES via AF_ALG `ecb(des)`). AES with the same writel
+		 * pattern fails NIST. The two key registers may have
+		 * different byte-order conventions:
+		 *   - DES_KEY: engine reads as integer = K[0..3] BE-packed.
+		 *     writel(0x01234567, ...) on LE puts bytes [67,45,23,01]
+		 *     on bus; engine reads the 32-bit register value back
+		 *     as integer 0x01234567 = K[0..3] BE-packed. ✓
+		 *   - RNDKEY: hypothesis is engine reads byte-by-byte with
+		 *     byte 0 = K[0]. writel(0x2b7e1516, ...) gives bus
+		 *     bytes [16,15,7e,2b], so engine sees K[0]=0x16
+		 *     instead of K[0]=0x2b — explaining the deterministic
+		 *     non-NIST output (ae5e647c... vs spec 3ad77bb4...).
+		 *
+		 * Fix the hypothesis by byteswapping the register write:
+		 * writel(bswap32(0x2b7e1516)=0x16157e2b, RNDKEY0) puts
+		 * bytes [2b,7e,15,16] on bus, engine reads byte 0 = 0x2b
+		 * = K[0]. If output now matches NIST, hypothesis confirmed.
+		 */
 		for (k = 0; k < enckey_words; k++)
-			writel((__force u32)enckey[k],
+			writel(__builtin_bswap32((__force u32)enckey[k]),
 			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
 	}
 
