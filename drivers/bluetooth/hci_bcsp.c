@@ -3296,7 +3296,20 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 		return PTR_ERR(bdev->device_wakeup);
 	}
 
-	bdev->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	/*
+	 * Claim the reset GPIO DE-ASSERTED (GPIOD_OUT_LOW with ACTIVE_LOW
+	 * binding → drives the line HIGH = NOT in reset).  Previously we
+	 * used GPIOD_OUT_HIGH, which immediately *asserted* reset at probe
+	 * time.  Live diag 2026-06-08 caught it:
+	 *   "bcsp_serdev_set_power(ON): shutdown=1 device_wakeup=1 reset=1"
+	 * The legacy webOS bt_power() never toggles BT_RST_N (gpio138) and
+	 * the always-on regulator pair (pm8058_s3 + pm8901_l3) leaves the
+	 * chip's PSRAM operational across SoC reboots — so any reset assert
+	 * from our side actively breaks the model we depend on.  TX byte
+	 * stream was byte-perfect BCSP HCI_RESET at the right baud/parity
+	 * and chip stayed silent only because we were holding it in reset.
+	 */
+	bdev->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(bdev->reset_gpio)) {
 		dev_err(dev, "Failed to get reset GPIO: %ld\n",
 			PTR_ERR(bdev->reset_gpio));
