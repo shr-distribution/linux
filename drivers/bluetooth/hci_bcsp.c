@@ -118,6 +118,19 @@ MODULE_PARM_DESC(bt_sync_rsp_delay_us,
 		 "Microseconds to delay SYNC-RSP TX after RX SYNC (default 0 = immediate)");
 
 /*
+ * Pulse a BREAK on the host TX line for N microseconds before every link-
+ * establishment TX (both the SHY-timer SYNC and the response SYNC-RSP).
+ * CSR app-notes for BlueCore deep-sleep / power-gated UART RX recommend
+ * a BREAK as a wake gesture; this knob makes it testable without rebuild.
+ * 0 = no BREAK (default).  Typical values to try: 200 us, 1000 us, 5000 us.
+ * Burns wall-clock per frame so keep it short.
+ */
+static unsigned int bt_tx_break_us;
+module_param(bt_tx_break_us, uint, 0644);
+MODULE_PARM_DESC(bt_tx_break_us,
+		 "Pulse BREAK on TX line for N us before every link-est frame (default 0 = off)");
+
+/*
  * BCSP link-establishment "hammer". The CSR BlueCore's UART RX is gated
  * between its 250 ms SYNC bursts and the FIRST frame after the RX wakes is
  * lost/corrupted (CSR deep-sleep docs + the known-good CyanogenMod ubcsp stack,
@@ -151,9 +164,11 @@ MODULE_PARM_DESC(bt_linkest_burst, "BCSP link-est frames per fast (10ms) tick (0
 #if IS_ENABLED(CONFIG_SERIAL_MSM)
 extern void msm_serial_bt_wake_glitch(void);
 extern void msm_serial_bt_force_rfr(bool assert_low);
+extern void msm_serial_bt_send_break(unsigned int us);
 #else
 static inline void msm_serial_bt_wake_glitch(void) { }
 static inline void msm_serial_bt_force_rfr(bool assert_low) { }
+static inline void msm_serial_bt_send_break(unsigned int us) { }
 #endif
 
 #define BCSP_TXWINSIZE	4
@@ -1127,6 +1142,13 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		 */
 		if (bt_sync_rsp_delay_us)
 			usleep_range(bt_sync_rsp_delay_us, bt_sync_rsp_delay_us + 100);
+		/*
+		 * Optional BREAK wake gesture (CSR app-notes deep-sleep) before
+		 * the SYNC-RSP TX. Tune via /sys/module/hci_uart/parameters/
+		 * bt_tx_break_us. No-op when 0.
+		 */
+		if (bt_tx_break_us)
+			msm_serial_bt_send_break(bt_tx_break_us);
 		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
 		skb_queue_head(&bcsp->unrel, nskb);  /* Head for immediate response */
 		hci_uart_tx_wakeup(hu);
@@ -2498,6 +2520,11 @@ static void bcsp_timed_event(struct timer_list *t)
 		int n = bt_linkest_burst > 0 ? bt_linkest_burst : 1;
 
 		BT_DBG("BCSP: SHY timer — TX %d SYNC pkt(s)", n);
+		/* Optional BREAK wake gesture (CSR app-notes) — runs in timer
+		 * context which is softirq; msm_serial_bt_send_break uses
+		 * usleep_range which is only safe in process context.  Skip
+		 * here; we still pulse BREAK ahead of SYNC_RSP TX, which runs
+		 * in the serdev RX (process) context. */
 		while (n-- > 0)
 			bcsp_send_link_pkt(bcsp, sync_pkt, sizeof(sync_pkt));
 	}

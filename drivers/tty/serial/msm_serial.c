@@ -388,6 +388,7 @@ static void msm_serial_set_mnd_regs(struct uart_port *port)
 static void msm_handle_tx(struct uart_port *port);
 void msm_serial_bt_wake_glitch(void);	/* exported; called by hci_bcsp */
 void msm_serial_bt_force_rfr(bool assert_low);	/* exported; called by hci_bcsp */
+void msm_serial_bt_send_break(unsigned int us);	/* exported; called by hci_bcsp */
 static inline unsigned int msm_apply_bt_imr_override(struct msm_port *msm_port,
 						     unsigned int imr);
 static inline void msm_write_imr(struct uart_port *port, unsigned int imr);
@@ -1788,6 +1789,37 @@ void msm_serial_bt_force_rfr(bool assert_low)
 		 assert_low ? "LOW (asserted)" : "HIGH (deasserted)");
 }
 EXPORT_SYMBOL_GPL(msm_serial_bt_force_rfr);
+
+/*
+ * Drive a BREAK condition on the BT UART TX line for N microseconds, then
+ * release.  Used by the BCSP serdev driver as an experimental "wake-from-
+ * deep-sleep" gesture for CSR BlueCore chips per CSR app-notes: a BREAK
+ * pulse on the host TX line is one documented way to nudge the chip's
+ * RX UART out of a power-gated state without toggling BT_WAKE.  Process
+ * context only (sleeps).  No-op until the BT port has probed.
+ */
+void msm_serial_bt_send_break(unsigned int us)
+{
+	struct uart_port *port = READ_ONCE(msm_bt_wake_port);
+	unsigned long flags;
+
+	if (!port || !us)
+		return;
+
+	uart_port_lock_irqsave(port, &flags);
+	msm_write(port, MSM_UART_CR_CMD_START_BREAK, MSM_UART_CR);
+	uart_port_unlock_irqrestore(port, flags);
+
+	/* BREAK held outside the spinlock — usleep_range can sleep. */
+	usleep_range(us, us + 200);
+
+	uart_port_lock_irqsave(port, &flags);
+	msm_write(port, MSM_UART_CR_CMD_STOP_BREAK, MSM_UART_CR);
+	uart_port_unlock_irqrestore(port, flags);
+
+	dev_info(port->dev, "BT BREAK pulsed for %u us\n", us);
+}
+EXPORT_SYMBOL_GPL(msm_serial_bt_send_break);
 
 static void msm_bt_wake_work(struct work_struct *w)
 {
