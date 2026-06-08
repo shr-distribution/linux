@@ -338,6 +338,7 @@ static void msm_serial_set_mnd_regs(struct uart_port *port)
 
 static void msm_handle_tx(struct uart_port *port);
 void msm_serial_bt_wake_glitch(void);	/* exported; called by hci_bcsp */
+void msm_serial_bt_force_rfr(bool assert_low);	/* exported; called by hci_bcsp */
 static void msm_start_rx_dma(struct msm_port *msm_port);
 
 static void msm_stop_dma(struct uart_port *port, struct msm_dma *dma)
@@ -1623,6 +1624,48 @@ void msm_serial_bt_wake_glitch(void)
 		msm_bt_wake_glitch(port);
 }
 EXPORT_SYMBOL_GPL(msm_serial_bt_wake_glitch);
+
+/*
+ * Manually drive the BT UART RFR (host-side "ready for receiving") signal
+ * via CR commands, WITHOUT enabling auto-RFR hardware mode. This mirrors
+ * the legacy webOS msm_uart_dm.c __msm_uartdm_set_rx_flow() pattern (flow_ctl
+ * = 0, flow_state = 1): clear MR1 RX_RDY_CTL (bit 7), then issue SET_RFR
+ * to drive the line LOW or RESET_RFR to drive it HIGH.
+ *
+ * Why this exists: the BCSP serdev driver (hci_bcsp) previously called
+ * serdev_device_set_tiocm(TIOCM_RTS) to assert RFR low. That routes through
+ * msm_set_mctrl(), which sets MR1 RX_RDY_CTL = auto-RFR mode. Auto-RFR is
+ * documented hardware behavior (deassert RFR when RX FIFO crosses
+ * AUTO_RFR_LEVEL0) but it isn't what BCSP link-establishment wants — the
+ * CSR chip expects RFR held statically LOW for the duration of the
+ * handshake. Live rdmem capture from a working webOS boot confirms link-est
+ * MR1 has bit 7 clear and RFR is driven via the CR command path, not via
+ * auto-RFR. Our mainline live capture (`reports/bt-trace/
+ * mainline_link_est_capture_*.txt`) showed MR1 = 0xb4 (bit 7 set) where
+ * webOS would have 0x34 — this helper closes that gap.
+ */
+void msm_serial_bt_force_rfr(bool assert_low)
+{
+	struct uart_port *port = READ_ONCE(msm_bt_wake_port);
+	unsigned long flags;
+	unsigned int mr1;
+
+	if (!port)
+		return;
+
+	uart_port_lock_irqsave(port, &flags);
+	mr1 = msm_read(port, MSM_UART_MR1);
+	mr1 &= ~MSM_UART_MR1_RX_RDY_CTL;
+	msm_write(port, mr1, MSM_UART_MR1);
+	msm_write(port,
+		  assert_low ? MSM_UART_CR_CMD_SET_RFR : MSM_UART_CR_CMD_RESET_RFR,
+		  MSM_UART_CR);
+	uart_port_unlock_irqrestore(port, flags);
+
+	dev_info(port->dev, "BT RFR forced %s (manual, no auto-RFR)\n",
+		 assert_low ? "LOW (asserted)" : "HIGH (deasserted)");
+}
+EXPORT_SYMBOL_GPL(msm_serial_bt_force_rfr);
 
 static void msm_bt_wake_work(struct work_struct *w)
 {

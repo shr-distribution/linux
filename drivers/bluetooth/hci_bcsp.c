@@ -124,8 +124,10 @@ MODULE_PARM_DESC(bt_linkest_burst, "BCSP link-est frames per fast (10ms) tick (0
  */
 #if IS_ENABLED(CONFIG_SERIAL_MSM)
 extern void msm_serial_bt_wake_glitch(void);
+extern void msm_serial_bt_force_rfr(bool assert_low);
 #else
 static inline void msm_serial_bt_wake_glitch(void) { }
+static inline void msm_serial_bt_force_rfr(bool assert_low) { }
 #endif
 
 #define BCSP_TXWINSIZE	4
@@ -973,16 +975,19 @@ static void bcsp_wake_chip_rx(struct hci_uart *hu)
 		return;
 
 	/*
-	 * Faithful webOS dance, synchronously before TX: deassert RTS, glitch
-	 * the chip-facing UART pins (TX/RFR) GPIO-high->UART via msm_serial,
-	 * then re-assert RTS. The pin-mux glitch is the element that actually
-	 * wakes the CSR BlueCore's power-gated UART RX; the RTS toggle alone is
-	 * not enough. No-op on non-msm_serial platforms.
+	 * Faithful webOS dance, synchronously before TX: deassert RFR HIGH,
+	 * glitch the chip-facing UART pins (TX/RFR) GPIO-high->UART via
+	 * msm_serial, then re-assert RFR LOW. The pin-mux glitch is the
+	 * element that actually wakes the CSR BlueCore's power-gated UART
+	 * RX; the RFR toggle alone is not enough. Use the direct CR-command
+	 * helper rather than serdev_device_set_tiocm() so we don't flip MR1
+	 * RX_RDY_CTL (auto-RFR mode) on each pulse — webOS keeps that bit
+	 * clear throughout. No-op on non-msm_serial platforms.
 	 */
-	serdev_device_set_tiocm(hu->serdev, 0, TIOCM_RTS);	/* deassert (put) */
+	msm_serial_bt_force_rfr(false);				/* RFR HIGH (deasserted) */
 	usleep_range(150, 300);
 	msm_serial_bt_wake_glitch();				/* TX/RFR mux off->on */
-	serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);	/* re-assert (get) */
+	msm_serial_bt_force_rfr(true);				/* RFR LOW (re-asserted) */
 	usleep_range(150, 300);
 }
 
@@ -2815,26 +2820,25 @@ static int bcsp_open(struct hci_uart *hu)
 		BT_INFO("BCSP: Hardware flow control disabled (webOS FLOW_CTRL_NONE)");
 
 		/*
-		 * Assert RTS (RFR, gpio56) during BCSP link establishment.
+		 * Assert RTS (RFR, gpio56) LOW for BCSP link establishment via
+		 * the manual CR-command path, matching legacy webOS exactly.
 		 *
-		 * The webOS cold-handshake capture
-		 * (reports/bt-trace/webos-cold-handshake-2026-05-22.log) shows
-		 * the legacy hsuart driving RFR ASSERTED (low; FUNC_1/OUT_LOW
-		 * via btuart_deassert_rts "get") immediately before TX SYNC.
-		 * RFR is the CSR chip's CTS input. With RFR DEASSERTED (high —
-		 * msm_serial's state when flow control is off) the chip treats
-		 * the host as "not ready to receive" and never transmits its
-		 * CONF/SYNC-RSP — it just streams SYNC forever and link
-		 * establishment never completes. That is exactly our symptom,
-		 * even though our SYNC bytes are byte-identical to webOS's.
+		 * Legacy `__msm_uartdm_set_rx_flow(port, flow_ctl=0,
+		 * flow_state=1)` (webos-linux-kernel msm_uart_dm.c:786) clears
+		 * MR1 RX_RDY_CTL and writes UART_DM_CR_CMD_SET_RFR to drive RFR
+		 * LOW statically — no auto-RFR mode involved.
 		 *
-		 * set_tiocm(TIOCM_RTS) -> msm_set_mctrl sets MR1 RX_RDY_CTL
-		 * (auto-RFR), asserting RFR low while the RX FIFO has room
-		 * (always true during light link-establishment traffic).
-		 * CTS_CTL stays clear so our TX is NOT gated by the chip's CTS.
+		 * Earlier this driver did `serdev_device_set_tiocm(TIOCM_RTS)`,
+		 * which routes through msm_set_mctrl() and sets MR1 RX_RDY_CTL
+		 * = auto-RFR mode. Live rdmem capture from working webOS shows
+		 * MR1 bit 7 CLEAR during link-est (RFR driven by command, not
+		 * by FIFO watermark), and our mainline capture
+		 * (reports/bt-trace/mainline_link_est_capture_*.txt) showed
+		 * MR1 = 0xb4 vs the expected 0x34 — the auto-RFR side-effect
+		 * is the gap. Switch to the direct helper.
 		 */
-		serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);
-		BT_INFO("BCSP: Asserted RTS (RFR) for link establishment (webOS-style)");
+		msm_serial_bt_force_rfr(true);
+		BT_INFO("BCSP: Asserted RTS (RFR) LOW via CR_CMD_SET_RFR for link establishment (webOS-style, manual)");
 	}
 
 	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
@@ -2890,8 +2894,12 @@ static int bcsp_open(struct hci_uart *hu)
 		 */
 		if (hu->serdev) {
 			serdev_device_set_baudrate(hu->serdev, 115200);
-			serdev_device_set_tiocm(hu->serdev, TIOCM_RTS, 0);
-			BT_INFO("BCSP: UART reset + RTS re-assert before SYNC (webOS reinit)");
+			/* Re-assert RFR LOW via CR-command path after the baud
+			 * change (msm_set_baud_rate -> msm_reset clears MR1
+			 * RX_RDY_CTL and de-asserts RFR). Match webOS reinit
+			 * order: reset, then SET_RFR. */
+			msm_serial_bt_force_rfr(true);
+			BT_INFO("BCSP: UART reset + RFR re-assert via CR_CMD_SET_RFR (webOS reinit)");
 		}
 
 		if (skb) {
