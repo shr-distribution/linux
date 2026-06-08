@@ -2996,7 +2996,25 @@ static int bcsp_open(struct hci_uart *hu)
 			serdev_device_set_baudrate(hu->serdev, op_baud);
 			parity_ret = serdev_device_set_parity(hu->serdev,
 							      SERDEV_PARITY_EVEN);
-			BT_INFO("BCSP: skip-sync — UART set to %u 8-E-1 (parity_ret=%d)",
+
+			/*
+			 * Operational state needs HW flow control ON to match
+			 * webOS captured UART state: MR1=0xf4 (auto-RFR + auto-CTS).
+			 * At 3.6864 Mbps the chip's RX buffer fills fast; without
+			 * auto-CTS our TX would keep streaming bytes past chip's
+			 * "not ready" assertion and overflow its RX, after which the
+			 * chip enters silent error recovery.  The earlier
+			 * "FLOW_CTRL_NONE" comment matched webOS link-est (115200)
+			 * where flow control is irrelevant and PSKEY-loaded MR1
+			 * later flipped these bits; in skip-sync we go straight to
+			 * the operational config so we must do it ourselves.
+			 *
+			 * (For the SHY-handshake path below we keep flow control
+			 * disabled — that matched webOS 115200 link-est.)
+			 */
+			serdev_device_set_flow_control(hu->serdev, true);
+
+			BT_INFO("BCSP: skip-sync — UART set to %u 8-E-1 +RTS/CTS (parity_ret=%d)",
 				op_baud, parity_ret);
 		}
 
