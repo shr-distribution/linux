@@ -1975,11 +1975,27 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
 
 	/*
-	 * Samsung MSM8x60 vendor reference does NOT touch CONFIG per op:
-	 * SW_RST + MASK_INTR are set ONCE in _init_ce_engine and the per-op
-	 * path leaves CONFIG alone. Probe-time CE2 init already programmed
-	 * MASK_INTR, so we leave CONFIG alone here.
+	 * EXPERIMENT: enable HIGH_SPD_IN/OUT bits in CONFIG before
+	 * GOPROC. With the PT byteswap fix, AES math is correct up to
+	 * 4 blocks per GOPROC then deterministically wrong from block 4
+	 * onward. The previous (scratch-written) driver explicitly
+	 * cleared HIGH_SPD_*_EN_N bits (= ENABLE high-speed) every op
+	 * before GOPROC. We dropped that when aligning with Samsung's
+	 * "no CONFIG write per op" pattern. Re-add only the HIGH_SPD
+	 * enable to see if it lifts the 4-block engine limit.
+	 *
+	 * If 16-block ops match NIST after this, we can drop the chunk
+	 * loop entirely. If not, fall back to chunking at 48 bytes
+	 * (3 blocks) per GOPROC.
 	 */
+	{
+		u32 cfg = readl(qce->base + CE2_REG_CONFIG);
+
+		cfg &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
+			 BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
+			 BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
+		writel(cfg, qce->base + CE2_REG_CONFIG);
+	}
 
 	/*
 	 * CE2 cipher path: ONE GOPROC for the entire op (matches the
