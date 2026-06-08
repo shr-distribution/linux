@@ -32,6 +32,33 @@
 #include "sha.h"
 #include "aead.h"
 
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/printk.h>
+
+/*
+ * Per-op AES debug instrumentation. Default off; toggle at runtime via
+ *   echo 1 > /sys/module/qcrypto/parameters/aes_debug
+ * Used to capture the full byte journey through key/IV/PT writes,
+ * register readbacks, and output byteswaps so we can isolate where
+ * the AES path diverges from NIST-expected bytes.
+ */
+static bool qce_aes_debug;
+module_param_named(aes_debug, qce_aes_debug, bool, 0644);
+MODULE_PARM_DESC(aes_debug,
+		 "Enable per-op AES register/buffer dumps (debug only)");
+
+#define QCE_DBG_BUF(qce, label, buf, len) do {				\
+	if (qce_aes_debug)						\
+		print_hex_dump(KERN_INFO, "qce-dbg " label ": ",	\
+			       DUMP_PREFIX_OFFSET, 16, 1, (buf), (len), false); \
+} while (0)
+
+#define QCE_DBG(qce, fmt, ...) do {					\
+	if (qce_aes_debug)						\
+		dev_info((qce)->dev, "qce-dbg: " fmt, ##__VA_ARGS__);	\
+} while (0)
+
 /*
  * CE2 register offset translation
  * CE2 has different register layout than v5
@@ -1517,6 +1544,9 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	memset(dst_copy, 0, padded);
 	sg_pcopy_to_buffer(src, sg_nents(src), src_copy, nbytes, sg_offset);
 
+	QCE_DBG_BUF(qce, "src_copy raw PT (first 32 B)",
+		    src_copy, min_t(unsigned, 32U, padded));
+
 	/*
 	 * Stage input dwords in BE memory order so the CE2 engine reads
 	 * each beat MSB-first; see qce_ce2_dma_chain_input_digest() for
@@ -1530,6 +1560,9 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 			((u32)src_copy[i * 4 + 3] <<  0);
 		in_buf[i] = (__force __le32)cpu_to_be32(w);
 	}
+
+	QCE_DBG_BUF(qce, "in_buf after BE-pack (first 32 B, to engine via DMA)",
+		    (u8 *)in_buf, min_t(unsigned, 32U, padded));
 
 	/* slave_config for both channels is done ONCE by
 	 * qce_ce2_dma_setup_cipher_chans() before the chunk loop -- no
@@ -1600,6 +1633,15 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		goto out_terminate;
 	}
 
+	QCE_DBG(qce,
+		"post-DMA: STATUS=0x%08x SEG_CFG=0x%08x ENCR_SEG_CFG=0x%08x SEG_SIZE=0x%08x\n",
+		readl(qce->base + CE2_REG_STATUS),
+		readl(qce->base + CE2_REG_SEG_CFG),
+		readl(qce->base + CE2_REG_ENCR_SEG_CFG),
+		readl(qce->base + CE2_REG_SEG_SIZE));
+	QCE_DBG_BUF(qce, "out_buf raw engine output (first 32 B)",
+		    (u8 *)out_buf, min_t(unsigned, 32U, padded));
+
 	/* Byte-swap output dwords from raw LE u32 -> BE bytes */
 	for (i = 0; i < dwords; i++) {
 		u32 w = le32_to_cpu(out_buf[i]);
@@ -1609,6 +1651,10 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		dst_copy[i * 4 + 2] = (w >>  8) & 0xff;
 		dst_copy[i * 4 + 3] = (w >>  0) & 0xff;
 	}
+
+	QCE_DBG_BUF(qce, "dst_copy after BE-unpack (first 32 B, to user)",
+		    dst_copy, min_t(unsigned, 32U, padded));
+
 	sg_pcopy_from_buffer(dst, sg_nents(dst), dst_copy, nbytes, sg_offset);
 
 	ret = 0;
@@ -1833,7 +1879,14 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * stored byte-reversed in memory, so the LE-read inside reconstitutes
 	 * the original BE-packed word -- matching Samsung's seed.
 	 */
+	QCE_DBG(qce, "skc op flags=0x%lx keylen=%u cryptlen=%u ivsize=%u\n",
+		flags, keylen, rctx->cryptlen, rctx->ivsize);
+	QCE_DBG_BUF(qce, "raw user key (ctx->enc_key)", ctx->enc_key, keylen);
+
 	qce_cpu_to_be32p_array(enckey, ctx->enc_key, keylen);
+	QCE_DBG_BUF(qce, "enckey[] after qce_cpu_to_be32p_array",
+		    (u8 *)enckey, keylen);
+
 	if (IS_DES(flags) || IS_3DES(flags)) {
 		for (k = 0; k < enckey_words; k++)
 			writel((__force u32)enckey[k],
@@ -1849,6 +1902,8 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				aerr);
 			return aerr;
 		}
+		QCE_DBG_BUF(qce, "aes_ctx.key_enc[] (first 64 B = rounds 0-3)",
+			    (u8 *)aes_ctx.key_enc, 64);
 		/* Write all 60 expanded dwords.  For AES-128 only the first
 		 * 44 are populated by FIPS-197; aes_ctx was zero-initialised
 		 * so the remaining 16 stay 0.  Mirrors Samsung's _ce_setup
@@ -1857,16 +1912,38 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		for (k = 0; k < CE2_AES_RNDKEYS; k++)
 			writel(aes_ctx.key_enc[k],
 			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
+
+		if (qce_aes_debug) {
+			u32 rb[4];
+
+			for (k = 0; k < 4; k++)
+				rb[k] = readl(qce->base +
+					      CE2_REG_AES_RNDKEY0 + k * 4);
+			QCE_DBG_BUF(qce, "RNDKEY0..3 readback",
+				    (u8 *)rb, sizeof(rb));
+		}
 		memzero_explicit(&aes_ctx, sizeof(aes_ctx));
 	}
 
 	/* IV: CNTR0..3.  Skip for ECB (no IV) */
 	if (!IS_ECB(flags) && rctx->iv && rctx->ivsize) {
+		QCE_DBG_BUF(qce, "raw user IV", rctx->iv, rctx->ivsize);
 		qce_cpu_to_be32p_array(enciv, rctx->iv, rctx->ivsize);
+		QCE_DBG_BUF(qce, "enciv[] after qce_cpu_to_be32p_array",
+			    (u8 *)enciv, rctx->ivsize);
 		enciv_words = rctx->ivsize / sizeof(u32);
 		for (k = 0; k < enciv_words; k++)
 			writel((__force u32)enciv[k],
 			       qce->base + CE2_REG_CNTR0_IV0 + k * 4);
+		if (qce_aes_debug) {
+			u32 rb[4];
+
+			for (k = 0; k < enciv_words; k++)
+				rb[k] = readl(qce->base +
+					      CE2_REG_CNTR0_IV0 + k * 4);
+			QCE_DBG_BUF(qce, "CNTR0..N readback",
+				    (u8 *)rb, enciv_words * 4);
+		}
 	}
 
 	if (IS_CTR(flags))
@@ -1958,6 +2035,13 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		writel(config, qce->base + CE2_REG_CONFIG);
 
 		dev_dbg(qce->dev, "CE2 skc op len=%u\n", total);
+		QCE_DBG(qce,
+			"pre-GOPROC: SEG_CFG=0x%08x ENCR_SEG_CFG=0x%08x SEG_SIZE=0x%08x CONFIG=0x%08x STATUS=0x%08x\n",
+			readl(qce->base + CE2_REG_SEG_CFG),
+			readl(qce->base + CE2_REG_ENCR_SEG_CFG),
+			readl(qce->base + CE2_REG_SEG_SIZE),
+			readl(qce->base + CE2_REG_CONFIG),
+			readl(qce->base + CE2_REG_STATUS));
 
 		/*
 		 * GOPROC fires inside qce_ce2_dma_inout_cipher via the
