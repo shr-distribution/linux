@@ -92,6 +92,32 @@ module_param(bt_rx_wake, bool, 0644);
 MODULE_PARM_DESC(bt_rx_wake, "Pulse RTS before link-est TX to wake the BT chip RX (default Y)");
 
 /*
+ * Runtime knob for the chip_sync_seen latch.  When true, suppress SYNC TX
+ * after the first chip RX SYNC (the 2026-05-26 "chip_sync_seen" behavior
+ * — based on a misread of webOS abcsp_lm_fsm bit-4-of-0x10d5, which deep
+ * dive 2026-06-08 falsified — see project_bcsp_chip_sync_seen_validated_
+ * tx_wall_persists.md).  Default false = webOS-faithful: SHY timer always
+ * emits SYNC every tick during the UNINIT state.
+ */
+static bool bt_skip_sync_after_rx_seen;
+module_param(bt_skip_sync_after_rx_seen, bool, 0644);
+MODULE_PARM_DESC(bt_skip_sync_after_rx_seen,
+		 "Stop sending SYNC once chip's SYNC has been seen once (default N = webOS-faithful continuous SYNC)");
+
+/*
+ * Delay between RX SYNC and TX SYNC-RSP.  webOS's userspace BCSP path
+ * (PmBtStack -> hsuart ioctl -> kernel UART driver) has ~10 ms of
+ * kernel+userspace round-trip latency before the SYNC-RSP byte hits the
+ * wire; our kernel-only serdev path responds in ~3 ms.  If the CSR chip
+ * has an RX-window-open minimum after its own TX, we may be answering too
+ * fast.  Tune via /sys/module/hci_uart/parameters/bt_sync_rsp_delay_us.
+ */
+static unsigned int bt_sync_rsp_delay_us;
+module_param(bt_sync_rsp_delay_us, uint, 0644);
+MODULE_PARM_DESC(bt_sync_rsp_delay_us,
+		 "Microseconds to delay SYNC-RSP TX after RX SYNC (default 0 = immediate)");
+
+/*
  * BCSP link-establishment "hammer". The CSR BlueCore's UART RX is gated
  * between its 250 ms SYNC bursts and the FIRST frame after the RX wakes is
  * lost/corrupted (CSR deep-sleep docs + the known-good CyanogenMod ubcsp stack,
@@ -1094,6 +1120,13 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
 
 		BT_DBG("BCSP: sending sync_rsp");
+		/*
+		 * Optional response delay before TX'ing SYNC-RSP. Tune via
+		 * /sys/module/hci_uart/parameters/bt_sync_rsp_delay_us.
+		 * Runs in process (serdev RX) context, so usleep_range is fine.
+		 */
+		if (bt_sync_rsp_delay_us)
+			usleep_range(bt_sync_rsp_delay_us, bt_sync_rsp_delay_us + 100);
 		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
 		skb_queue_head(&bcsp->unrel, nskb);  /* Head for immediate response */
 		hci_uart_tx_wakeup(hu);
@@ -2461,7 +2494,7 @@ static void bcsp_timed_event(struct timer_list *t)
 	 * state; never inject sync/conf frames or the chip will reject them.
 	 */
 	if (!bcsp->skip_sync && bcsp->link_state == BCSP_LINK_UNINIT &&
-	    !bcsp->chip_sync_seen) {
+	    (!bt_skip_sync_after_rx_seen || !bcsp->chip_sync_seen)) {
 		int n = bt_linkest_burst > 0 ? bt_linkest_burst : 1;
 
 		BT_DBG("BCSP: SHY timer — TX %d SYNC pkt(s)", n);

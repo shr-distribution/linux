@@ -95,6 +95,40 @@ static unsigned int bt_tx_bytegap_us;
 module_param(bt_tx_bytegap_us, uint, 0644);
 MODULE_PARM_DESC(bt_tx_bytegap_us,
 	"BT UART: force N us idle gap between TX bytes on the wire (diag; 0=off)");
+
+/*
+ * BT UART IPR / IMR overrides. Live rdmem capture (2026-06-08) found two
+ * persistent register-level deltas between mainline link-est and webOS
+ * operational state:
+ *
+ *   IPR: mainline 0x06, webOS 0x200 (rxstale-timeout ~20x shorter on us)
+ *   IMR: mainline 0x1aa7, webOS 0x203 (mainline enables bits 1/2/7/11/12
+ *        not present in mainline's IMR bit map — possible QC-specific bits)
+ *
+ * These knobs let us A/B-test the deltas at runtime without rebuilding:
+ *
+ *   echo 0x200 > /sys/module/msm_serial/parameters/bt_ipr_override
+ *   echo 0x203 > /sys/module/msm_serial/parameters/bt_imr_override
+ *
+ * Zero = don't override (use the driver-computed value).  Override applies
+ * only to the BT UART port (port->mapbase == MSM_BT_UART_MAPBASE).  IPR is
+ * re-applied when the param is written; IMR override takes effect on the
+ * next IRQ-handler IMR restore (which happens many times a second under
+ * any traffic, so updates are near-immediate).
+ */
+static unsigned int bt_ipr_override;
+static unsigned int bt_imr_override;
+static int bt_ipr_override_set(const char *val, const struct kernel_param *kp);
+static const struct kernel_param_ops bt_ipr_override_ops = {
+	.set = bt_ipr_override_set,
+	.get = param_get_uint,
+};
+module_param_cb(bt_ipr_override, &bt_ipr_override_ops, &bt_ipr_override, 0644);
+MODULE_PARM_DESC(bt_ipr_override,
+	"BT UART: override IPR (rxstale timeout) — 0=use computed (default)");
+module_param(bt_imr_override, uint, 0644);
+MODULE_PARM_DESC(bt_imr_override,
+	"BT UART: override IMR (interrupt mask) — 0=use computed (default)");
 #include <linux/wait.h>
 
 #define MSM_UART_MR1			0x0000
@@ -1165,7 +1199,8 @@ static irqreturn_t msm_uart_irq(int irq, void *dev_id)
 	if (misr & MSM_UART_IMR_DELTA_CTS)
 		msm_handle_delta_cts(port);
 
-	msm_write(port, msm_port->imr, MSM_UART_IMR); /* restore interrupt */
+	msm_write(port, msm_apply_bt_imr_override(msm_port, msm_port->imr),
+		  MSM_UART_IMR); /* restore interrupt */
 	uart_unlock_and_check_sysrq(port);
 
 	return IRQ_HANDLED;
@@ -1348,7 +1383,14 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 
 	watermark |= mask & (rxstale << 2);
 
-	msm_write(port, watermark, MSM_UART_IPR);
+	/* Apply IPR override (BT port only) if /sys param is set. */
+	if (msm_port->bt_is_bt_uart && bt_ipr_override) {
+		msm_write(port, bt_ipr_override, MSM_UART_IPR);
+		dev_info(port->dev, "BT IPR overridden to 0x%x (post-baud)\n",
+			 bt_ipr_override);
+	} else {
+		msm_write(port, watermark, MSM_UART_IPR);
+	}
 
 	/* set RX watermark */
 	watermark = (port->fifosize * 3) / 4;
@@ -1424,6 +1466,46 @@ MODULE_PARM_DESC(bt_wake_period_ms,
  */
 static struct uart_port *msm_bt_wake_port;
 static DEFINE_MUTEX(msm_bt_wake_lock);
+
+/*
+ * If bt_imr_override is set and this port is the BT UART, return the
+ * override value to write into IMR instead of the driver-computed one.
+ * Used by the IRQ handler's IMR restore (msm_uart_irq) and by every other
+ * site that writes msm_port->imr -> MSM_UART_IMR.
+ */
+static inline unsigned int msm_apply_bt_imr_override(struct msm_port *msm_port,
+						     unsigned int imr)
+{
+	if (msm_port->bt_is_bt_uart && bt_imr_override)
+		return bt_imr_override;
+	return imr;
+}
+
+/*
+ * Writable-param setter for bt_ipr_override.  When the user echoes a value
+ * to /sys/module/msm_serial/parameters/bt_ipr_override, apply it to the BT
+ * port's IPR register immediately (don't wait for the next baud-rate set).
+ */
+static int bt_ipr_override_set(const char *val, const struct kernel_param *kp)
+{
+	struct uart_port *port;
+	unsigned long flags;
+	int ret;
+
+	ret = param_set_uint(val, kp);
+	if (ret)
+		return ret;
+
+	port = READ_ONCE(msm_bt_wake_port);
+	if (port && bt_ipr_override) {
+		uart_port_lock_irqsave(port, &flags);
+		msm_write(port, bt_ipr_override, MSM_UART_IPR);
+		uart_port_unlock_irqrestore(port, flags);
+		dev_info(port->dev, "BT IPR overridden to 0x%x\n",
+			 bt_ipr_override);
+	}
+	return 0;
+}
 
 /* ---- TouchPad BT TX diagnostics (no scope required) ---------------------- */
 
