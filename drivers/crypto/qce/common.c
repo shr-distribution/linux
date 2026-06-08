@@ -935,12 +935,23 @@ static int qce_ce2_dma_chain_input_digest(struct qce_device *qce,
 	 * Cap nbytes well below UINT_MAX so the round_up(nbytes, 16)
 	 * below cannot overflow to 0 and let kzalloc(in_total) and
 	 * sg_copy_to_buffer(.., nbytes) below turn a 16-byte heap
-	 * allocation into a multi-gigabyte memcpy. 1 MiB is far above
-	 * the largest single hash chunk userspace will hand us through
-	 * the AHASH update path; anything larger is rejected as bogus.
+	 * allocation into a multi-gigabyte memcpy.
+	 *
+	 * Return -EMSGSIZE (not -EINVAL) so callers can detect the soft
+	 * limit and chunk at the AHASH update layer instead of treating
+	 * it as a logic error. Each update accumulates into the same
+	 * partial digest, so chunking is transparent — what changes is
+	 * the number of round-trips through this function. dm-integrity,
+	 * fscrypt and IPsec large-payload callers that pass multi-MB
+	 * buffers in a single update need to either chunk or take the
+	 * software fallback.
+	 *
+	 * Transparent internal chunking is a separate follow-up; it
+	 * would manage first/last flags and AUTH_IV0..N carry-over
+	 * across per-chunk GOPROC.
 	 */
 	if (nbytes > SZ_1M)
-		return -EINVAL;
+		return -EMSGSIZE;
 
 	/* Input buffer: round up to 16-byte FIFO chunk, byte-swap to BE */
 	in_total = round_up(nbytes, 16);
@@ -2305,6 +2316,29 @@ int qce_check_status(struct qce_device *qce, u32 *status)
 		 * the existing pattern in the cipher chunk loop. In the
 		 * common case AUTH_DONE is already asserted on the first
 		 * read and the loop exits with zero added latency.
+		 *
+		 * IMPORTANT for future refactors: the AUTH_DONE bit name is
+		 * literal — only hash and AEAD operations on CE2 ever set
+		 * it. A pure skcipher op never sets AUTH_DONE and would
+		 * loop here for the full 500 µs and then return -ENXIO.
+		 *
+		 * Today the CE2 skcipher path bypasses qce_check_status()
+		 * entirely (qce_skcipher_async_req_handle dispatches direct
+		 * to qce_ce2_pio_run_skcipher, which does its own checks
+		 * against CE2_DOUT_RDY / CE2_CRYPTO_STATE_MASK rather than
+		 * AUTH_DONE), and qce_ahash_async_req_handle does the same
+		 * bypass to qce_ce2_pio_run_hash. AEAD is no longer
+		 * registered on CE2 either (see qce_aead_register), so this
+		 * branch currently goes unreached on CE2 in practice — but
+		 * it must stay correct for any future caller that does
+		 * route through here.
+		 *
+		 * If a future cleanup removes the bypasses and routes CE2
+		 * cipher / hash completion back through here, split this
+		 * branch — e.g. a qce_check_status_skcipher() that waits
+		 * for CE2_DOUT_RDY instead of AUTH_DONE. Do not just remove
+		 * the bypass without adjusting this function or every
+		 * cipher op will silently fail with -ENXIO.
 		 */
 		for (timeout = 50; timeout > 0; timeout--) {
 			*status = qce_read(qce, qce_reg_status(qce));

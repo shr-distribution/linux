@@ -537,6 +537,31 @@ static int qce_skcipher_register(struct qce_device *qce)
 	int ret, i;
 
 	for (i = 0; i < ARRAY_SIZE(skcipher_def); i++) {
+		/*
+		 * CE2 (MSM8x60) cannot safely register ctr(aes): the
+		 * per-chunk CTR mode in qce_ce2_pio_run_skcipher reads back
+		 * the post-cipher counter from CE2_REG_CNTR0_IV0..3 between
+		 * chunks, but on this silicon CE2_REG_STATUS transitions to
+		 * IDLE one cycle before the engine's final write to CNTR
+		 * commits. CBC works around this by deriving the next IV
+		 * from the byte-swapped dst_copy buffer (deterministic from
+		 * ciphertext, no race), but CTR has no equivalent: the
+		 * post-chunk counter is NOT derivable from ciphertext and
+		 * we must read CNTR0..3. Sporadically-wrong block 0 on the
+		 * next chunk means keystream reuse, which downstream
+		 * integrity mechanisms cannot recover from.
+		 *
+		 * Refuse registration on CE2 rather than knowingly
+		 * advertise an algorithm that can return wrong ciphertext.
+		 * Userspace falls back to ctr(aes-arm) (NEON, comparable
+		 * throughput on Scorpion).
+		 */
+		if (qce_is_ce2(qce) && IS_CTR(skcipher_def[i].flags)) {
+			dev_info(qce->dev,
+				 "CE2: skip ctr(aes) — CNTR readback race, see qce_skcipher_register()\n");
+			continue;
+		}
+
 		ret = qce_skcipher_register_one(&skcipher_def[i], qce);
 		if (ret)
 			goto err;

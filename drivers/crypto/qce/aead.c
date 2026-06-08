@@ -821,6 +821,28 @@ static int qce_aead_register(struct qce_device *qce)
 {
 	int ret, i;
 
+	/*
+	 * AEAD is not implemented on CE2 (MSM8x60). qce_setup_regs_aead()
+	 * returns -EINVAL unconditionally for qce_is_ce2(qce), and aead.c
+	 * has no qce_ce2_pio_run_aead() bypass. Without this guard,
+	 * devm_qce_register_algs() advertises every aead_def[] entry as
+	 * available — and every request walks through sg_alloc_table +
+	 * dma_map_sg + qce_dma_prep_sgs + qce_dma_issue_pending before
+	 * qce_start() bottoms out with -EINVAL, with a noisy
+	 * "aead operation error" dev_err for each one (status word
+	 * 0x10200004 was the periodic ~95 s symptom on tenderloin).
+	 *
+	 * Refuse the entire aead_ops registration on CE2 so userspace
+	 * picks the AF_ALG software fallback at selection time instead
+	 * of hitting a per-op DMA-mapping-then-fail. Hash and skcipher
+	 * remain registered with the CE2 PIO paths.
+	 */
+	if (qce_is_ce2(qce)) {
+		dev_info(qce->dev,
+			 "CE2: AEAD not implemented — skipping aead_ops registration\n");
+		return 0;
+	}
+
 	for (i = 0; i < ARRAY_SIZE(aead_def); i++) {
 		ret = qce_aead_register_one(&aead_def[i], qce);
 		if (ret)
