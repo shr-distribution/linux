@@ -1777,17 +1777,21 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	}
 
 	/*
-	 * Drop the per-op SW_RST pulse + writel(0, CONFIG) that the
-	 * scratch-written CE2 path was doing — the Samsung MSM8x60 vendor
-	 * driver (drivers/crypto/msm/qce.c _ce_setup) does NOT touch
-	 * CONFIG per op. SW_RST + MASK_INTR is set ONCE in _init_ce_engine
-	 * and the per-op path only programs SEG_CFG / ENCR_SEG_CFG /
-	 * SEG_SIZE / GOPROC. Writing CONFIG (specifically writing 0 then
-	 * later MASK_INTR) per op appears to clobber the engine's key
-	 * register state — confirmed by NIST AES-128-ECB(2b7e..., 6bc1...)
-	 * producing deterministic non-AES output and RNDKEY0..3 readback
-	 * returning all zeros after our writes.
+	 * Per-op SW_RST pulse via CONFIG. Samsung's vendor driver only
+	 * resets in error-recovery paths; we re-added it unconditionally
+	 * because once our CRCI flow control wedges (e.g. on cryptlen
+	 * past the engine's reliable range), the error bits (DIN_ERR,
+	 * DOUT_ERR, SW_ERR) persist across ops and silently corrupt
+	 * subsequent successful-looking transfers. SW_RST clears those.
+	 * Cost is small (~30 us per op). The previous wrong-output bug
+	 * traced to writing CONFIG = 0 elsewhere; the SW_RST pulse keeps
+	 * MASK_INTR (bits 3-6) implicitly cleared during the brief
+	 * SW_RST=1 window which is what we want.
 	 */
+	writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
+	usleep_range(10, 20);
+	writel_relaxed(0, qce->base + CE2_REG_CONFIG);
+	usleep_range(10, 20);
 
 	/* Wait for IDLE before configuring */
 	/*
