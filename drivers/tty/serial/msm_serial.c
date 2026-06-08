@@ -375,6 +375,7 @@ void msm_serial_bt_wake_glitch(void);	/* exported; called by hci_bcsp */
 void msm_serial_bt_force_rfr(bool assert_low);	/* exported; called by hci_bcsp */
 static inline unsigned int msm_apply_bt_imr_override(struct msm_port *msm_port,
 						     unsigned int imr);
+static inline void msm_write_imr(struct uart_port *port, unsigned int imr);
 static void msm_start_rx_dma(struct msm_port *msm_port);
 
 static void msm_stop_dma(struct uart_port *port, struct msm_dma *dma)
@@ -576,7 +577,7 @@ static void msm_stop_tx(struct uart_port *port)
 	struct msm_port *msm_port = to_msm_port(port);
 
 	msm_port->imr &= ~MSM_UART_IMR_TXLEV;
-	msm_write(port, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(port, msm_port->imr);
 }
 
 static void msm_start_tx(struct uart_port *port)
@@ -589,7 +590,7 @@ static void msm_start_tx(struct uart_port *port)
 		return;
 
 	msm_port->imr |= MSM_UART_IMR_TXLEV;
-	msm_write(port, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(port, msm_port->imr);
 }
 
 static void msm_reset_dm_count(struct uart_port *port, int count)
@@ -635,7 +636,7 @@ static void msm_complete_tx_dma(void *args)
 
 	/* Restore "Tx FIFO below watermark" interrupt */
 	msm_port->imr |= MSM_UART_IMR_TXLEV;
-	msm_write(port, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(port, msm_port->imr);
 
 	if (kfifo_len(&tport->xmit_fifo) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
@@ -685,7 +686,7 @@ static int msm_handle_tx_dma(struct msm_port *msm_port, unsigned int count)
 	 * "Tx FIFO below watermark" one, disable it
 	 */
 	msm_port->imr &= ~MSM_UART_IMR_TXLEV;
-	msm_write(port, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(port, msm_port->imr);
 
 	val = msm_read(port, UARTDM_DMEN);
 	val |= dma->enable_bit;
@@ -812,7 +813,7 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	if (msm_port->is_uartdm < UARTDM_1P4)
 		msm_port->imr |= MSM_UART_IMR_RXSTALE;
 
-	msm_write(uart, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(uart, msm_port->imr);
 
 	dma->rx.count = UARTDM_RX_SIZE;
 
@@ -848,7 +849,7 @@ sw_mode:
 
 	/* Re-enable RX interrupts */
 	msm_port->imr |= MSM_UART_IMR_RXLEV | MSM_UART_IMR_RXSTALE;
-	msm_write(uart, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(uart, msm_port->imr);
 }
 
 static void msm_stop_rx(struct uart_port *port)
@@ -857,7 +858,7 @@ static void msm_stop_rx(struct uart_port *port)
 	struct msm_dma *dma = &msm_port->rx_dma;
 
 	msm_port->imr &= ~(MSM_UART_IMR_RXLEV | MSM_UART_IMR_RXSTALE);
-	msm_write(port, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(port, msm_port->imr);
 
 	if (dma->chan)
 		msm_stop_dma(port, dma);
@@ -868,7 +869,7 @@ static void msm_enable_ms(struct uart_port *port)
 	struct msm_port *msm_port = to_msm_port(port);
 
 	msm_port->imr |= MSM_UART_IMR_DELTA_CTS;
-	msm_write(port, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(port, msm_port->imr);
 }
 
 static void msm_handle_rx_dm(struct uart_port *port, unsigned int misr)
@@ -1201,8 +1202,7 @@ static irqreturn_t msm_uart_irq(int irq, void *dev_id)
 	if (misr & MSM_UART_IMR_DELTA_CTS)
 		msm_handle_delta_cts(port);
 
-	msm_write(port, msm_apply_bt_imr_override(msm_port, msm_port->imr),
-		  MSM_UART_IMR); /* restore interrupt */
+	msm_write_imr(port, msm_port->imr); /* restore interrupt */
 	uart_unlock_and_check_sysrq(port);
 
 	return IRQ_HANDLED;
@@ -1419,7 +1419,7 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	msm_port->imr = MSM_UART_IMR_RXLEV | MSM_UART_IMR_RXSTALE |
 			MSM_UART_IMR_CURRENT_CTS | MSM_UART_IMR_RXBREAK_START;
 
-	msm_write(port, msm_port->imr, MSM_UART_IMR);
+	msm_write_imr(port, msm_port->imr);
 
 	if (msm_port->is_uartdm) {
 		msm_write(port, MSM_UART_CR_CMD_RESET_STALE_INT, MSM_UART_CR);
@@ -1481,6 +1481,29 @@ static inline unsigned int msm_apply_bt_imr_override(struct msm_port *msm_port,
 	if (msm_port->bt_is_bt_uart && bt_imr_override)
 		return bt_imr_override;
 	return imr;
+}
+
+/*
+ * Universal IMR-write helper.  ALL writes to MSM_UART_IMR that pass a
+ * non-zero value (i.e. enabling/restoring interrupts) must go through this
+ * to honour bt_imr_override consistently.  The bare zero-writes (disable
+ * IRQs during processing) still use msm_write() directly so we don't
+ * accidentally re-enable the override IMR mid-handler.
+ *
+ * Without this wrapper the override applied only at the IRQ-handler
+ * restore site, while ~10 other writers (set_mctrl, set_termios, startup,
+ * shutdown, set_baud_rate, console, console_write etc.) overwrote it with
+ * the driver-computed `msm_port->imr` on every config touch.  That left
+ * IMR flapping between the override and the driver value, and during a
+ * `rmmod hci_uart` storm the partial override masked RXLEV/RXSTALE long
+ * enough for the BCSP layer to wedge with the port lock held -> CPU0
+ * stuck in cpuidle, CPU1 spinning in the unload path -> soft lockup.
+ */
+static inline void msm_write_imr(struct uart_port *port, unsigned int imr)
+{
+	struct msm_port *msm_port = to_msm_port(port);
+
+	msm_write(port, msm_apply_bt_imr_override(msm_port, imr), MSM_UART_IMR);
 }
 
 /*
@@ -1633,7 +1656,7 @@ static int msm_bt_diag_loopback_run(void)
 	msm_write(port, MSM_UART_CR_TX_ENABLE | MSM_UART_CR_RX_ENABLE,
 		  MSM_UART_CR);
 	msm_port->imr = save_imr;
-	msm_write(port, save_imr, MSM_UART_IMR);
+	msm_write_imr(port, save_imr);
 
 	uart_port_unlock_irqrestore(port, flags);
 
@@ -2149,7 +2172,7 @@ static int msm_poll_get_char(struct uart_port *port)
 		c = msm_poll_get_char_single(port);
 
 	/* Enable interrupts */
-	msm_write(port, imr, MSM_UART_IMR);
+	msm_write_imr(port, imr);
 
 	return c;
 }
@@ -2178,7 +2201,7 @@ static void msm_poll_put_char(struct uart_port *port, unsigned char c)
 		cpu_relax();
 
 	/* Enable interrupts */
-	msm_write(port, imr, MSM_UART_IMR);
+	msm_write_imr(port, imr);
 }
 #endif
 
