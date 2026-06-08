@@ -978,7 +978,16 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * THAT to eMMC is what destabilised it before, not this value.
 		 * All other CRCIs (crypto CE, etc.) keep the computed value.
 		 */
-		if (async_desc->crci == 1 || async_desc->crci == 5)
+		/*
+		 * SDCC override: eMMC = CRCI 1 wants blk_size=1 (half-FIFO).
+		 * The earlier override also included CRCI 5 for the "WiFi
+		 * mailbox" use case on a different platform — but on MSM8x60
+		 * (Tenderloin) CRCI 5 is the QCE Crypto Engine 2 CE_OUT line,
+		 * which uses 256-byte (blk_size=5) bursts for AES. Forcing
+		 * blk_size=1 mismatches the CRCI handshake pace against the
+		 * engine and stalls the DMA. Restrict the override to CRCI 1.
+		 */
+		if (async_desc->crci == 1)
 			blk_size = 1;
 
 		/*
