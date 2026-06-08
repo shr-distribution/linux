@@ -1751,6 +1751,29 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			   (status & CE2_CRYPTO_STATE_MASK) == 0,
 			   10, 100000);
 
+	/*
+	 * Drain any residual DOUT FIFO dwords from a prior op. On this
+	 * silicon neither GCC_CE2_RESET nor SW_RST reliably empties the
+	 * DOUT FIFO — empirically ~15% of cold-start ops produced silently
+	 * wrong ciphertext (same wrong digest every time, matching the
+	 * signature of stale FIFO data being pulled into the output ahead
+	 * of the engine's real result). DATA_OUT (0x010) is the direct PIO
+	 * drain port. DOUT_SIZE_AVAIL is a 3-bit field (max 7) so 8 reads
+	 * are sufficient.
+	 */
+	{
+		int drain;
+
+		for (drain = 0; drain < 8; drain++) {
+			u32 s = readl_relaxed(qce->base + CE2_REG_STATUS);
+			u32 avail = (s >> CE2_DOUT_SIZE_AVAIL_SHIFT) & 0x7;
+
+			if (avail == 0)
+				break;
+			readl_relaxed(qce->base + CE2_REG_DATA_OUT);
+		}
+	}
+
 	encr_cfg = qce_encr_cfg_ce2(flags, keylen);
 	if (encr_cfg == ~0U) {
 		dev_err(qce->dev,
@@ -1955,6 +1978,30 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 				readl_relaxed(qce->base + CE2_REG_STATUS));
 			qce_ce2_free_bounce(qce, &bounce);
 			return ret;
+		}
+
+		/*
+		 * Post-GOPROC sanity: on healthy ops the engine has produced
+		 * all output and DOUT_SIZE_AVAIL=0. A non-zero residue means
+		 * the engine produced fewer dwords than ADM pulled, and ADM
+		 * pulled stale DATA_SHADOW0 dwords into our output buffer —
+		 * the signature of the FIFO-leak corruption that prior chunked
+		 * iterations of this driver tried to mask with per-chunk
+		 * resets. Fail the op explicitly so the caller sees -EIO
+		 * instead of silently wrong ciphertext.
+		 */
+		{
+			u32 st = readl_relaxed(qce->base + CE2_REG_STATUS);
+			unsigned int avail = (st & CE2_DOUT_SIZE_AVAIL_MASK) >>
+					     CE2_DOUT_SIZE_AVAIL_SHIFT;
+
+			if (avail != 0) {
+				dev_err_ratelimited(qce->dev,
+					"CE2 skc engine no-op (DOUT_AVAIL=%u STATUS=0x%08x len=%u)\n",
+					avail, st, total);
+				qce_ce2_free_bounce(qce, &bounce);
+				return -EIO;
+			}
 		}
 
 		/*
