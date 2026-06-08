@@ -29,6 +29,25 @@ struct qcom_adm_peripheral_config {
 	 */
 	void (*exec_func)(void *exec_user);
 	void *exec_user;
+
+	/*
+	 * Per-word byteswap of the data the ADM moves on this channel.
+	 * Match Qualcomm's downstream ADM command-list bits:
+	 *   swap_bytes  - exchange bytes inside each 16-bit half-word
+	 *   swap_shorts - exchange the two 16-bit halves of each 32-bit word
+	 * Both together yield a 32-bit big-endian / little-endian byteswap
+	 * per dword (ntohl-equivalent). For DMA_MEM_TO_DEV channels these
+	 * become DST_SWAP_* (bits 14/15); for DMA_DEV_TO_MEM they become
+	 * SRC_SWAP_* (bits 11/12).
+	 *
+	 * Required by the CE2 (MSM8x60) Crypto Engine 2: the engine consumes
+	 * data in big-endian-packed integer form at DATA_SHADOW0 and emits
+	 * results the same way. Without ADM-side swap the engine produces
+	 * deterministically wrong AES output past the first 4 blocks per
+	 * GOPROC (engine's CRCI handshake is tied to ADM's per-word swap).
+	 */
+	bool swap_bytes;
+	bool swap_shorts;
 };
 
 /**

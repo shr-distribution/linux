@@ -1470,11 +1470,24 @@ struct qce_ce2_bounce {
 static int qce_ce2_dma_setup_cipher_chans(struct qce_device *qce,
 					  unsigned int block_dwords)
 {
+	/*
+	 * Per-word byteswap in the ADM controller (CMD_DST_SWAP_BYTES |
+	 * CMD_DST_SWAP_SHORTS for input, CMD_SRC_SWAP_BYTES |
+	 * CMD_SRC_SWAP_SHORTS for output) — matches Samsung's vendor
+	 * driver chain command setup, removes the previous software-side
+	 * byteswap in qce_ce2_dma_inout_cipher input/output prep, and
+	 * (hypothesis under test) lifts the engine's apparent 4-block
+	 * limit per GOPROC that the software-swap path hit.
+	 */
 	struct qcom_adm_peripheral_config in_periph = {
 		.crci = qce->adm_crci_in,
+		.swap_bytes = true,
+		.swap_shorts = true,
 	};
 	struct qcom_adm_peripheral_config out_periph = {
 		.crci = qce->adm_crci_out,
+		.swap_bytes = true,
+		.swap_shorts = true,
 	};
 	struct dma_slave_config in_conf = {
 		.direction = DMA_MEM_TO_DEV,
@@ -1532,13 +1545,10 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	enum dma_status status;
 	unsigned int burst_bytes = block_dwords * 4;
 	unsigned int padded = round_up(nbytes, burst_bytes);
-	unsigned int dwords;
-	unsigned int i;
 	int ret;
 
 	if (!padded || padded > b->size)
 		return -EINVAL;
-	dwords = padded / 4;
 
 	memset(src_copy, 0, padded);
 	memset(dst_copy, 0, padded);
@@ -1548,32 +1558,16 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		    src_copy, min_t(unsigned, 32U, padded));
 
 	/*
-	 * Per-word byte-reverse the PT bytes before DMA so the engine
-	 * reads back the user-visible PT byte order. Engine LE-decodes
-	 * each 4-byte DMA word into a u32 and then treats that integer
-	 * as the FIPS-197 state column (byte 0 of FIPS = MSB of
-	 * integer). With src bytes [b0,b1,b2,b3] we need the LE-decoded
-	 * integer to be b0<<24|b1<<16|b2<<8|b3 so that engine's state
-	 * column matches user's PT. Storing w as a __le32 on LE host
-	 * places bytes [b3,b2,b1,b0] in memory; DMA copies those
-	 * verbatim; engine LE-reads back the original packed integer.
-	 *
-	 * The prior `cpu_to_be32(w)` step combined with the __le32
-	 * cast was a no-op on LE — bytes stayed in src order — which
-	 * meant the engine LE-decoded into the byte-reversed integer
-	 * (PT' = byteswap-per-word(NIST_PT)) and the AES result was
-	 * deterministically wrong (matched software AES of the
-	 * byteswapped PT, confirmed via the qce-nist tool).
+	 * No software byteswap here. The ADM does per-word byteswap in
+	 * hardware via CMD_DST_SWAP_BYTES | CMD_DST_SWAP_SHORTS (set
+	 * via qcom_adm_peripheral_config.swap_bytes/swap_shorts in
+	 * qce_ce2_dma_setup_cipher_chans). Pass the user bytes through
+	 * to DMA verbatim; ADM swaps them into the byte-order the
+	 * engine wants when it writes to DATA_SHADOW0.
 	 */
-	for (i = 0; i < dwords; i++) {
-		u32 w = ((u32)src_copy[i * 4 + 0] << 24) |
-			((u32)src_copy[i * 4 + 1] << 16) |
-			((u32)src_copy[i * 4 + 2] <<  8) |
-			((u32)src_copy[i * 4 + 3] <<  0);
-		in_buf[i] = (__force __le32)w;
-	}
+	memcpy(in_buf, src_copy, padded);
 
-	QCE_DBG_BUF(qce, "in_buf after BE-pack (first 32 B, to engine via DMA)",
+	QCE_DBG_BUF(qce, "in_buf (ADM byteswaps; first 32 B, to engine)",
 		    (u8 *)in_buf, min_t(unsigned, 32U, padded));
 
 	/* slave_config for both channels is done ONCE by
@@ -1651,20 +1645,18 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		readl(qce->base + CE2_REG_SEG_CFG),
 		readl(qce->base + CE2_REG_ENCR_SEG_CFG),
 		readl(qce->base + CE2_REG_SEG_SIZE));
-	QCE_DBG_BUF(qce, "out_buf raw engine output (first 32 B)",
+	QCE_DBG_BUF(qce, "out_buf raw engine output (first 32 B, ADM-swapped)",
 		    (u8 *)out_buf, min_t(unsigned, 32U, padded));
 
-	/* Byte-swap output dwords from raw LE u32 -> BE bytes */
-	for (i = 0; i < dwords; i++) {
-		u32 w = le32_to_cpu(out_buf[i]);
+	/*
+	 * No software byteswap here either. ADM SRC_SWAP on the output
+	 * channel has already byteswapped the engine's BE-packed integer
+	 * output into user byte order in out_buf. memcpy out → user dst
+	 * directly.
+	 */
+	memcpy(dst_copy, out_buf, padded);
 
-		dst_copy[i * 4 + 0] = (w >> 24) & 0xff;
-		dst_copy[i * 4 + 1] = (w >> 16) & 0xff;
-		dst_copy[i * 4 + 2] = (w >>  8) & 0xff;
-		dst_copy[i * 4 + 3] = (w >>  0) & 0xff;
-	}
-
-	QCE_DBG_BUF(qce, "dst_copy after BE-unpack (first 32 B, to user)",
+	QCE_DBG_BUF(qce, "dst_copy (first 32 B, to user)",
 		    dst_copy, min_t(unsigned, 32U, padded));
 
 	sg_pcopy_from_buffer(dst, sg_nents(dst), dst_copy, nbytes, sg_offset);

@@ -96,6 +96,19 @@
 #define ADM_CMD_DST_CRCI(n)		(((n) & 0xf) << 7)
 #define ADM_CMD_SRC_CRCI(n)		(((n) & 0xf) << 3)
 
+/*
+ * Per-word byteswap bits in the ADM command word. Required by the CE2
+ * Crypto Engine on MSM8x60: the engine consumes data at DATA_SHADOW0
+ * as big-endian-packed integers, and the engine's CRCI handshake is
+ * tied to ADM doing the swap rather than the peripheral driver
+ * pre-swapping in memory.  Toggled per channel via
+ * qcom_adm_peripheral_config.{swap_bytes, swap_shorts}.
+ */
+#define ADM_CMD_DST_SWAP_BYTES		BIT(14)
+#define ADM_CMD_DST_SWAP_SHORTS		BIT(15)
+#define ADM_CMD_SRC_SWAP_BYTES		BIT(11)
+#define ADM_CMD_SRC_SWAP_SHORTS		BIT(12)
+
 #define ADM_CMD_TYPE_SINGLE		0x0
 #define ADM_CMD_TYPE_BOX		0x3
 
@@ -165,6 +178,14 @@ struct adm_chan {
 	struct adm_async_desc *curr_txd;
 	struct dma_slave_config slave;
 	u32 crci;
+
+	/*
+	 * Per-channel swap config from qcom_adm_peripheral_config.
+	 * Encoded into the ADM command word at descriptor build time
+	 * (DST_SWAP for MEM_TO_DEV, SRC_SWAP for DEV_TO_MEM).
+	 */
+	bool swap_bytes;
+	bool swap_shorts;
 
 	/*
 	 * Per-channel exec_func, set via adm_slave_config from
@@ -448,11 +469,19 @@ static void *adm_process_fc_descriptors(struct adm_chan *achan, void *desc,
 
 	if (direction == DMA_DEV_TO_MEM) {
 		crci_cmd = ADM_CMD_SRC_CRCI(crci);
+		if (achan->swap_bytes)
+			crci_cmd |= ADM_CMD_SRC_SWAP_BYTES;
+		if (achan->swap_shorts)
+			crci_cmd |= ADM_CMD_SRC_SWAP_SHORTS;
 		row_offset = burst;
 		src = &achan->slave.src_addr;
 		dst = &mem_addr;
 	} else {
 		crci_cmd = ADM_CMD_DST_CRCI(crci);
+		if (achan->swap_bytes)
+			crci_cmd |= ADM_CMD_DST_SWAP_BYTES;
+		if (achan->swap_shorts)
+			crci_cmd |= ADM_CMD_DST_SWAP_SHORTS;
 		row_offset = burst << 16;
 		src = &mem_addr;
 		dst = &achan->slave.dst_addr;
@@ -820,6 +849,8 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 		achan->crci = config->crci;
 		achan->exec_func = config->exec_func;
 		achan->exec_user = config->exec_user;
+		achan->swap_bytes = config->swap_bytes;
+		achan->swap_shorts = config->swap_shorts;
 	}
 	spin_unlock_irqrestore(&achan->vc.lock, flag);
 
