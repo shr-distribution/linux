@@ -373,6 +373,8 @@ static void msm_serial_set_mnd_regs(struct uart_port *port)
 static void msm_handle_tx(struct uart_port *port);
 void msm_serial_bt_wake_glitch(void);	/* exported; called by hci_bcsp */
 void msm_serial_bt_force_rfr(bool assert_low);	/* exported; called by hci_bcsp */
+static inline unsigned int msm_apply_bt_imr_override(struct msm_port *msm_port,
+						     unsigned int imr);
 static void msm_start_rx_dma(struct msm_port *msm_port);
 
 static void msm_stop_dma(struct uart_port *port, struct msm_dma *dma)
