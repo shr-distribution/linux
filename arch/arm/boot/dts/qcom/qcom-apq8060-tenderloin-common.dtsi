@@ -2068,7 +2068,17 @@
 		hostwake-pins {
 			pins = "gpio129";
 			function = "gpio";
-			bias-pull-down;
+			/*
+			 * webOS live rdmem capture (2026-06-08) shows TLMM_CFG
+			 * = 0xc3 on gpio129 — pull-UP, not pull-down. Decode per
+			 * legacy gpiomux-v2.c: bits = (drv<<6)|(func<<2)|pull,
+			 * so 0xc3 = PULL_UP + FUNC_GPIO + DRV_2MA. We previously
+			 * used pull-down; switch to pull-up to match webOS exactly.
+			 * Matters only when the BCM4329 tristates HOST_WAKE (e.g.
+			 * during chip boot or sleep), but it's the one pin-config
+			 * differential we still had vs webOS after the live audit.
+			 */
+			bias-pull-up;
 		};
 
 		power-pins {
