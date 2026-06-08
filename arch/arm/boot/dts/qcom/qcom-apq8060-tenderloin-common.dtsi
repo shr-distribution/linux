@@ -3249,24 +3249,30 @@
 	qcom,startup-mux-glitch;
 
 	/*
-	 * UART clock for Bluetooth.  Live capture from working webOS BCSP
-	 * link-est shows the legacy hsuart driver runs the GSBI6 UART_APPS
-	 * clock at 7,372,800 Hz with NS=0xfd9a0b43 MD=0x000cfd8e at 115200,
-	 * NOT 58.9824 MHz (logged in /var/log/messages.0.gz around
-	 * t=44.82s: "TPADUART baud=115200 clk=7372800 NS=0xfd9a0b43
-	 * MD=0x000cfd8e | MR1=0x34 MR2=0x34 ...").  Mainline's 58.9824 MHz
-	 * choice was inherited from the old 3.6864 Mbps high-speed path —
-	 * but at 115200 link-est, webOS uses 7.3728 MHz with a different
-	 * MND divider chain.  The CSR BlueCore's UART RX may be sensitive
-	 * to the actual MND clock pattern (jitter, edge timing) and not
-	 * just the resulting baud rate; setting our clock to match webOS
-	 * exactly removes that variable.
+	 * UART clock for Bluetooth — assign to 58.9824 MHz so msm_serial can
+	 * derive BOTH baud rates we use:
+	 *   115,200 link-est:  58982400 / 16 / 32 = 115200 (CSR=0x66)
+	 *   3,686,400 oper:    58982400 / 16 /  1 = 3686400 (CSR=0xff)
 	 *
-	 * 7372800 Hz / 16 (oversample) / 4 (CSR divisor 0x66) = 115200.
-	 * Same baud, same clock source as webOS.
+	 * Why not 7,372,800 (which matches webOS link-est MND register
+	 * dump exactly):  with that lower assigned rate, the clock framework
+	 * fails to dynamically scale up to 58.9824 MHz when msm_serial
+	 * requests 3.6864 M baud (the requested clk_round_rate succeeds but
+	 * the subsequent dev_pm_opp_set_rate doesn't actually move the
+	 * rate — observed 2026-06-08: live clk_rate stuck at 7372800,
+	 * CSR ended up 0x0c mixed-divisor garbage, RX silent).  Assigning
+	 * the high rate up front lets msm_serial select an integer CSR
+	 * divisor for whichever baud is in use without touching the parent.
+	 *
+	 * The previous 7,372,800 choice was made when we were doing the SHY
+	 * BCSP link-est handshake at 115200 and the byte-perfect MND match
+	 * was the goal.  With qcom,bcsp-skip-sync now in use (chip retains
+	 * webOS operational PSRAM, no SHY handshake), we never run a 115200
+	 * SYNC handshake against the chip, so matching webOS's 115200-stage
+	 * MND register pattern is moot — what matters is reaching 3.6864 M.
 	 */
 	assigned-clocks = <&gcc GSBI6_UART_CLK>;
-	assigned-clock-rates = <7372800>;
+	assigned-clock-rates = <58982400>;
 
 	/*
 	 * PIO TX + DMA RX for the Bluetooth UART — matching the legacy webOS
