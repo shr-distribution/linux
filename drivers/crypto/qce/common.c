@@ -1308,11 +1308,32 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	 */
 	{
 		__be32 result[SHA256_DIGEST_SIZE / sizeof(__be32)];
+		u32 hash_status;
 
 		ret = qce_ce2_dma_chain_input_digest(qce, req->src, req->nbytes,
 						     result, digestsize);
 		if (ret)
 			goto out;
+
+		/*
+		 * Check CE2 STATUS for hardware-side error bits before
+		 * trusting the AUTH_IV0..N bytes that qce_ce2_dma_chain_input_digest
+		 * just copied into `result`. The cipher path validates via
+		 * qce_check_status() (STATUS_ERRORS_CE2) but the hash path
+		 * bypasses that helper for performance — without this check
+		 * an engine that raised SW_ERR / DIN_ERR / DOUT_ERR /
+		 * ACCESS_VIOL mid-operation would silently produce a stale
+		 * or zero digest, and the caller (kernel crypto API, AF_ALG)
+		 * has no way to detect it.
+		 */
+		hash_status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (hash_status & STATUS_ERRORS_CE2) {
+			dev_dbg(qce->dev,
+				"CE2 hash: post-DMA STATUS=0x%08x has error bits — discarding digest\n",
+				hash_status);
+			ret = -ENXIO;
+			goto out;
+		}
 
 		memcpy(rctx->digest, result, digestsize);
 		if (req->result && rctx->last_blk)
