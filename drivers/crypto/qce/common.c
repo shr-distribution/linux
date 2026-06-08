@@ -2011,7 +2011,22 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * a single call.
 	 */
 	{
-		unsigned int burst = (IS_DES(flags) || IS_3DES(flags)) ? 8 : 64;
+		/*
+		 * burst = ADM CRCI handshake granularity in dwords. The
+		 * CE2 engine signals CRCI per 16-byte (4-dword) block for
+		 * AES and per 8-byte (2-dword) block for DES/3DES — same
+		 * value qce_dma_configure_crci uses at probe time.
+		 *
+		 * The earlier 64 dwords (256 B) here was a leftover from
+		 * the chunked iteration when device_fc was effectively
+		 * bypassed; ADM blasted the whole burst without CRCI
+		 * handshakes so the mismatch was invisible. Now that
+		 * device_fc=true routes us through the CRCI-flow-controlled
+		 * path, ADM expects to pull `burst` bytes per engine
+		 * handshake — a 64-dword burst would wait for handshakes
+		 * the engine doesn't fire and stall.
+		 */
+		unsigned int burst = (IS_DES(flags) || IS_3DES(flags)) ? 2 : 4;
 		unsigned int total = rctx->cryptlen;
 		u32 seg_cfg = encr_cfg | BIT(CE2_FIRST_SHIFT) |
 			      BIT(CE2_LAST_SHIFT);
