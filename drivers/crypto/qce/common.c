@@ -1770,23 +1770,27 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * for AES-256; AES-128/DES/3DES are faster and tolerate either.
 	 */
 	/*
-	 * Drop the per-op GCC CE2 reset (reset_control_assert/deassert).
-	 * Samsung's vendor _ce_setup_aes never toggles the GCC reset per op;
-	 * it only resets once at probe via _init_ce_engine. Resetting at
-	 * GCC layer per op is overkill and creates a >2 ms gap during which
-	 * the ADM channels still hold descriptor state from the previous
-	 * (possibly wedged) op — ADM and engine then disagree about CRCI
-	 * handshake state on the next GOPROC. Replace with:
-	 *  - dmaengine_terminate_sync on BOTH channels (flush ADM state)
-	 *  - SW_RST pulse via CONFIG (engine internal reset, ~30 us)
-	 *  - restore Samsung's MASK_INTR after the pulse so the engine
-	 *    has interrupts masked the way the vendor driver expects them
-	 *    (we still poll, but engine error reporting may behave
-	 *    differently when MASK_ERR_INTR=1 vs 0).
+	 * Per-op SW_RST + restore MASK_INTR (matches Samsung _init_ce_engine
+	 * but on a per-op basis since our path can wedge — clears engine
+	 * error bits between ops). Cost ~30 µs.
+	 *
+	 * IMPORTANT: do NOT call dmaengine_terminate_sync on the rx/tx
+	 * channels here. On a wedged channel, qcom_adm's terminate_all takes
+	 * the controller submit_lock and waits for the in-flight descriptor
+	 * to drain — which never happens if the engine has stopped firing
+	 * CRCI handshakes. The ADM IRQ handler also takes that lock; with it
+	 * held, the IRQ cannot run, the descriptor cannot complete, and the
+	 * CPU running terminate_sync deadlocks. The error path
+	 * (out_terminate label) calls terminate_sync exactly once after the
+	 * engine has been hardware-reset; that single call is safe because
+	 * the engine is no longer issuing handshakes that the ADM might wait
+	 * on indefinitely.
+	 *
+	 * The GCC CE2 reset_control_assert/deassert was dropped here because
+	 * Samsung never toggles GCC reset per op (only at probe). With the
+	 * SW_RST pulse + MASK_INTR restore below, the engine clears its
+	 * internal state per op without touching the clock/reset framework.
 	 */
-	dmaengine_terminate_sync(qce->dma.rxchan);
-	dmaengine_terminate_sync(qce->dma.txchan);
-
 	writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
 	usleep_range(10, 20);
 	writel_relaxed(BIT(CE2_MASK_DOUT_INTR_SHIFT) |
