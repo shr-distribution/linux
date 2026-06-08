@@ -1548,17 +1548,29 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		    src_copy, min_t(unsigned, 32U, padded));
 
 	/*
-	 * Stage input dwords in BE memory order so the CE2 engine reads
-	 * each beat MSB-first; see qce_ce2_dma_chain_input_digest() for
-	 * the full rationale. cpu_to_be32() (not cpu_to_le32) is the
-	 * required helper on little-endian hosts.
+	 * Per-word byte-reverse the PT bytes before DMA so the engine
+	 * reads back the user-visible PT byte order. Engine LE-decodes
+	 * each 4-byte DMA word into a u32 and then treats that integer
+	 * as the FIPS-197 state column (byte 0 of FIPS = MSB of
+	 * integer). With src bytes [b0,b1,b2,b3] we need the LE-decoded
+	 * integer to be b0<<24|b1<<16|b2<<8|b3 so that engine's state
+	 * column matches user's PT. Storing w as a __le32 on LE host
+	 * places bytes [b3,b2,b1,b0] in memory; DMA copies those
+	 * verbatim; engine LE-reads back the original packed integer.
+	 *
+	 * The prior `cpu_to_be32(w)` step combined with the __le32
+	 * cast was a no-op on LE — bytes stayed in src order — which
+	 * meant the engine LE-decoded into the byte-reversed integer
+	 * (PT' = byteswap-per-word(NIST_PT)) and the AES result was
+	 * deterministically wrong (matched software AES of the
+	 * byteswapped PT, confirmed via the qce-nist tool).
 	 */
 	for (i = 0; i < dwords; i++) {
 		u32 w = ((u32)src_copy[i * 4 + 0] << 24) |
 			((u32)src_copy[i * 4 + 1] << 16) |
 			((u32)src_copy[i * 4 + 2] <<  8) |
 			((u32)src_copy[i * 4 + 3] <<  0);
-		in_buf[i] = (__force __le32)cpu_to_be32(w);
+		in_buf[i] = (__force __le32)w;
 	}
 
 	QCE_DBG_BUF(qce, "in_buf after BE-pack (first 32 B, to engine via DMA)",
@@ -1915,28 +1927,18 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 * byte order separately.
 		 */
 		/*
-		 * BYTE-ORDER HYPOTHESIS: DES NIST vector passes through
-		 * QCE correctly (cbc-des-qce / ecb-des-qce match software
-		 * DES via AF_ALG `ecb(des)`). AES with the same writel
-		 * pattern fails NIST. The two key registers may have
-		 * different byte-order conventions:
-		 *   - DES_KEY: engine reads as integer = K[0..3] BE-packed.
-		 *     writel(0x01234567, ...) on LE puts bytes [67,45,23,01]
-		 *     on bus; engine reads the 32-bit register value back
-		 *     as integer 0x01234567 = K[0..3] BE-packed. ✓
-		 *   - RNDKEY: hypothesis is engine reads byte-by-byte with
-		 *     byte 0 = K[0]. writel(0x2b7e1516, ...) gives bus
-		 *     bytes [16,15,7e,2b], so engine sees K[0]=0x16
-		 *     instead of K[0]=0x2b — explaining the deterministic
-		 *     non-NIST output (ae5e647c... vs spec 3ad77bb4...).
-		 *
-		 * Fix the hypothesis by byteswapping the register write:
-		 * writel(bswap32(0x2b7e1516)=0x16157e2b, RNDKEY0) puts
-		 * bytes [2b,7e,15,16] on bus, engine reads byte 0 = 0x2b
-		 * = K[0]. If output now matches NIST, hypothesis confirmed.
+		 * Key write — NO byteswap. The engine reads RNDKEY0..N
+		 * as 32-bit integers matching the writel value: enckey[k]
+		 * is the user key as a BE-packed integer (via
+		 * qce_cpu_to_be32p_array), writel encodes that integer onto
+		 * the LE bus, engine reads back the same integer, and
+		 * interprets it as the FIPS-197 BE-packed K[0..3] word for
+		 * that round-0 column. Triangulation against software
+		 * AES (see commit message) showed engine_K = NIST_K under
+		 * this write pattern.
 		 */
 		for (k = 0; k < enckey_words; k++)
-			writel(__builtin_bswap32((__force u32)enckey[k]),
+			writel((__force u32)enckey[k],
 			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
 	}
 
