@@ -1769,28 +1769,31 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	 * deassert (vs 10 us in hash path) gives the core enough time
 	 * for AES-256; AES-128/DES/3DES are faster and tolerate either.
 	 */
-	if (qce->reset) {
-		reset_control_assert(qce->reset);
-		usleep_range(1000, 1500);
-		reset_control_deassert(qce->reset);
-		usleep_range(1000, 1500);
-	}
-
 	/*
-	 * Per-op SW_RST pulse via CONFIG. Samsung's vendor driver only
-	 * resets in error-recovery paths; we re-added it unconditionally
-	 * because once our CRCI flow control wedges (e.g. on cryptlen
-	 * past the engine's reliable range), the error bits (DIN_ERR,
-	 * DOUT_ERR, SW_ERR) persist across ops and silently corrupt
-	 * subsequent successful-looking transfers. SW_RST clears those.
-	 * Cost is small (~30 us per op). The previous wrong-output bug
-	 * traced to writing CONFIG = 0 elsewhere; the SW_RST pulse keeps
-	 * MASK_INTR (bits 3-6) implicitly cleared during the brief
-	 * SW_RST=1 window which is what we want.
+	 * Drop the per-op GCC CE2 reset (reset_control_assert/deassert).
+	 * Samsung's vendor _ce_setup_aes never toggles the GCC reset per op;
+	 * it only resets once at probe via _init_ce_engine. Resetting at
+	 * GCC layer per op is overkill and creates a >2 ms gap during which
+	 * the ADM channels still hold descriptor state from the previous
+	 * (possibly wedged) op — ADM and engine then disagree about CRCI
+	 * handshake state on the next GOPROC. Replace with:
+	 *  - dmaengine_terminate_sync on BOTH channels (flush ADM state)
+	 *  - SW_RST pulse via CONFIG (engine internal reset, ~30 us)
+	 *  - restore Samsung's MASK_INTR after the pulse so the engine
+	 *    has interrupts masked the way the vendor driver expects them
+	 *    (we still poll, but engine error reporting may behave
+	 *    differently when MASK_ERR_INTR=1 vs 0).
 	 */
+	dmaengine_terminate_sync(qce->dma.rxchan);
+	dmaengine_terminate_sync(qce->dma.txchan);
+
 	writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
 	usleep_range(10, 20);
-	writel_relaxed(0, qce->base + CE2_REG_CONFIG);
+	writel_relaxed(BIT(CE2_MASK_DOUT_INTR_SHIFT) |
+		       BIT(CE2_MASK_DIN_INTR_SHIFT) |
+		       BIT(CE2_MASK_AUTH_DONE_INTR_SHIFT) |
+		       BIT(CE2_MASK_ERR_INTR_SHIFT),
+		       qce->base + CE2_REG_CONFIG);
 	usleep_range(10, 20);
 
 	/* Wait for IDLE before configuring */
@@ -1973,27 +1976,12 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
 
 	/*
-	 * EXPERIMENT: enable HIGH_SPD_IN/OUT bits in CONFIG before
-	 * GOPROC. With the PT byteswap fix, AES math is correct up to
-	 * 4 blocks per GOPROC then deterministically wrong from block 4
-	 * onward. The previous (scratch-written) driver explicitly
-	 * cleared HIGH_SPD_*_EN_N bits (= ENABLE high-speed) every op
-	 * before GOPROC. We dropped that when aligning with Samsung's
-	 * "no CONFIG write per op" pattern. Re-add only the HIGH_SPD
-	 * enable to see if it lifts the 4-block engine limit.
-	 *
-	 * If 16-block ops match NIST after this, we can drop the chunk
-	 * loop entirely. If not, fall back to chunking at 48 bytes
-	 * (3 blocks) per GOPROC.
+	 * HIGH_SPD_*_EN_N bits: 0 = high-speed enabled. The SW_RST pulse +
+	 * MASK_INTR write above leaves these bits cleared (= enabled),
+	 * which is what we want. Samsung's vendor driver never explicitly
+	 * touches HIGH_SPD per op — dropping our per-op read-modify-write
+	 * matches their pattern and avoids re-arming MASK_INTR state.
 	 */
-	{
-		u32 cfg = readl(qce->base + CE2_REG_CONFIG);
-
-		cfg &= ~(BIT(CE2_HIGH_SPD_IN_EN_N_SHIFT) |
-			 BIT(CE2_HIGH_SPD_OUT_EN_N_SHIFT) |
-			 BIT(CE2_HIGH_SPD_HASH_EN_N_SHIFT));
-		writel(cfg, qce->base + CE2_REG_CONFIG);
-	}
 
 	/*
 	 * CE2 cipher path: ONE GOPROC for the entire op (matches the
