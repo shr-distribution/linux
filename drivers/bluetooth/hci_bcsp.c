@@ -3201,6 +3201,22 @@ static int bcsp_serdev_set_power(struct bcsp_serdev *bdev, bool powered)
 			gpiod_set_value_cansleep(bdev->shutdown_gpio, 0);
 	}
 
+	/*
+	 * Diagnostic: read back the post-set values from the GPIO descriptor.
+	 * gpiod_get_value() returns the *logical* state (already inverted for
+	 * ACTIVE_LOW), so 1 = "asserted" regardless of the line's electrical
+	 * polarity.  For device_wakeup (ACTIVE_LOW in DT) value=1 means the
+	 * line is being driven electrically LOW — the webOS-equivalent BT_WAKE
+	 * asserted state.  If we see 0 here after asking for 1, the polarity
+	 * binding or gpiomux state is wrong and the chip's UART RX is asleep.
+	 */
+	dev_info(bdev->dev,
+		 "bcsp_serdev_set_power(%s): shutdown=%d device_wakeup=%d reset=%d\n",
+		 powered ? "ON" : "OFF",
+		 bdev->shutdown_gpio ? gpiod_get_value_cansleep(bdev->shutdown_gpio) : -1,
+		 bdev->device_wakeup ? gpiod_get_value_cansleep(bdev->device_wakeup) : -1,
+		 bdev->reset_gpio    ? gpiod_get_value_cansleep(bdev->reset_gpio)    : -1);
+
 	return 0;
 }
 
