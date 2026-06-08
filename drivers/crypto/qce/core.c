@@ -406,6 +406,11 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/* CE2 cipher bounce buffer (pre-allocated, ~256 KB) — no-op on v5 */
+	ret = qce_ce2_bounce_init(qce);
+	if (ret)
+		return ret;
+
 	INIT_WORK(&qce->done_work, qce_req_done_work);
 	crypto_init_queue(&qce->queue, QCE_QUEUE_LENGTH);
 

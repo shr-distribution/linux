@@ -12,6 +12,8 @@
 
 #include "dma.h"
 
+struct qce_ce2_bounce;
+
 /**
  * enum qce_version - crypto engine hardware version
  * @QCE_VERSION_CE2: Crypto Engine 2 (MSM8x60 - MSM8260/MSM8660/APQ8060)
@@ -69,7 +71,19 @@ struct qce_device {
 	int (*async_req_enqueue)(struct qce_device *qce,
 				 struct crypto_async_request *req);
 	void (*async_req_done)(struct qce_device *qce, int ret);
+	struct qce_ce2_bounce *ce2_bounce;
 };
+
+/*
+ * CE2 bounce-buffer probe-time alloc/free. Defined in common.c since
+ * the struct layout is private there. Pre-allocates the 4 buffers
+ * (src_copy, dst_copy, in_buf, out_buf) at the engine's max
+ * single-GOPROC size so that each cipher op is a fixed-cost
+ * mutex(qce->lock) + memcpy + engine run, with no CMA allocation in
+ * the hot path.
+ */
+int qce_ce2_bounce_init(struct qce_device *qce);
+void qce_ce2_bounce_destroy(struct qce_device *qce);
 
 /**
  * struct qce_algo_ops - algorithm operations per crypto type

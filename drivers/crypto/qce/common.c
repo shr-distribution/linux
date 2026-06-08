@@ -1672,50 +1672,101 @@ out_terminate_rx:
 	return ret;
 }
 
-/* Allocate the bounce-buffer set for AES chunked path.  Sized once
- * at the start of qce_ce2_pio_run_skcipher and reused across all
- * chunks; freed at the end.
+/*
+ * CE2 max single-GOPROC = 65280 B (16-bit SEG_SIZE rounded down to a
+ * 256-byte / burst*4 boundary). The per-op path will -EMSGSIZE any
+ * request larger than this and let the skcipher / AF_ALG layer split.
+ */
+#define QCE_CE2_BOUNCE_MAX	65280U
+
+/*
+ * Pre-allocate the bounce-buffer set ONCE at probe (4 × 65280 B =
+ * ~256 KB resident). The per-op fast path hands out the pre-allocated
+ * pointers; qce->lock serialises ops on the engine, so no extra
+ * locking. Replaces per-op dma_alloc_coherent (CMA migration + RCU
+ * sync) which dominated the cipher path overhead (~3-5 ms / op,
+ * capping throughput at ~7 MiB/s on long streams).
+ */
+static void qce_ce2_bounce_destroy_action(void *data)
+{
+	qce_ce2_bounce_destroy(data);
+}
+
+int qce_ce2_bounce_init(struct qce_device *qce)
+{
+	struct qce_ce2_bounce *b;
+	int ret;
+
+	if (!qce_is_ce2(qce))
+		return 0;
+
+	b = devm_kzalloc(qce->dev, sizeof(*b), GFP_KERNEL);
+	if (!b)
+		return -ENOMEM;
+
+	b->size = QCE_CE2_BOUNCE_MAX;
+	b->src_copy = devm_kzalloc(qce->dev, b->size, GFP_KERNEL);
+	if (!b->src_copy)
+		return -ENOMEM;
+	b->dst_copy = devm_kzalloc(qce->dev, b->size, GFP_KERNEL);
+	if (!b->dst_copy)
+		return -ENOMEM;
+	b->in_buf = dma_alloc_coherent(qce->dev, b->size, &b->in_dma,
+				       GFP_KERNEL);
+	if (!b->in_buf)
+		return -ENOMEM;
+	b->out_buf = dma_alloc_coherent(qce->dev, b->size, &b->out_dma,
+					GFP_KERNEL);
+	if (!b->out_buf) {
+		dma_free_coherent(qce->dev, b->size, b->in_buf, b->in_dma);
+		return -ENOMEM;
+	}
+
+	qce->ce2_bounce = b;
+
+	ret = devm_add_action_or_reset(qce->dev,
+				       qce_ce2_bounce_destroy_action, qce);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+void qce_ce2_bounce_destroy(struct qce_device *qce)
+{
+	struct qce_ce2_bounce *b = qce->ce2_bounce;
+
+	if (!b)
+		return;
+	dma_free_coherent(qce->dev, b->size, b->out_buf, b->out_dma);
+	dma_free_coherent(qce->dev, b->size, b->in_buf, b->in_dma);
+	/* src_copy + dst_copy + b itself are devm-managed */
+	qce->ce2_bounce = NULL;
+}
+
+/*
+ * Hot-path: hand out the pre-allocated bounce. No allocation; no CMA.
+ * Returns 0 on success; -EMSGSIZE if the caller wants more than we
+ * pre-allocated (caller should chunk above us).
  */
 static int qce_ce2_alloc_bounce(struct qce_device *qce,
 				struct qce_ce2_bounce *b, size_t size)
 {
-	memset(b, 0, sizeof(*b));
-	b->size = size;
-	b->src_copy = kzalloc(size, GFP_KERNEL);
-	if (!b->src_copy)
-		return -ENOMEM;
-	b->dst_copy = kzalloc(size, GFP_KERNEL);
-	if (!b->dst_copy)
-		goto free_src;
-	b->in_buf = dma_alloc_coherent(qce->dev, size, &b->in_dma,
-				       GFP_KERNEL);
-	if (!b->in_buf)
-		goto free_dst;
-	b->out_buf = dma_alloc_coherent(qce->dev, size, &b->out_dma,
-					GFP_KERNEL);
-	if (!b->out_buf)
-		goto free_in;
-	return 0;
+	struct qce_ce2_bounce *src = qce->ce2_bounce;
 
-free_in:
-	dma_free_coherent(qce->dev, size, b->in_buf, b->in_dma);
-free_dst:
-	kfree(b->dst_copy);
-free_src:
-	kfree(b->src_copy);
-	memset(b, 0, sizeof(*b));
-	return -ENOMEM;
+	if (WARN_ON_ONCE(!src))
+		return -ENOMEM;
+	if (size > src->size)
+		return -EMSGSIZE;
+	*b = *src;
+	b->size = size;
+	return 0;
 }
 
 static void qce_ce2_free_bounce(struct qce_device *qce,
 				struct qce_ce2_bounce *b)
 {
-	if (!b->size)
-		return;
-	dma_free_coherent(qce->dev, b->size, b->out_buf, b->out_dma);
-	dma_free_coherent(qce->dev, b->size, b->in_buf, b->in_dma);
-	kfree(b->dst_copy);
-	kfree(b->src_copy);
+	/* Pre-allocated pool — nothing to free per op. */
 	memset(b, 0, sizeof(*b));
 }
 
@@ -2005,7 +2056,7 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 * layer above split the request — same pattern as the hash
 		 * path uses for inputs over SZ_1M.
 		 */
-		if (total > 65280)
+		if (total > QCE_CE2_BOUNCE_MAX)
 			return -EMSGSIZE;
 
 		bounce_sz = round_up(total, burst * 4);
