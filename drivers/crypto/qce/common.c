@@ -1892,37 +1892,31 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 			writel((__force u32)enckey[k],
 			       qce->base + CE2_REG_DES_KEY0 + k * 4);
 	} else {	/* AES */
-		struct crypto_aes_ctx aes_ctx = {0};
-		int aerr;
-
-		aerr = aes_expandkey(&aes_ctx, (const u8 *)enckey, keylen);
-		if (aerr) {
-			dev_err(qce->dev,
-				"CE2 cipher: aes_expandkey failed (%d)\n",
-				aerr);
-			return aerr;
-		}
-		QCE_DBG_BUF(qce, "aes_ctx.key_enc[] (first 64 B = rounds 0-3)",
-			    (u8 *)aes_ctx.key_enc, 64);
-		/* Write all 60 expanded dwords.  For AES-128 only the first
-		 * 44 are populated by FIPS-197; aes_ctx was zero-initialised
-		 * so the remaining 16 stay 0.  Mirrors Samsung's _ce_setup
-		 * auStack_160 buffer layout.
+		/*
+		 * AES_SEL_FAST path: ENGINES_AVAIL reports AES = FAST on
+		 * this silicon, and the prior comment block notes "an
+		 * earlier raw-key fast-path ... passed all NIST vectors
+		 * <= 32 B". The slow path (software-expanded 60-dword
+		 * round-key schedule) currently produces deterministic
+		 * non-NIST AES output for varied-byte keys — confirmed by
+		 * qce-nist with the NIST FIPS-197 vector
+		 *   K=2b7e..., PT=6bc1bee2... → expected 3ad77bb4...
+		 *   got ae5e647c... (off by full AES math).
+		 *
+		 * Switch to fast path: write ONLY the raw user key (4 dwords
+		 * for AES-128, 6 for AES-192, 8 for AES-256) and let the
+		 * engine expand internally. enckey[] is the user key already
+		 * BE-packed by qce_cpu_to_be32p_array() above; writel on LE
+		 * places bus bytes so the engine reads the user-key bytes
+		 * in original order at RNDKEY0..N.
+		 *
+		 * If this path also wedges past ~64 bytes (as the older
+		 * comment warned), we'll cap there and fix the slow-path
+		 * byte order separately.
 		 */
-		for (k = 0; k < CE2_AES_RNDKEYS; k++)
-			writel(aes_ctx.key_enc[k],
+		for (k = 0; k < enckey_words; k++)
+			writel((__force u32)enckey[k],
 			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
-
-		if (qce_aes_debug) {
-			u32 rb[4];
-
-			for (k = 0; k < 4; k++)
-				rb[k] = readl(qce->base +
-					      CE2_REG_AES_RNDKEY0 + k * 4);
-			QCE_DBG_BUF(qce, "RNDKEY0..3 readback",
-				    (u8 *)rb, sizeof(rb));
-		}
-		memzero_explicit(&aes_ctx, sizeof(aes_ctx));
 	}
 
 	/* IV: CNTR0..3.  Skip for ECB (no IV) */
