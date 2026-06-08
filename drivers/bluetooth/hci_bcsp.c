@@ -873,9 +873,15 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 		nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len,
 					hci_skb_pkt_type(skb));
 		if (nskb) {
-			/* Debug: show first bytes of prepared packet */
-			if (hci_skb_pkt_type(skb) == BCSP_LE_PKT && nskb->len <= 16)
-				BT_DBG("BCSP: TX LE pkt: %*ph", nskb->len, nskb->data);
+			/*
+			 * Wire-dump every TX so we can compare to known-good
+			 * webOS BTWIRE captures.  Show up to 64 bytes
+			 * (BCSP HCI cmd+header is ~12 bytes; longer payloads
+			 * are still recognizable from the leading bytes).
+			 */
+			BT_INFO("BCSP: TX[unrel,hci_type=%d] %*ph",
+				hci_skb_pkt_type(skb),
+				min_t(int, nskb->len, 64), nskb->data);
 			kfree_skb(skb);
 			return nskb;
 		} else {
@@ -910,6 +916,16 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 			nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len,
 						hci_skb_pkt_type(skb));
 			if (nskb) {
+				/*
+				 * Wire-dump every reliable-channel TX too
+				 * (HCI commands like HCI_RESET land here in
+				 * skip-sync mode).  Up to 64 bytes.
+				 */
+				BT_INFO("BCSP: TX[rel,hci_type=%d,txseq=%u,unack=%u] %*ph",
+					hci_skb_pkt_type(skb),
+					bcsp->msgq_txseq,
+					bcsp->unack.qlen,
+					min_t(int, nskb->len, 64), nskb->data);
 				__skb_queue_tail(&bcsp->unack, skb);
 				mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
 				spin_unlock_irqrestore(&bcsp->unack.lock, flags);

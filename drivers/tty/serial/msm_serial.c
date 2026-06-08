@@ -1390,6 +1390,24 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 
 	msm_write(port, entry->code, MSM_UART_CSR);
 
+	/*
+	 * BT UART diagnostic: confirm what msm_set_baud_rate actually set,
+	 * including whether MSM_UART_CSR (0x0008) is even read-back-able on
+	 * this UART block.  Live tests 2026-06-08 showed devmem reads of
+	 * 0x16540008 returning 0x0c (TX-DIV=0xc nibble, RX-DIV=0x0 nibble)
+	 * even after the driver wrote 0xff for divisor=1 — strongly suggesting
+	 * the offset is write-only and reads return unrelated FIFO/state.
+	 * This dev_info prints the rate, computed divisor, written code, the
+	 * post-write CSR readback, and the resolved baud so we can compare.
+	 */
+	if (port->mapbase == 0x16540000) {
+		unsigned int csr_rb = msm_read(port, MSM_UART_CSR);
+
+		dev_info(port->dev,
+			 "msm_set_baud_rate: rate=%lu divisor=%u CSR_w=0x%02x CSR_r=0x%08x baud=%u\n",
+			 rate, entry->divisor, entry->code, csr_rb, baud);
+	}
+
 	/* RX stale watermark */
 	rxstale = entry->rxstale;
 	watermark = MSM_UART_IPR_STALE_LSB & rxstale;
