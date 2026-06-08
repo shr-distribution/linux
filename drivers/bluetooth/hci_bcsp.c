@@ -3113,67 +3113,48 @@ static const struct hci_uart_proto bcsp = {
  */
 static int bcsp_serdev_set_power(struct bcsp_serdev *bdev, bool powered)
 {
+	/*
+	 * Match legacy webOS bt_power() in arch/arm/mach-msm/board-tenderloin.c
+	 * exactly (legacy line ~3345):
+	 *
+	 *   static int bt_power(unsigned int on) {
+	 *       int gpios[] = { BT_POWER_PIN, BT_WAKE_PIN };
+	 *       if (!on) gpio_set_value(BT_POWER_PIN, 0);
+	 *       configure_gpiomux_gpios(on, gpios, 2);
+	 *       if (on)  gpio_set_value(BT_POWER_PIN, 1);
+	 *   }
+	 *
+	 * Legacy NEVER toggles BT_RST_N (gpio138) at power-on.  It also does
+	 * not do a power-off / 500 ms drain / 1 second settle.  It just flips
+	 * the two pinmux states and drives BT_POWER (gpio130) HIGH.
+	 *
+	 * Our previous aggressive 100 ms reset pulse on gpio138 + 500 ms
+	 * power-off + 1 s settle was an inherited Broadcom/bcattach-style
+	 * sequence that DOES NOT apply to this CSR BlueCore + always-on
+	 * regulator combination.  Live capture of a working webOS BCSP boot
+	 * (/var/log/messages on the device) shows the chip is *quiet* at
+	 * t=0 and only starts emitting SYNC after the host first TXes SYNC.
+	 * Our mainline sees the chip emitting BCSP SYNC autonomously *before*
+	 * we send anything — that "autonomous SYNC" state is almost certainly
+	 * what our reset-pulse sequence is inducing, and once the chip is in
+	 * it, it never accepts our SYNC-RSP.  Drop the reset/power-off path
+	 * and match legacy: just assert BT_WAKE and BT_POWER, no more.
+	 *
+	 * The reset GPIO descriptor is left present for future use (it's a
+	 * documented schematic pin even if the legacy software doesn't toggle
+	 * it) but we no longer cycle it at probe.
+	 */
 	if (powered) {
-		/*
-		 * Power-on + reset sequence matching webOS bcattach
-		 * (webOS-ports/utilities tenderloin-halium/bcattach/main.c):
-		 * power on, hold reset asserted (low) for 100 ms, deassert,
-		 * then wait a FULL SECOND for the CSR BlueCore to finish
-		 * booting before any UART traffic.
-		 *
-		 * The previous code deasserted reset with no hold (a ~µs pulse)
-		 * and waited only 100 ms. On-device that left the chip with a
-		 * working autonomous SYNC transmitter but a dead/uninitialised
-		 * UART receiver: it streamed SYNC (da dc ed ed) forever and
-		 * never parsed our SYNC/SYNC-RSP, so BCSP link establishment
-		 * never completed. A proper 100 ms reset pulse + 1 s settle (and
-		 * staying silent until the chip is up) matches webOS.
-		 */
-		/*
-		 * Force a TRUE cold start first. The chip may have been left
-		 * powered (bootloader, or a previous link attempt) — a bare reset
-		 * pulse does not clear the CSR BlueCore's power-gated UART RX
-		 * state, only removing BT_POWER does. Continuous power across
-		 * attempts is the one variable never controlled while the chip
-		 * only-SYNCs and ignores our byte-perfect TX. Drive everything off
-		 * and hold long enough for the rails to drain, then power on.
-		 */
-		if (bdev->device_wakeup)
-			gpiod_set_value_cansleep(bdev->device_wakeup, 0);
-		if (bdev->reset_gpio)
-			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* assert reset */
-		if (bdev->shutdown_gpio) {
-			gpiod_set_value_cansleep(bdev->shutdown_gpio, 0); /* power OFF */
-			msleep(500);
-		}
-
 		if (bdev->shutdown_gpio)
-			gpiod_set_value_cansleep(bdev->shutdown_gpio, 1);
-
-		/* Hold reset asserted (active-low) for 100 ms, then release */
-		if (bdev->reset_gpio) {
-			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* assert */
-			msleep(100);
-			gpiod_set_value_cansleep(bdev->reset_gpio, 0); /* deassert */
-		}
-
+			gpiod_set_value_cansleep(bdev->shutdown_gpio, 1); /* BT_POWER on */
 		if (bdev->device_wakeup)
-			gpiod_set_value_cansleep(bdev->device_wakeup, 1);
-
-		/* Wait for the chip to fully boot before talking to it */
-		msleep(1000);
+			gpiod_set_value_cansleep(bdev->device_wakeup, 1); /* BT_WAKE asserted */
+		/* No reset pulse, no power-off drain, no 1 s settle. Match legacy. */
 	} else {
-		/* Power off sequence */
 		if (bdev->device_wakeup)
 			gpiod_set_value_cansleep(bdev->device_wakeup, 0);
-
-		if (bdev->reset_gpio)
-			gpiod_set_value_cansleep(bdev->reset_gpio, 1); /* Assert reset */
-
 		if (bdev->shutdown_gpio)
 			gpiod_set_value_cansleep(bdev->shutdown_gpio, 0);
-
-		msleep(10);
 	}
 
 	return 0;
