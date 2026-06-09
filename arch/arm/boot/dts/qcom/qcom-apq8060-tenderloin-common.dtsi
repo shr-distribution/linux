@@ -2079,25 +2079,54 @@
 			bias-pull-up;
 		};
 
+		/*
+		 * BT_POWER (gpio130) - drive HIGH continuously.  Legacy webOS
+		 * gpiomux BT_POWER_ACTIVE_CFG uses GPIO_OUTL_8M_PN (output LOW)
+		 * + bt_power(1) overrides to HIGH at boot; net effect is a
+		 * sustained HIGH from moboot handoff onward.  Without an
+		 * explicit `output-high` here, pinctrl-msm puts the pin into
+		 * INPUT mode at apply time and the line droops LOW (no pull,
+		 * weak external) — a HIGH→LOW transient on chip's main power
+		 * gate that may have been wiping BCSP PSRAM and forcing the
+		 * chip into a fresh SHY on every mainline boot.
+		 */
 		power-pins {
 			pins = "gpio130";
 			function = "gpio";
 			drive-strength = <8>;
 			bias-disable;
+			output-high;
 		};
 
+		/*
+		 * BT_WAKE (gpio131) - drive LOW continuously.  webOS gpiomux
+		 * uses GPIO_OUTL_8M_PN in both ACTIVE and SUSPENDED so the
+		 * pin sits LOW for the chip's entire lifetime.  Without
+		 * `output-low` here, pinctrl-msm transitions through INPUT
+		 * (effectively floats the line) which the chip can interpret
+		 * as "host going to sleep" and tear down its BCSP context.
+		 */
 		devwake-pins {
 			pins = "gpio131";
 			function = "gpio";
 			drive-strength = <8>;
 			bias-disable;
+			output-low;
 		};
 
+		/*
+		 * BT_RST_N (gpio138) - keep HIGH (de-asserted).  Per memory
+		 * project_bt_reset_phantom_no_software_resettable this pin is
+		 * a phantom on this board (TLMM writes don't actually move
+		 * the chip's RST# net), but pin a defined level anyway so any
+		 * pinctrl apply doesn't transiently look like an assert.
+		 */
 		reset-pins {
 			pins = "gpio138";
 			function = "gpio";
 			drive-strength = <8>;
 			bias-disable;
+			output-high;
 		};
 	};
 
