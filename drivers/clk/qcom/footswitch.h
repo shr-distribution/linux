@@ -70,10 +70,23 @@ enum footswitch_pwr_state {
  *		rail and from footswitch_power_on() after unclamping it,
  *		matching the downstream footswitch-8x60.c pairing of
  *		msm_bus_axi_porthalt/portunhalt with rail clamp/unclamp.
- *		The MSM8x60 MMCC provider supplies this via qcom_rpm
- *		(QCOM_RPM_MM_FABRIC_HALT). Errors are logged but do not
- *		abort the power transition (best-effort: the rail still
- *		gets clamped / unclamped even if the NoC write fails).
+ *
+ *		PM-phase contract: the callback runs at whatever PM phase
+ *		genpd_power_on/off fires the footswitch_power_on/off
+ *		callback. For runtime PM that is runtime-suspend context
+ *		(IRQs enabled). For system suspend genpd hard-wires
+ *		power_off to .suspend_noirq (drivers/pmdomain/core.c) --
+ *		after dpm_suspend_noirq() has called suspend_device_irqs()
+ *		-- so any callback that relies on IRQ-driven IPC (notably
+ *		qcom_rpm_write, which waits 5*HZ for the RPM ack IRQ) will
+ *		time out and return -ETIMEDOUT. The MSM8x60 MMCC provider
+ *		uses qcom_mmss_port_halt() under the hood; that helper
+ *		refcounts per port, so a system-suspend collapse where the
+ *		consumer's .suspend_late hook already halted the port sees
+ *		no transition here and returns 0 immediately. Errors are
+ *		logged but do not abort the power transition (best-effort:
+ *		the rail still gets clamped / unclamped even if the NoC
+ *		write fails or is skipped).
  */
 struct footswitch {
 	struct generic_pm_domain	pd;

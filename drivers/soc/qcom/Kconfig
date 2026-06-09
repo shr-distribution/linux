@@ -236,6 +236,19 @@ config QCOM_SPM
 	  to manage cores, L2 low power modes and to configure the internal
 	  Adaptive Voltage Scaler parameters, where supported.
 
+config QCOM_MMSS_PORT_HALT
+	tristate "Qualcomm MSM8x60 MMSS NoC port halt helper"
+	depends on (ARCH_QCOM || COMPILE_TEST) && MFD_QCOM_RPM
+	help
+	  Refcounted helper for halting Qualcomm MSM8260/MSM8660/APQ8060
+	  MMSS NoC master ports via the qcom_rpm IPC. Used by the MSM8x60
+	  MMCC footswitch driver and by per-subsystem .suspend_late hooks
+	  on the multimedia consumers (MDP4 display, Adreno 220 GPU,
+	  CAMSS-VFE, video codec) to quiesce AXI traffic before the rail
+	  that backs each NoC master collapses.
+
+	  Selected automatically by MSM_MMCC_8660.
+
 config QCOM_RPM_SLEEP_SET_MSM8660
 	tristate "Qualcomm RPM sleep-set programmer for MSM8660/APQ8060"
 	depends on (ARCH_QCOM || COMPILE_TEST) && MFD_QCOM_RPM

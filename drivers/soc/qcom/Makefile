@@ -30,6 +30,7 @@ obj-$(CONFIG_QCOM_SMP2P)	+= smp2p.o
 obj-$(CONFIG_QCOM_SMSM)	+= smsm.o
 obj-$(CONFIG_QCOM_SOCINFO)	+= socinfo.o
 obj-$(CONFIG_QCOM_SPM)		+= spm.o
+obj-$(CONFIG_QCOM_MMSS_PORT_HALT)	+= qcom_mmss_porthalt.o
 obj-$(CONFIG_QCOM_RPM_SLEEP_SET_MSM8660)	+= rpm-sleep-set-msm8660.o
 obj-$(CONFIG_QCOM_STATS)	+= qcom_stats.o
 obj-$(CONFIG_QCOM_WCNSS_CTRL) += wcnss_ctrl.o

@@ -587,6 +587,7 @@ config MSM_MMCC_8660
 	depends on ARM || COMPILE_TEST
 	select MSM_GCC_8660
 	select QCOM_FOOTSWITCH
+	select QCOM_MMSS_PORT_HALT if MFD_QCOM_RPM
 	help
 	  Support for the multimedia clock controller on the MSM8x60 family
 	  (MSM8260/MSM8660/APQ8060). Say Y if you want to support multimedia

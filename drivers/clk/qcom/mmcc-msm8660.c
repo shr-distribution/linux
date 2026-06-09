@@ -22,6 +22,7 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/regmap.h>
+#include <linux/soc/qcom/qcom_mmss_porthalt.h>
 
 #include <dt-bindings/clock/qcom,mmcc-msm8660.h>
 #include <dt-bindings/mfd/qcom-rpm.h>
@@ -2494,22 +2495,21 @@ static struct qcom_rpm *mmcc_msm8660_rpm;
 /*
  * footswitch port_halt callback. Invoked from footswitch_power_off()
  * before rail clamp (halt=true) and from footswitch_power_on() after
- * the rail is unclamped (halt=false). Best-effort: footswitch.c only
- * logs the error and continues the power transition, so a transient
- * RPM hiccup never leaves the rail in an indeterminate state.
+ * the rail is unclamped (halt=false).
+ *
+ * Delegates to qcom_mmss_port_halt(), which refcounts per-port so this
+ * callback composes cleanly with the per-subsystem .suspend_late hooks
+ * on mdp4 / adreno / camss-vfe / vidc that halt the port earlier in the
+ * PM cycle (where qcom_rpm IPC is still usable -- see the helper's
+ * Context: section). At system-suspend time the per-subsystem halt has
+ * already brought the refcount > 0; this callback then runs from
+ * genpd_finish_suspend at .suspend_noirq, sees no transition, and
+ * returns 0 immediately without trying the (unusable) RPM IPC. At
+ * runtime PM time IRQs are still enabled and this callback may issue
+ * the IPC directly.
  */
 static int mmcc_msm8660_set_port_halt(u32 port_mask, bool halt)
 {
-	/*
-	 * QCOM_RPM_MM_FABRIC_HALT takes two words:
-	 *   [0] = halt state bits (1=halt, 0=unhalt) for ports in [1]
-	 *   [1] = port mask (which ports the state applies to)
-	 */
-	u32 cmd[2] = {
-		halt ? port_mask : 0,
-		port_mask,
-	};
-
 	/*
 	 * Tolerate calls before the cache is populated. footswitch_register()
 	 * runs inside qcom_cc_really_probe(), which is invoked *after*
@@ -2522,8 +2522,7 @@ static int mmcc_msm8660_set_port_halt(u32 port_mask, bool halt)
 	if (!mmcc_msm8660_rpm)
 		return 0;
 
-	return qcom_rpm_write(mmcc_msm8660_rpm, QCOM_RPM_ACTIVE_STATE,
-			      QCOM_RPM_MM_FABRIC_HALT, cmd, 2);
+	return qcom_mmss_port_halt(mmcc_msm8660_rpm, port_mask, halt);
 }
 
 /*
