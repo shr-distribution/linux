@@ -198,6 +198,12 @@ MODULE_PARM_DESC(bt_imr_override,
 #define MSM_UART_CR_RX_DISABLE			BIT(1)
 #define MSM_UART_CR_RX_ENABLE			BIT(0)
 #define MSM_UART_CR_CMD_RESET_RXBREAK_START	((1 << 11) | (2 << 4))
+/* Legacy webOS additional clears, missing from upstream msm_serial. The
+ * BT_CLR_TX_DONE command in particular is required to clear TX_DONE on this
+ * UARTDM v1.3 block — without it, subsequent TX bursts can stall mid-frame
+ * (chip sees nothing).  Same value as CR_CMD_CLR_TX_DONE in legacy headers.
+ */
+#define MSM_UART_CR_CMD_CLR_TX_DONE		(17 << 4)
 
 #define MSM_UART_IMR			0x0014
 #define MSM_UART_IMR_TXLEV		BIT(0)
@@ -1262,6 +1268,7 @@ static void msm_reset(struct uart_port *port)
 {
 	struct msm_port *msm_port = to_msm_port(port);
 	unsigned int mr;
+	bool bt = port->mapbase == 0x16540000;
 
 	/* reset everything */
 	msm_write(port, MSM_UART_CR_CMD_RESET_RX, MSM_UART_CR);
@@ -1269,7 +1276,27 @@ static void msm_reset(struct uart_port *port)
 	msm_write(port, MSM_UART_CR_CMD_RESET_ERR, MSM_UART_CR);
 	msm_write(port, MSM_UART_CR_CMD_RESET_BREAK_INT, MSM_UART_CR);
 	msm_write(port, MSM_UART_CR_CMD_RESET_CTS, MSM_UART_CR);
-	msm_write(port, MSM_UART_CR_CMD_RESET_RFR, MSM_UART_CR);
+
+	/* TouchPad CSR BlueCore BT UART: legacy webOS __msm_uartdm_reset
+	 * additionally clears stale-event + TX_DONE before re-enabling TX.
+	 * Without CLR_TX_DONE we observed our SYNC frames leaving SoC OK
+	 * (TX FIFO drains, BCSP TXWIRE prints correct bytes, tx counter
+	 * advances) but chip never firing SHY+event=1 — chip's BCSP layer
+	 * never sees them.  Match webOS exactly here. */
+	if (bt) {
+		msm_write(port, MSM_UART_CR_CMD_RESET_STALE_INT, MSM_UART_CR);
+		msm_write(port, MSM_UART_CR_CMD_CLR_TX_DONE, MSM_UART_CR);
+	}
+
+	/* RESET_RFR drives RFR HIGH = deasserted.  For the BT UART we keep
+	 * RFR LOW during the BCSP link-est (chip needs continuous CTS-low
+	 * to TX), and hci_bcsp.c later calls msm_serial_bt_force_rfr(true)
+	 * to assert it.  But the brief HIGH window between this reset and
+	 * the force_rfr call is webOS-incompatible.  Skip RESET_RFR for the
+	 * BT UART; manual SET_RFR in force_rfr will drive it LOW shortly. */
+	if (!bt)
+		msm_write(port, MSM_UART_CR_CMD_RESET_RFR, MSM_UART_CR);
+
 	mr = msm_read(port, MSM_UART_MR1);
 	mr &= ~MSM_UART_MR1_RX_RDY_CTL;
 	msm_write(port, mr, MSM_UART_MR1);
