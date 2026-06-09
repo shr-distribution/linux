@@ -202,6 +202,22 @@ static int footswitch_power_on(struct generic_pm_domain *domain)
 
 	udelay(LEGACY_FS_CLAMP_RELEASE_US);
 
+	/*
+	 * Unhalt the NoC master ports owned by this domain (paired with
+	 * the clamp release above; matches downstream footswitch-8x60.c
+	 * msm_bus_axi_portunhalt() in footswitch_enable()). Best-effort:
+	 * a failed unhalt leaves the rail powered + I/O unclamped, which
+	 * is still safer than tearing the rail back down -- the consumer
+	 * driver will hit a downstream bus error rather than indeterminate
+	 * silicon state.
+	 */
+	if (fs->port_halt && fs->port_mask) {
+		ret = fs->port_halt(fs->port_mask, false);
+		if (ret)
+			pr_warn("%s: NoC port unhalt (mask 0x%x) failed (%d); continuing\n",
+				fs->pd.name, fs->port_mask, ret);
+	}
+
 	return 0;
 }
 
@@ -236,6 +252,24 @@ static int footswitch_power_off(struct generic_pm_domain *domain)
 
 	if (fs->flags & FOOTSWITCH_SW_RESET)
 		footswitch_assert_reset(fs);
+
+	/*
+	 * Halt the NoC master ports owned by this domain BEFORE clamping
+	 * the I/O. With the master port halted no new AXI traffic can be
+	 * issued; the bus quiesces, the rail clamp below is safe, and any
+	 * subsequent clock-halt-status poll on AXI clocks in this domain
+	 * succeeds. Pairs with footswitch_power_on()'s portunhalt; matches
+	 * downstream footswitch-8x60.c msm_bus_axi_porthalt() in
+	 * footswitch_disable(). Best-effort: a failed halt does NOT abort
+	 * the power-off -- proceeding to clamp + collapse is safer than
+	 * leaving the rail powered with the halt request hanging.
+	 */
+	if (fs->port_halt && fs->port_mask) {
+		ret = fs->port_halt(fs->port_mask, true);
+		if (ret)
+			pr_warn("%s: NoC port halt (mask 0x%x) failed (%d); continuing collapse\n",
+				fs->pd.name, fs->port_mask, ret);
+	}
 
 	ret = footswitch_assert_clamp(fs);
 	if (ret)

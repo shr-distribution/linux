@@ -61,6 +61,19 @@ enum footswitch_pwr_state {
  * @reset_count:number of entries in @resets
  * @flags:	FOOTSWITCH_SW_RESET / _ALWAYS_ON / _RPM_ALWAYS_ON
  * @pwrsts:	power-state capability of this domain
+ * @port_mask:	bitmap of NoC master ports owned by this power domain.
+ *		Zero (the default) means the domain has no associated NoC
+ *		master and the @port_halt callback is not invoked.
+ * @port_halt:	optional callback that halts (@halt=true) or unhalts
+ *		(@halt=false) the @port_mask ports at the NoC fabric.
+ *		Called from footswitch_power_off() before clamping the
+ *		rail and from footswitch_power_on() after unclamping it,
+ *		matching the downstream footswitch-8x60.c pairing of
+ *		msm_bus_axi_porthalt/portunhalt with rail clamp/unclamp.
+ *		The MSM8x60 MMCC provider supplies this via qcom_rpm
+ *		(QCOM_RPM_MM_FABRIC_HALT). Errors are logged but do not
+ *		abort the power transition (best-effort: the rail still
+ *		gets clamped / unclamped even if the NoC write fails).
  */
 struct footswitch {
 	struct generic_pm_domain	pd;
@@ -73,6 +86,8 @@ struct footswitch {
 	unsigned int			reset_count;
 	u32				flags;
 	enum footswitch_pwr_state	pwrsts;
+	u32				port_mask;
+	int				(*port_halt)(u32 port_mask, bool halt);
 };
 
 /**
