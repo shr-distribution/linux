@@ -1625,6 +1625,38 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	ret = 0;
 
 out_terminate:
+	/*
+	 * Hard-reset the engine BEFORE terminating the ADM channels.
+	 *
+	 * qcom_adm's terminate_all takes the controller submit_lock and
+	 * waits for the in-flight box descriptor to drain. If the engine
+	 * has wedged mid-op (DOUT FIFO holding output the engine refuses
+	 * to release; DIN FIFO waiting for input the engine refuses to
+	 * accept) it has stopped firing CRCI handshakes — the ADM
+	 * descriptor never drains, terminate_sync never returns, and
+	 * the CPU that called us deadlocks waiting for an ADM IRQ that
+	 * can never run (because it needs the same submit_lock we now
+	 * indirectly hold via terminate_sync). On the device this
+	 * cascades into RCU stalls and full system lockup within ~20 s.
+	 *
+	 * GCC_CE2_RESET releases the engine's CRCI lines: after
+	 * deassert the engine no longer signals "ready" so ADM stops
+	 * waiting for handshakes and the in-flight descriptor either
+	 * completes (any remaining queued bytes flushed) or is cancelled
+	 * cleanly. terminate_sync below then drains the now-quiescent
+	 * channel without blocking.
+	 *
+	 * Skip if qce->reset is NULL (DT didn't wire reset-names =
+	 * "engine") — older deployments without the reset line have to
+	 * accept the deadlock risk, but mainline tenderloin DT does
+	 * provide it.
+	 */
+	if (qce->reset) {
+		reset_control_assert(qce->reset);
+		udelay(10);
+		reset_control_deassert(qce->reset);
+		udelay(10);
+	}
 	dmaengine_terminate_sync(tx);
 out_terminate_rx:
 	dmaengine_terminate_sync(rx);
@@ -2001,8 +2033,32 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 * handshake — a 64-dword burst would wait for handshakes
 		 * the engine doesn't fire and stall.
 		 */
-		unsigned int burst = (IS_DES(flags) || IS_3DES(flags)) ? 2 : 4;
+		/*
+		 * burst = 4 dwords (16 B) for ALL ciphers, not per-cipher.
+		 *
+		 * Earlier this was 2 dwords (8 B) for DES/3DES on the theory
+		 * that the DMA burst should match the cipher block size. But
+		 * the engine signals CE_IN / CE_OUT CRCI at its internal FIFO
+		 * granularity (16 B), independent of cipher block size.
+		 * Setting burst = 8 B made adm_get_blksize() map to
+		 * blk_size=1 (= 32 B CRCI handshake) — the engine then
+		 * signalled every 16 B but ADM expected 32 B per handshake,
+		 * exactly the same drift class that the CRCI-5 SDCC override
+		 * bug caused for AES output. DES produced wrong / flaky
+		 * output for cryptlen < 32 B and wedged the engine at large
+		 * cryptlen. Samsung's vendor driver never switches burst
+		 * per-cipher either; the ADM channel CRCI burst is set once
+		 * at probe.
+		 *
+		 * Engine FIFO granularity is 16 B, so DES inputs that aren't
+		 * a multiple of 16 must be padded to one before the engine
+		 * runs (engine sees padded length; we copy back only the
+		 * caller-visible length). For AES, cryptlen is always a
+		 * multiple of the AES block (16 B) so the pad is a no-op.
+		 */
+		unsigned int burst = 4;
 		unsigned int total = rctx->cryptlen;
+		unsigned int eng_total = round_up(total, burst * 4);
 		u32 seg_cfg = encr_cfg | BIT(CE2_FIRST_SHIFT) |
 			      BIT(CE2_LAST_SHIFT);
 		struct qce_ce2_bounce bounce;
@@ -2043,13 +2099,22 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		/*
 		 * Samsung vendor register order: ENCR_SEG_CFG -> SEG_CFG ->
 		 * SEG_SIZE -> GOPROC.  CONFIG is NOT touched per op.
+		 *
+		 * Engine sees eng_total (pad-rounded), not the caller's
+		 * cryptlen — the ADM transfers eng_total bytes and the
+		 * engine must agree, or DOUT FIFO drifts vs ADM expectations
+		 * and wedges.  Caller-visible cryptlen is restored when we
+		 * sg_pcopy_from_buffer() only `total` bytes back into the
+		 * user's dst sgl, and when the CBC IV-chain capture below
+		 * indexes by `total` (not eng_total) so the IV for op N+1
+		 * comes from the real last cipher block, not the pad's.
 		 */
-		writel(total << CE2_ENCR_SEG_SIZE_SHIFT,
+		writel(eng_total << CE2_ENCR_SEG_SIZE_SHIFT,
 		       qce->base + CE2_REG_ENCR_SEG_CFG);
 		writel(seg_cfg, qce->base + CE2_REG_SEG_CFG);
-		writel(total, qce->base + CE2_REG_SEG_SIZE);
+		writel(eng_total, qce->base + CE2_REG_SEG_SIZE);
 
-		dev_dbg(qce->dev, "CE2 skc op len=%u\n", total);
+		dev_dbg(qce->dev, "CE2 skc op len=%u eng=%u\n", total, eng_total);
 		QCE_DBG(qce,
 			"pre-GOPROC: SEG_CFG=0x%08x ENCR_SEG_CFG=0x%08x SEG_SIZE=0x%08x CONFIG=0x%08x STATUS=0x%08x\n",
 			readl(qce->base + CE2_REG_SEG_CFG),
@@ -2070,6 +2135,12 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 					       burst, &bounce,
 					       qce_ce2_skc_fire_goproc,
 					       NULL);
+		/* inout_cipher's internal `padded = round_up(nbytes, burst_bytes)`
+		 * matches our eng_total — both pad to 16 B. sg_pcopy in/out is
+		 * sized to `nbytes` (= total) so the user sees only the
+		 * caller-visible bytes; pad bytes encrypt and decrypt as
+		 * throwaway.
+		 */
 		if (ret) {
 			dev_err(qce->dev,
 				"CE2 skc DMA failed: ret=%d STATUS=0x%08x\n",
