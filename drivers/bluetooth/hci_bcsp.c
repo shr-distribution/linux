@@ -19,6 +19,7 @@
 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/math64.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/types.h>
 #include <linux/fcntl.h>
@@ -310,7 +311,13 @@ static inline void msm_serial_bt_dance(void) { }
  */
 static inline u16 bcsp_baud_to_pskey_divisor(unsigned int baud)
 {
-	return (u16)((500000U + baud * 4096ULL) / 1000000U);
+	/* baud * 4096 can overflow u32 at baud > 1048575; div_u64 (32-bit
+	 * divisor) keeps the ARM modpost away from __aeabi_uldivmod which
+	 * isn't normally available to modules.
+	 */
+	u64 num = 500000ULL + (u64)baud * 4096ULL;
+
+	return (u16)div_u64(num, 1000000U);
 }
 
 /* Palm Platform PSKEYs (12 entries from webOS) */
