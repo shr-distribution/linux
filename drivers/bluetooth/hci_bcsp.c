@@ -783,15 +783,16 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	 * 0xdb) so it's silently discarded by SLIP's between-frames state.
 	 */
 	/*
-	 * 64 bytes × ~87 µs/byte @ 115,200 baud = ~5.6 ms of UART activity.
-	 * That matches the CSR BlueCore6 datasheet section 6.2.1 figure:
-	 *   "BlueCore6-ROM hardware incorporates an automatic 5ms delay after
-	 *    the assertion of the system clock request signal before running
-	 *    firmware."
-	 * So 5 ms is the chip's documented wake-from-sleep firmware-ready time;
-	 * earlier 4-byte attempts (~348 µs) were far too short.
+	 * 4-byte and 64-byte 0x00 preambles tested on-device, neither advanced
+	 * the chip past SHY.  Hypothesis: 64 bytes (~5.5 ms of mostly-LOW
+	 * signal at 115,200) tripped chip's UART break detector OR confused
+	 * chip's SLIP RX into discarding the frame; 4 bytes (~348 µs) was
+	 * shorter than chip's wake-up window.  Set to 0 and rely on the
+	 * "send 2 packets back-to-back" alternative from the same thesis
+	 * paragraph: bcsp_complete_rx_pkt queues SYNC_RSP twice on each
+	 * received SYNC.  First absorbs wake, second is processed.
 	 */
-	#define BCSP_LE_WAKE_PREAMBLE 64
+	#define BCSP_LE_WAKE_PREAMBLE 0
 	int le_wake = (pkt_type == BCSP_LE_PKT) ? BCSP_LE_WAKE_PREAMBLE : 0;
 
 	nskb = alloc_skb((len + 6) * 2 + 2 + tx_preamble + le_wake, GFP_ATOMIC);
@@ -1186,13 +1187,24 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		/* Clear warm reset flag */
 		bcsp->warm_reset_sent = false;
 
-		nskb = alloc_skb(4, GFP_ATOMIC);
-		if (!nskb)
-			return;
-		skb_put_data(nskb, sync_rsp_pkt, 4);
-		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
+		/*
+		 * Queue SYNC_RSP TWICE — per Josbrant thesis page 22:
+		 *   "When a packet arrives to a sleeping BT module the packet
+		 *    will only wake the module up to normal mode, thus require
+		 *    2 packets to be send or first a 'signalling' byte."
+		 *
+		 * The 'signalling byte' alternative (0x00 wake preamble) was
+		 * tested at 4 and 64 bytes — neither advanced the chip past SHY.
+		 * The 2-packets alternative is cleaner: a duplicate SYNC_RSP
+		 * frame is processed identically by the BCSP RX (SHY-state
+		 * "sync_rsp received" handler is idempotent — fires the SHY ->
+		 * CURIOUS transition on first valid frame), so back-to-back
+		 * duplicates cost nothing if the chip is already awake, but
+		 * cover the case where the first packet wakes the chip and
+		 * the second is processed.
+		 */
+		BT_DBG("BCSP: sending sync_rsp x2 (wake + process)");
 
-		BT_DBG("BCSP: sending sync_rsp");
 		/*
 		 * Optional response delay before TX'ing SYNC-RSP. Tune via
 		 * /sys/module/hci_uart/parameters/bt_sync_rsp_delay_us.
@@ -1208,7 +1220,25 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 		if (bt_tx_break_us)
 			msm_serial_bt_send_break(bt_tx_break_us);
 		bcsp_wake_chip_rx(hu);		/* wake chip RX before TX (H2) */
-		skb_queue_head(&bcsp->unrel, nskb);  /* Head for immediate response */
+
+		/* SYNC_RSP #1 — absorbs chip wake-up */
+		nskb = alloc_skb(4, GFP_ATOMIC);
+		if (!nskb)
+			return;
+		skb_put_data(nskb, sync_rsp_pkt, 4);
+		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
+		skb_queue_tail(&bcsp->unrel, nskb);
+
+		/* SYNC_RSP #2 — processed by chip's BCSP firmware */
+		nskb = alloc_skb(4, GFP_ATOMIC);
+		if (!nskb) {
+			hci_uart_tx_wakeup(hu);
+			return;
+		}
+		skb_put_data(nskb, sync_rsp_pkt, 4);
+		hci_skb_pkt_type(nskb) = BCSP_LE_PKT;
+		skb_queue_tail(&bcsp->unrel, nskb);
+
 		hci_uart_tx_wakeup(hu);
 	}
 	/* Handle sync_rsp packet - device acknowledged our sync, send conf */
