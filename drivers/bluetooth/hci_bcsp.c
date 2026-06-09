@@ -2163,23 +2163,35 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 	bccmd[15] = 0x00;
 
 	/*
-	 * BD Address in CSR PSKEY format:
-	 *   Word 0: LAP[15:8] | (LAP[23:16] << 8)
-	 *   Word 1: LAP[7:0] with padding
-	 *   Word 2: UAP with padding
-	 *   Word 3: NAP (little endian)
+	 * BD Address in CSR PSKEY_BDADDR wire format (4 uint16 words).
 	 *
-	 * bdaddr_t.b[] stores address in little endian:
+	 * Layout verified by disassembling webOS PmBtStack's
+	 * setBootstrapLocalDeviceBluetoothAddress @ 0x69268 in
+	 * libPmBtBsaif.so — the function takes a {u32 lap; u8 uap; u8 pad;
+	 * u16 nap} input struct and writes:
+	 *
+	 *   word 0 (struct+0) = LAP[23:16] in low byte, 0 in high byte
+	 *   word 1 (struct+2) = LAP[15:0]
+	 *   word 2 (struct+4) = UAP in low byte, 0 in high byte
+	 *   word 3 (struct+6) = NAP
+	 *
+	 * bdaddr_t.b[] stores the 6-byte address LE (the same order our
+	 * nvmem cell delivers it):
 	 *   b[0]=LAP[7:0], b[1]=LAP[15:8], b[2]=LAP[23:16],
 	 *   b[3]=UAP, b[4]=NAP[7:0], b[5]=NAP[15:8]
+	 *
+	 * The pre-2026-06-09 driver swapped the LAP nibbling (put
+	 * LAP[15:8]+LAP[23:16] in word 0 and LAP[7:0] in word 1), so the
+	 * chip received a corrupt BDADDR and reverted to the factory
+	 * default `00:02:5B:00:A5:A5` after WARM_RESET.
 	 */
-	bccmd[16] = addr->b[1];	/* Word 0 low: LAP[15:8] */
-	bccmd[17] = addr->b[2];	/* Word 0 high: LAP[23:16] */
-	bccmd[18] = addr->b[0];	/* Word 1 low: LAP[7:0] */
-	bccmd[19] = 0x00;	/* Word 1 high: padding */
-	bccmd[20] = addr->b[3];	/* Word 2 low: UAP */
+	bccmd[16] = addr->b[2];	/* Word 0 low : LAP[23:16] */
+	bccmd[17] = 0x00;	/* Word 0 high: padding */
+	bccmd[18] = addr->b[0];	/* Word 1 low : LAP[7:0]  */
+	bccmd[19] = addr->b[1];	/* Word 1 high: LAP[15:8] */
+	bccmd[20] = addr->b[3];	/* Word 2 low : UAP */
 	bccmd[21] = 0x00;	/* Word 2 high: padding */
-	bccmd[22] = addr->b[4];	/* Word 3 low: NAP[7:0] */
+	bccmd[22] = addr->b[4];	/* Word 3 low : NAP[7:0]  */
 	bccmd[23] = addr->b[5];	/* Word 3 high: NAP[15:8] */
 
 	skb = alloc_skb(sizeof(bccmd), GFP_KERNEL);
