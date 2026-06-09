@@ -75,7 +75,7 @@ static uint tx_preamble;
  * ANA_FTRIM=0x01F6, HOST_INTERFACE=0x01F9, UART_BAUDRATE=0x01BE,
  * LC_MAX_TX_POWER=0x0011, LC_DEFAULT_TX_POWER=0x0013).
  */
-static bool skip_pskeys = true;  /* Skip PSKEY/WARM_RESET (scrambled ids brick chip) */
+static bool skip_pskeys;  /* default: send PSKEYs (varids now authoritative per csr.h) */
 
 /*
  * Wake the CSR BlueCore's power-gated UART RX before each link-establishment
@@ -2169,7 +2169,26 @@ static int bcsp_send_bdaddr_bccmd(struct hci_uart *hu, bdaddr_t *addr)
 static int bcsp_setup(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp = hu->priv;
+	struct bcsp_serdev *bdev = NULL;
+	unsigned int oper_baud = 0;
 	int i;
+
+	if (hu->serdev) {
+		bdev = container_of(hu, struct bcsp_serdev, serdev_hu);
+		/*
+		 * Target operational baud: max-speed DT property (typ.
+		 * 3.6864 Mbps on TouchPad), falling back to 3.6864 Mbps if
+		 * the DT didn't specify.  The PSKEY_UART_BAUDRATE we will
+		 * send to the chip must match — bcsp_baud_to_pskey_divisor
+		 * (verified against setBootstrapBaudrate at
+		 * libPmBtBsaif.so 0x69030: 3686400 → divisor 0x3AFC).
+		 */
+		oper_baud = bdev->oper_speed ?: 3686400;
+		bcsp->pskey_uart_baudrate =
+			bcsp_baud_to_pskey_divisor(oper_baud);
+		BT_INFO("BCSP: targeting oper_baud=%u (PSKEY_UART_BAUDRATE divisor=0x%04x)",
+			oper_baud, bcsp->pskey_uart_baudrate);
+	}
 
 	/*
 	 * BD address configuration for CSR chips.
@@ -2181,8 +2200,9 @@ static int bcsp_setup(struct hci_uart *hu)
 	 * Instead, we send BCCMD commands here after link establishment:
 	 * 1. Send PSKEY_BDADDR to set the BD address
 	 * 2. Send WARM_RESET to apply the change
-	 * 3. Wait for chip to reset and re-establish link
-	 * 4. Continue with HCI initialization
+	 * 3. Wait for chip to reset and re-establish link at oper_baud
+	 * 4. Switch host UART to oper_baud + EVEN parity + HW flow
+	 * 5. Continue with HCI initialization
 	 */
 	if (bcsp->bdaddr_state == BCSP_BDADDR_PENDING) {
 		if (skip_pskeys) {
@@ -2254,8 +2274,14 @@ static int bcsp_setup(struct hci_uart *hu)
 				     bcsp->pskey_h_hc_fc_max_acl_pkts);
 		msleep(20);
 
-		/* UART baudrate divisor */
-		bcsp_send_pskey_word(hu, PSKEY_PCM_CONFIG32,
+		/*
+		 * UART baudrate divisor.  At this point bcsp->pskey_uart_baudrate
+		 * is the divisor for the OPERATIONAL baud (set in bcsp_setup()
+		 * below from oper_speed/max-speed in DT) so chip comes back at
+		 * 3.6864 Mbps after WARM_RESET.  Host UART is then re-tuned to
+		 * match in the post-WARM_RESET path.
+		 */
+		bcsp_send_pskey_word(hu, PSKEY_UART_BAUDRATE,
 				     bcsp->pskey_uart_baudrate);
 		msleep(20);
 
@@ -2264,7 +2290,7 @@ static int bcsp_setup(struct hci_uart *hu)
 				     bcsp->pskey_enc_key_min);
 		msleep(20);
 
-		/* Unknown 0x01F9 */
+		/* BCSP-specific UART config (PSKEY 0x01BF) */
 		bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
 				     bcsp->pskey_uart_config_bcsp);
 		msleep(20);
@@ -2274,7 +2300,7 @@ static int bcsp_setup(struct hci_uart *hu)
 				     bcsp->pskey_max_tx_power_no_rssi);
 		msleep(20);
 
-		/* Default TX power without RSSI */
+		/* VM disable (PSKEY 0x025D, bool — webOS sets to 1) */
 		bcsp_send_pskey_word(hu, PSKEY_VM_DISABLE,
 				     bcsp->pskey_default_tx_power_no_rssi);
 		msleep(20);
@@ -2394,6 +2420,30 @@ static int bcsp_setup(struct hci_uart *hu)
 			BT_INFO("BCSP: Serdev mode - waiting for chip restart after WARM_RESET...");
 
 			/*
+			 * After WARM_RESET the chip reboots its firmware and
+			 * applies the PSKEYs we wrote — including
+			 * PSKEY_UART_BAUDRATE.  Chip's UART will come back at
+			 * oper_baud (typ. 3.6864 Mbps); ours is still at
+			 * init-speed (115,200) from the SHY handshake.  Switch
+			 * the host UART NOW, BEFORE chip emits its post-reset
+			 * SYNC at the new baud — otherwise we'd mis-frame the
+			 * SYNC and the re-handshake would timeout.
+			 *
+			 * Brief msleep gives chip a moment to actually finish
+			 * the reset / re-program its UART block before our
+			 * baud switch hits the RX line.
+			 */
+			if (oper_baud && oper_baud != bdev->init_speed) {
+				msleep(50);
+				BT_INFO("BCSP: Switching host UART to oper_baud=%u 8-E-1 + HW flow",
+					oper_baud);
+				serdev_device_set_baudrate(hu->serdev, oper_baud);
+				serdev_device_set_parity(hu->serdev,
+							 SERDEV_PARITY_EVEN);
+				serdev_device_set_flow_control(hu->serdev, true);
+			}
+
+			/*
 			 * The chip restarts in BCSP link-establishment state and
 			 * will send SYNC packets until we ACK them. The sync
 			 * handler resets our seq numbers + sets link_state back
@@ -2411,7 +2461,8 @@ static int bcsp_setup(struct hci_uart *hu)
 				BT_ERR("BCSP: Timeout waiting for re-handshake after WARM_RESET");
 				return -ETIMEDOUT;
 			}
-			BT_INFO("BCSP: Link re-established after WARM_RESET");
+			BT_INFO("BCSP: Link re-established after WARM_RESET at oper_baud=%u",
+				oper_baud);
 		} else {
 			msleep(500);
 			BT_INFO("BCSP: PSKEYs + BDADDR applied. Restart hciattach for fresh connection.");
@@ -2480,7 +2531,10 @@ static int bcsp_setup(struct hci_uart *hu)
 		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
 				     bcsp->pskey_h_hc_fc_max_acl_pkts);
 		msleep(20);
-		bcsp_send_pskey_word(hu, PSKEY_PCM_CONFIG32,
+		/* UART baudrate divisor — matches bcsp->pskey_uart_baudrate
+		 * computed from oper_speed/max-speed in bcsp_setup() so chip
+		 * comes back at the operational baud after WARM_RESET. */
+		bcsp_send_pskey_word(hu, PSKEY_UART_BAUDRATE,
 				     bcsp->pskey_uart_baudrate);
 		msleep(20);
 		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
@@ -2582,6 +2636,23 @@ static int bcsp_setup(struct hci_uart *hu)
 			BT_INFO("BCSP: Serdev mode - waiting for re-handshake after WARM_RESET...");
 
 			/*
+			 * Same host-UART switch as the BDADDR_PENDING branch
+			 * above: chip applies the new PSKEY_UART_BAUDRATE on
+			 * reset and will SYNC at oper_baud — bring the host
+			 * UART to the same baud + parity + flow before the
+			 * re-handshake starts.
+			 */
+			if (oper_baud && oper_baud != bdev->init_speed) {
+				msleep(50);
+				BT_INFO("BCSP: Switching host UART to oper_baud=%u 8-E-1 + HW flow",
+					oper_baud);
+				serdev_device_set_baudrate(hu->serdev, oper_baud);
+				serdev_device_set_parity(hu->serdev,
+							 SERDEV_PARITY_EVEN);
+				serdev_device_set_flow_control(hu->serdev, true);
+			}
+
+			/*
 			 * After WARM_RESET the chip restarts in handshake state
 			 * and emits SYNCs; sync handler resets driver state and
 			 * advances toward LINK_ACTIVE. Wait for the link to come
@@ -2593,7 +2664,8 @@ static int bcsp_setup(struct hci_uart *hu)
 				BT_ERR("BCSP: Timeout waiting for re-handshake after WARM_RESET");
 				return -ETIMEDOUT;
 			}
-			BT_INFO("BCSP: Link re-established after WARM_RESET");
+			BT_INFO("BCSP: Link re-established after WARM_RESET at oper_baud=%u",
+				oper_baud);
 		} else {
 			msleep(500);
 			BT_INFO("BCSP: PSKEYs applied. Restart hciattach for fresh connection.");
