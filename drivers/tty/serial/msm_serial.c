@@ -796,27 +796,38 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	struct uart_port *uart = &msm_port->uart;
 	u32 val;
 	int ret;
+	bool bt = uart->mapbase == 0x16540000;
 
-	if (IS_ENABLED(CONFIG_CONSOLE_POLL))
+	if (IS_ENABLED(CONFIG_CONSOLE_POLL)) {
+		if (bt) dev_info(uart->dev, "rx_dma: bail CONSOLE_POLL=y\n");
 		return;
+	}
 
-	if (!dma->chan)
+	if (!dma->chan) {
+		if (bt) dev_info(uart->dev, "rx_dma: bail dma->chan=NULL\n");
 		return;
+	}
 
+	if (bt) dev_info(uart->dev, "rx_dma: prep_slave_single phys=%pad size=%u\n",
+			 &dma->rx.phys, UARTDM_RX_SIZE);
 	/* Coherent RX buffer: phys is stable, no per-cycle mapping needed. */
 	dma->desc = dmaengine_prep_slave_single(dma->chan, dma->rx.phys,
 						UARTDM_RX_SIZE, DMA_DEV_TO_MEM,
 						DMA_PREP_INTERRUPT);
-	if (!dma->desc)
+	if (!dma->desc) {
+		if (bt) dev_info(uart->dev, "rx_dma: prep returned NULL -> sw_mode\n");
 		goto sw_mode;
+	}
 
 	dma->desc->callback = msm_complete_rx_dma;
 	dma->desc->callback_param = msm_port;
 
 	dma->cookie = dmaengine_submit(dma->desc);
 	ret = dma_submit_error(dma->cookie);
-	if (ret)
+	if (ret) {
+		if (bt) dev_info(uart->dev, "rx_dma: submit err=%d -> sw_mode\n", ret);
 		goto sw_mode;
+	}
 	/*
 	 * Using DMA for FIFO off-load, no need for "Rx FIFO over
 	 * watermark" or "stale" interrupts, disable them
@@ -850,6 +861,13 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	if (msm_port->is_uartdm > UARTDM_1P3)
 		msm_write(uart, val, UARTDM_DMEN);
 
+	if (bt) {
+		u32 dmen_rb = msm_read(uart, UARTDM_DMEN);
+		u32 imr_rb  = msm_read(uart, MSM_UART_IMR);
+		dev_info(uart->dev,
+			 "rx_dma: armed, enable_bit=0x%02x DMEN_w=0x%02x DMEN_r=0x%02x IMR=0x%x\n",
+			 dma->enable_bit, val, dmen_rb, imr_rb);
+	}
 	return;
 
 sw_mode:
@@ -867,6 +885,11 @@ sw_mode:
 	/* Re-enable RX interrupts */
 	msm_port->imr |= MSM_UART_IMR_RXLEV | MSM_UART_IMR_RXSTALE;
 	msm_write_imr(uart, msm_port->imr);
+
+	if (bt) {
+		u32 imr_rb = msm_read(uart, MSM_UART_IMR);
+		dev_info(uart->dev, "rx_dma: sw_mode IMR=0x%x\n", imr_rb);
+	}
 }
 
 static void msm_stop_rx(struct uart_port *port)
