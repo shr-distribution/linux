@@ -114,12 +114,17 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 
+		/* Each child node name (e.g. "BToADDR") is matched against the
+		 * factory token name in the partition; `reg = <offset length>`
+		 * picks where the parsed data lands in the synthetic nvmem
+		 * address space.  6-byte cells against ASCII tokens are auto-
+		 * parsed as "XX:XX:XX:XX:XX:XX" → 6 raw LE bytes (the format
+		 * the `local-bd-address` consumer binding expects).
+		 */
 		bt_addr: BToADDR@0 {
-			/* offset/length are set by the provider at probe; the
-			 * `reg` here is decorative — cell lookup is by name. */
 			reg = <0 6>;
 		};
-		wifi_addr: WIFIoADDR@1 {
+		wifi_addr: WIFIoADDR@6 {
 			reg = <6 6>;
 		};
 	};
@@ -3450,12 +3455,10 @@
 		 * Bluetooth Device Address (BD_ADDR) — per-device unique,
 		 * sourced from the BToADDR factory token in the eMMC tokens
 		 * partition (mmcblk0p12) via the touchpad-tokens nvmem
-		 * provider (drivers/nvmem/touchpad-tokens.c).  Cell name
-		 * matches the ASCII token name ("BToADDR"); the standard
-		 * `local-bd-address` cell-name binding triggers the macaddr
-		 * post-processor in the provider, converting the
-		 * "XX:XX:XX:XX:XX:XX" ASCII into the 6 raw bytes (LE order)
-		 * the Bluetooth subsystem expects.
+		 * provider (drivers/nvmem/touchpad-tokens.c).  The provider
+		 * detects 6-byte cells against ASCII tokens and parses the
+		 * "XX:XX:XX:XX:XX:XX" source into 6 raw LE bytes — the
+		 * format the `local-bd-address` consumer binding expects.
 		 *
 		 * Falls back to the kernel's HCI_QUIRK_INVALID_BDADDR random
 		 * address if the nvmem read fails (tokens partition missing,

@@ -3709,6 +3709,10 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 			dev_info(dev, "BCSP: deferring probe — BD-address nvmem cell not ready\n");
 			return -EPROBE_DEFER;
 		}
+		if (IS_ERR(cell)) {
+			dev_warn(dev, "BCSP: no 'local-bd-address' nvmem cell (%ld) — falling back to DT/random\n",
+				 PTR_ERR(cell));
+		}
 		if (!IS_ERR(cell)) {
 			size_t cell_len = 0;
 			void *buf = nvmem_cell_read(cell, &cell_len);
@@ -3725,7 +3729,6 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 			} else {
 				dev_warn(dev, "BCSP: nvmem cell wrong length %zu (want %zu)\n",
 					 cell_len, sizeof(bdev->nvmem_bdaddr));
-				kfree(buf);
 			}
 			if (!IS_ERR(buf))
 				kfree(buf);

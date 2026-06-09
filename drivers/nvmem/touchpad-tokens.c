@@ -6,8 +6,7 @@
  * holds the unique-per-device factory tokens: BToADDR, WIFIoADDR, ProductSN,
  * ProductSKU, HWoRev, etc.  webOS reads them as ASCII strings from
  * /dev/tokens/<name>; this driver parses the same format and re-exposes
- * each token as an nvmem cell that mainline drivers can consume via the
- * standard nvmem-cells DT binding.
+ * each token requested via DT-declared cells.
  *
  * Storage layout:
  *
@@ -24,16 +23,24 @@
  *                          0x14  char name[16] (null-padded)
  *                          0x24  u8   data[length]
  *
- * BToADDR specifically is stored as ASCII "00:1D:FE:85:64:A9".  Cells
- * declared with `read-post-process = "macaddr"` get the ASCII parsed
- * into 6 raw bytes (Bluetooth LE order: LSB first).
+ * Cell layout model:
  *
- * The driver waits for the backing block device to be ready (typically
- * deferring probe until the mmc host has enumerated mmcblk0) then reads
- * the partition once and caches the parsed token data.
+ *   Each DT child node of touchpad-tokens declares one cell.  The child
+ *   node's name (e.g. "BToADDR") is matched against the token name in the
+ *   partition.  The child's `reg = <offset length>` declares where the
+ *   cell sits inside the synthetic nvmem address space exposed to consumers.
+ *
+ *   At probe we allocate a synthetic buffer sized to fit all the declared
+ *   cells, then for each DT child find the matching token and copy (or
+ *   parse) its data into the buffer at the declared offset.  reg_read is
+ *   then a flat memcpy out of that buffer — no cell-info merge surprises,
+ *   no offset/length mismatch between programmatic cells and DT cells.
+ *
+ *   Special case: a cell with declared length 6 against an ASCII token is
+ *   treated as "XX:XX:XX:XX:XX:XX" and parsed into 6 raw LE bytes — the
+ *   format the standard `local-bd-address` consumer binding expects.
  */
-#include <linux/blk_types.h>
-#include <linux/blkdev.h>
+#include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -53,36 +60,32 @@
 #define TOKEN_TYPE_BINARY	1
 #define TOKEN_TYPE_ASCII	2
 
-/* Max raw partition bytes we keep in RAM for parsing.  TouchPad's tokens
- * region is ~10 KB; cap at 64 KB defensively.
- */
 #define TOKENS_PARTITION_MAX	(64 * 1024)
 
 struct touchpad_token {
 	char	name[TOKEN_NAME_SIZE + 1];
 	u32	type;
 	u32	length;
-	const u8 *data;		/* pointer into priv->raw */
+	const u8 *data;
 };
 
 struct touchpad_tokens_priv {
 	struct device	*dev;
 	struct nvmem_device *nvmem;
-	void		*raw;		/* cached partition bytes */
+
+	void		*raw;
 	size_t		raw_size;
 
-	/* Each cell is given a linear synthetic offset into the nvmem space;
-	 * the driver translates that back to its underlying token data via
-	 * this offset table.  Cell 0 starts at offset 0, cell 1 starts at
-	 * offset cell0.len, etc.
-	 */
 	struct touchpad_token *tokens;
 	unsigned int	num_tokens;
 
-	struct nvmem_cell_info *cell_info;
+	/* Synthetic linear buffer the nvmem framework reads from.  Sized to
+	 * cover the highest-addressed DT cell; reg_read is memcpy from here.
+	 */
+	u8		*synth;
+	size_t		synth_size;
 };
 
-/* Parse the NVRM TOC and find the token-region offset+size. */
 static int touchpad_tokens_find_region(struct touchpad_tokens_priv *priv,
 				       size_t *out_off, size_t *out_len)
 {
@@ -116,7 +119,6 @@ static int touchpad_tokens_find_region(struct touchpad_tokens_priv *priv,
 	return -ENOENT;
 }
 
-/* Walk the tokens region and stash each TOKN record's metadata. */
 static int touchpad_tokens_parse(struct touchpad_tokens_priv *priv,
 				 size_t tokens_off, size_t tokens_len)
 {
@@ -125,7 +127,6 @@ static int touchpad_tokens_parse(struct touchpad_tokens_priv *priv,
 	const u8 *p    = base;
 	unsigned int n = 0;
 
-	/* First pass: count valid records so we can kcalloc the array. */
 	while (p + TOKEN_HEADER_SIZE <= end) {
 		u32 len;
 
@@ -145,7 +146,6 @@ static int touchpad_tokens_parse(struct touchpad_tokens_priv *priv,
 	if (!priv->tokens)
 		return -ENOMEM;
 
-	/* Second pass: fill in. */
 	p = base;
 	for (priv->num_tokens = 0; priv->num_tokens < n; priv->num_tokens++) {
 		struct touchpad_token *t = &priv->tokens[priv->num_tokens];
@@ -163,10 +163,18 @@ static int touchpad_tokens_parse(struct touchpad_tokens_priv *priv,
 	return 0;
 }
 
-/* Convert "XX:XX:XX:XX:XX:XX" ASCII (NUL-terminated, possibly with
- * trailing junk) into a 6-byte raw MAC in Bluetooth LE order (LSB first
- * = standard `local-bd-address` cell format).
- */
+static struct touchpad_token *find_token(struct touchpad_tokens_priv *priv,
+					 const char *name)
+{
+	unsigned int i;
+
+	for (i = 0; i < priv->num_tokens; i++)
+		if (!strcmp(priv->tokens[i].name, name))
+			return &priv->tokens[i];
+	return NULL;
+}
+
+/* "XX:XX:XX:XX:XX:XX" ASCII → 6 raw bytes in Bluetooth-LE order. */
 static int parse_macaddr_ascii_le(const char *ascii, size_t len, u8 *out)
 {
 	unsigned int v[6];
@@ -179,7 +187,6 @@ static int parse_macaddr_ascii_le(const char *ascii, size_t len, u8 *out)
 	if (r != 6)
 		return -EINVAL;
 
-	/* Bluetooth `local-bd-address` cell expects LE order. */
 	out[0] = v[5];
 	out[1] = v[4];
 	out[2] = v[3];
@@ -189,61 +196,93 @@ static int parse_macaddr_ascii_le(const char *ascii, size_t len, u8 *out)
 	return 0;
 }
 
-/* nvmem-cell `read-post-process = "macaddr"` callback. */
-static int touchpad_tokens_post_process_macaddr(void *context, const char *id,
-						int index, unsigned int offset,
-						void *buf, size_t bytes)
+/* Walk DT children, allocate a synthetic buffer big enough to cover them
+ * all, and populate it.  Each child node's name picks the token; reg picks
+ * where in the synthetic space it lands.
+ */
+static int touchpad_tokens_layout(struct touchpad_tokens_priv *priv,
+				  struct device_node *np)
 {
-	struct touchpad_tokens_priv *priv = context;
-	unsigned int i;
+	struct device_node *child;
+	size_t needed = 0;
 
-	if (bytes != 6)
-		return -EINVAL;
-	/* The cell's underlying token must have come back as ASCII; find it
-	 * by name (cell name == token name) and parse.
-	 */
-	for (i = 0; i < priv->num_tokens; i++) {
-		if (strcmp(priv->tokens[i].name, id))
+	for_each_child_of_node(np, child) {
+		u32 reg[2];
+
+		if (of_property_read_u32_array(child, "reg", reg, 2))
 			continue;
-		if (priv->tokens[i].type != TOKEN_TYPE_ASCII)
-			return -EINVAL;
-		return parse_macaddr_ascii_le((const char *)priv->tokens[i].data,
-					      priv->tokens[i].length, buf);
+		if (reg[0] + reg[1] > needed)
+			needed = reg[0] + reg[1];
 	}
-	return -ENOENT;
+	if (!needed) {
+		dev_err(priv->dev, "no DT cells declared — nothing to expose\n");
+		return -EINVAL;
+	}
+
+	priv->synth_size = needed;
+	priv->synth = devm_kzalloc(priv->dev, needed, GFP_KERNEL);
+	if (!priv->synth)
+		return -ENOMEM;
+
+	for_each_child_of_node(np, child) {
+		u32 reg[2];
+		struct touchpad_token *t;
+		const char *cell_name = child->name;
+
+		if (of_property_read_u32_array(child, "reg", reg, 2))
+			continue;
+
+		t = find_token(priv, cell_name);
+		if (!t) {
+			dev_warn(priv->dev,
+				 "cell '%s' has no matching token — leaving zero\n",
+				 cell_name);
+			continue;
+		}
+
+		/* 6-byte cell against an ASCII token: treat as "XX:XX:..." MAC
+		 * and parse into 6 raw LE bytes — what `local-bd-address`
+		 * consumers want.
+		 */
+		if (reg[1] == 6 && t->type == TOKEN_TYPE_ASCII) {
+			u8 mac[6];
+
+			if (!parse_macaddr_ascii_le((const char *)t->data,
+						    t->length, mac)) {
+				memcpy(priv->synth + reg[0], mac, 6);
+				dev_info(priv->dev,
+					 "cell '%s' parsed MAC %pM (LE bytes %*phN)\n",
+					 cell_name, mac, 6, mac);
+				continue;
+			}
+			dev_warn(priv->dev,
+				 "cell '%s': MAC parse of '%.*s' failed, raw copy fallback\n",
+				 cell_name, (int)min_t(size_t, t->length, 24),
+				 t->data);
+		}
+
+		{
+			size_t copy = min_t(size_t, reg[1], t->length);
+
+			memcpy(priv->synth + reg[0], t->data, copy);
+			dev_dbg(priv->dev, "cell '%s' raw copy %zu bytes\n",
+				cell_name, copy);
+		}
+	}
+	return 0;
 }
 
-/* reg_read for the synthetic flat nvmem space: each token gets a fixed
- * contiguous range starting at the offset we recorded in cell_info.
- */
 static int touchpad_tokens_read(void *context, unsigned int offset,
 				void *val, size_t bytes)
 {
 	struct touchpad_tokens_priv *priv = context;
-	struct nvmem_cell_info *ci;
-	unsigned int i;
 
-	for (i = 0; i < priv->num_tokens; i++) {
-		ci = &priv->cell_info[i];
-		if (offset >= ci->offset && offset < ci->offset + ci->bytes) {
-			unsigned int in_cell = offset - ci->offset;
-			unsigned int copy = min_t(unsigned int, bytes,
-						  ci->bytes - in_cell);
-
-			if (priv->tokens[i].length < in_cell + copy)
-				return -EINVAL;
-			memcpy(val, priv->tokens[i].data + in_cell, copy);
-			return 0;
-		}
-	}
-	return -EINVAL;
+	if (offset + bytes > priv->synth_size)
+		return -EINVAL;
+	memcpy(val, priv->synth + offset, bytes);
+	return 0;
 }
 
-/* Read the backing block device into priv->raw.  Uses kernel-side VFS
- * filp_open so we don't have to invent a custom block-dev API. Defers
- * probe if the device isn't enumerated yet (e.g., mmc host probe hasn't
- * completed).
- */
 static int touchpad_tokens_load_storage(struct touchpad_tokens_priv *priv,
 					const char *path)
 {
@@ -282,7 +321,6 @@ static int touchpad_tokens_probe(struct platform_device *pdev)
 	struct nvmem_config cfg = {};
 	const char *path;
 	size_t tokens_off, tokens_len;
-	unsigned int i, total = 0;
 	int err;
 
 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
@@ -311,45 +349,19 @@ static int touchpad_tokens_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	/* Build cell_info array.  Token names become cell names; each token
-	 * gets a contiguous offset range.  Consumers reference cells by
-	 * <name> via the nvmem-cell-names DT binding.
-	 */
-	priv->cell_info = devm_kcalloc(&pdev->dev, priv->num_tokens,
-				       sizeof(*priv->cell_info), GFP_KERNEL);
-	if (!priv->cell_info)
-		return -ENOMEM;
-	for (i = 0; i < priv->num_tokens; i++) {
-		priv->cell_info[i].name   = priv->tokens[i].name;
-		priv->cell_info[i].offset = total;
-		priv->cell_info[i].bytes  = priv->tokens[i].length;
-		/* For ASCII MAC tokens, attach the macaddr post-processor —
-		 * cells declared with `nvmem-cell-names = "local-bd-address";`
-		 * pick this up automatically per the standard binding.
-		 */
-		if (priv->tokens[i].type == TOKEN_TYPE_ASCII &&
-		    (!strcmp(priv->tokens[i].name, "BToADDR") ||
-		     !strcmp(priv->tokens[i].name, "WIFIoADDR"))) {
-			priv->cell_info[i].read_post_process =
-				touchpad_tokens_post_process_macaddr;
-			/* Override exposed length: post-processor produces 6
-			 * raw bytes regardless of the ASCII source length.
-			 */
-			priv->cell_info[i].bytes = 6;
-		}
-		total += priv->cell_info[i].bytes;
-	}
+	err = touchpad_tokens_layout(priv, pdev->dev.of_node);
+	if (err)
+		return err;
 
 	cfg.dev      = &pdev->dev;
 	cfg.name     = "touchpad-tokens";
-	cfg.size     = total;
+	cfg.size     = priv->synth_size;
 	cfg.word_size = 1;
 	cfg.stride   = 1;
 	cfg.read_only = true;
 	cfg.priv     = priv;
 	cfg.reg_read = touchpad_tokens_read;
-	cfg.cells    = priv->cell_info;
-	cfg.ncells   = priv->num_tokens;
+	cfg.add_legacy_fixed_of_cells = true;
 
 	priv->nvmem = devm_nvmem_register(&pdev->dev, &cfg);
 	if (IS_ERR(priv->nvmem))
