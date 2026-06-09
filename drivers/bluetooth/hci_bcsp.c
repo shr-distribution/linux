@@ -136,6 +136,22 @@ MODULE_PARM_DESC(bt_force_skip_sync,
 		 "Override DT qcom,bcsp-skip-sync at probe (-1=use DT, 0=force off, 1=force on)");
 
 /*
+ * Diagnostic knob: skip the host UART baud bump after WARM_RESET.
+ *
+ * Normally after WARM_RESET we re-tune the host UART to oper_baud (3.6864 M)
+ * because the chip's PSKEY_UART_BAUDRATE PSRAM write should have taken effect
+ * and the chip restarts at the new baud.  If chip is silent at 3.6864M after
+ * WARM_RESET, set this = 1 to KEEP host at init_speed (115,200) — if SYNC
+ * bytes then appear from chip, the PSKEY_UART_BAUDRATE write didn't stick
+ * (chip restarted at default 115,200).  If chip remains silent at 115,200
+ * too, the chip either didn't warm-reset or its firmware is wedged.
+ */
+static int bt_skip_post_warm_baud_switch;
+module_param(bt_skip_post_warm_baud_switch, int, 0644);
+MODULE_PARM_DESC(bt_skip_post_warm_baud_switch,
+		 "Keep host UART at init_speed after WARM_RESET for diagnosis (0=switch to oper_baud, 1=keep init_speed)");
+
+/*
  * Delay between RX SYNC and TX SYNC-RSP.  webOS's userspace BCSP path
  * (PmBtStack -> hsuart ioctl -> kernel UART driver) has ~10 ms of
  * kernel+userspace round-trip latency before the SYNC-RSP byte hits the
@@ -2448,7 +2464,8 @@ static int bcsp_setup(struct hci_uart *hu)
 			 * the reset / re-program its UART block before our
 			 * baud switch hits the RX line.
 			 */
-			if (oper_baud && oper_baud != bdev->init_speed) {
+			if (oper_baud && oper_baud != bdev->init_speed &&
+			    !bt_skip_post_warm_baud_switch) {
 				msleep(50);
 				BT_INFO("BCSP: Switching host UART to oper_baud=%u 8-E-1 + HW flow",
 					oper_baud);
@@ -2456,6 +2473,9 @@ static int bcsp_setup(struct hci_uart *hu)
 				serdev_device_set_parity(hu->serdev,
 							 SERDEV_PARITY_EVEN);
 				serdev_device_set_flow_control(hu->serdev, true);
+			} else if (bt_skip_post_warm_baud_switch) {
+				BT_INFO("BCSP: KEEPING host UART at init_speed=%u for post-WARM_RESET diagnostic",
+					bdev->init_speed);
 			}
 
 			/*
@@ -2657,7 +2677,8 @@ static int bcsp_setup(struct hci_uart *hu)
 			 * UART to the same baud + parity + flow before the
 			 * re-handshake starts.
 			 */
-			if (oper_baud && oper_baud != bdev->init_speed) {
+			if (oper_baud && oper_baud != bdev->init_speed &&
+			    !bt_skip_post_warm_baud_switch) {
 				msleep(50);
 				BT_INFO("BCSP: Switching host UART to oper_baud=%u 8-E-1 + HW flow",
 					oper_baud);
@@ -2665,6 +2686,9 @@ static int bcsp_setup(struct hci_uart *hu)
 				serdev_device_set_parity(hu->serdev,
 							 SERDEV_PARITY_EVEN);
 				serdev_device_set_flow_control(hu->serdev, true);
+			} else if (bt_skip_post_warm_baud_switch) {
+				BT_INFO("BCSP: KEEPING host UART at init_speed=%u for post-WARM_RESET diagnostic",
+					bdev->init_speed);
 			}
 
 			/*
