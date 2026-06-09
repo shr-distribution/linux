@@ -105,6 +105,35 @@ MODULE_PARM_DESC(bt_skip_sync_after_rx_seen,
 		 "Stop sending SYNC once chip's SYNC has been seen once (default N = webOS-faithful continuous SYNC)");
 
 /*
+ * Runtime overrides for the DT init-speed / skip-sync settings so we can
+ * A/B test baud + skip-sync behaviour without rebuilding the DTB.
+ *
+ * Workflow on device:
+ *   rmmod hci_uart
+ *   echo 3686400 > /sys/module/hci_uart/parameters/bt_force_init_speed
+ *   echo 1 > /sys/module/hci_uart/parameters/bt_force_skip_sync
+ *   insmod hci_uart.ko
+ *
+ * - bt_force_init_speed = 0   → use DT init-speed (no override)
+ * - bt_force_init_speed > 0   → override DT init-speed for this probe
+ * - bt_force_skip_sync = -1  → use DT qcom,bcsp-skip-sync (no override)
+ * - bt_force_skip_sync =  0   → force skip-sync OFF (do BCSP SHY handshake)
+ * - bt_force_skip_sync =  1   → force skip-sync ON  (open at oper speed)
+ *
+ * Read once at bcsp_serdev_probe() time (so changing them at runtime after
+ * the device has bound has no effect — rmmod/insmod to re-probe).
+ */
+static unsigned int bt_force_init_speed;
+module_param(bt_force_init_speed, uint, 0644);
+MODULE_PARM_DESC(bt_force_init_speed,
+		 "Override DT init-speed at probe (0=use DT, >0=force baud)");
+
+static int bt_force_skip_sync = -1;
+module_param(bt_force_skip_sync, int, 0644);
+MODULE_PARM_DESC(bt_force_skip_sync,
+		 "Override DT qcom,bcsp-skip-sync at probe (-1=use DT, 0=force off, 1=force on)");
+
+/*
  * Delay between RX SYNC and TX SYNC-RSP.  webOS's userspace BCSP path
  * (PmBtStack -> hsuart ioctl -> kernel UART driver) has ~10 ms of
  * kernel+userspace round-trip latency before the SYNC-RSP byte hits the
@@ -2777,6 +2806,15 @@ static void bcsp_read_pskeys_from_dt(struct bcsp_struct *bcsp)
 		BT_DBG("BCSP: skip-sync property not found or false");
 	}
 
+	/* Apply runtime override for skip-sync if set. */
+	if (bt_force_skip_sync == 0) {
+		bcsp->skip_sync = false;
+		BT_INFO("BCSP: skip-sync FORCED OFF by bt_force_skip_sync=0");
+	} else if (bt_force_skip_sync == 1) {
+		bcsp->skip_sync = true;
+		BT_INFO("BCSP: skip-sync FORCED ON by bt_force_skip_sync=1");
+	}
+
 	/* Read TX power table from DT (overrides Palm default) */
 	if (of_find_property(np, "brcm,tx-power-table", &len)) {
 		len = len / sizeof(u16);
@@ -3494,6 +3532,13 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 
 	if (!bdev->init_speed)
 		bdev->init_speed = 115200;
+
+	/* Apply runtime override for init-speed if set. */
+	if (bt_force_init_speed) {
+		dev_info(dev, "BCSP: init-speed OVERRIDDEN from %u to %u via bt_force_init_speed\n",
+			 bdev->init_speed, bt_force_init_speed);
+		bdev->init_speed = bt_force_init_speed;
+	}
 
 	dev_info(dev, "BCM4329 BCSP Bluetooth, init-speed=%u\n", bdev->init_speed);
 
