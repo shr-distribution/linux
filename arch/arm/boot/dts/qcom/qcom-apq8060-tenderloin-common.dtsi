@@ -3495,44 +3495,63 @@
 		 */
 
 		/*
-		 * brcm,ana-freq: Crystal frequency (PSKEY 0x0011)
-		 * 26000 = 26 MHz crystal - CRITICAL for RF operation
+		 * The property names below were inherited from an earlier
+		 * scrambled #define table; the VALUES are the authoritative
+		 * webOS bootstrap-struct defaults (libPmBtBsaif.so .data
+		 * @ 0xe415c), cross-checked against BlueZ csr.h.  The PSKEY
+		 * ID after each comment is the REAL varid the driver writes,
+		 * not the legacy stale ID.
+		 */
+
+		/*
+		 * brcm,ana-freq → PSKEY_ANA_FREQ (0x01FE)
+		 * 26000 (0x6590) = 26 MHz crystal — CRITICAL for RF operation
 		 */
 		brcm,ana-freq = /bits/ 16 <26000>;
 
 		/*
-		 * brcm,ana-ftrim: Crystal fine trim (PSKEY 0x0013)
-		 * 0x19 = Fine tune for 26 MHz crystal
+		 * brcm,ana-ftrim → PSKEY_ANA_FTRIM (0x01F6)
+		 * 0x0025 (37) = crystal fine trim (bootstrap struct @ +4).
+		 * Was 0x0019 prior to 2026-06-09 audit — that mismatched the
+		 * webOS default and likely contributed to post-WARM_RESET
+		 * chip wedge.
 		 */
-		brcm,ana-ftrim = /bits/ 16 <0x0019>;
+		brcm,ana-ftrim = /bits/ 16 <0x0025>;
 
 		/*
-		 * brcm,host-interface: Host interface protocol (PSKEY 0x01fe)
-		 * 0x0001 = BCSP mode
+		 * brcm,host-interface → PSKEY_HOST_INTERFACE (0x01F9)
+		 * 0x0001 = BCSP
 		 */
 		brcm,host-interface = /bits/ 16 <0x0001>;
 
 		/*
-		 * brcm,deep-sleep: Deep sleep config (PSKEY 0x01be)
-		 * 0x0000 = Disabled
+		 * brcm,deep-sleep → PSKEY_PCM_MIN_CPU_CLOCK (0x024D)
+		 * 0x0000 = default (webOS leaves it at the chip default)
 		 */
 		brcm,deep-sleep = /bits/ 16 <0x0000>;
 
 		/*
-		 * brcm,hci-max-acl: Max ACL packets in HCI buffer (PSKEY 0x01ab)
-		 * 0x03ec (1004) = Flow control for ACL data
+		 * brcm,hci-max-acl → PSKEY_H_HC_FC_MAX_ACL_PKT_LEN (0x0011)
+		 * 0x0154 (340) = host-controller max ACL packet length
+		 * (bootstrap struct @ +14).  Was 0x03EC (1004) prior to the
+		 * 2026-06-09 audit — chip rejected the oversized value.
 		 */
-		brcm,hci-max-acl = /bits/ 16 <0x03ec>;
+		brcm,hci-max-acl = /bits/ 16 <0x0154>;
 
 		/*
-		 * brcm,hci-max-sco: Max SCO packets in HCI buffer (PSKEY 0x01b0)
-		 * 0x0000 = No SCO buffering
+		 * brcm,hci-max-sco → PSKEY_H_HC_FC_MAX_ACL_PKTS (0x0013)
+		 * 0x000B (11) = max simultaneous ACL packets (bootstrap
+		 * struct @ +16).  Was 0x0000 prior to the audit — zero
+		 * packet slots breaks HCI flow control.
 		 */
-		brcm,hci-max-sco = /bits/ 16 <0x0000>;
+		brcm,hci-max-sco = /bits/ 16 <0x000B>;
 
 		/*
-		 * brcm,uart-baudrate: UART baudrate divisor (PSKEY 0x01b9)
-		 * 0x01d8 (472) = 115200 baud
+		 * brcm,uart-baudrate → PSKEY_UART_BAUDRATE (0x01BE)
+		 * 0x01D8 (472) = 115200 baud divisor (bootstrap default).
+		 * The driver overrides to oper_baud (3.6864 M, divisor
+		 * 0x3AFB) immediately before TX, so this initial value is
+		 * only used by paths that skip the override.
 		 */
 		brcm,uart-baudrate = /bits/ 16 <0x01d8>;
 

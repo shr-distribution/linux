@@ -2861,22 +2861,38 @@ static void bcsp_init_pskey_defaults(struct bcsp_struct *bcsp)
 	 * comment after each line documents which PSKEY ID and webOS
 	 * symbolic-name this default actually corresponds to.
 	 */
-	bcsp->pskey_ana_freq = 0x0154;			/* PSKEY 0x0011 = h_hc_fc_max_acl_pkt_len (340) */
-	bcsp->pskey_pskey0013 = 0x000B;			/* PSKEY 0x0013 = h_hc_fc_max_acl_pkts (11) */
-	bcsp->pskey_enc_key_min = 0x0001;		/* PSKEY 0x000E = vm_disable */
-	bcsp->pskey_max_tx_power = 0x0004;
-	bcsp->pskey_default_tx_power = 0x0004;
-	bcsp->pskey_h_hc_fc_max_acl_pkt_len = 0x0001;	/* PSKEY 0x01AB = hostio_map_sco_pcm */
-	bcsp->pskey_h_hc_fc_max_acl_pkts = 0x0001;	/* PSKEY 0x01B0 = hostio_map_sco_codec */
-	bcsp->pskey_pcm_config32 = 0x0008;		/* PSKEY 0x01B9 = codec_pio */
-	bcsp->pskey_pcm_min_cpu_clock = 0x0000;		/* PSKEY 0x01BE */
-	bcsp->pskey_pcm_format = 0x0025;		/* PSKEY 0x01F6 = ana_ftrim (37) */
-	bcsp->pskey_ana_ftrim = 0x0025;			/* PSKEY 0x01F7 = ana_ftrim (paired w/ 0x01F6) */
-	bcsp->pskey_uart_baudrate = bcsp_baud_to_pskey_divisor(115200);  /* PSKEY 0x01F8 = 0x01D8 */
-	bcsp->pskey_uart_config_bcsp = HOST_INTERFACE_BCSP;  /* PSKEY 0x01F9 = host_interface = 2 (BCSP, overrides ROM H4=1) */
-	bcsp->pskey_host_interface = 0x6590;		/* PSKEY 0x01FE = mhz (crystal freq, 26000) */
-	bcsp->pskey_max_tx_power_no_rssi = 0x0004;	/* PSKEY 0x024D */
-	bcsp->pskey_default_tx_power_no_rssi = 0x0001;	/* PSKEY 0x025D */
+	/*
+	 * Defaults assigned BY CALL-SITE PSKEY varid, not by struct field
+	 * name.  Each field is sent at exactly one call site (search
+	 * "bcsp_send_pskey_word(hu, PSKEY_*" for the receiver varid);
+	 * the comment after each line below is the real varid.
+	 *
+	 * Authoritative source: libPmBtBsaif.so .data @ 0xe415c (bootstrap
+	 * struct) and palmPlatformCommonPskeys @ 0xe42cc.  Cross-verified
+	 * against BlueZ csr.h.
+	 *
+	 * Prior version (pre-2026-06-09 audit) had values matching the OLD
+	 * scrambled #defines and was clobbering chip state across
+	 * WARM_RESET (ANA_FREQ←340 instead of 26000, H_HC_FC fields←1
+	 * instead of 340/11, etc.).
+	 */
+	bcsp->pskey_ana_freq                 = 0x6590; /* PSKEY_ANA_FREQ 0x01FE = 26000 (26 MHz) */
+	bcsp->pskey_pskey0013                = 0x000B; /* 0x0013 H_HC_FC_MAX_ACL_PKTS = 11 */
+	bcsp->pskey_enc_key_min              = 0x0001; /* PSKEY_ENC_KEY_LMIN 0x00DA */
+	bcsp->pskey_max_tx_power             = 0x0004; /* PSKEY_LC_MAX_TX_POWER 0x0017 */
+	bcsp->pskey_default_tx_power         = 0x0004; /* PSKEY_LC_DEFAULT_TX_POWER 0x0021 */
+	bcsp->pskey_h_hc_fc_max_acl_pkt_len  = 0x0154; /* PSKEY_H_HC_FC_MAX_ACL_PKT_LEN 0x0011 = 340 */
+	bcsp->pskey_h_hc_fc_max_acl_pkts     = 0x000B; /* PSKEY_H_HC_FC_MAX_ACL_PKTS 0x0013 = 11 */
+	bcsp->pskey_pcm_config32             = 0x08A0; /* PSKEY_PCM_CONFIG32 0x01B3 low word — palmPlatformCommonPskeys */
+	bcsp->pskey_pcm_min_cpu_clock        = 0x0000; /* PSKEY_PCM_MIN_CPU_CLOCK 0x024D */
+	bcsp->pskey_pcm_format               = 0x0060; /* PSKEY_PCM_FORMAT 0x01B6 — palmPlatformCommonPskeys */
+	bcsp->pskey_ana_ftrim                = 0x0025; /* PSKEY_ANA_FTRIM 0x01F6 = 37 */
+	bcsp->pskey_uart_baudrate = bcsp_baud_to_pskey_divisor(115200);
+						       /* PSKEY_UART_BAUDRATE 0x01BE — overridden to oper_baud divisor at TX */
+	bcsp->pskey_uart_config_bcsp         = 0x082E; /* PSKEY_UART_CONFIG_BCSP 0x01BF — palmPlatformCommonPskeys */
+	bcsp->pskey_host_interface           = 0x0001; /* PSKEY_HOST_INTERFACE 0x01F9 = BCSP */
+	bcsp->pskey_max_tx_power_no_rssi     = 0x0004; /* PSKEY_LC_MAX_TX_POWER_NO_RSSI 0x002D */
+	bcsp->pskey_default_tx_power_no_rssi = 0x0001; /* PSKEY_VM_DISABLE 0x025D (field name preserved, semantic is VM_DISABLE) */
 
 	/* Palm Platform PSKEYs - use static defaults */
 	bcsp->pskey_palm_01b3 = palm_pskey_01b3;
