@@ -2948,8 +2948,28 @@ static int bcsp_open(struct hci_uart *hu)
 		 * MR1 = 0xb4 vs the expected 0x34 — the auto-RFR side-effect
 		 * is the gap. Switch to the direct helper.
 		 */
-		msm_serial_bt_force_rfr(true);
-		BT_INFO("BCSP: Asserted RTS (RFR) LOW via CR_CMD_SET_RFR for link establishment (webOS-style, manual)");
+		/*
+		 * RFR/RTS handling removed 2026-06-09.  webOS legacy does NOT
+		 * drive RFR via the UART CR_CMD_SET_RFR path — the live webOS
+		 * BTWIRE log shows a `btuart_deassert_rts: 0(get)` immediately
+		 * before the first SYNC TX which calls msm_gpiomux_get(RTS_GPIO)
+		 * to claim the gpiomux ACTIVE config, NOT a direct level drive.
+		 *
+		 * Earlier this driver called msm_serial_bt_force_rfr(true) which
+		 * writes UART_DM_CR_CMD_SET_RFR to force RFR electrically LOW.
+		 * That keeps RFR pinned LOW continuously and bypasses whatever
+		 * pinctrl-controlled level legacy webOS leaves it at.  The
+		 * CR-command path was reverse-engineered from a misreading of
+		 * `__msm_uartdm_set_rx_flow(flow_ctl=0, flow_state=1)` —
+		 * misread to be "drive RFR LOW", but actually that legacy path
+		 * just clears MR1 RX_RDY_CTL and leaves the pin to its pinctrl
+		 * state.
+		 *
+		 * With CRTSCTS off (which serdev_device_set_flow_control(false)
+		 * already established earlier in this function), MR1 RX_RDY_CTL
+		 * is 0 and the RFR pin is in its post-msm_set_termios default
+		 * (HIGH for active-low RTS) — exactly what we want.
+		 */
 
 		/*
 		 * UART BREAK chip reset — datasheet BC63B239A04 Section 9.2 and
