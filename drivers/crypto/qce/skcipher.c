@@ -53,7 +53,7 @@ static void qce_skcipher_done(void *data)
 
 	sg_free_table(&rctx->dst_tbl);
 
-	error = qce_check_status(qce, &status);
+	error = qce_check_status(qce, &status, false);
 	if (error < 0)
 		dev_dbg(qce->dev, "skcipher operation error (%x)\n", status);
 

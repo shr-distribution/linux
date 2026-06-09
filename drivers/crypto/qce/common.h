@@ -97,7 +97,7 @@ struct qce_alg_template {
 };
 
 void qce_cpu_to_be32p_array(__be32 *dst, const u8 *src, unsigned int len);
-int qce_check_status(struct qce_device *qce, u32 *status);
+int qce_check_status(struct qce_device *qce, u32 *status, bool wait_auth_done);
 void qce_get_version(struct qce_device *qce, u32 *major, u32 *minor, u32 *step);
 int qce_start(struct crypto_async_request *async_req, u32 type);
 #ifdef CONFIG_CRYPTO_DEV_QCE_SHA

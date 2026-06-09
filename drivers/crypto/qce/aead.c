@@ -63,7 +63,7 @@ static void qce_aead_done(void *data)
 		sg_free_table(&rctx->dst_tbl);
 	}
 
-	error = qce_check_status(qce, &status);
+	error = qce_check_status(qce, &status, true);
 	if (error < 0 && (error != -EBADMSG))
 		dev_err(qce->dev, "aead operation error (%x)\n", status);
 

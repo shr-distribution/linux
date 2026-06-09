@@ -61,7 +61,7 @@ static void qce_ahash_done(void *data)
 	rctx->byte_count[0] = cpu_to_be32(result->auth_byte_count[0]);
 	rctx->byte_count[1] = cpu_to_be32(result->auth_byte_count[1]);
 
-	error = qce_check_status(qce, &status);
+	error = qce_check_status(qce, &status, true);
 	if (error < 0)
 		dev_dbg(qce->dev, "ahash operation error (%x)\n", status);
 

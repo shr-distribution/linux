@@ -338,6 +338,11 @@ static u32 qce_auth_cfg(struct qce_device *qce, unsigned long flags,
 #endif
 
 #ifdef CONFIG_CRYPTO_DEV_QCE_SHA
+/*
+ * v5 (BAM-based) hash register setup. CE2 (MSM8x60) callers bypass
+ * this entirely via qce_ce2_pio_run_hash() before qce_start(), so any
+ * qce_is_ce2() branch here would be dead code on every platform.
+ */
 static int qce_setup_regs_ahash(struct crypto_async_request *async_req)
 {
 	struct ahash_request *req = ahash_request_cast(async_req);
@@ -374,7 +379,7 @@ static int qce_setup_regs_ahash(struct crypto_async_request *async_req)
 		u32 authkey_words = rctx->authklen / sizeof(u32);
 
 		qce_cpu_to_be32p_array(mackey, rctx->authkey, rctx->authklen);
-		qce_write_array(qce, qce_reg_auth_key0(qce), (u32 *)mackey,
+		qce_write_array(qce, REG_AUTH_KEY0, (u32 *)mackey,
 				authkey_words);
 	}
 
@@ -387,62 +392,36 @@ static int qce_setup_regs_ahash(struct crypto_async_request *async_req)
 		qce_cpu_to_be32p_array(auth, rctx->digest, digestsize);
 
 	iv_words = (IS_SHA1(rctx->flags) || IS_SHA1_HMAC(rctx->flags)) ? 5 : 8;
-	qce_write_array(qce, qce_reg_auth_iv0(qce), (u32 *)auth, iv_words);
+	qce_write_array(qce, REG_AUTH_IV0, (u32 *)auth, iv_words);
 
 	if (rctx->first_blk)
-		qce_clear_array(qce, qce_reg_auth_bytecnt0(qce), 4);
+		qce_clear_array(qce, REG_AUTH_BYTECNT0, 4);
 	else
-		qce_write_array(qce, qce_reg_auth_bytecnt0(qce),
+		qce_write_array(qce, REG_AUTH_BYTECNT0,
 				(u32 *)rctx->byte_count, 2);
 
 	auth_cfg = qce_auth_cfg(qce, rctx->flags, 0, digestsize);
 
-	if (qce_is_ce2(qce)) {
-		if (rctx->last_blk)
-			auth_cfg |= BIT(CE2_LAST_SHIFT);
-		if (rctx->first_blk)
-			auth_cfg |= BIT(CE2_FIRST_SHIFT);
-		/* CLR_CNTXT on the first block prevents state leakage from any
-		 * prior operation (the engine retains AUTH_IV until cleared).
-		 */
-		if (rctx->first_blk)
-			auth_cfg |= BIT(CE2_CLR_CNTXT_SHIFT);
-	} else {
-		if (rctx->last_blk)
-			auth_cfg |= BIT(AUTH_LAST_SHIFT);
-		else
-			auth_cfg &= ~BIT(AUTH_LAST_SHIFT);
+	if (rctx->last_blk)
+		auth_cfg |= BIT(AUTH_LAST_SHIFT);
+	else
+		auth_cfg &= ~BIT(AUTH_LAST_SHIFT);
 
-		if (rctx->first_blk)
-			auth_cfg |= BIT(AUTH_FIRST_SHIFT);
-		else
-			auth_cfg &= ~BIT(AUTH_FIRST_SHIFT);
-	}
+	if (rctx->first_blk)
+		auth_cfg |= BIT(AUTH_FIRST_SHIFT);
+	else
+		auth_cfg &= ~BIT(AUTH_FIRST_SHIFT);
 
 go_proc:
-	if (qce_is_ce2(qce)) {
-		/*
-		 * CE2 uses different register layout for hash operations.
-		 * SEG_CFG at 0x030 holds the combined config (set above).
-		 * AUTH_SEG_CFG at 0x038 holds auth size/start.
-		 * SEG_SIZE at 0x03C holds the total segment size.
-		 * No separate ENCR_SEG_CFG write needed for hash-only.
-		 */
-		qce_write(qce, CE2_REG_SEG_CFG, auth_cfg);
-		qce_write(qce, CE2_REG_AUTH_SEG_CFG,
-			  req->nbytes << CE2_AUTH_SEG_SIZE_SHIFT);
-		qce_write(qce, CE2_REG_SEG_SIZE, req->nbytes);
-	} else {
-		qce_write(qce, REG_AUTH_SEG_CFG, auth_cfg);
-		qce_write(qce, REG_AUTH_SEG_SIZE, req->nbytes);
-		qce_write(qce, REG_AUTH_SEG_START, 0);
-		qce_write(qce, REG_ENCR_SEG_CFG, 0);
-		qce_write(qce, REG_SEG_SIZE, req->nbytes);
-	}
+	qce_write(qce, REG_AUTH_SEG_CFG, auth_cfg);
+	qce_write(qce, REG_AUTH_SEG_SIZE, req->nbytes);
+	qce_write(qce, REG_AUTH_SEG_START, 0);
+	qce_write(qce, REG_ENCR_SEG_CFG, 0);
+	qce_write(qce, REG_SEG_SIZE, req->nbytes);
 
 	/* get little endianness */
 	config = qce_config_reg(qce, 1);
-	qce_write(qce, qce_reg_config(qce), config);
+	qce_write(qce, REG_CONFIG, config);
 
 	qce_crypto_go(qce, true);
 
@@ -589,6 +568,11 @@ static void qce_xtskey(struct qce_device *qce, const u8 *enckey,
 	qce_write(qce, REG_ENCR_XTS_DU_SIZE, cryptlen);
 }
 
+/*
+ * v5 (BAM-based) cipher register setup. CE2 (MSM8x60) callers bypass
+ * this entirely via qce_ce2_pio_run_skcipher() before qce_start(), so
+ * any qce_is_ce2() branch here would be dead code on every platform.
+ */
 static int qce_setup_regs_skcipher(struct crypto_async_request *async_req)
 {
 	struct skcipher_request *req = skcipher_request_cast(async_req);
@@ -614,11 +598,7 @@ static int qce_setup_regs_skcipher(struct crypto_async_request *async_req)
 	qce_cpu_to_be32p_array(enckey, ctx->enc_key, keylen);
 	enckey_words = keylen / sizeof(u32);
 
-	/* Clear auth config for encryption-only operation */
-	if (qce_is_ce2(qce))
-		qce_write(qce, CE2_REG_AUTH_SEG_CFG, auth_cfg);
-	else
-		qce_write(qce, REG_AUTH_SEG_CFG, auth_cfg);
+	qce_write(qce, REG_AUTH_SEG_CFG, auth_cfg);
 
 	encr_cfg = qce_encr_cfg(qce, flags, keylen);
 
@@ -629,28 +609,15 @@ static int qce_setup_regs_skcipher(struct crypto_async_request *async_req)
 		enciv_words = 2;
 		enckey_words = 6;
 	} else if (IS_AES(flags)) {
-		if (IS_XTS(flags)) {
-			if (qce_is_ce2(qce))
-				return -EINVAL; /* CE2 doesn't support XTS */
+		if (IS_XTS(flags))
 			qce_xtskey(qce, ctx->enc_key, ctx->enc_keylen,
 				   rctx->cryptlen);
-		}
 		enciv_words = 4;
 	} else {
 		return -EINVAL;
 	}
 
-	/* Write encryption key to appropriate register */
-	if (qce_is_ce2(qce)) {
-		if (IS_DES(flags) || IS_3DES(flags))
-			qce_write_array(qce, qce_reg_des_key0(qce),
-					(u32 *)enckey, enckey_words);
-		else
-			qce_write_array(qce, qce_reg_encr_key0(qce),
-					(u32 *)enckey, enckey_words);
-	} else {
-		qce_write_array(qce, REG_ENCR_KEY0, (u32 *)enckey, enckey_words);
-	}
+	qce_write_array(qce, REG_ENCR_KEY0, (u32 *)enckey, enckey_words);
 
 	if (!IS_ECB(flags)) {
 		if (IS_XTS(flags))
@@ -658,48 +625,28 @@ static int qce_setup_regs_skcipher(struct crypto_async_request *async_req)
 		else
 			qce_cpu_to_be32p_array(enciv, rctx->iv, ivsize);
 
-		qce_write_array(qce, qce_reg_cntr0_iv0(qce), (u32 *)enciv, enciv_words);
+		qce_write_array(qce, REG_CNTR0_IV0, (u32 *)enciv, enciv_words);
 	}
 
-	if (IS_ENCRYPT(flags)) {
-		if (qce_is_ce2(qce))
-			encr_cfg |= BIT(CE2_ENCODE_SHIFT);
-		else
-			encr_cfg |= BIT(ENCODE_SHIFT);
-	}
+	if (IS_ENCRYPT(flags))
+		encr_cfg |= BIT(ENCODE_SHIFT);
 
-	if (qce_is_ce2(qce)) {
-		/*
-		 * CE2 uses combined SEG_CFG register for mode/algorithm
-		 * and separate ENCR_SEG_CFG for size/start.
-		 * Add FIRST and LAST bits for single-shot operation.
-		 */
-		encr_cfg |= BIT(CE2_FIRST_SHIFT) | BIT(CE2_LAST_SHIFT);
-		qce_write(qce, CE2_REG_SEG_CFG, encr_cfg);
-		/* ENCR_SEG_CFG has size in upper 16 bits, start in lower 16 */
-		qce_write(qce, CE2_REG_ENCR_SEG_CFG,
-			  (rctx->cryptlen << CE2_ENCR_SEG_SIZE_SHIFT));
-	} else {
-		qce_write(qce, REG_ENCR_SEG_CFG, encr_cfg);
-		qce_write(qce, REG_ENCR_SEG_SIZE, rctx->cryptlen);
-		qce_write(qce, REG_ENCR_SEG_START, 0);
-	}
+	qce_write(qce, REG_ENCR_SEG_CFG, encr_cfg);
+	qce_write(qce, REG_ENCR_SEG_SIZE, rctx->cryptlen);
+	qce_write(qce, REG_ENCR_SEG_START, 0);
 
 	if (IS_CTR(flags)) {
-		qce_write(qce, qce_reg_cntr_mask(qce), ~0);
-		if (!qce_is_ce2(qce)) {
-			/* v5 has additional mask registers */
-			qce_write(qce, REG_CNTR_MASK0, ~0);
-			qce_write(qce, REG_CNTR_MASK1, ~0);
-			qce_write(qce, REG_CNTR_MASK2, ~0);
-		}
+		qce_write(qce, REG_CNTR_MASK, ~0);
+		qce_write(qce, REG_CNTR_MASK0, ~0);
+		qce_write(qce, REG_CNTR_MASK1, ~0);
+		qce_write(qce, REG_CNTR_MASK2, ~0);
 	}
 
-	qce_write(qce, qce_reg_seg_size(qce), rctx->cryptlen);
+	qce_write(qce, REG_SEG_SIZE, rctx->cryptlen);
 
 	/* get little endianness */
 	config = qce_config_reg(qce, 1);
-	qce_write(qce, qce_reg_config(qce), config);
+	qce_write(qce, REG_CONFIG, config);
 
 	qce_crypto_go(qce, true);
 
@@ -960,25 +907,27 @@ static int qce_ce2_dma_chain_input_digest(struct qce_device *qce,
 	int ret;
 
 	/*
-	 * Cap nbytes well below UINT_MAX so the round_up(nbytes, 16)
-	 * below cannot overflow to 0 and let kzalloc(in_total) and
-	 * sg_copy_to_buffer(.., nbytes) below turn a 16-byte heap
-	 * allocation into a multi-gigabyte memcpy.
+	 * Hardware cap: CE2_REG_SEG_SIZE and CE2_AUTH_SEG_SIZE are both
+	 * 16-bit fields (bits 15:0 of SEG_SIZE; bits 31:16 of AUTH_SEG_CFG).
+	 * The engine cannot accept more than 65535 B per GOPROC. Round down
+	 * to a 16-byte input-FIFO boundary (65520) so round_up(nbytes, 16)
+	 * below cannot overflow into the field's high bits and silently
+	 * truncate. Earlier code allowed up to SZ_1M; anything > 65535
+	 * silently truncated AUTH_SEG_SIZE to the low 16 bits and the
+	 * engine hashed only the first ~64 KiB while reporting success.
 	 *
-	 * Return -EMSGSIZE (not -EINVAL) so callers can detect the soft
-	 * limit and chunk at the AHASH update layer instead of treating
-	 * it as a logic error. Each update accumulates into the same
-	 * partial digest, so chunking is transparent — what changes is
-	 * the number of round-trips through this function. dm-integrity,
-	 * fscrypt and IPsec large-payload callers that pass multi-MB
-	 * buffers in a single update need to either chunk or take the
-	 * software fallback.
+	 * Return -EMSGSIZE so AHASH layer callers can detect the limit and
+	 * chunk at the update boundary. Each AHASH update accumulates into
+	 * the same partial digest, so transparent caller-side chunking is
+	 * lossless. dm-integrity, fscrypt and IPsec large-payload callers
+	 * that pass multi-MB single updates need to either chunk or fall
+	 * back to software SHA.
 	 *
-	 * Transparent internal chunking is a separate follow-up; it
-	 * would manage first/last flags and AUTH_IV0..N carry-over
-	 * across per-chunk GOPROC.
+	 * Transparent internal chunking is a separate follow-up; it would
+	 * manage first/last flags and AUTH_IV0..N carry-over across
+	 * per-chunk GOPROC.
 	 */
-	if (nbytes > SZ_1M)
+	if (nbytes > 65520)
 		return -EMSGSIZE;
 
 	/* Input buffer: round up to 16-byte FIFO chunk, byte-swap to BE */
@@ -1164,6 +1113,16 @@ int qce_ce2_pio_run_hash(struct crypto_async_request *async_req)
 	 * After deassert the engine is back to power-on state -- our
 	 * per-op SEG_CFG/AUTH_IV/AUTH_BYTECNT/CONFIG/GOPROC writes below
 	 * re-program it from scratch.
+	 *
+	 * udelay (not usleep_range) on both flanks: GCC reset propagation
+	 * is a hardware-level timing requirement on the order of single-
+	 * digit microseconds and cannot tolerate scheduler latency. Total
+	 * cost per op: 2 × ~10 us = ~20 us. The other udelay() sites in
+	 * this file are similarly short bounded waits (post-GOPROC IDLE
+	 * leave: max 1000 × 10 us = 10 ms; CTR IV settle / AUTH_DONE poll:
+	 * max 50 × 10 us = 500 us) — they were previously open-coded as
+	 * 10000 × udelay(10) busy-spins (~100 ms) and are now bounded to
+	 * the actual hardware latency envelope.
 	 */
 	if (qce->reset) {
 		reset_control_assert(qce->reset);
@@ -2217,7 +2176,7 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 }
 #endif	/* CONFIG_CRYPTO_DEV_QCE_SKCIPHER */
 
-int qce_check_status(struct qce_device *qce, u32 *status)
+int qce_check_status(struct qce_device *qce, u32 *status, bool wait_auth_done)
 {
 	int ret = 0;
 
@@ -2248,35 +2207,35 @@ int qce_check_status(struct qce_device *qce, u32 *status)
 		 * common case AUTH_DONE is already asserted on the first
 		 * read and the loop exits with zero added latency.
 		 *
-		 * IMPORTANT for future refactors: the AUTH_DONE bit name is
-		 * literal — only hash and AEAD operations on CE2 ever set
-		 * it. A pure skcipher op never sets AUTH_DONE and would
-		 * loop here for the full 500 µs and then return -ENXIO.
+		 * The AUTH_DONE bit is literal — only hash and AEAD operations
+		 * on CE2 ever set it. A pure skcipher op never sets AUTH_DONE;
+		 * waiting for it on a cipher completion would always time out
+		 * and return -ENXIO. Callers select the right completion
+		 * condition via @wait_auth_done:
 		 *
-		 * Today the CE2 skcipher path bypasses qce_check_status()
-		 * entirely (qce_skcipher_async_req_handle dispatches direct
-		 * to qce_ce2_pio_run_skcipher, which does its own checks
-		 * against CE2_DOUT_RDY / CE2_CRYPTO_STATE_MASK rather than
-		 * AUTH_DONE), and qce_ahash_async_req_handle does the same
-		 * bypass to qce_ce2_pio_run_hash. AEAD is no longer
-		 * registered on CE2 either (see qce_aead_register), so this
-		 * branch currently goes unreached on CE2 in practice — but
-		 * it must stay correct for any future caller that does
-		 * route through here.
+		 *   wait_auth_done = true  (hash, AEAD): poll AUTH_DONE
+		 *   wait_auth_done = false (skcipher):   poll engine IDLE
 		 *
-		 * If a future cleanup removes the bypasses and routes CE2
-		 * cipher / hash completion back through here, split this
-		 * branch — e.g. a qce_check_status_skcipher() that waits
-		 * for CE2_DOUT_RDY instead of AUTH_DONE. Do not just remove
-		 * the bypass without adjusting this function or every
-		 * cipher op will silently fail with -ENXIO.
+		 * Today the CE2 cipher/hash async_req_handle entry points
+		 * bypass this function (dispatching direct to
+		 * qce_ce2_pio_run_{skcipher,hash} which do their own
+		 * register polling), and AEAD is not registered on CE2 (see
+		 * qce_aead_register), so this branch is currently unreached
+		 * on CE2 in practice. The split below keeps it
+		 * structurally-safe for any future caller that does route
+		 * through here.
 		 */
 		for (timeout = 50; timeout > 0; timeout--) {
 			*status = qce_read(qce, qce_reg_status(qce));
 			if (*status & STATUS_ERRORS_CE2)
 				return -ENXIO;
-			if (*status & BIT(CE2_AUTH_DONE_SHIFT))
-				return 0;
+			if (wait_auth_done) {
+				if (*status & BIT(CE2_AUTH_DONE_SHIFT))
+					return 0;
+			} else {
+				if ((*status & CE2_CRYPTO_STATE_MASK) == 0)
+					return 0;
+			}
 			udelay(10);
 		}
 		return -ENXIO;
