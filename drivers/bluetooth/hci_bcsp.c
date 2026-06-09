@@ -271,27 +271,6 @@ static inline void msm_serial_bt_dance(void) { }
 #define PSKEY_VM_DISABLE		0x025D	/* CSR_PSKEY_VM_DISABLE — bool (was labeled LC_DEFAULT_TX_POWER_NO_RSSI) */
 #define PSKEY_WARM_RESET_BCCMD_VARID	0x4002	/* BCCMD warm-reset varid (NOT a PSKEY) */
 
-/*
- * Deprecated/legacy alias #defines for the call-site code that still
- * uses the old names.  Each ALIAS NOW POINTS TO THE CORRECT VARID
- * matching the SEMANTIC INTENT of the field name — the previous
- * mismatched mapping is what made `skip_pskeys=true` necessary.
- *
- * Plan for cleanup: rewire each call site to use the canonical
- * authoritative name above, then drop these aliases.  Until then the
- * aliases make the patch surgical: only #define swaps, no call-site
- * touches needed (call sites already send the right semantic value;
- * they just sent it to the wrong varid before).
- */
-#define PSKEY_LC_MAX_TX_POWER_NO_RSSI_OLD  PSKEY_LC_MAX_TX_POWER_NO_RSSI /* 0x002D — was wrongly 0x024D in driver */
-/* The driver's PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI was 0x025D — that's actually
- * VM_DISABLE.  Map the alias to VM_DISABLE: this preserves on-wire behaviour
- * (we send to the same varid webOS sends to at struct+20) while making the
- * varid-name pairing semantically honest. */
-#define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI  PSKEY_VM_DISABLE   /* 0x025D */
-/* The driver's PSKEY_TX_POWER_LEVEL was 0x0031 — csr.h calls that
- * LC_ENHANCED_POWER_TABLE.  Alias the old name. */
-#define PSKEY_TX_POWER_LEVEL               PSKEY_LC_ENHANCED_POWER_TABLE  /* 0x0031 */
 
 /*
  * CSR BlueCore HOST_INTERFACE values written via PSKEY_HOST_INTERFACE
@@ -1441,7 +1420,7 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 					     bcsp->pskey_enc_key_min);
 			bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
 					     bcsp->pskey_uart_config_bcsp);
-			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+			bcsp_send_pskey_word(hu, PSKEY_VM_DISABLE,
 					     bcsp->pskey_default_tx_power_no_rssi);
 			/* The actual ANA_FTRIM + UART_BAUDRATE PSKEYs */
 			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
@@ -1478,11 +1457,11 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 
 			/* TX Power Table */
 			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
-				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+				bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
 						     bcsp->tx_power_table,
 						     bcsp->tx_power_table_len);
 			} else {
-				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+				bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
 						     palm_tx_power_table,
 						     ARRAY_SIZE(palm_tx_power_table));
 			}
@@ -1509,11 +1488,11 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 					     bcsp->pskey_default_tx_power);
 
 			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
-				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+				bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
 						     bcsp->tx_power_table,
 						     bcsp->tx_power_table_len);
 			} else {
-				bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+				bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
 						     palm_tx_power_table,
 						     ARRAY_SIZE(palm_tx_power_table));
 			}
@@ -2296,7 +2275,7 @@ static int bcsp_setup(struct hci_uart *hu)
 		msleep(20);
 
 		/* Default TX power without RSSI */
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+		bcsp_send_pskey_word(hu, PSKEY_VM_DISABLE,
 				     bcsp->pskey_default_tx_power_no_rssi);
 		msleep(20);
 
@@ -2358,11 +2337,11 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * Use DT-provided table if available, otherwise use Palm defaults.
 		 */
 		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
-			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+			bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
 					     bcsp->tx_power_table,
 					     bcsp->tx_power_table_len);
 		} else {
-			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+			bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
 					     palm_tx_power_table,
 					     ARRAY_SIZE(palm_tx_power_table));
 		}
@@ -2513,7 +2492,7 @@ static int bcsp_setup(struct hci_uart *hu)
 		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
 				     bcsp->pskey_max_tx_power_no_rssi);
 		msleep(20);
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI,
+		bcsp_send_pskey_word(hu, PSKEY_VM_DISABLE,
 				     bcsp->pskey_default_tx_power_no_rssi);
 		msleep(20);
 
@@ -2560,11 +2539,11 @@ static int bcsp_setup(struct hci_uart *hu)
 
 		/* TX Power Table - use DT if available, else Palm defaults */
 		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
-			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+			bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
 					     bcsp->tx_power_table,
 					     bcsp->tx_power_table_len);
 		} else {
-			bcsp_send_pskey_data(hu, PSKEY_TX_POWER_LEVEL,
+			bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
 					     palm_tx_power_table,
 					     ARRAY_SIZE(palm_tx_power_table));
 		}
