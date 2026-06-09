@@ -782,7 +782,16 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	 * parses.  0x00 is not a SLIP delimiter (END=0xc0) or escape (ESC=
 	 * 0xdb) so it's silently discarded by SLIP's between-frames state.
 	 */
-	#define BCSP_LE_WAKE_PREAMBLE 4
+	/*
+	 * 64 bytes × ~87 µs/byte @ 115,200 baud = ~5.6 ms of UART activity.
+	 * That matches the CSR BlueCore6 datasheet section 6.2.1 figure:
+	 *   "BlueCore6-ROM hardware incorporates an automatic 5ms delay after
+	 *    the assertion of the system clock request signal before running
+	 *    firmware."
+	 * So 5 ms is the chip's documented wake-from-sleep firmware-ready time;
+	 * earlier 4-byte attempts (~348 µs) were far too short.
+	 */
+	#define BCSP_LE_WAKE_PREAMBLE 64
 	int le_wake = (pkt_type == BCSP_LE_PKT) ? BCSP_LE_WAKE_PREAMBLE : 0;
 
 	nskb = alloc_skb((len + 6) * 2 + 2 + tx_preamble + le_wake, GFP_ATOMIC);
