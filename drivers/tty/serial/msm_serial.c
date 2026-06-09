@@ -83,6 +83,20 @@ module_param(bt_force_8e1, bool, 0644);
 MODULE_PARM_DESC(bt_force_8e1, "BT UART: force even parity 8E1 (diag; default 8N1)");
 
 /*
+ * bt_force_crtscts: force HW flow control (auto-RFR + auto-CTS) on the
+ * BT UART regardless of requested termios.  PmBtStack disassembly
+ * (0x1d0680: hsuart_mode SET ioctl flags=0x09 = HSUART_MODE_FLOW_CTRL_HW |
+ * HSUART_MODE_PARITY_EVEN) shows the legacy userspace sets BOTH HW flow
+ * AND even parity.  bt_force_8e1 covers the parity half; this covers the
+ * flow-control half.  Use together (or separately) to isolate which of
+ * the two — parity or flow control — is the chip-side requirement that
+ * our mainline 8-N-1+noflow path is missing.  Default off.
+ */
+static bool bt_force_crtscts;
+module_param(bt_force_crtscts, bool, 0644);
+MODULE_PARM_DESC(bt_force_crtscts, "BT UART: force HW flow control auto-RFR+auto-CTS (diag; default off)");
+
+/*
  * bt_tx_bytegap_us: forced inter-byte gap experiment. When >0, the BT UART
  * PIO TX sends one byte at a time, waits for the transmitter to fully drain
  * (SR TX_EMPTY), then idles the line for this many microseconds before the
@@ -2215,6 +2229,12 @@ static void msm_set_termios(struct uart_port *port, struct ktermios *termios,
 	if (termios->c_cflag & CRTSCTS) {
 		mr |= MSM_UART_MR1_CTS_CTL;
 		mr |= MSM_UART_MR1_RX_RDY_CTL;
+	}
+	if (msm_port->bt_is_bt_uart && bt_force_crtscts) {
+		mr |= MSM_UART_MR1_CTS_CTL;
+		mr |= MSM_UART_MR1_RX_RDY_CTL;
+		dev_info(port->dev,
+			 "BT-DIAG: forcing HW flow control (auto-RFR + auto-CTS) on BT UART (diag)\n");
 	}
 	msm_write(port, mr, MSM_UART_MR1);
 
