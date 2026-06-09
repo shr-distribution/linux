@@ -2994,27 +2994,29 @@ static int bcsp_open(struct hci_uart *hu)
 			int parity_ret;
 
 			serdev_device_set_baudrate(hu->serdev, op_baud);
-			parity_ret = serdev_device_set_parity(hu->serdev,
-							      SERDEV_PARITY_EVEN);
 
 			/*
-			 * Operational state needs HW flow control ON to match
-			 * webOS captured UART state: MR1=0xf4 (auto-RFR + auto-CTS).
-			 * At 3.6864 Mbps the chip's RX buffer fills fast; without
-			 * auto-CTS our TX would keep streaming bytes past chip's
-			 * "not ready" assertion and overflow its RX, after which the
-			 * chip enters silent error recovery.  The earlier
-			 * "FLOW_CTRL_NONE" comment matched webOS link-est (115200)
-			 * where flow control is irrelevant and PSKEY-loaded MR1
-			 * later flipped these bits; in skip-sync we go straight to
-			 * the operational config so we must do it ourselves.
+			 * webOS uses 8-N-1 with NO HW flow control at the
+			 * operational 3.6864 Mbps baud — proven by live capture
+			 * from the webOS-debug kernel TPADUART dump:
+			 *   baud=3686400 clk=58982400 NS=0xfdee0b43 MD=0x0060fd8e
+			 *   | MR1=0x34 MR2=0x34 SR=0xc IPR=0x200 IMR=0x1
+			 *     RFWR=0x20 TFWR=0x20 DMEN=0x2
+			 * MR1=0x34 (auto-RFR bit 7 and auto-CTS bit 6 both CLEAR);
+			 * MR2=0x34 (bits 5:4=11 CS8, bits 3:2=01 1-stop,
+			 * bits 1:0=00 no parity).
 			 *
-			 * (For the SHY-handshake path below we keep flow control
-			 * disabled — that matched webOS 115200 link-est.)
+			 * Prior commits enabled EVEN parity and HW flow control
+			 * based on a memory note that was wrong (project_bcsp_
+			 * webos_uart_state_captured.md claimed MR1=0xf4 MR2=0x36
+			 * but the live debug dump above contradicts).  Restore to
+			 * NONE parity + no HW flow control to match webOS exactly.
 			 */
-			serdev_device_set_flow_control(hu->serdev, true);
+			parity_ret = serdev_device_set_parity(hu->serdev,
+							      SERDEV_PARITY_NONE);
+			serdev_device_set_flow_control(hu->serdev, false);
 
-			BT_INFO("BCSP: skip-sync — UART set to %u 8-E-1 +RTS/CTS (parity_ret=%d)",
+			BT_INFO("BCSP: skip-sync — UART set to %u 8-N-1 no flow (parity_ret=%d)",
 				op_baud, parity_ret);
 		}
 
