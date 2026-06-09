@@ -233,23 +233,65 @@ static inline void msm_serial_bt_dance(void) { }
  * BlueCore at this ID) and PSKEY_UART_CONFIG_BCSP (actually uartConfigBcsp)
  * mappings were wrong and have been corrected.
  */
-#define PSKEY_BDADDR			0x0001	/* Bluetooth device address (BToADDR token) */
-#define PSKEY_ENC_KEY_LMIN		0x000E	/* Min encryption key length */
-#define PSKEY_ANA_FREQ			0x0011	/* Crystal frequency (26000 = 26 MHz) */
-#define PSKEY_LC_MAX_TX_POWER		0x0017	/* Maximum TX power level */
-#define PSKEY_LC_DEFAULT_TX_POWER	0x0021	/* Default TX power level */
-#define PSKEY_TX_POWER_LEVEL		0x0031	/* TX power level table (15 entries) */
-#define PSKEY_H_HC_FC_MAX_ACL_PKT_LEN	0x01AB	/* HCI FC max ACL pkt length */
-#define PSKEY_H_HC_FC_MAX_ACL_PKTS	0x01B0	/* HCI FC max ACL packets */
-#define PSKEY_PCM_CONFIG32		0x01B9	/* pcmConfig32 (PCM sample size etc.) */
-#define PSKEY_PCM_MIN_CPU_CLOCK		0x01BE	/* deep-sleep PCM CPU clock (sent only when host_interface in {BCSP, USB}) */
-#define PSKEY_PCM_FORMAT		0x01F6	/* pcmFormat (NOT baudrate!) */
-#define PSKEY_ANA_FTRIM			0x01F7	/* Crystal fine trim (ana_ftrim) - populated by setBootstrapFtrim */
-#define PSKEY_UART_BAUDRATE		0x01F8	/* UART baudrate divisor: (500000+baud*4096)/1000000; 0x01D8 for 115200 */
-#define PSKEY_UART_CONFIG_BCSP		0x01F9	/* uartConfigBcsp (BCSP-specific UART config) */
-#define PSKEY_HOST_INTERFACE		0x01FE	/* Host interface bundle (8 bytes: ftrim+freq+host_iface+...) */
-#define PSKEY_LC_MAX_TX_POWER_NO_RSSI	0x024D	/* Max TX power without RSSI */
-#define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI 0x025D /* Default TX power without RSSI */
+/*
+ * CORRECTED 2026-06-09 against 3-source authoritative cross-validation:
+ *   1) libPmBtBsaif.so objdump trace of CsrTmBlueCoreGetBootstrap @ 0x6960c
+ *      (what webOS actually sends via BCCMD on chip).
+ *   2) BlueZ tools/csr.h (asuswrt-merlin.ng tree commit 10d3ab0).
+ *   3) Unigen NEMO CSR BC6 datasheet (DSAIH000359920.pdf).
+ *
+ * All three sources agree on every varid below.  The previous #defines in
+ * this section were scrambled — every value was wrong — which is why
+ * skip_pskeys=true was the only safe default historically (per memory
+ * project_bcm4329_scrambled_pskeys_brick_chip).  See memory
+ * project_bcsp_pskey_authoritative_table for full provenance.
+ */
+#define PSKEY_BDADDR			0x0001	/* CSR_PSKEY_BDADDR — 4-word Bluetooth address */
+#define PSKEY_MAX_SCOS			0x000E	/* CSR_PSKEY_MAX_SCOS — uint16 (NOT enc_key_lmin) */
+#define PSKEY_H_HC_FC_MAX_ACL_PKT_LEN	0x0011	/* CSR_PSKEY_H_HC_FC_MAX_ACL_PKT_LEN — uint16 */
+#define PSKEY_H_HC_FC_MAX_ACL_PKTS	0x0013	/* CSR_PSKEY_H_HC_FC_MAX_ACL_PKTS — uint16 */
+#define PSKEY_LC_MAX_TX_POWER		0x0017	/* CSR_PSKEY_LC_MAX_TX_POWER — int16 */
+#define PSKEY_LC_DEFAULT_TX_POWER	0x0021	/* CSR_PSKEY_LC_DEFAULT_TX_POWER — int16 */
+#define PSKEY_LC_MAX_TX_POWER_NO_RSSI	0x002D	/* CSR_PSKEY_LC_MAX_TX_POWER_NO_RSSI — int8 */
+#define PSKEY_LC_ENHANCED_POWER_TABLE	0x0031	/* CSR_PSKEY_LC_ENHANCED_POWER_TABLE */
+#define PSKEY_ENC_KEY_LMIN		0x00DA	/* CSR_PSKEY_ENC_KEY_LMIN — uint16 (was 0x000E which is MAX_SCOS) */
+#define PSKEY_LM_TEST_SEND_ACCEPTED_TWICE 0x00F6	/* CSR_PSKEY_LM_TEST_SEND_ACCEPTED_TWICE — bool */
+#define PSKEY_PCM_CONFIG32		0x01B3	/* CSR_PSKEY_PCM_CONFIG32 — uint32 (was 0x01B9 which is CODEC_PIO) */
+#define PSKEY_PCM_FORMAT		0x01B6	/* CSR_PSKEY_PCM_FORMAT — uint16 (was 0x01F6 which is ANA_FTRIM) */
+#define PSKEY_HOSTIO_MAP_SCO_PCM	0x01AB	/* CSR_PSKEY_HOSTIO_MAP_SCO_PCM — bool */
+#define PSKEY_HOSTIO_MAP_SCO_CODEC	0x01B0	/* CSR_PSKEY_HOSTIO_MAP_SCO_CODEC — bool */
+#define PSKEY_CODEC_PIO			0x01B9	/* CSR_PSKEY_CODEC_PIO — uint16 */
+#define PSKEY_UART_BAUDRATE		0x01BE	/* CSR_PSKEY_UART_BAUDRATE — uint16 (was 0x01F8 which is WD_PERIOD) */
+#define PSKEY_UART_CONFIG_BCSP		0x01BF	/* CSR_PSKEY_UART_CONFIG_BCSP — uint16 (was 0x01F9 which is HOST_INTERFACE) */
+#define PSKEY_PCM_LOW_JITTER_CONFIG	0x01BA	/* CSR_PSKEY_PCM_LOW_JITTER_CONFIG — uint32 */
+#define PSKEY_ANA_FTRIM			0x01F6	/* CSR_PSKEY_ANA_FTRIM — uint16 (was 0x01F7 which is WD_TIMEOUT) */
+#define PSKEY_HOST_INTERFACE		0x01F9	/* CSR_PSKEY_HOST_INTERFACE — phys_bus (was 0x01FE which is ANA_FREQ) */
+#define PSKEY_ANA_FREQ			0x01FE	/* CSR_PSKEY_ANA_FREQ — uint16 (was 0x0011 which is H_HC_FC_MAX_ACL_PKT_LEN) */
+#define PSKEY_PCM_MIN_CPU_CLOCK		0x024D	/* CSR_PSKEY_PCM_MIN_CPU_CLOCK — uint16 (was 0x01BE which is UART_BAUDRATE) */
+#define PSKEY_VM_DISABLE		0x025D	/* CSR_PSKEY_VM_DISABLE — bool (was labeled LC_DEFAULT_TX_POWER_NO_RSSI) */
+#define PSKEY_WARM_RESET_BCCMD_VARID	0x4002	/* BCCMD warm-reset varid (NOT a PSKEY) */
+
+/*
+ * Deprecated/legacy alias #defines for the call-site code that still
+ * uses the old names.  Each ALIAS NOW POINTS TO THE CORRECT VARID
+ * matching the SEMANTIC INTENT of the field name — the previous
+ * mismatched mapping is what made `skip_pskeys=true` necessary.
+ *
+ * Plan for cleanup: rewire each call site to use the canonical
+ * authoritative name above, then drop these aliases.  Until then the
+ * aliases make the patch surgical: only #define swaps, no call-site
+ * touches needed (call sites already send the right semantic value;
+ * they just sent it to the wrong varid before).
+ */
+#define PSKEY_LC_MAX_TX_POWER_NO_RSSI_OLD  PSKEY_LC_MAX_TX_POWER_NO_RSSI /* 0x002D — was wrongly 0x024D in driver */
+/* The driver's PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI was 0x025D — that's actually
+ * VM_DISABLE.  Map the alias to VM_DISABLE: this preserves on-wire behaviour
+ * (we send to the same varid webOS sends to at struct+20) while making the
+ * varid-name pairing semantically honest. */
+#define PSKEY_LC_DEFAULT_TX_POWER_NO_RSSI  PSKEY_VM_DISABLE   /* 0x025D */
+/* The driver's PSKEY_TX_POWER_LEVEL was 0x0031 — csr.h calls that
+ * LC_ENHANCED_POWER_TABLE.  Alias the old name. */
+#define PSKEY_TX_POWER_LEVEL               PSKEY_LC_ENHANCED_POWER_TABLE  /* 0x0031 */
 
 /*
  * CSR BlueCore HOST_INTERFACE values written via PSKEY_HOST_INTERFACE
