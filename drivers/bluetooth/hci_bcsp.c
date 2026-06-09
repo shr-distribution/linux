@@ -762,16 +762,47 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 	 * + 2 (0xc0 delimiters at start and end).
 	 */
 
-	nskb = alloc_skb((len + 6) * 2 + 2 + tx_preamble, GFP_ATOMIC);
+	/*
+	 * Link-establishment packets (chan 1 SYNC / SYNC_RSP / CONF / CONF_RSP)
+	 * always carry a 4-byte 0x00 wake preamble.  Per the BCSP description in
+	 * "Reactive Implementation of BCSP on the MULLE with TinyTimber"
+	 * (Josbrant 2006, Luleå Univ. of Tech., page 22):
+	 *
+	 *   "When a packet arrives to a sleeping BT module the packet will only
+	 *    wake the module up to normal mode, thus require 2 packets to be
+	 *    send or first a 'signalling' byte."
+	 *
+	 * This is exactly the symptom we hit: between Tshy ticks the CSR
+	 * BlueCore drops to Shallow Sleep; our SYNC_RSP arrives, the chip's
+	 * UART RX wakes, but the bytes are consumed by the wake — the BCSP
+	 * stack never sees the frame.  Chip stays in SHY, never advances.
+	 * Prepending 0x00 idle bytes ahead of the SLIP-framed packet gives
+	 * the chip's UART RX something to wake on FIRST, after which the
+	 * 0xc0 SLIP delim starts a fresh frame that the BCSP stack actually
+	 * parses.  0x00 is not a SLIP delimiter (END=0xc0) or escape (ESC=
+	 * 0xdb) so it's silently discarded by SLIP's between-frames state.
+	 */
+	#define BCSP_LE_WAKE_PREAMBLE 4
+	int le_wake = (pkt_type == BCSP_LE_PKT) ? BCSP_LE_WAKE_PREAMBLE : 0;
+
+	nskb = alloc_skb((len + 6) * 2 + 2 + tx_preamble + le_wake, GFP_ATOMIC);
 	if (!nskb)
 		return NULL;
 
 	hci_skb_pkt_type(nskb) = pkt_type;
 
+	if (le_wake) {
+		int i;
+
+		for (i = 0; i < le_wake; i++)
+			skb_put_u8(nskb, 0x00);
+	}
+
 	/*
 	 * Optional 0xFF idle preamble (tx_preamble) before the leading 0xc0,
 	 * to let the CSR BlueCore RX re-lock its baud clock. 0xFF needs no SLIP
-	 * escaping, so it is emitted raw ahead of the framed packet.
+	 * escaping, so it is emitted raw ahead of the framed packet.  Default
+	 * disabled (0); BCSP_LE_PKT uses the 0x00 wake preamble above instead.
 	 */
 	if (tx_preamble) {
 		unsigned int i;
