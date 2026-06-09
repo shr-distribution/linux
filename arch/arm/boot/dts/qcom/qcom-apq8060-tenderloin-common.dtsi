@@ -3249,30 +3249,26 @@
 	qcom,startup-mux-glitch;
 
 	/*
-	 * UART clock for Bluetooth — assign to 58.9824 MHz so msm_serial can
-	 * derive BOTH baud rates we use:
-	 *   115,200 link-est:  58982400 / 16 / 32 = 115200 (CSR=0x66)
-	 *   3,686,400 oper:    58982400 / 16 /  1 = 3686400 (CSR=0xff)
+	 * UART clock for Bluetooth — assigned to 7,372,800 Hz to match webOS
+	 * link-est exactly.  webOS-debug TPADUART dump at the SHY/115200 phase:
 	 *
-	 * Why not 7,372,800 (which matches webOS link-est MND register
-	 * dump exactly):  with that lower assigned rate, the clock framework
-	 * fails to dynamically scale up to 58.9824 MHz when msm_serial
-	 * requests 3.6864 M baud (the requested clk_round_rate succeeds but
-	 * the subsequent dev_pm_opp_set_rate doesn't actually move the
-	 * rate — observed 2026-06-08: live clk_rate stuck at 7372800,
-	 * CSR ended up 0x0c mixed-divisor garbage, RX silent).  Assigning
-	 * the high rate up front lets msm_serial select an integer CSR
-	 * divisor for whichever baud is in use without touching the parent.
+	 *   baud=115200 clk=7372800 NS=0xfd9a0b43 MD=0x000cfd8e
+	 *   | MR1=0x34 MR2=0x34 SR=0xc IPR=0xa IMR=0x41
+	 *     RFWR=0x20 TFWR=0x20 DMEN=0x2
 	 *
-	 * The previous 7,372,800 choice was made when we were doing the SHY
-	 * BCSP link-est handshake at 115200 and the byte-perfect MND match
-	 * was the goal.  With qcom,bcsp-skip-sync now in use (chip retains
-	 * webOS operational PSRAM, no SHY handshake), we never run a 115200
-	 * SYNC handshake against the chip, so matching webOS's 115200-stage
-	 * MND register pattern is moot — what matters is reaching 3.6864 M.
+	 * The clk-msm8660 freq_tbl entry { 7372800, P_PLL8, 1, 12, 625 } produces
+	 * MD=0x000cfd8e NS=0xfd9a0b43 — byte-identical to webOS.  At 115,200 the
+	 * clk_mult=4 workaround in msm_find_best_baud picks divisor=4 (CSR=0xcc),
+	 * matching webOS's effective 7,372,800 / 16 / 4 = 115200 path.
+	 *
+	 * Previously raised to 58,982,400 for the operational-baud (3.6864 M)
+	 * skip-sync path.  That path was wrong (see qcom,bcsp-skip-sync comment
+	 * removal above) — we now SHY-handshake at 115,200 first, just like
+	 * webOS.  When/if we wire the BCCMD baud-change to step up to 3.6864 M
+	 * later, we'll revisit how the clock framework scales the parent rate.
 	 */
 	assigned-clocks = <&gcc GSBI6_UART_CLK>;
-	assigned-clock-rates = <58982400>;
+	assigned-clock-rates = <7372800>;
 
 	/*
 	 * PIO TX + DMA RX for the Bluetooth UART — matching the legacy webOS
@@ -3368,30 +3364,26 @@
 		status = "okay";
 
 		/*
-		 * Skip BCSP link-establishment SYNC handshake — RE-ENABLED 2026-06-08.
+		 * qcom,bcsp-skip-sync REMOVED 2026-06-09.
 		 *
-		 * Updated theory: the CSR BlueCore6-ROM chip retains its BCSP-operational
-		 * PSRAM state across SoC warm reboots (always-on regulators pm8058_s3 +
-		 * pm8901_l3 keep the chip powered).  After ANY webOS boot the chip is
-		 * left in GARRULOUS at 3.6864 Mbps 8-E-1.  Live data 2026-06-08: webOS
-		 * BT works (headset connects/streams) and on the immediate next mainline
-		 * boot the BT UART shows tx=N rx=0 even after sending byte-correct SYNC —
-		 * the chip is ignoring our 115200 8-N-1 SYNC bytes because it is at
-		 * 3.6864 M 8-E-1 looking for BCCMD/HCI traffic.
+		 * Skip-sync was based on the assumption that the chip retains its
+		 * BCSP-operational PSRAM state across SoC warm reboots (since
+		 * pm8058_s3 + pm8901_l3 are always-on).  On-device evidence falsified
+		 * this: at byte-perfect 3.6864 Mbps 8-N-1 with MR1=0x34 MR2=0x34 DMEN=0x02
+		 * (matched against webOS-debug TPADUART dump), DMA RX armed, chip stayed
+		 * silent.  Even though the regulator pair keeps the chip powered, the
+		 * chip's BCSP/firmware state machine does NOT survive the warm reboot
+		 * cleanly.
 		 *
-		 * The earlier (2026-05-22) refutation assumed a fresh-cold-boot ROM-default
-		 * chip.  That holds only after a true battery-out power cycle; after webOS
-		 * has run the chip retains PSRAM and the SHY handshake is the wrong path.
-		 *
-		 * When this property is present, hci_bcsp will raise baud to max-speed,
-		 * switch parity to EVEN, signal the BCSP link as ACTIVE, and skip the
-		 * SHY/CURIOUS/GARRULOUS SYNC dance — letting HCI traffic flow directly.
-		 *
-		 * NOTE: after a true battery-drain cold boot, chip is in ROM/SHY at
-		 * 115200 8-N-1 and this property must be removed (or the SHY handshake
-		 * driven via the normal path).
+		 * The datasheet (BC63B239A04 Section 9.2 + 14.1.2) documents a UART
+		 * BREAK-based chip reset: a continuous logic-low on UART_RX longer than
+		 * PSKEY_HOSTIO_UART_RESET_TIMEOUT (PSKEY 0x1a4) forces a hardware reboot.
+		 * The hci_bcsp driver now sends a 50 ms BREAK at bcsp_open() so the chip
+		 * returns to a known SHY/ROM state at 115,200 8-N-1, then runs the
+		 * normal SHY/CURIOUS/GARRULOUS handshake.  This matches what webOS does
+		 * (TPADUART trace: 115,200 link-est → 115,200 pre-WARM_RESET →
+		 * 3,686,400 operational).
 		 */
-		qcom,bcsp-skip-sync;
 
 		/*
 		 * Bluetooth Device Address (BD_ADDR)
@@ -3736,19 +3728,14 @@
 		clock-names = "lpo";
 
 		/*
-		 * With qcom,bcsp-skip-sync the chip is in operational PSRAM at
-		 * 3.6864 Mbps 8-E-1 (retained from a prior webOS session).  Open
-		 * the UART at that baud directly so msm_set_baud_rate picks the
-		 * 58.9824 MHz parent rate up front; opening at 115200 first leads
-		 * msm_find_best_baud to pin the parent at 7.3728 MHz (clk_mult=4
-		 * workaround for low-baud BT) and the framework then refuses to
-		 * raise the rate at runtime while the UART is active.
-		 *
-		 * If we ever return to the SHY-handshake path (cold-boot chip in
-		 * ROM/SHY at 115200 8-N-1), remove qcom,bcsp-skip-sync and revert
-		 * init-speed to 115200.
+		 * After the UART-BREAK chip reset in bcsp_open(), the chip is at
+		 * SHY/ROM defaults: 115,200 8-N-1.  Open the UART at that baud for
+		 * the SHY/CURIOUS/GARRULOUS handshake.  After link-up the driver
+		 * may step up to 3.6864 Mbps (max-speed) via BCCMD baud-change
+		 * once we wire that path; for now staying at 115,200 is fine for
+		 * basic HCI traffic.
 		 */
-		init-speed = <3686400>;
+		init-speed = <115200>;
 		max-speed = <3686400>;
 
 		brcm,bt-pcm-int-params = [00 02 00 01 01];

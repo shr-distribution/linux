@@ -2950,6 +2950,37 @@ static int bcsp_open(struct hci_uart *hu)
 		 */
 		msm_serial_bt_force_rfr(true);
 		BT_INFO("BCSP: Asserted RTS (RFR) LOW via CR_CMD_SET_RFR for link establishment (webOS-style, manual)");
+
+		/*
+		 * UART BREAK chip reset — datasheet BC63B239A04 Section 9.2 and
+		 * 14.1.2: "Presenting a UART break condition to the chip can
+		 * force the chip to perform a hardware reboot."  A continuous
+		 * logic-low on UART_RX longer than PSKEY_HOSTIO_UART_RESET_TIMEOUT
+		 * (PSKEY 0x1a4) triggers a hardware reset and returns the chip to
+		 * its SHY/ROM defaults at 115,200 8-N-1.
+		 *
+		 * The CSR BlueCore6's BCSP/firmware state does NOT survive a SoC
+		 * warm reboot cleanly (the regulator pair pm8058_s3 + pm8901_l3
+		 * keeps the chip POWERED but its firmware state machine ends up in
+		 * an unknown post-webOS state that does not respond to fresh BCSP
+		 * frames).  Without this reset, the chip can stay silent for the
+		 * entire SHY handshake; with it, we are guaranteed a clean
+		 * SHY-ROM state to start from.
+		 *
+		 * The break helper bracket START_BREAK/STOP_BREAK with a sleep —
+		 * a properly-bounded break, NOT the indefinite-low that the old
+		 * /dev/mem CR_CMD_START_BREAK pattern produced (and which case #2
+		 * of datasheet 14.1.2 documents would "hold the chip in a low
+		 * power state, preventing normal initialisation while the
+		 * condition exists").
+		 */
+		msm_serial_bt_send_break(50000);   /* 50 ms */
+		BT_INFO("BCSP: Sent 50 ms UART BREAK to reset chip to SHY/ROM");
+
+		/* Datasheet: reset is performed 1.5–4.0 ms after RST# active.
+		 * UART-break path uses internal LF clock filter; give it 10 ms
+		 * of margin before we start poking the chip. */
+		msleep(10);
 	}
 
 	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
