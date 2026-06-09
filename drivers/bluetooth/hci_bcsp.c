@@ -19,6 +19,7 @@
 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/types.h>
 #include <linux/fcntl.h>
 #include <linux/interrupt.h>
@@ -436,6 +437,13 @@ struct bcsp_serdev {
 	/* UART settings */
 	u32			init_speed;
 	u32			oper_speed;
+
+	/* BD address sourced from nvmem-cells = <&bt_addr> at probe (typ.
+	 * the BToADDR token in the eMMC tokens partition).  Falls back to
+	 * the existing local-bd-address DT property or random if unset.
+	 */
+	bdaddr_t		nvmem_bdaddr;
+	bool			has_nvmem_bdaddr;
 };
 
 struct bcsp_struct {
@@ -3254,6 +3262,28 @@ static int bcsp_open(struct hci_uart *hu)
 	 */
 	bcsp_read_pskeys_from_dt(bcsp);
 
+	/*
+	 * BD address precedence:
+	 *   1) nvmem cell (`local-bd-address` via touchpad-tokens) — per-
+	 *      device unique, loaded at serdev probe
+	 *   2) legacy DT property `local-bd-address` (handled in
+	 *      bcsp_read_pskeys_from_dt above)
+	 *   3) HCI random per-boot fallback (no override here)
+	 *
+	 * Overwrite whatever (2) loaded with (1) when nvmem succeeded.
+	 */
+	if (hu->serdev) {
+		struct bcsp_serdev *bdev =
+			container_of(hu, struct bcsp_serdev, serdev_hu);
+
+		if (bdev->has_nvmem_bdaddr) {
+			bcsp->bdaddr = bdev->nvmem_bdaddr;
+			bcsp->bdaddr_from_dt = true; /* "we have an address" */
+			BT_INFO("BCSP: BD address from nvmem cell: %pMR",
+				&bcsp->bdaddr);
+		}
+	}
+
 	if (bcsp->skip_sync) {
 		/*
 		 * Chip is already in BCSP operational state (PSRAM retained from
@@ -3651,6 +3681,49 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 		dev_err(dev, "Failed to get reset GPIO: %ld\n",
 			PTR_ERR(bdev->reset_gpio));
 		return PTR_ERR(bdev->reset_gpio);
+	}
+
+	/*
+	 * BD address via nvmem-cells = <&bt_addr>.  The TouchPad's
+	 * touchpad-tokens nvmem provider exposes the BToADDR factory token
+	 * (parsed from /dev/mmcblk0p12) as 6 raw bytes in
+	 * Bluetooth-`local-bd-address` LE order.  Defer probe until the
+	 * provider is ready (block device late-enumerates).  If the cell
+	 * isn't declared (no nvmem-cells in DT) we silently fall through to
+	 * the legacy `local-bd-address = [...]` DT property handled in
+	 * bcsp_read_pskeys_from_dt(), and ultimately to a random per-boot
+	 * address via HCI_QUIRK_INVALID_BDADDR.
+	 */
+	{
+		struct nvmem_cell *cell;
+
+		cell = nvmem_cell_get(dev, "local-bd-address");
+		if (PTR_ERR(cell) == -EPROBE_DEFER) {
+			dev_info(dev, "BCSP: deferring probe — BD-address nvmem cell not ready\n");
+			return -EPROBE_DEFER;
+		}
+		if (!IS_ERR(cell)) {
+			size_t cell_len = 0;
+			void *buf = nvmem_cell_read(cell, &cell_len);
+
+			if (!IS_ERR(buf) && cell_len == sizeof(bdev->nvmem_bdaddr)) {
+				memcpy(&bdev->nvmem_bdaddr, buf,
+				       sizeof(bdev->nvmem_bdaddr));
+				bdev->has_nvmem_bdaddr = true;
+				dev_info(dev, "BCSP: BD address from nvmem cell: %pMR\n",
+					 &bdev->nvmem_bdaddr);
+			} else if (IS_ERR(buf)) {
+				dev_warn(dev, "BCSP: nvmem cell read failed: %ld\n",
+					 PTR_ERR(buf));
+			} else {
+				dev_warn(dev, "BCSP: nvmem cell wrong length %zu (want %zu)\n",
+					 cell_len, sizeof(bdev->nvmem_bdaddr));
+				kfree(buf);
+			}
+			if (!IS_ERR(buf))
+				kfree(buf);
+			nvmem_cell_put(cell);
+		}
 	}
 
 	/* Get UART speeds from DT */

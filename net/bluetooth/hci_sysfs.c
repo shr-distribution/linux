@@ -102,8 +102,18 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_WO(reset);
 
+static ssize_t address_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct hci_dev *hdev = to_hci_dev(dev);
+
+	return sysfs_emit(buf, "%pMR\n", &hdev->bdaddr);
+}
+static DEVICE_ATTR_RO(address);
+
 static struct attribute *bt_host_attrs[] = {
 	&dev_attr_reset.attr,
+	&dev_attr_address.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(bt_host);

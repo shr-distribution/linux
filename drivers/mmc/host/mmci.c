@@ -569,23 +569,18 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 
 	/*
 	 * Diagnostic: observe what clkreg + state we end up with for each
-	 * controller instance, ratelimited so we don't spam during normal
-	 * operation. Gated on qcom_datactrl_delay so only the qcom variant
-	 * emits this. Useful when chasing eMMC vs SDIO regressions where
-	 * the per-instance PWRSAVE / datactrl_first / card-type combination
-	 * matters.
+	 * controller instance. Gated on qcom_datactrl_delay so only the qcom
+	 * variant emits this. dev_dbg (off by default, enable via dynamic
+	 * debug) when chasing eMMC vs SDIO regressions where the per-instance
+	 * PWRSAVE / datactrl_first / card-type combination matters.
 	 */
-	if (variant->qcom_datactrl_delay) {
-		static DEFINE_RATELIMIT_STATE(rs, HZ, 3);
-
-		if (__ratelimit(&rs))
-			dev_info(mmc_dev(host->mmc),
-				 "set_clkreg: desired=%u clk_reg=0x%08x datactrl_first=%d card_type=%d pwrsave=%s\n",
-				 desired, clk,
-				 host->datactrl_first,
-				 host->mmc->card ? host->mmc->card->type : -1,
-				 (clk & MCI_CLK_PWRSAVE) ? "on" : "off");
-	}
+	if (variant->qcom_datactrl_delay)
+		dev_dbg(mmc_dev(host->mmc),
+			"set_clkreg: desired=%u clk_reg=0x%08x datactrl_first=%d card_type=%d pwrsave=%s\n",
+			desired, clk,
+			host->datactrl_first,
+			host->mmc->card ? host->mmc->card->type : -1,
+			(clk & MCI_CLK_PWRSAVE) ? "on" : "off");
 
 	mmci_write_clkreg(host, clk);
 

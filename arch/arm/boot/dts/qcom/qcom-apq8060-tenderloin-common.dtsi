@@ -93,6 +93,38 @@
 	};
 
 	/*
+	 * Per-device factory tokens stored in the "tokens" eMMC partition
+	 * (mmcblk0p12 in the moboot partition layout).  The driver parses
+	 * the NVRM + TOC + TOKN TLV format used by webOS's /dev/tokens fs
+	 * and exposes each token as an nvmem cell named after the token.
+	 *
+	 * Consumers reference cells by name (e.g. <&bt_addr>) and pair them
+	 * with `nvmem-cell-names = "local-bd-address"` to trigger the ASCII
+	 * "XX:XX:XX:XX:XX:XX" → LE 6-byte parsing in the provider.
+	 *
+	 * The provider waits for /dev/mmcblk0p12 to appear before completing
+	 * probe (EPROBE_DEFER on ENOENT), so consumers that depend on cells
+	 * are deferred until block-device enumeration finishes — no DT
+	 * ordering hacks needed.
+	 */
+	touchpad_tokens: touchpad-tokens {
+		compatible = "hp,touchpad-nvrm-tokens";
+		storage-device-path = "/dev/mmcblk0p12";
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		bt_addr: BToADDR@0 {
+			/* offset/length are set by the provider at probe; the
+			 * `reg` here is decorative — cell lookup is by name. */
+			reg = <0 6>;
+		};
+		wifi_addr: WIFIoADDR@1 {
+			reg = <6 6>;
+		};
+	};
+
+	/*
 	 * PM8058 die-temperature thermal zone.
 	 *
 	 * Replicates the legacy webOS pmic8058-tm 3-stage trip model
@@ -3415,11 +3447,22 @@
 		 */
 
 		/*
-		 * Bluetooth Device Address (BD_ADDR)
-		 * Read from webOS /dev/tokens/BToADDR: 00:1D:FE:85:64:A9
-		 * DT format is little-endian: [A9 64 85 FE 1D 00]
+		 * Bluetooth Device Address (BD_ADDR) — per-device unique,
+		 * sourced from the BToADDR factory token in the eMMC tokens
+		 * partition (mmcblk0p12) via the touchpad-tokens nvmem
+		 * provider (drivers/nvmem/touchpad-tokens.c).  Cell name
+		 * matches the ASCII token name ("BToADDR"); the standard
+		 * `local-bd-address` cell-name binding triggers the macaddr
+		 * post-processor in the provider, converting the
+		 * "XX:XX:XX:XX:XX:XX" ASCII into the 6 raw bytes (LE order)
+		 * the Bluetooth subsystem expects.
+		 *
+		 * Falls back to the kernel's HCI_QUIRK_INVALID_BDADDR random
+		 * address if the nvmem read fails (tokens partition missing,
+		 * BToADDR token absent, ASCII malformed).
 		 */
-		local-bd-address = [A9 64 85 FE 1D 00];
+		nvmem-cells = <&bt_addr>;
+		nvmem-cell-names = "local-bd-address";
 
 		/*
 		 * TX Power Level Table for RF calibration (PSKEY 0x0031)

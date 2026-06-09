@@ -404,6 +404,21 @@ config NVMEM_STM32_ROMEM
 	  This driver can also be built as a module. If so, the module
 	  will be called nvmem-stm32-romem.
 
+config NVMEM_TOUCHPAD_TOKENS
+	tristate "HP TouchPad NVRM tokens partition nvmem provider"
+	depends on ARCH_QCOM || COMPILE_TEST
+	help
+	  Enable nvmem-cell access to the unique-per-device factory tokens
+	  stored in the HP TouchPad's "tokens" eMMC partition (mmcblk0p12 in
+	  the moboot layout).  This includes BToADDR (Bluetooth address),
+	  WIFIoADDR (WiFi MAC), ProductSN, ProductSKU, HWoRev, etc.
+
+	  Required for hci_bcsp to obtain a unique Bluetooth address without
+	  baking it into device tree per-unit.  Other consumers (WiFi
+	  firmware loader, board-id reporting) can also use it.
+
+	  If unsure, say N.
+
 config NVMEM_SUNPLUS_OCOTP
 	tristate "Sunplus SoC OTP support"
 	depends on SOC_SP7021 || COMPILE_TEST

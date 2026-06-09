@@ -510,7 +510,7 @@ static void msm_request_tx_dma(struct msm_port *msm_port, resource_size_t base)
 	if (ret)
 		goto rel_tx;
 
-	dev_info(dev, "TX DMA channel acquired (CRCI %u)\n", crci);
+	dev_dbg(dev, "TX DMA channel acquired (CRCI %u)\n", crci);
 	dma->dir = DMA_TO_DEVICE;
 
 	if (msm_port->is_uartdm < UARTDM_1P4)
@@ -578,7 +578,7 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 	if (ret)
 		goto err;
 
-	dev_info(dev, "RX DMA channel acquired (CRCI %u)\n", crci);
+	dev_dbg(dev, "RX DMA channel acquired (CRCI %u)\n", crci);
 	dma->dir = DMA_FROM_DEVICE;
 
 	if (msm_port->is_uartdm < UARTDM_1P4)
@@ -908,7 +908,7 @@ sw_mode:
 
 	if (bt) {
 		u32 imr_rb = msm_read(uart, MSM_UART_IMR);
-		dev_info(uart->dev, "rx_dma: sw_mode IMR=0x%x\n", imr_rb);
+		dev_dbg(uart->dev, "rx_dma: sw_mode IMR=0x%x\n", imr_rb);
 	}
 }
 
@@ -1467,9 +1467,9 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	if (port->mapbase == 0x16540000) {
 		unsigned int csr_rb = msm_read(port, MSM_UART_CSR);
 
-		dev_info(port->dev,
-			 "msm_set_baud_rate: rate=%lu divisor=%u CSR_w=0x%02x CSR_r=0x%08x baud=%u\n",
-			 rate, entry->divisor, entry->code, csr_rb, baud);
+		dev_dbg(port->dev,
+			"msm_set_baud_rate: rate=%lu divisor=%u CSR_w=0x%02x CSR_r=0x%08x baud=%u\n",
+			rate, entry->divisor, entry->code, csr_rb, baud);
 	}
 
 	/* RX stale watermark */
@@ -1487,8 +1487,8 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	/* Apply IPR override (BT port only) if /sys param is set. */
 	if (msm_port->bt_is_bt_uart && bt_ipr_override) {
 		msm_write(port, bt_ipr_override, MSM_UART_IPR);
-		dev_info(port->dev, "BT IPR overridden to 0x%x (post-baud)\n",
-			 bt_ipr_override);
+		dev_dbg(port->dev, "BT IPR overridden to 0x%x (post-baud)\n",
+			bt_ipr_override);
 	} else {
 		msm_write(port, watermark, MSM_UART_IPR);
 	}
@@ -1625,8 +1625,8 @@ static int bt_ipr_override_set(const char *val, const struct kernel_param *kp)
 		uart_port_lock_irqsave(port, &flags);
 		msm_write(port, bt_ipr_override, MSM_UART_IPR);
 		uart_port_unlock_irqrestore(port, flags);
-		dev_info(port->dev, "BT IPR overridden to 0x%x\n",
-			 bt_ipr_override);
+		dev_dbg(port->dev, "BT IPR overridden to 0x%x\n",
+			bt_ipr_override);
 	}
 	return 0;
 }
@@ -2047,7 +2047,7 @@ static int msm_startup(struct uart_port *port)
 	 */
 	if (msm_port->startup_mux_glitch && msm_port->pinctrl) {
 		msm_bt_wake_glitch(port);
-		dev_info(port->dev, "startup pin-mux glitch applied (BT wake)\n");
+		dev_dbg(port->dev, "startup pin-mux glitch applied (BT wake)\n");
 
 		/*
 		 * Keep re-arming the wake glitch through BCSP link establishment
