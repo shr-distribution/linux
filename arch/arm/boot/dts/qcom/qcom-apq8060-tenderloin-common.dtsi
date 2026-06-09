@@ -3757,31 +3757,24 @@
 		clock-names = "lpo";
 
 		/*
-		 * Operational baud / skip-sync test 2026-06-09.
+		 * Open the BT UART at the 115,200 ROM-default link-est baud and
+		 * let hci_bcsp do the full SHY/CURIOUS/GARRULOUS handshake.  The
+		 * driver sets EVEN parity + HW flow control on entry via
+		 * serdev_device_set_parity(EVEN) + set_flow_control(true) —
+		 * proven correct by the 2026-06-09 webOS-debug TPADUART capture
+		 * (MR1=0xf4 MR2=0x36 right after PmBtStack's userspace ioctl)
+		 * and confirmed on-device with the bt_force_8e1=1 test that
+		 * unblocked the BCSP wall after months.
 		 *
-		 * Per project_webos_skips_bcsp_handshake_uses_psram_state: webOS
-		 * never goes through the BCSP SHY/CURIOUS/GARRULOUS handshake — it
-		 * opens at the 3.6864 Mbps operational baud with the PSKEY-loaded
-		 * BCCMD-ready chip and starts pushing HCI traffic.  Chip PSRAM is
-		 * preserved across SoC warm reboots by the always-on pm8058_s3 +
-		 * pm8901_l3 supplies, and today's GPIO/pinctrl fixes (commits
-		 * 1213f082c638 + 3af38a6c90f2) eliminate the BT_POWER LOW
-		 * transient that earlier wiped that state on every boot.
-		 *
-		 * Try the same skip-sync path here so we land in operational mode
-		 * directly.  If chip is already GARRULOUS at 3.6864 M (PSRAM
-		 * intact), HCI Reset will succeed.  If chip's PSRAM was wiped
-		 * again, this will fail and we'll drop back to the 115,200 SHY
-		 * handshake path — at which point we have separately confirmed
-		 * the "PSRAM wipe is still happening" hypothesis.
-		 *
-		 * 8-N-1 NO HW flow control per the corrected
-		 * project_bcsp_webos_uart_state_captured memory (live TPADUART
-		 * dump from webOS-debug kernel: MR1=0x34 MR2=0x34 at 3.6864 M).
+		 * After link-est completes (GARRULOUS), max-speed (3.6864 Mbps)
+		 * is the BCCMD-targeted operational baud — driver will bump to
+		 * it once the PSKEY load / WARM_RESET path is wired up.  Skip-
+		 * sync is OFF here because chip PSRAM isn't reliably retained
+		 * across SoC warm reboots for our mainline path; full handshake
+		 * is the safe default.
 		 */
-		init-speed = <3686400>;
+		init-speed = <115200>;
 		max-speed = <3686400>;
-		qcom,bcsp-skip-sync;
 
 		brcm,bt-pcm-int-params = [00 02 00 01 01];
 

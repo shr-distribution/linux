@@ -3019,8 +3019,37 @@ static int bcsp_open(struct hci_uart *hu)
 	 * disabled before calling us; keep it that way explicitly.
 	 */
 	if (hu->serdev) {
-		serdev_device_set_flow_control(hu->serdev, false);
-		BT_INFO("BCSP: Hardware flow control disabled (webOS FLOW_CTRL_NONE)");
+		int parity_ret;
+
+		/*
+		 * BCSP SHY/CURIOUS/GARRULOUS link-establishment with CSR
+		 * BC63B239A_WLCSP_51P on TouchPad: chip requires EVEN parity
+		 * AND HW flow control.  TPADUART instrumentation of the legacy
+		 * webOS-debug kernel (2026-06-09) captured PmBtStack's
+		 * HSUART_MODE_SET ioctl at /var/log/messages t=41.547 with
+		 * flags=0x09 = HSUART_MODE_FLOW_CTRL_HW | HSUART_MODE_PARITY_EVEN,
+		 * applied at BOTH 115,200 link-est AND 3.6864 Mbps operational
+		 * baud.  TPADUART-PARITY at t=41.569 confirmed MR2=0x36
+		 * (CS8+1stop+EVEN) and MR1=0xf4 (auto-RFR + auto-CTS + 0x34).
+		 *
+		 * On-device proof (2026-06-09): setting MR2=0x36 via the
+		 * msm_serial bt_force_8e1 knob unblocked the SHY handshake on
+		 * the first try — chip transitioned UNINIT → INIT → CURIOUS →
+		 * GARRULOUS and we got "Link established (first time)" in
+		 * dmesg after months of being stuck in SHY.
+		 *
+		 * The previous comments here that said "8-N-1 no flow" were
+		 * based on a kernel-only TPADUART capture taken BEFORE
+		 * PmBtStack's userspace ioctl ran — those values were the
+		 * kernel's default, not the steady-state PmBtStack
+		 * configuration.  See [[bcsp-webos-uart-state-captured]] for
+		 * the chronology.
+		 */
+		serdev_device_set_flow_control(hu->serdev, true);
+		parity_ret = serdev_device_set_parity(hu->serdev,
+						      SERDEV_PARITY_EVEN);
+		BT_INFO("BCSP: link-est UART set to 8-E-1 + HW flow (parity_ret=%d)",
+			parity_ret);
 
 		/*
 		 * Run the full legacy-webOS BT bring-up dance before the first
@@ -3168,17 +3197,22 @@ static int bcsp_open(struct hci_uart *hu)
 			 * MR2=0x34 (bits 5:4=11 CS8, bits 3:2=01 1-stop,
 			 * bits 1:0=00 no parity).
 			 *
-			 * Prior commits enabled EVEN parity and HW flow control
-			 * based on a memory note that was wrong (project_bcsp_
-			 * webos_uart_state_captured.md claimed MR1=0xf4 MR2=0x36
-			 * but the live debug dump above contradicts).  Restore to
-			 * NONE parity + no HW flow control to match webOS exactly.
+			 * CORRECTED 2026-06-09: that dump was kernel-only
+			 * (__msm_uartdm_set_baud_rate snapshot BEFORE PmBtStack's
+			 * userspace HSUART_MODE_SET ioctl).  Webos-debug TPADUART
+			 * instrumentation at t=44.230 showed PmBtStack
+			 * IMMEDIATELY re-asserts MR1=0xf4 MR2=0x36 (8-E-1 + HW
+			 * flow) at this 3.6864 M operational baud, identical to
+			 * the link-est settings.  On-device proof: setting MR2=0x36
+			 * unblocked the SHY handshake — chip went UNINIT → INIT →
+			 * CURIOUS → GARRULOUS and we got Link established for the
+			 * first time ever.
 			 */
 			parity_ret = serdev_device_set_parity(hu->serdev,
-							      SERDEV_PARITY_NONE);
-			serdev_device_set_flow_control(hu->serdev, false);
+							      SERDEV_PARITY_EVEN);
+			serdev_device_set_flow_control(hu->serdev, true);
 
-			BT_INFO("BCSP: skip-sync — UART set to %u 8-N-1 no flow (parity_ret=%d)",
+			BT_INFO("BCSP: skip-sync — UART set to %u 8-E-1 + HW flow (parity_ret=%d)",
 				op_baud, parity_ret);
 		}
 
