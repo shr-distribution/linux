@@ -3423,9 +3423,37 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 	bdev->init_state = BCSP_SERDEV_INIT_POWER_OFF;
 	serdev_device_set_drvdata(serdev, bdev);
 
-	/* Get GPIO descriptors */
+	/*
+	 * Get GPIO descriptors.
+	 *
+	 * CRITICAL: claim each GPIO with the logical state that matches the
+	 * legacy webOS gpiomux drive level so the pin does NOT transient
+	 * through the OPPOSITE level at probe.
+	 *
+	 * - shutdown (gpio130, ACTIVE_HIGH): webOS bt_power(1) holds the pin
+	 *   HIGH (= BT_POWER ON).  The pin state is HIGH at moboot→mainline
+	 *   handoff (preserved from webOS).  Claiming with GPIOD_OUT_LOW
+	 *   drives the pin to logical 0 = physical LOW = BT_POWER OFF for
+	 *   the few µs between claim and the bcsp_serdev_set_power(ON)
+	 *   gpiod_set_value(1) call below.  On this board the chip's only
+	 *   power gate is via this rail, so a brief LOW = brief power loss
+	 *   = chip PSRAM WIPED.  Claim HIGH (asserted) from the start.
+	 *
+	 * - device-wakeup (gpio131, ACTIVE_LOW): webOS gpiomux drives this
+	 *   pin LOW continuously (GPIO_OUTL_8M_PN in both ACTIVE and
+	 *   SUSPENDED configs).  LOW = BT_WAKE asserted = chip's UART RX
+	 *   stays powered for receive.  Claiming with GPIOD_OUT_LOW (logical
+	 *   0 + ACTIVE_LOW polarity) drives the pin physically HIGH for a
+	 *   moment — chip sees BT_WAKE deasserted = "host going to sleep"
+	 *   and may drop its BCSP context to SHY.  Claim asserted from the
+	 *   start so the pin stays LOW continuously.
+	 *
+	 * Both transients are the suspected cause of the long-standing
+	 * "chip in SHY but never advances to CURIOUS" wall captured in
+	 * project_bcsp_deep_audit_exhausted.md.
+	 */
 	bdev->shutdown_gpio = devm_gpiod_get_optional(dev, "shutdown",
-						       GPIOD_OUT_LOW);
+						       GPIOD_OUT_HIGH);
 	if (IS_ERR(bdev->shutdown_gpio)) {
 		dev_err(dev, "Failed to get shutdown GPIO: %ld\n",
 			PTR_ERR(bdev->shutdown_gpio));
@@ -3433,7 +3461,7 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 	}
 
 	bdev->device_wakeup = devm_gpiod_get_optional(dev, "device-wakeup",
-						       GPIOD_OUT_LOW);
+						       GPIOD_OUT_HIGH);
 	if (IS_ERR(bdev->device_wakeup)) {
 		dev_err(dev, "Failed to get device-wakeup GPIO: %ld\n",
 			PTR_ERR(bdev->device_wakeup));
