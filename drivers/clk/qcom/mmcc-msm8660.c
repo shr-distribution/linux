@@ -2462,7 +2462,7 @@ static const struct qcom_reset_map mmcc_msm8660_resets[] = {
 };
 
 /*
- * MMSS NoC AXI master ports
+ * MMSS NoC AXI master port assignments
  *
  * Per the downstream Qualcomm BSP (msm_bus_board_8660.c MSM_BUS_MASTER_*
  * enum), the MMSS fabric has 14 master ports. Two of the power domains
@@ -2478,10 +2478,13 @@ static const struct qcom_reset_map mmcc_msm8660_resets[] = {
  * transitions during runtime PM, and their halt-status bit only
  * transitions when the master port is halted -- which during normal
  * runtime PM cycles it is not.
+ *
+ * The actual port-mask bit constants (QCOM_MMSS_PORT_MDP0 / MDP1 /
+ * GFX3D) live in <linux/soc/qcom/qcom_mmss_porthalt.h> so that
+ * SoC-agnostic consumer drivers (drm/msm/mdp4, drm/msm/adreno,
+ * camss-vfe, vidc) can request port halts for the masters they own
+ * without depending on this MSM8x60-specific clock driver.
  */
-#define MMSS_PORT_MDP0		BIT(0)
-#define MMSS_PORT_MDP1		BIT(1)
-#define MMSS_PORT_GFX3D		BIT(4)
 
 /*
  * RPM handle cached by mmcc_msm8660_unhalt_fabric_ports() at probe time.
@@ -2522,7 +2525,7 @@ static int mmcc_msm8660_set_port_halt(u32 port_mask, bool halt)
 	if (!mmcc_msm8660_rpm)
 		return 0;
 
-	return qcom_mmss_port_halt(mmcc_msm8660_rpm, port_mask, halt);
+	return qcom_mmss_port_halt(port_mask, halt);
 }
 
 /*
@@ -2593,7 +2596,7 @@ static struct footswitch gfx3d_gdsc = {
 	 *   msm_bus_axi_porthalt(MSM_BUS_MASTER_GRAPHICS_3D).
 	 * Because of RPM_ALWAYS_ON above this only fires on system suspend.
 	 */
-	.port_mask = MMSS_PORT_GFX3D,
+	.port_mask = QCOM_MMSS_PORT_GFX3D,
 	.port_halt = mmcc_msm8660_set_port_halt,
 };
 
@@ -2660,7 +2663,7 @@ static struct footswitch mdp_gdsc = {
 	 * the bus across collapse, mirroring footswitch-8x60.c's
 	 *   msm_bus_axi_porthalt(MSM_BUS_MASTER_MDP_PORT0/1).
 	 */
-	.port_mask = MMSS_PORT_MDP0 | MMSS_PORT_MDP1,
+	.port_mask = QCOM_MMSS_PORT_MDP0 | QCOM_MMSS_PORT_MDP1,
 	.port_halt = mmcc_msm8660_set_port_halt,
 };
 
@@ -3120,12 +3123,17 @@ static int mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 	/*
 	 * Cache the RPM handle for the per-domain port halt/unhalt path
 	 * invoked from footswitch_power_off() / footswitch_power_on() via
-	 * mmcc_msm8660_set_port_halt(). Safe to keep across this device's
-	 * lifetime because device_link_add() above pinned the supplier
+	 * mmcc_msm8660_set_port_halt(), and publish it to the SoC-agnostic
+	 * MMSS port-halt helper so consumer drivers (drm/msm/mdp4,
+	 * drm/msm/adreno, camss-vfe, vidc) can call qcom_mmss_port_halt()
+	 * from their own .suspend hooks without each having to re-resolve
+	 * the RPM phandle. Safe to keep across this device's lifetime
+	 * because device_link_add() above pinned the supplier
 	 * (DL_FLAG_AUTOREMOVE_CONSUMER) -- qcom_rpm cannot unbind while we
 	 * are bound.
 	 */
 	mmcc_msm8660_rpm = rpm;
+	qcom_mmss_porthalt_register_rpm(rpm);
 
 	rc = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE,
 			    QCOM_RPM_MM_FABRIC_HALT, mmss_halt, 2);
@@ -3134,6 +3142,7 @@ static int mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 
 	if (rc) {
 		mmcc_msm8660_rpm = NULL;
+		qcom_mmss_porthalt_register_rpm(NULL);
 		return dev_err_probe(dev, rc,
 				     "MMSS fabric unhalt RPM write failed\n");
 	}

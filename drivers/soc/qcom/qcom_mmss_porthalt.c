@@ -48,6 +48,34 @@
 static atomic_t port_halt_count[MMSS_FABRIC_NR_PORTS];
 
 /*
+ * Cached qcom_rpm handle. Set once by qcom_mmss_porthalt_register_rpm()
+ * from the MMCC provider's probe path (drivers/clk/qcom/mmcc-msm8660.c)
+ * after it has resolved the RPM supplier with device_link_add(). The
+ * supplier stays bound for the consumer's lifetime so the pointer is
+ * valid until the consumer (mmcc) goes away.
+ *
+ * SoC-agnostic consumer drivers (drm/msm/mdp4, drm/msm/adreno,
+ * camss-vfe, vidc) call qcom_mmss_port_halt() without supplying the
+ * handle themselves; on SoCs other than MSM8x60 the cache stays NULL
+ * (no provider registered) and the helper returns -ENODEV, making the
+ * port_halt call a harmless no-op there.
+ *
+ * READ_ONCE / WRITE_ONCE for visibility; full SMP synchronisation isn't
+ * needed because (a) register happens once during the MMCC provider's
+ * probe with no concurrent halt callers, and (b) callers that race with
+ * a NULL-to-non-NULL transition simply get -ENODEV on the first call
+ * and succeed on the next, which is the same as if they had arrived
+ * one cycle later.
+ */
+static struct qcom_rpm *cached_rpm;
+
+void qcom_mmss_porthalt_register_rpm(struct qcom_rpm *rpm)
+{
+	WRITE_ONCE(cached_rpm, rpm);
+}
+EXPORT_SYMBOL_GPL(qcom_mmss_porthalt_register_rpm);
+
+/*
  * Serializes the refcount-transition -> RPM-write window. atomic_t per
  * port keeps individual port accounting correct across concurrent
  * callers; this mutex prevents two threads from issuing overlapping
@@ -60,10 +88,8 @@ static DEFINE_MUTEX(port_halt_lock);
 
 /**
  * qcom_mmss_port_halt() - halt or unhalt MMSS NoC master ports
- * @rpm:	qcom_rpm IPC handle (resolved by the caller, typically the
- *		MMCC provider via dev_get_drvdata() on its pinned supplier)
  * @port_mask:	bitmap of MMSS NoC master port IDs to act on
- *		(MSM_BUS_MASTER_* enum, max 14 bits)
+ *		(QCOM_MMSS_PORT_* defines, max 14 bits)
  * @halt:	true to halt the ports (quiesce AXI traffic), false to
  *		unhalt them (admit traffic again)
  *
@@ -94,6 +120,11 @@ static DEFINE_MUTEX(port_halt_lock);
  * Return:
  * - 0 on success, or on no-op (the requested transition was already in
  *   the cumulative refcounted state).
+ * - -ENODEV if no MMCC provider has registered an RPM handle yet
+ *   (qcom_mmss_porthalt_register_rpm() hasn't run, or the running SoC
+ *   simply has no MMSS NoC HALT facility -- e.g. mainline MSM8960+ where
+ *   AXI quiescence moved in-band into the GDSC FSM). Callers can treat
+ *   this as "halt unsupported on this platform, continue without it".
  * - -EAGAIN if called from atomic / IRQ-disabled context. The cumulative
  *   refcount is left unchanged; the caller should either retry in a
  *   schedulable context or accept the missed halt (the underlying rail
@@ -104,17 +135,20 @@ static DEFINE_MUTEX(port_halt_lock);
  *   transitions are rolled back so the next call re-attempts the IPC,
  *   keeping the helper's view of silicon state consistent.
  */
-int qcom_mmss_port_halt(struct qcom_rpm *rpm, u32 port_mask, bool halt)
+int qcom_mmss_port_halt(u32 port_mask, bool halt)
 {
+	struct qcom_rpm *rpm = READ_ONCE(cached_rpm);
 	unsigned long mask = port_mask;
 	u32 transition_mask = 0;
 	u32 cmd[2];
 	int bit, ret;
 
-	if (!rpm || (port_mask & ~MMSS_FABRIC_PORT_MASK))
+	if (port_mask & ~MMSS_FABRIC_PORT_MASK)
 		return -EINVAL;
 	if (!port_mask)
 		return 0;
+	if (!rpm)
+		return -ENODEV;
 
 	/*
 	 * Reject IRQ-disabled callers up front (see context note above).
