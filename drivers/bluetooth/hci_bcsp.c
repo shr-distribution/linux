@@ -4040,9 +4040,11 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 		 * Save the original hci_uart_open so our wrapper can chain.
 		 */
 		if (bdev->serdev_hu.hdev) {
-			bdev->orig_hdev_open = bdev->serdev_hu.hdev->open;
-			bdev->serdev_hu.hdev->open = bcsp_hdev_open_wrapper;
-			bdev->serdev_hu.hdev->shutdown = bcsp_hdev_shutdown;
+			struct hci_dev *hdev = bdev->serdev_hu.hdev;
+
+			bdev->orig_hdev_open = hdev->open;
+			hdev->open = bcsp_hdev_open_wrapper;
+			hdev->shutdown = bcsp_hdev_shutdown;
 			/* Required so the chip-cold-boot path on every open
 			 * (after our shutdown collapsed the rail) re-runs the
 			 * full BCSP bring-up: SYNC→CONF, PSKEYs, BDADDR,
@@ -4050,10 +4052,37 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 			 * skips setup() on second+ open and HCI Reset times
 			 * out against a chip that's at factory defaults.
 			 */
-			bdev->serdev_hu.hdev->setup = bcsp_hdev_setup;
-			hci_set_quirk(bdev->serdev_hu.hdev,
-				      HCI_QUIRK_NON_PERSISTENT_SETUP);
-			dev_info(dev, "BCSP: hdev open/shutdown/setup hooks wired for clean suspend-resume + down/up\n");
+			hdev->setup = bcsp_hdev_setup;
+			hci_set_quirk(hdev, HCI_QUIRK_NON_PERSISTENT_SETUP);
+
+			/*
+			 * Suppress the HCI_AUTO_OFF dance.
+			 *
+			 * hci_register_dev() unconditionally sets HCI_AUTO_OFF
+			 * and hci_power_on() queues a 2-second delayed work
+			 * (hci_power_off) that fires if no userspace MGMT
+			 * client (bluetoothd) has claimed the controller in
+			 * that window.  On LuneOS that window is ~40 s long —
+			 * BCSP probe finishes around t=29 but bluetoothd
+			 * starts ~t=72 once systemd hands off from initramfs
+			 * to rootfs.  The auto-off fires at t≈31, our
+			 * hdev->shutdown collapses the chip rail, the chip
+			 * cold-boots, bluetoothd later opens against a now-
+			 * factory chip and we have to redo SHY/CONF/PSKEY/
+			 * WARM_RESET in the resume setup path.
+			 *
+			 * Clearing HCI_AUTO_OFF and cancelling the queued
+			 * delayed_work means the chip stays fully configured
+			 * from probe through the entire initramfs→rootfs
+			 * handover.  bluetoothd's first MGMT command lands on
+			 * an already-running chip and HCI Reset succeeds on
+			 * the first try.  No chip cold-boot, no resume re-
+			 * handshake, no race window.
+			 */
+			hci_dev_clear_flag(hdev, HCI_AUTO_OFF);
+			cancel_delayed_work_sync(&hdev->power_off);
+
+			dev_info(dev, "BCSP: hdev hooks wired + HCI_AUTO_OFF suppressed (no auto-power-off dance)\n");
 		}
 	}
 
