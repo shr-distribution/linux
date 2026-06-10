@@ -3789,6 +3789,25 @@ static int bcsp_hdev_setup(struct hci_dev *hdev)
 
 	dev_info(&hdev->dev, "BCSP: hdev setup — re-running full BCSP bring-up\n");
 	bdev->need_resetup = false;
+
+	/*
+	 * Reset the host UART back to init_speed (115,200) BEFORE bcsp_setup
+	 * runs.  The previous operational cycle left the UART at oper_speed
+	 * (3.6864 M post-WARM_RESET), but our hdev->shutdown collapsed the
+	 * chip rail so the chip re-cold-booted into its 115,200 8-N-1
+	 * factory state — without a baud reset here, bcsp_setup's SHY
+	 * handshake would TX at 3.6864 M against a 115,200 chip RX and
+	 * time out.  Safe to call here: hci_uart_open() has already returned
+	 * (we're chained behind it), so the underlying tty is live.
+	 *
+	 * Parity / flow_control are re-set by bcsp_setup's proto->open path
+	 * (8-E-1 + HW flow for the SHY/CONF link-est phase).
+	 */
+	serdev_device_set_baudrate(hu->serdev, bdev->init_speed);
+	dev_info(&hdev->dev,
+		 "BCSP: hdev setup — reset host UART to init_speed=%u for re-handshake\n",
+		 bdev->init_speed);
+
 	return bcsp_setup(hu);
 }
 
