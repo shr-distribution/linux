@@ -54,6 +54,12 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 	int ret;
 
+	dev_info(lvds_codec->dev,
+		 "lvds_codec_enable: ENTER settle_ms=%u pins_default=%p pins_sleep=%p\n",
+		 lvds_codec->powerup_settle_ms,
+		 lvds_codec->pins_default,
+		 lvds_codec->pins_sleep);
+
 	ret = regulator_enable(lvds_codec->vcc);
 	if (ret) {
 		dev_err(lvds_codec->dev,
@@ -61,8 +67,11 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 		return;
 	}
 
-	if (lvds_codec->powerdown_gpio)
+	if (lvds_codec->powerdown_gpio) {
 		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 0);
+		dev_info(lvds_codec->dev,
+			 "lvds_codec_enable: powerdown deasserted (chip ON)\n");
+	}
 
 	/*
 	 * Some encoders (e.g. TI SN75LVDS83B) refuse to acquire PLL lock if
@@ -81,13 +90,21 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 			dev_err(lvds_codec->dev,
 				"Failed to select pinctrl default state: %d\n",
 				ret);
+		else
+			dev_info(lvds_codec->dev,
+				 "lvds_codec_enable: pinctrl-default selected (live RGB routed)\n");
 	}
+	dev_info(lvds_codec->dev, "lvds_codec_enable: EXIT\n");
 }
 
 static void lvds_codec_disable(struct drm_bridge *bridge)
 {
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 	int ret;
+
+	dev_info(lvds_codec->dev,
+		 "lvds_codec_disable: ENTER pins_default=%p pins_sleep=%p\n",
+		 lvds_codec->pins_default, lvds_codec->pins_sleep);
 
 	/*
 	 * Disconnect MDP signaling from the encoder input before the chip is
@@ -100,15 +117,22 @@ static void lvds_codec_disable(struct drm_bridge *bridge)
 			dev_err(lvds_codec->dev,
 				"Failed to select pinctrl sleep state: %d\n",
 				ret);
+		else
+			dev_info(lvds_codec->dev,
+				 "lvds_codec_disable: pinctrl-sleep selected (pins parked)\n");
 	}
 
-	if (lvds_codec->powerdown_gpio)
+	if (lvds_codec->powerdown_gpio) {
 		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 1);
+		dev_info(lvds_codec->dev,
+			 "lvds_codec_disable: powerdown asserted (chip OFF)\n");
+	}
 
 	ret = regulator_disable(lvds_codec->vcc);
 	if (ret)
 		dev_err(lvds_codec->dev,
 			"Failed to disable regulator \"vcc\": %d\n", ret);
+	dev_info(lvds_codec->dev, "lvds_codec_disable: EXIT\n");
 }
 
 #define MAX_INPUT_SEL_FORMATS 1

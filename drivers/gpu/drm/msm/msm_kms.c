@@ -348,11 +348,20 @@ int msm_kms_pm_prepare(struct device *dev)
 {
 	struct msm_drm_private *priv = dev_get_drvdata(dev);
 	struct drm_device *ddev = priv ? priv->dev : NULL;
+	int ret;
 
-	if (!priv || !priv->kms)
+	dev_info(dev, "msm_kms_pm_prepare: ENTER priv=%p kms=%p ddev=%p\n",
+		 priv, priv ? priv->kms : NULL, ddev);
+
+	if (!priv || !priv->kms) {
+		dev_info(dev, "msm_kms_pm_prepare: SKIP (no priv/kms)\n");
 		return 0;
+	}
 
-	return drm_mode_config_helper_suspend(ddev);
+	ret = drm_mode_config_helper_suspend(ddev);
+	dev_info(dev, "msm_kms_pm_prepare: drm_mode_config_helper_suspend -> %d\n",
+		 ret);
+	return ret;
 }
 
 void msm_kms_pm_complete(struct device *dev)
@@ -360,10 +369,16 @@ void msm_kms_pm_complete(struct device *dev)
 	struct msm_drm_private *priv = dev_get_drvdata(dev);
 	struct drm_device *ddev = priv ? priv->dev : NULL;
 
-	if (!priv || !priv->kms)
+	dev_info(dev, "msm_kms_pm_complete: ENTER priv=%p kms=%p ddev=%p\n",
+		 priv, priv ? priv->kms : NULL, ddev);
+
+	if (!priv || !priv->kms) {
+		dev_info(dev, "msm_kms_pm_complete: SKIP (no priv/kms)\n");
 		return;
+	}
 
 	drm_mode_config_helper_resume(ddev);
+	dev_info(dev, "msm_kms_pm_complete: drm_mode_config_helper_resume done\n");
 }
 
 void msm_kms_shutdown(struct platform_device *pdev)

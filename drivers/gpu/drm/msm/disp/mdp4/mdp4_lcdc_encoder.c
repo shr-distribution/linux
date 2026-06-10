@@ -316,6 +316,10 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 			to_mdp4_lcdc_encoder(encoder);
 	struct mdp4_kms *mdp4_kms = get_kms(encoder);
 
+	dev_info(encoder->dev->dev,
+		 "mdp4_lcdc_encoder_disable: ENTER enabled=%d\n",
+		 mdp4_lcdc_encoder->enabled);
+
 	/*
 	 * Make the disable path idempotent. Skipping the work on
 	 * already-disabled is safe; WARNing was actively harmful because
@@ -325,8 +329,11 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 	 * on silicon at a point where the kernel believes the encoder is
 	 * off. Silent return is correct for an already-disabled encoder.
 	 */
-	if (!mdp4_lcdc_encoder->enabled)
+	if (!mdp4_lcdc_encoder->enabled) {
+		dev_info(encoder->dev->dev,
+			 "mdp4_lcdc_encoder_disable: SKIP (already disabled)\n");
 		return;
+	}
 
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
 
@@ -346,6 +353,8 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 			       mdp4_lcdc_encoder->regs);
 
 	mdp4_lcdc_encoder->enabled = false;
+	dev_info(encoder->dev->dev,
+		 "mdp4_lcdc_encoder_disable: EXIT (full disable done)\n");
 }
 
 static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
