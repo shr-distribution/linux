@@ -241,6 +241,28 @@ struct adm_device {
 	 * legacy webOS msm_dmov per-ADM spinlock behaviour.
 	 */
 	spinlock_t submit_lock;
+
+	/*
+	 * CRCI_CTL write-cache (Fix 2 of project_adm_submit_lock_starvation).
+	 *
+	 * Legacy webOS dma.c:378 (`crci_mask_compare`) only writes the CRCI
+	 * register when the desired mask actually differs from what's
+	 * currently programmed.  Mainline qcom_adm wrote CRCI_CTL on every
+	 * adm_start_dma call unconditionally — at our BT sustained 308 pkt/sec
+	 * RX rate that's 308 extra ~600 ns MMIO writes per second to a
+	 * register whose value rarely changes.
+	 *
+	 * Cache the last-written value per CRCI index (0-15 = 16 CRCIs total
+	 * per controller).  Updated under submit_lock so the write+cache pair
+	 * is atomic vs another mmci submit; the no-exec_func path (BT RX) can
+	 * read-and-skip lock-free because the only way the value changes is
+	 * through the exec_func gated path which barriers via the lock release.
+	 *
+	 * crci_ctl_cache_valid is a bitmap so 0-initialised state correctly
+	 * forces the first write of each CRCI to actually hit MMIO.
+	 */
+	u32 crci_ctl_cache[16];
+	u16 crci_ctl_cache_valid;	/* one bit per CRCI */
 };
 
 /**
@@ -1016,8 +1038,27 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * is live at EE=1; only the CONFIG bank CONF/CRCI_CTL is at EE=0.)
 		 */
 		crci_val = async_desc->mux | blk_size;
-		writel(crci_val,
-		       adev->regs + ADM_CRCI_CTL(async_desc->crci, 0));
+
+		/*
+		 * Fix 2: skip the CRCI_CTL MMIO write when the cached value
+		 * matches the desired value.  CRCI 1 (eMMC) and CRCI 9 (BT)
+		 * both write the same constants on every submit so 95%+ of
+		 * these MMIO writes are no-ops.  See
+		 * project_adm_submit_lock_starvation for the rationale.
+		 *
+		 * The cache is updated under submit_lock when need_submit_lock
+		 * is true.  When BT RX runs without the lock the read is racy
+		 * but harmless: at worst we do one redundant write, and the
+		 * value being written would be identical to whatever a racing
+		 * mmci start writes (same CRCI = same blk_size+mux constants).
+		 */
+		if (!(adev->crci_ctl_cache_valid & BIT(async_desc->crci)) ||
+		    adev->crci_ctl_cache[async_desc->crci] != crci_val) {
+			writel(crci_val,
+			       adev->regs + ADM_CRCI_CTL(async_desc->crci, 0));
+			adev->crci_ctl_cache[async_desc->crci] = crci_val;
+			adev->crci_ctl_cache_valid |= BIT(async_desc->crci);
+		}
 	}
 
 	/*
