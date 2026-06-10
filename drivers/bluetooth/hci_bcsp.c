@@ -467,6 +467,11 @@ struct bcsp_serdev {
 	 */
 	bdaddr_t		nvmem_bdaddr;
 	bool			has_nvmem_bdaddr;
+
+	/* Saved hdev->open we wrap to do a webOS-style power cycle on
+	 * `hciconfig hci0 up` after we did set_power(false) on shutdown.
+	 */
+	int			(*orig_hdev_open)(struct hci_dev *hdev);
 };
 
 struct bcsp_struct {
@@ -3660,6 +3665,85 @@ static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 	return 0;
 }
 
+/*
+ * hdev->shutdown — called by HCI on `hciconfig hci0 down` etc.
+ *
+ * Mirror webOS bt_power(0): drop the BT_POWER (gpio130) rail so the
+ * chip's main supply collapses.  webOS's bt_power() also re-muxes the
+ * pin to a 2 mA keeper to prevent leakage through the protection
+ * diodes — our pinctrl active/suspend state pair would do the same;
+ * for now we rely on gpiod_set_value alone (works in practice on
+ * tenderloin).  Do NOT touch gpio138 (reset) — webOS doesn't, and
+ * writes to it have been observed to wedge the chip across SoC
+ * reboot (memory: project_bt_reset_phantom_no_software_resettable).
+ */
+static int bcsp_hdev_shutdown(struct hci_dev *hdev)
+{
+	struct hci_uart *hu = hci_get_drvdata(hdev);
+	struct bcsp_struct *bcsp = hu->priv;
+	struct bcsp_serdev *bdev;
+
+	if (!bcsp || !bcsp->is_serdev || !bcsp->serdev_bdev)
+		return 0;
+
+	bdev = bcsp->serdev_bdev;
+	dev_info(bdev->dev, "BCSP: hdev shutdown — collapsing chip rail\n");
+	bcsp_serdev_set_power(bdev, false);
+	msleep(50);		/* let VDD decay before next power-on */
+	return 0;
+}
+
+/*
+ * hdev->open wrapper — called by HCI on `hciconfig hci0 up`.
+ *
+ * webOS bt_power(1) sequence: drive gpio130 HIGH (chip power on), then
+ * a brief gpio138 LOW→HIGH pulse (reset), then re-open /dev/bt_uart.
+ * The chip cold-boots and emits SYNC autonomously at 115,200 8-N-1.
+ *
+ * Our equivalent: set_power(true), short msleep for chip boot, reset
+ * the BCSP link state machine to UNINIT (chip is at factory defaults
+ * again, all PSKEYs gone), then chain to the original hci_uart_open.
+ * The chip's autonomous SYNC will drive bcsp_recv() through
+ * UNINIT→INIT→ACTIVE on its own; bdaddr_state=PENDING ensures the
+ * post-link-up PSKEY load + WARM_RESET re-runs.
+ */
+static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
+{
+	struct hci_uart *hu = hci_get_drvdata(hdev);
+	struct bcsp_struct *bcsp = hu->priv;
+	struct bcsp_serdev *bdev;
+
+	if (!bcsp || !bcsp->is_serdev || !bcsp->serdev_bdev ||
+	    !bcsp->orig_hdev_open)
+		return -ENODEV;
+
+	bdev = bcsp->serdev_bdev;
+	dev_info(bdev->dev, "BCSP: hdev open — re-powering chip\n");
+
+	bcsp_serdev_set_power(bdev, true);
+	msleep(20);		/* webOS sleeps a few ms before BT speaks */
+
+	/* Chip is freshly cold-booted — reset our BCSP link state so the
+	 * chip's autonomous SYNC at 115,200 8-N-1 (chip factory default)
+	 * drives a fresh handshake.  Reset the host UART back to init_speed
+	 * to match.  bcsp_setup() will re-run the SHY → CURIOUS → GARRULOUS
+	 * + PSKEY + WARM_RESET sequence after link_up.
+	 */
+	serdev_device_set_baudrate(bdev->serdev_hu.serdev, bdev->init_speed);
+	bcsp->link_state            = BCSP_LINK_UNINIT;
+	bcsp->bdaddr_state          = bcsp->has_nvmem_bdaddr || bcsp->bdaddr_from_dt
+					? BCSP_BDADDR_PENDING : BCSP_BDADDR_NONE;
+	bcsp->warm_reset_sent       = false;
+	bcsp->link_established      = false;
+	bcsp->rxseq_txack           = 0;
+	bcsp->rxack                 = 0;
+	bcsp->msgq_txseq            = 0;
+	bcsp->txack_req             = 0;
+	bcsp->use_crc               = 0;
+
+	return bcsp->orig_hdev_open(hdev);
+}
+
 static int bcsp_serdev_probe(struct serdev_device *serdev)
 {
 	struct bcsp_serdev *bdev;
@@ -3835,6 +3919,19 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 		bcsp_priv->is_serdev = true;
 		bcsp_priv->serdev_bdev = bdev;
 		dev_info(dev, "BCSP serdev tracking initialized\n");
+
+		/*
+		 * Wire the webOS-style clean power-cycle hooks on the hdev so
+		 * `hciconfig hci0 down/up` collapses + re-powers the chip
+		 * cleanly instead of leaving it half-initialised and wedging.
+		 * Save the original hci_uart_open so our wrapper can chain.
+		 */
+		if (bdev->serdev_hu.hdev) {
+			bcsp_priv->orig_hdev_open = bdev->serdev_hu.hdev->open;
+			bdev->serdev_hu.hdev->open = bcsp_hdev_open_wrapper;
+			bdev->serdev_hu.hdev->shutdown = bcsp_hdev_shutdown;
+			dev_info(dev, "BCSP: hdev open/shutdown hooks wired for clean down/up\n");
+		}
 	}
 
 	bdev->init_state = BCSP_SERDEV_INIT_PHASE1;
