@@ -19,14 +19,23 @@
 #include "msm_mmu.h"
 #include "mdp4_kms.h"
 
-static int mdp4_hw_init(struct msm_kms *kms)
+/*
+ * Program the MDP4 top-level / pipe / overlay configuration registers
+ * that survive a single bind but are RESET on every mdp_gdsc collapse
+ * (system suspend, or any future runtime collapse). Called from both
+ * .hw_init (first bind) and runtime_resume (every power-on after
+ * collapse), so the registers always reflect the values mdp4 expects
+ * before atomic_helper restores the per-CRTC modeset state.
+ *
+ * Caller MUST hold a runtime-PM reference (i.e. clocks + mdp_gdsc rail
+ * up). When called from runtime_resume this is satisfied by the
+ * clk_prepare_enable() block that precedes it; when called from
+ * .hw_init the surrounding pm_runtime_get_sync/put_sync provides it.
+ */
+static void mdp4_program_init_regs(struct mdp4_kms *mdp4_kms)
 {
-	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
-	struct drm_device *dev = mdp4_kms->dev;
 	u32 dmap_cfg, vg_cfg;
 	unsigned long clk;
-
-	pm_runtime_get_sync(dev->dev);
 
 	if (mdp4_kms->rev > 1) {
 		mdp4_write(mdp4_kms, REG_MDP4_CS_CONTROLLER0, 0x0707ffff);
@@ -78,7 +87,15 @@ static int mdp4_hw_init(struct msm_kms *kms)
 
 	if (mdp4_kms->rev > 1)
 		mdp4_write(mdp4_kms, REG_MDP4_RESET_STATUS, 1);
+}
 
+static int mdp4_hw_init(struct msm_kms *kms)
+{
+	struct mdp4_kms *mdp4_kms = to_mdp4_kms(to_mdp_kms(kms));
+	struct drm_device *dev = mdp4_kms->dev;
+
+	pm_runtime_get_sync(dev->dev);
+	mdp4_program_init_regs(mdp4_kms);
 	pm_runtime_put_sync(dev->dev);
 
 	return 0;
@@ -718,6 +735,25 @@ static int mdp4_runtime_resume(struct device *dev)
 	clk_prepare_enable(mdp4_kms->lut_clk);
 	clk_prepare_enable(mdp4_kms->axi_clk);
 	clk_prepare_enable(mdp4_kms->vsync_clk);
+
+	/*
+	 * Re-program MDP top-level / pipe / overlay configuration. These
+	 * registers were lost when mdp_gdsc collapsed (system suspend on
+	 * MSM8x60 since mdp_gdsc has no ALWAYS_ON flag, or any future
+	 * runtime collapse on other SoCs). Without this re-program the
+	 * atomic_helper resume modeset restores per-CRTC state but leaves
+	 * READ_CNFG / PORTMAP_MODE / FETCH_CONFIG / LAYERMIXER_IN_CFG at
+	 * post-reset defaults, which produces immediate
+	 * PRIMARY_INTF_UDERRUN + EXTERNAL_INTF_UDERRUN (mdp4_irq_error
+	 * 0x100 | 0x400) on the first scanline of resumed scanout and a
+	 * permanently dark panel (backlight stays under ALS control, but
+	 * no pixels reach the display interface).
+	 *
+	 * Idempotent: programming the same values into already-correct
+	 * registers is harmless, so we do it on every power-on rather
+	 * than tracking whether mdp_gdsc actually collapsed.
+	 */
+	mdp4_program_init_regs(mdp4_kms);
 
 	return 0;
 }
