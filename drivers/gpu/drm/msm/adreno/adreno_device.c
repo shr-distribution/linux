@@ -394,6 +394,31 @@ static int adreno_system_suspend(struct device *dev)
 	gpu->suspend_to_system = true;
 	ret = pm_runtime_force_suspend(dev);
 	gpu->suspend_to_system = false;
+
+	/*
+	 * Force-mark the rail as cold for the next resume, regardless of
+	 * whether pm_runtime_force_suspend() actually invoked our runtime-
+	 * suspend callback. It is a no-op when the device is already
+	 * runtime-suspended (autosuspend timer expired before system
+	 * suspend fired) -- in that case msm_gpu_pm_suspend() did not run
+	 * during this cycle, so it could not set gpu_cold = true itself.
+	 *
+	 * The rail will still collapse, though: genpd_finish_suspend()
+	 * during dpm_suspend_noirq calls power_off on every domain whose
+	 * consumers are all suspended, and GENPD_FLAG_RPM_ALWAYS_ON only
+	 * pins the domain ON during runtime PM cycles -- not across
+	 * system suspend (per include/linux/pm_domain.h:99-100).
+	 *
+	 * Without this set, msm_gpu_pm_resume() on the next cycle would
+	 * see gpu_cold == false and skip both enable_pwrrail() (harmless
+	 * -- genpd_finish_resume() already brought the rail back) AND
+	 * setting needs_hw_init = true (NOT harmless -- the next
+	 * submission then runs msm_gpu_hw_init() as a no-op, leaving the
+	 * GPU executing against post-reset register state and the first
+	 * draw wedges with a hangcheck timeout).
+	 */
+	if (!ret)
+		gpu->gpu_cold = true;
 out:
 	if (ret)
 		resume_scheduler(gpu);
