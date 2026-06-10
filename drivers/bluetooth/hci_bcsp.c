@@ -3713,11 +3713,13 @@ static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
 	struct bcsp_struct *bcsp = hu->priv;
 	struct bcsp_serdev *bdev;
 
-	if (!bcsp || !bcsp->is_serdev || !bcsp->serdev_bdev ||
-	    !bcsp->orig_hdev_open)
+	if (!bcsp || !bcsp->is_serdev || !bcsp->serdev_bdev)
 		return -ENODEV;
 
 	bdev = bcsp->serdev_bdev;
+	if (!bdev->orig_hdev_open)
+		return -ENODEV;
+
 	dev_info(bdev->dev, "BCSP: hdev open — re-powering chip\n");
 
 	bcsp_serdev_set_power(bdev, true);
@@ -3731,7 +3733,7 @@ static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
 	 */
 	serdev_device_set_baudrate(bdev->serdev_hu.serdev, bdev->init_speed);
 	bcsp->link_state            = BCSP_LINK_UNINIT;
-	bcsp->bdaddr_state          = bcsp->has_nvmem_bdaddr || bcsp->bdaddr_from_dt
+	bcsp->bdaddr_state          = bdev->has_nvmem_bdaddr || bcsp->bdaddr_from_dt
 					? BCSP_BDADDR_PENDING : BCSP_BDADDR_NONE;
 	bcsp->warm_reset_sent       = false;
 	bcsp->link_established      = false;
@@ -3741,7 +3743,7 @@ static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
 	bcsp->txack_req             = 0;
 	bcsp->use_crc               = 0;
 
-	return bcsp->orig_hdev_open(hdev);
+	return bdev->orig_hdev_open(hdev);
 }
 
 static int bcsp_serdev_probe(struct serdev_device *serdev)
@@ -3927,7 +3929,7 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 		 * Save the original hci_uart_open so our wrapper can chain.
 		 */
 		if (bdev->serdev_hu.hdev) {
-			bcsp_priv->orig_hdev_open = bdev->serdev_hu.hdev->open;
+			bdev->orig_hdev_open = bdev->serdev_hu.hdev->open;
 			bdev->serdev_hu.hdev->open = bcsp_hdev_open_wrapper;
 			bdev->serdev_hu.hdev->shutdown = bcsp_hdev_shutdown;
 			dev_info(dev, "BCSP: hdev open/shutdown hooks wired for clean down/up\n");
