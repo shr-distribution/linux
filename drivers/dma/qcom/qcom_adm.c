@@ -263,6 +263,19 @@ struct adm_device {
 	 */
 	u32 crci_ctl_cache[16];
 	u16 crci_ctl_cache_valid;	/* one bit per CRCI */
+
+	/*
+	 * Set when this controller is ADM1 (reg base 0x18420000).  Used
+	 * by adm_prep_slave_sg to apply the SDCC half-FIFO blk_size=1
+	 * override to BOTH CRCI 1 (eMMC sdcc1) AND CRCI 5 (sdcc4 = AR6003
+	 * WiFi).  Legacy webOS arch/arm/mach-msm/dma.c adm1_crci_conf
+	 * configures both as DMOV_CRCI_CONF(sd=1, blk=1).  The earlier
+	 * code only matched CRCI 1 because somebody had tested CRCI 5 on
+	 * ADM0 where it's QCE Crypto Engine 2 CE_OUT (and 16 B granularity
+	 * is correct there).  Differentiating per-controller lets us apply
+	 * the override only where it's right.
+	 */
+	bool is_adm1;
 };
 
 /**
@@ -661,27 +674,27 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		}
 
 		/*
-		 * SDCC eMMC CRCI 1 block-size override (half-FIFO).
+		 * SDCC block-size override (half-FIFO).
 		 *
 		 * Legacy webOS msm_dmov adm1_crci_conf[] hardcodes blk_size=1
-		 * for the eMMC CRCI: blk_size=1 = half-FIFO (32 B) = the SDCC
-		 * half-full CRCI trigger. adm_get_blksize() instead derives it
-		 * from burst (64 B FIFO -> 2 = full-FIFO), which mis-paces the
-		 * CRCI handshake against the SDCC FIFO and causes DATACRCFAIL /
-		 * RXOVERRUN on large eMMC reads.
+		 * for CRCI 1 (sdcc1 = eMMC) AND CRCI 5 (sdcc4 = AR6003 WiFi):
+		 * blk_size=1 = half-FIFO (32 B) = the SDCC half-full CRCI
+		 * trigger.  adm_get_blksize() derives it from burst (64 B
+		 * FIFO -> 2 = full-FIFO) which mis-paces the CRCI handshake
+		 * against the SDCC FIFO and causes DATACRCFAIL / RXOVERRUN on
+		 * large reads — and on the AR6003 specifically, kills the HTC
+		 * body-read CMD53 at probe so WMI CONTROL connect times out
+		 * (-110) and ath6kl probe fails -5.
 		 *
-		 * CRCI 5 is QCE Crypto Engine 2 CE_OUT on MSM8x60 (not the
-		 * "WiFi mailbox" on other platforms). The engine signals
-		 * CE_OUT every 16 B, so blk_size MUST stay at 0 (16 B
-		 * handshake granularity). Forcing blk_size=1 here caused the
-		 * engine's DOUT FIFO to fill faster than ADM drained — engine
-		 * stalled in PROCESSING state with DOUT_AVAIL=4 dwords waiting
-		 * after ~6 AES blocks (STATUS=0x1120120c), DMA timed out, ADM
-		 * channel error-path terminate_sync deadlocked. The
-		 * adm_slave_config override below was already correctly scoped
-		 * to CRCI 1 only; this earlier slave-prep override was missed.
+		 * Scope the override to ADM1 ONLY: on ADM0, CRCI 5 is QCE
+		 * Crypto Engine 2 CE_OUT — the engine signals CE_OUT every
+		 * 16 B so blk_size MUST stay at 0 (16 B handshake granularity).
+		 * A previous attempt to apply blk_size=1 unconditionally
+		 * deadlocked the crypto engine (DOUT_AVAIL=4 dwords stuck,
+		 * STATUS=0x1120120c, terminate_sync hang).  is_adm1 was set
+		 * at probe time from the controller's MMIO base address.
 		 */
-		if (crci == 1)
+		if (adev->is_adm1 && (crci == 1 || crci == 5))
 			blk_size = 1;
 	}
 
@@ -1414,6 +1427,16 @@ static int adm_dma_probe(struct platform_device *pdev)
 	adev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(adev->regs))
 		return PTR_ERR(adev->regs);
+
+	{
+		struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+
+		adev->is_adm1 = res && res->start == 0x18420000;
+		dev_info(adev->dev,
+			 "ADM controller at %pR (%s)\n",
+			 res, adev->is_adm1 ? "ADM1, SDCC half-FIFO override active for CRCI 1+5"
+					    : "ADM0");
+	}
 
 	adev->irq = platform_get_irq(pdev, 0);
 	if (adev->irq < 0)
