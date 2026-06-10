@@ -3142,82 +3142,6 @@ static int mmcc_msm8660_unhalt_fabric_ports(struct device *dev)
 	return 0;
 }
 
-/*
- * Aggregate every port_mask declared on the mmcc_msm8660_fs[] table into a
- * single bitmap. Used by the system-PM hooks below to halt / unhalt every
- * MMSS NoC master port the MMCC provider owns in one shot, regardless of
- * which subset is currently powered.
- */
-static u32 mmcc_msm8660_total_port_mask(void)
-{
-	u32 mask = 0;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(mmcc_msm8660_fs); i++) {
-		struct footswitch *fs = mmcc_msm8660_fs[i];
-
-		if (fs)
-			mask |= fs->port_mask;
-	}
-
-	return mask;
-}
-
-/*
- * System-suspend .suspend_late hook: proactively halt every MMSS NoC port
- * the MMCC owns BEFORE the genpd cascade reaches .suspend_noirq.
- *
- * This sidesteps the qcom_rpm noirq-window failure: at .suspend_late the
- * ack IRQ is still unmasked (dpm_suspend_noirq hasn't called
- * suspend_device_irqs() yet), so qcom_rpm_write completes normally. The
- * per-port refcount inside qcom_mmss_port_halt() then absorbs the
- * subsequent genpd-level port_halt callbacks at .suspend_noirq as
- * idempotent no-ops, eliminating the 5*HZ wait_for_completion_timeout
- * that would otherwise wedge the RPM IPC for the entire suspend window
- * (see drivers/mfd/qcom_rpm.c:447 -- one timed-out write under
- * rpm->lock blocks 22 downstream RPM consumers for ~110s cumulative).
- *
- * Idempotency: if a domain is already runtime-collapsed before suspend
- * (its genpd power_off already bumped the refcount), this call bumps
- * it again (1->2, no IPC). The matching .resume_early decrement just
- * lowers it back; the genpd power_on on next runtime-resume restores
- * the count to 0 with an IPC. The refcount model handles all orderings.
- */
-static int __maybe_unused mmcc_msm8660_suspend_late(struct device *dev)
-{
-	u32 mask = mmcc_msm8660_total_port_mask();
-	int ret;
-
-	if (!mask || !mmcc_msm8660_rpm)
-		return 0;
-
-	ret = qcom_mmss_port_halt(mmcc_msm8660_rpm, mask, true);
-	if (ret)
-		dev_warn(dev, "MMSS port halt (mask 0x%x) at suspend_late failed (%d); subsequent .suspend_noirq genpd halts may wedge RPM for ~110s\n",
-			 mask, ret);
-	return 0;
-}
-
-static int __maybe_unused mmcc_msm8660_resume_early(struct device *dev)
-{
-	u32 mask = mmcc_msm8660_total_port_mask();
-	int ret;
-
-	if (!mask || !mmcc_msm8660_rpm)
-		return 0;
-
-	ret = qcom_mmss_port_halt(mmcc_msm8660_rpm, mask, false);
-	if (ret)
-		dev_warn(dev, "MMSS port unhalt (mask 0x%x) at resume_early failed (%d); MMSS consumers may stall on resume\n",
-			 mask, ret);
-	return 0;
-}
-
-static const struct dev_pm_ops mmcc_msm8660_pm_ops = {
-	SET_LATE_SYSTEM_SLEEP_PM_OPS(mmcc_msm8660_suspend_late,
-				     mmcc_msm8660_resume_early)
-};
-
 static int mmcc_msm8660_probe(struct platform_device *pdev)
 {
 	struct regmap *regmap;
@@ -3255,7 +3179,6 @@ static struct platform_driver mmcc_msm8660_driver = {
 	.driver		= {
 		.name	= "mmcc-msm8660",
 		.of_match_table = mmcc_msm8660_match_table,
-		.pm	= &mmcc_msm8660_pm_ops,
 	},
 };
 
