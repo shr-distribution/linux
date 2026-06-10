@@ -55,16 +55,27 @@ struct qcom_rpm {
 	u32 ack_status;
 
 	/*
-	 * Set by qcom_rpm_suspend_noirq(), cleared by qcom_rpm_resume_noirq().
+	 * Set by qcom_rpm_suspend_late(), cleared by qcom_rpm_resume_early().
 	 * While true, qcom_rpm_write() returns -EAGAIN immediately instead of
-	 * grabbing rpm->lock and blocking 5*HZ on rpm->ack -- the ack IRQ has
-	 * been masked at the GIC by suspend_device_irqs(), so the completion
-	 * would never fire and the call would time out. Worse, because the
-	 * lock is held across the whole wait, every subsequent caller would
-	 * serialise behind it (22 RPM consumers x 5.04s = ~110s of resume-
-	 * window cascade on MSM8x60). The guard turns that into an instant
-	 * -EAGAIN return; callers can either retry later or treat their
-	 * operation as a best-effort no-op for this PM cycle.
+	 * grabbing rpm->lock and blocking 5*HZ on rpm->ack -- after this point
+	 * the ack IRQ will be masked at the GIC by suspend_device_irqs() (or
+	 * is masked by the time the matching genpd power_off cascade reaches
+	 * us at .suspend_noirq), so the completion would never fire and the
+	 * call would time out. Worse, because the lock is held across the
+	 * whole wait, every subsequent caller would serialise behind it
+	 * (22 RPM consumers x 5.04s = ~110s of resume-window cascade on
+	 * MSM8x60). The guard turns that into an instant -EAGAIN return;
+	 * callers can either retry later or treat their operation as a best-
+	 * effort no-op for this PM cycle.
+	 *
+	 * Arming this at .suspend_late (not .suspend_noirq) matters: noirq
+	 * callbacks run AFTER suspend_device_irqs() has masked the IRQ, AND
+	 * the PM core walks noirq callbacks in reverse probe order, so the
+	 * MMCC genpd footswitch power_off cascade (qcom_rpm's child consumers)
+	 * fires its own qcom_rpm_write attempts BEFORE qcom_rpm's own
+	 * .suspend_noirq would set the flag. By the suspend_late phase we
+	 * are guaranteed to run before both suspend_device_irqs() and the
+	 * genpd cascade.
 	 */
 	bool suspended;
 
@@ -478,12 +489,12 @@ int qcom_rpm_write(struct qcom_rpm *rpm,
 		return -EINVAL;
 
 	/*
-	 * Reject writes once dpm_suspend_noirq() has armed the suspend
-	 * guard. The ack IRQ is masked at the GIC at this point, so
-	 * wait_for_completion_timeout() below would spin a full 5*HZ and
-	 * return -ETIMEDOUT -- with rpm->lock held, dragging every other
-	 * RPM caller into the same wait. Fail fast instead. See the
-	 * struct qcom_rpm.suspended comment for context.
+	 * Reject writes once .suspend_late has armed the suspend guard.
+	 * Beyond that point dpm_suspend_noirq() will mask the ack IRQ at
+	 * the GIC, so wait_for_completion_timeout() below would spin a
+	 * full 5*HZ and return -ETIMEDOUT -- with rpm->lock held, dragging
+	 * every other RPM caller into the same wait. Fail fast instead.
+	 * See the struct qcom_rpm.suspended comment for context.
 	 */
 	if (READ_ONCE(rpm->suspended))
 		return -EAGAIN;
@@ -698,47 +709,47 @@ static int qcom_rpm_probe(struct platform_device *pdev)
 	return devm_of_platform_populate(&pdev->dev);
 }
 
-static int __maybe_unused qcom_rpm_suspend_noirq(struct device *dev)
+static int __maybe_unused qcom_rpm_suspend_late(struct device *dev)
 {
 	struct qcom_rpm *rpm = dev_get_drvdata(dev);
 
 	/*
-	 * After this point dpm_suspend_noirq() has called
-	 * suspend_device_irqs(), which masks our ack IRQ at the GIC.
-	 * Any qcom_rpm_write() that landed here would spin the full
-	 * RPM_REQUEST_TIMEOUT (5*HZ) waiting for an ack that cannot
-	 * be delivered, holding rpm->lock for the duration and
-	 * serialising every subsequent caller. Refuse such writes
-	 * with -EAGAIN in qcom_rpm_write().
+	 * .suspend_late runs after every device's .suspend has completed
+	 * (so consumers that need RPM votes during their own suspend have
+	 * already issued them) but before dpm_suspend_noirq() calls
+	 * suspend_device_irqs(). Arming the guard here ensures both that
+	 * (a) the MMCC footswitch power_off cascade reached from
+	 * genpd_finish_suspend at .suspend_noirq sees the flag and skips
+	 * its qcom_rpm_write attempts, and (b) any other late RPM caller
+	 * (regulator set_load, qnoc ARB write) also fails fast instead of
+	 * stalling on the masked ack IRQ.
 	 *
-	 * Pair with .resume_noirq below; SMP visibility is handled by
-	 * the surrounding PM-core spinlocks (dpm_list_mtx + the
-	 * suspend_late/noirq enable_irq flush), so a plain WRITE_ONCE
-	 * is sufficient.
+	 * WRITE_ONCE for visibility; full SMP synchronisation isn't needed
+	 * because by .suspend_late the PM core has already serialised
+	 * device suspends via dpm_list_mtx + the suspend_test_finish flush.
 	 */
 	WRITE_ONCE(rpm->suspended, true);
 	return 0;
 }
 
-static int __maybe_unused qcom_rpm_resume_noirq(struct device *dev)
+static int __maybe_unused qcom_rpm_resume_early(struct device *dev)
 {
 	struct qcom_rpm *rpm = dev_get_drvdata(dev);
 
 	/*
-	 * suspend_device_irqs() is about to be reversed by
-	 * resume_device_irqs(); the ack IRQ becomes deliverable again
-	 * almost immediately. Clearing the guard here lets the first
-	 * post-resume caller (typically a regulator set_load or
-	 * interconnect ARB write from .resume_early) issue its IPC
-	 * normally.
+	 * .resume_early runs after dpm_resume_noirq() has called
+	 * resume_device_irqs() to re-enable our ack IRQ at the GIC. Clear
+	 * the guard so the first .resume_early caller that needs RPM
+	 * (e.g. drm/msm/mdp4 issuing its NoC port unhalt) can issue an
+	 * IPC normally.
 	 */
 	WRITE_ONCE(rpm->suspended, false);
 	return 0;
 }
 
 static const struct dev_pm_ops qcom_rpm_pm_ops = {
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(qcom_rpm_suspend_noirq,
-				      qcom_rpm_resume_noirq)
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(qcom_rpm_suspend_late,
+				     qcom_rpm_resume_early)
 };
 
 static struct platform_driver qcom_rpm_driver = {
