@@ -1001,9 +1001,9 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 			 * (BCSP HCI cmd+header is ~12 bytes; longer payloads
 			 * are still recognizable from the leading bytes).
 			 */
-			BT_INFO("BCSP: TX[unrel,hci_type=%d] %*ph",
-				hci_skb_pkt_type(skb),
-				min_t(int, nskb->len, 64), nskb->data);
+			BT_DBG("BCSP: TX[unrel,hci_type=%d] %*ph",
+			       hci_skb_pkt_type(skb),
+			       min_t(int, nskb->len, 64), nskb->data);
 			kfree_skb(skb);
 			return nskb;
 		} else {
@@ -1043,10 +1043,10 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 				 * (HCI commands like HCI_RESET land here in
 				 * skip-sync mode).  Up to 64 bytes.
 				 */
-				BT_INFO("BCSP: TX[rel,hci_type=%d,txseq=%u,unack=%u] %*ph",
-					hci_skb_pkt_type(skb),
-					bcsp->msgq_txseq,
-					bcsp->unack.qlen,
+				BT_DBG("BCSP: TX[rel,hci_type=%d,txseq=%u,unack=%u] %*ph",
+				       hci_skb_pkt_type(skb),
+				       bcsp->msgq_txseq,
+				       bcsp->unack.qlen,
 					min_t(int, nskb->len, 64), nskb->data);
 				__skb_queue_tail(&bcsp->unack, skb);
 				mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);

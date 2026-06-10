@@ -819,23 +819,23 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	bool bt = uart->mapbase == 0x16540000;
 
 	if (IS_ENABLED(CONFIG_CONSOLE_POLL)) {
-		if (bt) dev_info(uart->dev, "rx_dma: bail CONSOLE_POLL=y\n");
+		if (bt && bt_diag) dev_info(uart->dev, "rx_dma: bail CONSOLE_POLL=y\n");
 		return;
 	}
 
 	if (!dma->chan) {
-		if (bt) dev_info(uart->dev, "rx_dma: bail dma->chan=NULL\n");
+		if (bt && bt_diag) dev_info(uart->dev, "rx_dma: bail dma->chan=NULL\n");
 		return;
 	}
 
-	if (bt) dev_info(uart->dev, "rx_dma: prep_slave_single phys=%pad size=%u\n",
+	if (bt && bt_diag) dev_info(uart->dev, "rx_dma: prep_slave_single phys=%pad size=%u\n",
 			 &dma->rx.phys, UARTDM_RX_SIZE);
 	/* Coherent RX buffer: phys is stable, no per-cycle mapping needed. */
 	dma->desc = dmaengine_prep_slave_single(dma->chan, dma->rx.phys,
 						UARTDM_RX_SIZE, DMA_DEV_TO_MEM,
 						DMA_PREP_INTERRUPT);
 	if (!dma->desc) {
-		if (bt) dev_info(uart->dev, "rx_dma: prep returned NULL -> sw_mode\n");
+		if (bt && bt_diag) dev_info(uart->dev, "rx_dma: prep returned NULL -> sw_mode\n");
 		goto sw_mode;
 	}
 
@@ -845,7 +845,7 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	dma->cookie = dmaengine_submit(dma->desc);
 	ret = dma_submit_error(dma->cookie);
 	if (ret) {
-		if (bt) dev_info(uart->dev, "rx_dma: submit err=%d -> sw_mode\n", ret);
+		if (bt && bt_diag) dev_info(uart->dev, "rx_dma: submit err=%d -> sw_mode\n", ret);
 		goto sw_mode;
 	}
 	/*
@@ -881,7 +881,7 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	if (msm_port->is_uartdm > UARTDM_1P3)
 		msm_write(uart, val, UARTDM_DMEN);
 
-	if (bt) {
+	if (bt && bt_diag) {
 		u32 dmen_rb = msm_read(uart, UARTDM_DMEN);
 		u32 imr_rb  = msm_read(uart, MSM_UART_IMR);
 		dev_info(uart->dev,
@@ -1973,8 +1973,9 @@ void msm_serial_bt_force_rfr(bool assert_low)
 		  MSM_UART_CR);
 	uart_port_unlock_irqrestore(port, flags);
 
-	dev_info(port->dev, "BT RFR forced %s (manual, no auto-RFR)\n",
-		 assert_low ? "LOW (asserted)" : "HIGH (deasserted)");
+	if (bt_diag)
+		dev_info(port->dev, "BT RFR forced %s (manual, no auto-RFR)\n",
+			 assert_low ? "LOW (asserted)" : "HIGH (deasserted)");
 }
 EXPORT_SYMBOL_GPL(msm_serial_bt_force_rfr);
 
