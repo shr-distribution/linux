@@ -699,7 +699,7 @@ struct bcsp_struct {
 /* Forward declaration for serdev power cycle */
 #ifdef CONFIG_SERIAL_DEV_BUS
 struct bcsp_serdev;
-static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev);
+static __maybe_unused int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev);
 #endif
 
 /* ---- BCSP CRC calculation ---- */
@@ -1158,6 +1158,7 @@ static int bcsp_send_warm_reset(struct hci_uart *hu);
 static int bcsp_send_pskey_word(struct hci_uart *hu, u16 pskey, u16 value);
 static int bcsp_send_pskey_data(struct hci_uart *hu, u16 pskey,
 				const u16 *data, u16 len_words);
+static void bcsp_send_touchpad_pskeys(struct hci_uart *hu);
 
 /*
  * Pulse RTS (the chip's CTS, GPIO56) to wake the CSR BlueCore's power-gated
@@ -1444,74 +1445,40 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 			 * send them as separate single-word writes which is
 			 * functionally equivalent for chip configuration.
 			 */
-			bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
-					     bcsp->pskey_host_interface);
-			if (bcsp->pskey_host_interface != HOST_INTERFACE_H4 &&
-			    bcsp->pskey_host_interface != HOST_INTERFACE_H5)
-				bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
-						     bcsp->pskey_pcm_min_cpu_clock);
+			/* Same 13-PSKEY base sequence as the serdev path —
+			 * matches the movw r0, #VARID sequence in
+			 * CsrTmBlueCoreGetBootstrap @ libPmBtBsaif.so 0x6960c.
+			 * Removed the 12 invented Palm Platform sends (those
+			 * are in-host BCCMD-reply LUTs, not bootstrap writes)
+			 * which were causing the chip to enable host-wake
+			 * gating and underperform on sustained A2DP.
+			 */
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
+					     bcsp->pskey_ana_freq);
+			bcsp_send_pskey_word(hu, PSKEY_UART_BAUDRATE,
+					     bcsp->pskey_uart_baudrate);
+			bcsp_send_pskey_word(hu, PSKEY_HOSTIO_MAP_SCO_PCM,
+					     0x0001);
+			bcsp_send_pskey_word(hu, PSKEY_HOSTIO_MAP_SCO_CODEC,
+					     0x0001);
+			bcsp_send_pskey_word(hu, PSKEY_CODEC_PIO, 0x0008);
+			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
+					     bcsp->pskey_ana_ftrim);
 			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
 					     bcsp->pskey_h_hc_fc_max_acl_pkt_len);
 			bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
 					     bcsp->pskey_h_hc_fc_max_acl_pkts);
-			bcsp_send_pskey_word(hu, PSKEY_PCM_CONFIG32,
-					     bcsp->pskey_pcm_config32);
-			bcsp_send_pskey_word(hu, PSKEY_PCM_FORMAT,
-					     bcsp->pskey_pcm_format);
-			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
-					     bcsp->pskey_ana_freq);
-			bcsp_send_pskey_word(hu, 0x0013, bcsp->pskey_pskey0013);
-			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
-					     bcsp->pskey_max_tx_power_no_rssi);
-			bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
-					     bcsp->pskey_enc_key_min);
-			bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
-					     bcsp->pskey_uart_config_bcsp);
-			bcsp_send_pskey_word(hu, PSKEY_VM_DISABLE,
-					     bcsp->pskey_default_tx_power_no_rssi);
-			/* The actual ANA_FTRIM + UART_BAUDRATE PSKEYs */
-			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
-					     bcsp->pskey_ana_ftrim);
-			bcsp_send_pskey_word(hu, PSKEY_UART_BAUDRATE,
-					     bcsp->pskey_uart_baudrate);
+			if (bcsp->pskey_host_interface != HOST_INTERFACE_H4 &&
+			    bcsp->pskey_host_interface != HOST_INTERFACE_H5)
+				bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+						     bcsp->pskey_pcm_min_cpu_clock);
+			bcsp_send_pskey_word(hu, PSKEY_MAX_SCOS, 0x0001);
+			bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
+					     bcsp->pskey_host_interface);
+			bcsp_send_pskey_word(hu, PSKEY_VM_DISABLE, 0x0001);
 
-			/* === Palm Platform PSKEYs === */
-			bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
-					     bcsp->pskey_palm_01b3,
-					     bcsp->pskey_palm_01b3_len);
-			bcsp_send_pskey_data(hu, PSKEY_PALM_01B6,
-					     bcsp->pskey_palm_01b6,
-					     bcsp->pskey_palm_01b6_len);
-			bcsp_send_pskey_data(hu, PSKEY_PALM_01BF,
-					     bcsp->pskey_palm_01bf,
-					     bcsp->pskey_palm_01bf_len);
-			bcsp_send_pskey_data(hu, PSKEY_PALM_01BA,
-					     bcsp->pskey_palm_01ba,
-					     bcsp->pskey_palm_01ba_len);
-			bcsp_send_pskey_data(hu, PSKEY_PALM_01C7,
-					     bcsp->pskey_palm_01c7,
-					     bcsp->pskey_palm_01c7_len);
-			bcsp_send_pskey_data(hu, PSKEY_PALM_01CA,
-					     bcsp->pskey_palm_01ca,
-					     bcsp->pskey_palm_01ca_len);
-			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
-					     bcsp->pskey_default_tx_power);
-			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
-					     bcsp->pskey_max_tx_power);
-			bcsp_send_pskey_data(hu, PSKEY_PALM_001D,
-					     bcsp->pskey_palm_001d,
-					     bcsp->pskey_palm_001d_len);
-
-			/* TX Power Table */
-			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
-				bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
-						     bcsp->tx_power_table,
-						     bcsp->tx_power_table_len);
-			} else {
-				bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
-						     palm_tx_power_table,
-						     ARRAY_SIZE(palm_tx_power_table));
-			}
+			/* TouchPad-specific RF cal from DT */
+			bcsp_send_touchpad_pskeys(hu);
 
 			/* WARM_RESET to apply PSKEYs */
 			bcsp_send_warm_reset(hu);
@@ -1523,26 +1490,18 @@ static void bcsp_handle_le_pkt(struct hci_uart *hu)
 			BT_INFO("BCSP: First link up, sending RF PSKEYs (no reset)");
 
 			/*
-			 * Line discipline mode: Send critical RF PSKEYs only.
+			 * Line discipline mode, no BD-address path: just push
+			 * the crystal-trim PSKEYs and the DT-supplied RF cal.
+			 * Per audit, LC_MAX_TX_POWER / LC_DEFAULT_TX_POWER /
+			 * LC_ENHANCED_POWER_TABLE are NOT actually written by
+			 * webOS — they're host-side LUT entries used to
+			 * answer chip BCCMD GET queries.  Don't send them.
 			 */
 			bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ,
 					     bcsp->pskey_ana_freq);
 			bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM,
 					     bcsp->pskey_ana_ftrim);
-			bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
-					     bcsp->pskey_max_tx_power);
-			bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
-					     bcsp->pskey_default_tx_power);
-
-			if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
-				bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
-						     bcsp->tx_power_table,
-						     bcsp->tx_power_table_len);
-			} else {
-				bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
-						     palm_tx_power_table,
-						     ARRAY_SIZE(palm_tx_power_table));
-			}
+			bcsp_send_touchpad_pskeys(hu);
 
 			bcsp->bdaddr_state = BCSP_BDADDR_DONE;
 			BT_INFO("BCSP: RF PSKEYs sent (no BD addr, no reset)");
@@ -2303,133 +2262,69 @@ static int bcsp_setup(struct hci_uart *hu)
 		 * All PSKEYs use stores=8 (PSRAM/volatile).
 		 */
 
-		/* === Common PSKEYs (from DT or Palm defaults) === */
+		/*
+		 * 13 base PSKEYs webOS actually WRITES to chip via
+		 * CsrTmBlueCoreGetBootstrap @ libPmBtBsaif.so:0x6960c (objdump
+		 * trace of the 42 `mov r0, #VARID` immediates is the ground
+		 * truth — see project_bcsp_pskey_authoritative_table.md).
+		 *
+		 * Crucially this is *only* 13 base PSKEYs, NOT the 12
+		 * palmPlatform{Common,Specific}Pskeys table entries our
+		 * driver previously sent.  Those tables live in libPmBtBsaif's
+		 * .data and are consumed by `MatchPskeyId` /
+		 * `PmBtBsaifBccmdGetPskey` as in-host BCCMD-reply LUTs only —
+		 * they never get written to the chip.  Sending them as
+		 * setreqs was pure invention on our part and the cause of
+		 * the A2DP throughput cap: 0x01C7 UART_HOST_WAKE +
+		 * 0x01CA UART_HOST_WAKE_SIGNAL enabled chip-side
+		 * host-wake gating against a nonexistent wake PIO, so the
+		 * chip pauses ACL TX waiting for a wake handshake that
+		 * never arrives — wedging the link after ~25 s of sustained
+		 * audio.
+		 *
+		 * Order below matches the movw sequence at 0x6960c+.  The 29
+		 * RF cal PSKEYs (0x0394, 0x03aa, 0x03ab, 0x03d4, 0x212c..0x222b)
+		 * come from DT via bcsp_send_touchpad_pskeys() and are
+		 * appended after the base set.
+		 */
 
-		/* Crystal frequency - CRITICAL for RF */
 		bcsp_send_pskey_word(hu, PSKEY_ANA_FREQ, bcsp->pskey_ana_freq);
 		msleep(20);
-
-		/* Crystal fine trim */
-		bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM, bcsp->pskey_ana_ftrim);
-		msleep(20);
-
-		/* Host interface - BCSP mode */
-		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
-				     bcsp->pskey_host_interface);
-		msleep(20);
-
-		/* Deep sleep config */
-		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
-				     bcsp->pskey_pcm_min_cpu_clock);
-		msleep(20);
-
-		/* HCI FC max ACL packets */
-		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
-				     bcsp->pskey_h_hc_fc_max_acl_pkt_len);
-		msleep(20);
-
-		/* HCI FC max SCO packets */
-		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
-				     bcsp->pskey_h_hc_fc_max_acl_pkts);
-		msleep(20);
-
-		/*
-		 * UART baudrate divisor.  At this point bcsp->pskey_uart_baudrate
-		 * is the divisor for the OPERATIONAL baud (set in bcsp_setup()
-		 * below from oper_speed/max-speed in DT) so chip comes back at
-		 * 3.6864 Mbps after WARM_RESET.  Host UART is then re-tuned to
-		 * match in the post-WARM_RESET path.
-		 */
 		bcsp_send_pskey_word(hu, PSKEY_UART_BAUDRATE,
 				     bcsp->pskey_uart_baudrate);
 		msleep(20);
-
-		/* Encryption key min length */
-		bcsp_send_pskey_word(hu, PSKEY_ENC_KEY_LMIN,
-				     bcsp->pskey_enc_key_min);
+		bcsp_send_pskey_word(hu, PSKEY_HOSTIO_MAP_SCO_PCM, 0x0001);
 		msleep(20);
-
-		/* BCSP-specific UART config (PSKEY 0x01BF) */
-		bcsp_send_pskey_word(hu, PSKEY_UART_CONFIG_BCSP,
-				     bcsp->pskey_uart_config_bcsp);
+		bcsp_send_pskey_word(hu, PSKEY_HOSTIO_MAP_SCO_CODEC, 0x0001);
 		msleep(20);
-
-		/* Max TX power without RSSI */
-		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER_NO_RSSI,
-				     bcsp->pskey_max_tx_power_no_rssi);
+		bcsp_send_pskey_word(hu, PSKEY_CODEC_PIO, 0x0008);
 		msleep(20);
-
-		/* VM disable (PSKEY 0x025D, bool — webOS sets to 1) */
-		bcsp_send_pskey_word(hu, PSKEY_VM_DISABLE,
-				     bcsp->pskey_default_tx_power_no_rssi);
+		bcsp_send_pskey_word(hu, PSKEY_ANA_FTRIM, bcsp->pskey_ana_ftrim);
 		msleep(20);
-
-		/* === Palm Platform Common PSKEYs === */
-
-		bcsp_send_pskey_data(hu, PSKEY_PALM_01B3,
-				     bcsp->pskey_palm_01b3,
-				     bcsp->pskey_palm_01b3_len);
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKT_LEN,
+				     bcsp->pskey_h_hc_fc_max_acl_pkt_len);
 		msleep(20);
-
-		bcsp_send_pskey_data(hu, PSKEY_PALM_01B6,
-				     bcsp->pskey_palm_01b6,
-				     bcsp->pskey_palm_01b6_len);
+		bcsp_send_pskey_word(hu, PSKEY_H_HC_FC_MAX_ACL_PKTS,
+				     bcsp->pskey_h_hc_fc_max_acl_pkts);
 		msleep(20);
-
-		bcsp_send_pskey_data(hu, PSKEY_PALM_01BF,
-				     bcsp->pskey_palm_01bf,
-				     bcsp->pskey_palm_01bf_len);
+		bcsp_send_pskey_word(hu, PSKEY_PCM_MIN_CPU_CLOCK,
+				     bcsp->pskey_pcm_min_cpu_clock);
 		msleep(20);
-
-		/* === Palm Platform Specific PSKEYs === */
-
-		bcsp_send_pskey_data(hu, PSKEY_PALM_01BA,
-				     bcsp->pskey_palm_01ba,
-				     bcsp->pskey_palm_01ba_len);
+		bcsp_send_pskey_word(hu, PSKEY_MAX_SCOS, 0x0001);
 		msleep(20);
-
-		bcsp_send_pskey_data(hu, PSKEY_PALM_01C7,
-				     bcsp->pskey_palm_01c7,
-				     bcsp->pskey_palm_01c7_len);
+		bcsp_send_pskey_word(hu, PSKEY_HOST_INTERFACE,
+				     bcsp->pskey_host_interface);
 		msleep(20);
+		bcsp_send_pskey_word(hu, PSKEY_VM_DISABLE, 0x0001);
+		msleep(50);
 
-		bcsp_send_pskey_data(hu, PSKEY_PALM_01CA,
-				     bcsp->pskey_palm_01ca,
-				     bcsp->pskey_palm_01ca_len);
-		msleep(20);
-
-		/* Default TX Power (PSKEY 0x0021) */
-		bcsp_send_pskey_word(hu, PSKEY_LC_DEFAULT_TX_POWER,
-				     bcsp->pskey_default_tx_power);
-		msleep(20);
-
-		/* Max TX Power (PSKEY 0x0017) */
-		bcsp_send_pskey_word(hu, PSKEY_LC_MAX_TX_POWER,
-				     bcsp->pskey_max_tx_power);
-		msleep(20);
-
-		/* Palm config 0x001D */
-		bcsp_send_pskey_data(hu, PSKEY_PALM_001D,
-				     bcsp->pskey_palm_001d,
-				     bcsp->pskey_palm_001d_len);
-		msleep(20);
-
-		/* TouchPad-specific RF calibration PSKEYs (if present) */
-		bcsp_send_touchpad_pskeys(hu);
-
-		/*
-		 * TX Power Level Table (PSKEY 0x0031) - CRITICAL FOR RF
-		 * Use DT-provided table if available, otherwise use Palm defaults.
+		/* TouchPad-specific RF calibration PSKEYs from DT (0x00F6,
+		 * 0x0203, 0x0394, 0x03aa, 0x03ab, 0x03d4, 0x212c..0x213a,
+		 * 0x21e1, 0x2215, 0x2216, 0x2227..0x222b) — the 29 RF cal
+		 * PSKEYs webOS emits after the 13 base ones in
+		 * CsrTmBlueCoreGetBootstrap.
 		 */
-		if (bcsp->tx_power_table && bcsp->tx_power_table_len > 0) {
-			bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
-					     bcsp->tx_power_table,
-					     bcsp->tx_power_table_len);
-		} else {
-			bcsp_send_pskey_data(hu, PSKEY_LC_ENHANCED_POWER_TABLE,
-					     palm_tx_power_table,
-					     ARRAY_SIZE(palm_tx_power_table));
-		}
+		bcsp_send_touchpad_pskeys(hu);
 		msleep(50);
 
 		/* BD address */
@@ -2769,7 +2664,6 @@ static void bcsp_send_link_pkt(struct bcsp_struct *bcsp, const u8 *data, size_t 
 static void bcsp_timed_event(struct timer_list *t)
 {
 	static const u8 sync_pkt[4]     = { 0xda, 0xdc, 0xed, 0xed };
-	static const u8 sync_rsp_pkt[4] = { 0xac, 0xaf, 0xef, 0xee };
 	static const u8 conf_pkt[4]     = { 0xad, 0xef, 0xac, 0xed };
 	struct bcsp_struct *bcsp = timer_container_of(bcsp, t, tbcsp);
 	struct hci_uart *hu = bcsp->hu;
@@ -3641,7 +3535,7 @@ static int bcsp_serdev_set_power(struct bcsp_serdev *bdev, bool powered)
  * We must reset our UART to init_speed to match, otherwise we get
  * baud mismatch and communication fails.
  */
-static int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
+static __maybe_unused int bcsp_serdev_power_cycle(struct bcsp_serdev *bdev)
 {
 	dev_info(bdev->dev, "Power cycling Bluetooth chip...\n");
 
