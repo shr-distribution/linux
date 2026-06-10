@@ -201,19 +201,37 @@ static int a2xx_hw_init(struct msm_gpu *gpu)
 	gpu_write(gpu, REG_A2XX_RBBM_PM_OVERRIDE2, 0xffffffff);
 
 	/*
-	 * KGSL (a2xx_start) resets ALL blocks (0xffffffff) only on the very
-	 * first init; on every subsequent a22x (re)init -- crucially including
-	 * resume from a GDSC power-collapse -- it resets ONLY the CP block
-	 * (0x1). Repeating the full block soft-reset on a22x resume leaves the
-	 * 3D pipe in a state where the first draw after resume wedges the
-	 * back-end (the recurring resume-from-autosuspend hang). a20x always
-	 * takes the full reset. Mirror KGSL.
+	 * Always issue a FULL RBBM_SOFT_RESET (0xffffffff) on hw_init.
+	 *
+	 * An earlier optimisation here gated this on an a2xx_gpu->soft_reset_done
+	 * sticky-true flag so that only the CP block (0x1) got reset on every
+	 * "warm" re-init after the first, matching what KGSL does for hw_init
+	 * calls that follow a kgsl_yamato_stop where the rail stayed up. That
+	 * was a correctness bug for two reasons:
+	 *
+	 *   1. The sticky flag was never cleared anywhere -- not in
+	 *      a2xx_pm_suspend, not in a2xx_pm_resume, not in a2xx_recover, not
+	 *      in a2xx_destroy. So on a true cold resume after gfx3d_gdsc has
+	 *      collapsed (GDSC power_off + SW_RESET fires), the silicon-side
+	 *      SQ / parameter-cache SRAM is in indeterminate state, and the
+	 *      CP-only reset cannot clear it. The first post-resume draw then
+	 *      wedges with rptr=0/wptr=33 and hangcheck fires.
+	 *
+	 *   2. The "performance" win was illusory. hw_init runs at most once
+	 *      per resume (gated by gpu->needs_hw_init in msm_gpu_hw_init).
+	 *      Saving ~30 ms of soft-reset settle on a path nobody is waiting
+	 *      on is invisible. Losing the post-resume draw is not.
+	 *
+	 * KGSL's kgsl_yamato_start (downstream BSP for this SoC) ALSO does the
+	 * full reset on every wake from KGSL_STATE_SUSPEND -- the CP-only
+	 * shortcut was only ever taken from inside the same uptime session, not
+	 * across a power-collapse. The mainline analogue of "still in the same
+	 * uptime session" doesn't exist after a true rail collapse, so we
+	 * unconditionally do the full reset and let a2xx_recover share the
+	 * same code path on warm recovery (where the ~30 ms is also fine --
+	 * recovery is already a tens-of-ms event).
 	 */
-	if (adreno_is_a20x(adreno_gpu) || !a2xx_gpu->soft_reset_done)
-		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
-	else
-		gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000001);
-	a2xx_gpu->soft_reset_done = true;
+	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0xffffffff);
 	msleep(30);
 	gpu_write(gpu, REG_A2XX_RBBM_SOFT_RESET, 0x00000000);
 

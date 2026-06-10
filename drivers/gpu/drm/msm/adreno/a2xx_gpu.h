@@ -19,13 +19,6 @@ struct a2xx_gpu {
 	struct adreno_gpu base;
 	bool pm_enabled;
 	bool protection_disabled;
-	/*
-	 * Set once the first FULL RBBM_SOFT_RESET (0xffffffff) has been done.
-	 * KGSL resets all blocks only on the first init; every subsequent a22x
-	 * (re)init -- including resume from GDSC power-collapse -- resets only
-	 * the CP block (0x1). See a2xx_hw_init().
-	 */
-	bool soft_reset_done;
 	struct icc_path *icc_path;
 	/*
 	 * GFX3D core reset (mmcc GFX3D_RESET). Pulsed by a2xx_recover() to clear
