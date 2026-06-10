@@ -37,27 +37,6 @@ struct mdp4_kms {
 	struct clk *vsync_clk;
 
 	/*
-	 * LVDS PHY state save/restore across system sleep.
-	 * On MSM8x60 the LVDS PHY (PLL CTRL_0..9, INTF_CTL, MUX_CTL[4],
-	 * CFG0/CFG2) is initialized by the bootloader at boot but loses its
-	 * configuration across s2idle even though mdp_gdsc has the
-	 * ALWAYS_ON workaround. The internal mdp4_lvds_pll clk_hw is
-	 * never registered on MSM8x60 (mdp4_get_lcdc_clock prefers
-	 * MMCC's lcdc_clk), so the framework can't fire a re-init.
-	 * We snapshot the working state at the first runtime_resume
-	 * (when bootloader-programmed values are intact) and replay it
-	 * on every subsequent runtime_resume to rearm the LVDS
-	 * transmitter (otherwise INTF_CTL ENABLE+LANE_EN bits stay 0
-	 * and the panel sees no pixels).
-	 */
-	bool lvds_state_saved;
-	u32 lvds_intf_ctl;
-	u32 lvds_mux_ctl[4];
-	u32 lvds_phy_cfg0;
-	u32 lvds_phy_cfg2;
-	u32 lvds_phy_pll_ctrl[10];
-
-	/*
 	 * Interconnect paths from the two MDP master ports out to memory.
 	 * MDP framebuffers live in EBI on tenderloin, so the EBI-targeted
 	 * paths carry real bandwidth; SMI paths are kept for completeness

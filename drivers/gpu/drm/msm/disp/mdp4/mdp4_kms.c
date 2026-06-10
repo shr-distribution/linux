@@ -720,88 +720,6 @@ fail:
 	return ret;
 }
 
-/*
- * LVDS PHY state save/restore for s2idle.
- *
- * On MSM8x60 / APQ8060 the bootloader programs the LVDS PHY (PLL CTRL_0..9,
- * LCDC_LVDS_INTF_CTL, LVDS_MUX_CTL[0..3], LVDS_PHY_CFG0/CFG2) before handing
- * off, and the kernel never re-runs that init: mdp4_get_lcdc_clock prefers
- * MMCC's lcdc_clk over the internal mdp4_lvds_pll clk_hw, so the lvds_pll
- * driver's enable callback (which would PHY-RESET + reprogram + wait for
- * lock) is never registered.
- *
- * Across s2idle the LVDS PHY register state gets clobbered even though
- * mdp_gdsc is held ALWAYS_ON: LVDS_INTF_CTL ENABLE+LANE_EN bits drop to 0
- * and post-resume writes to those bits no longer stick because the PHY is
- * not in a writable state. LCDC keeps scanning (vsync IRQ continues at
- * 60 Hz) but no pixel data shifts out -> panel goes black.
- *
- * Workaround: snapshot the LVDS PHY register window on the FIRST
- * runtime_resume (when the bootloader-programmed state is still intact),
- * then replay the snapshot on every subsequent runtime_resume via the
- * same sequence mdp4_lvds_pll_enable would use (PHY_RESET=0x33, reload
- * PLL_CTRL_1..9, PLL_CTRL_0=0x01, poll PLL_LOCKED, restore CFG/INTF/MUX).
- *
- * Replaceable by the proper phy_provider refactor (move mdp4_lvds_pll.c
- * to drivers/phy/qualcomm/, use devm_phy_get + phy_power_on in the LCDC
- * encoder); this in-driver save/restore is a stop-gap that needs zero
- * DT changes and self-captures whatever rate the bootloader programmed.
- */
-static void mdp4_lvds_state_save(struct mdp4_kms *mdp4_kms)
-{
-	int i;
-
-	mdp4_kms->lvds_intf_ctl = mdp4_read(mdp4_kms, REG_MDP4_LCDC_LVDS_INTF_CTL);
-	for (i = 0; i < 4; i++)
-		mdp4_kms->lvds_mux_ctl[i] =
-			mdp4_read(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL(i));
-	mdp4_kms->lvds_phy_cfg0 = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0);
-	mdp4_kms->lvds_phy_cfg2 = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_CFG2);
-	mdp4_kms->lvds_phy_pll_ctrl[0] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_0);
-	mdp4_kms->lvds_phy_pll_ctrl[1] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_1);
-	mdp4_kms->lvds_phy_pll_ctrl[2] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_2);
-	mdp4_kms->lvds_phy_pll_ctrl[3] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_3);
-	mdp4_kms->lvds_phy_pll_ctrl[5] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_5);
-	mdp4_kms->lvds_phy_pll_ctrl[6] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_6);
-	mdp4_kms->lvds_phy_pll_ctrl[7] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_7);
-	mdp4_kms->lvds_phy_pll_ctrl[8] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_8);
-	mdp4_kms->lvds_phy_pll_ctrl[9] = mdp4_read(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_9);
-	mdp4_kms->lvds_state_saved = true;
-	dev_info(mdp4_kms->dev->dev,
-		 "LVDS PHY state saved: INTF_CTL=0x%08x CFG0=0x%08x CFG2=0x%08x PLL_CTRL_1=0x%08x\n",
-		 mdp4_kms->lvds_intf_ctl, mdp4_kms->lvds_phy_cfg0,
-		 mdp4_kms->lvds_phy_cfg2, mdp4_kms->lvds_phy_pll_ctrl[1]);
-}
-
-static void mdp4_lvds_state_restore(struct mdp4_kms *mdp4_kms)
-{
-	int i;
-
-	/*
-	 * HP TouchPad / HPBL appears to use a different LVDS PHY init scheme
-	 * than mainline's mdp4_lvds_pll_enable. PLL_CTRL_0 was 0 at boot
-	 * (mainline's PLL_LOCKED never asserts), yet display worked from
-	 * bootloader -- so HPBL is driving LVDS through a path we don't see
-	 * via the documented PLL_CTRL registers. Replay HPBL's saved values
-	 * literally without the mainline reset+PLL_LOCK dance.
-	 */
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_1, mdp4_kms->lvds_phy_pll_ctrl[1]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_2, mdp4_kms->lvds_phy_pll_ctrl[2]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_3, mdp4_kms->lvds_phy_pll_ctrl[3]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_5, mdp4_kms->lvds_phy_pll_ctrl[5]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_6, mdp4_kms->lvds_phy_pll_ctrl[6]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_7, mdp4_kms->lvds_phy_pll_ctrl[7]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_8, mdp4_kms->lvds_phy_pll_ctrl[8]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_9, mdp4_kms->lvds_phy_pll_ctrl[9]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_PLL_CTRL_0, mdp4_kms->lvds_phy_pll_ctrl[0]);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG2, mdp4_kms->lvds_phy_cfg2);
-	mdp4_write(mdp4_kms, REG_MDP4_LVDS_PHY_CFG0, mdp4_kms->lvds_phy_cfg0);
-	for (i = 0; i < 4; i++)
-		mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_MUX_CTL(i),
-			   mdp4_kms->lvds_mux_ctl[i]);
-	mdp4_write(mdp4_kms, REG_MDP4_LCDC_LVDS_INTF_CTL, mdp4_kms->lvds_intf_ctl);
-}
-
 static int mdp4_runtime_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -837,31 +755,6 @@ static int mdp4_runtime_resume(struct device *dev)
 	 * than tracking whether mdp_gdsc actually collapsed.
 	 */
 	mdp4_program_init_regs(mdp4_kms);
-
-	/*
-	 * LVDS PHY save/restore stop-gap (see mdp4_lvds_state_save comment).
-	 * First call snapshots the bootloader's working state; later calls
-	 * replay it to undo whatever s2idle did to the PHY register window.
-	 * Gated on INTF_CTL_ENABLE so we don't snapshot the cleared state if
-	 * the very first runtime_resume happens to land before bootloader
-	 * setup is observable.
-	 */
-	if (!mdp4_kms->lvds_state_saved) {
-		/*
-		 * On HP TouchPad (APQ8060) the LVDS PHY is programmed by HP's
-		 * proprietary HPBL first-stage bootloader (moboot is NO-OP for
-		 * LCDC, mdp4_lvds_pll clk_hw is never registered on this SoC).
-		 * HPBL's INTF_CTL value does NOT have the mainline-defined
-		 * ENABLE bit (0x80) set -- it uses 0x02 (an undocumented bit
-		 * mainline doesn't know about). So we cannot gate the save on
-		 * INTF_CTL_ENABLE; just snapshot whatever HPBL left.
-		 */
-		mdp4_lvds_state_save(mdp4_kms);
-	} else {
-		dev_info(mdp4_kms->dev->dev,
-			 "runtime_resume: restoring LVDS PHY state\n");
-		mdp4_lvds_state_restore(mdp4_kms);
-	}
 
 	return 0;
 }
