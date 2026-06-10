@@ -472,6 +472,17 @@ struct bcsp_serdev {
 	 * `hciconfig hci0 up` after we did set_power(false) on shutdown.
 	 */
 	int			(*orig_hdev_open)(struct hci_dev *hdev);
+
+	/* Set by bcsp_hdev_shutdown when it collapses the chip rail.
+	 * Checked by bcsp_hdev_setup so the post-resume / post-down-up
+	 * path re-runs bcsp_setup() against the freshly cold-booted chip
+	 * — but the initial mgmt-triggered open right after probe (where
+	 * the chip is still in the operational state probe-time
+	 * bcsp_setup left it in) is a no-op.  Without this gate, the
+	 * NON_PERSISTENT_SETUP quirk re-runs SHY at 115,200 against a
+	 * chip already at 3.6864 M 8-E-1 → 5 s timeout.
+	 */
+	bool			need_resetup;
 };
 
 struct bcsp_struct {
@@ -3690,6 +3701,7 @@ static int bcsp_hdev_shutdown(struct hci_dev *hdev)
 	dev_info(bdev->dev, "BCSP: hdev shutdown — collapsing chip rail\n");
 	bcsp_serdev_set_power(bdev, false);
 	msleep(50);		/* let VDD decay before next power-on */
+	bdev->need_resetup = true;	/* tell hdev->setup to re-run on next open */
 	return 0;
 }
 
@@ -3761,8 +3773,22 @@ static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
 static int bcsp_hdev_setup(struct hci_dev *hdev)
 {
 	struct hci_uart *hu = hci_get_drvdata(hdev);
+	struct bcsp_struct *bcsp = hu->priv;
+	struct bcsp_serdev *bdev;
+
+	if (!bcsp || !bcsp->is_serdev || !bcsp->serdev_bdev)
+		return 0;
+
+	bdev = bcsp->serdev_bdev;
+
+	if (!bdev->need_resetup) {
+		dev_info(&hdev->dev,
+			 "BCSP: hdev setup — chip still configured from previous bring-up, skipping\n");
+		return 0;
+	}
 
 	dev_info(&hdev->dev, "BCSP: hdev setup — re-running full BCSP bring-up\n");
+	bdev->need_resetup = false;
 	return bcsp_setup(hu);
 }
 
