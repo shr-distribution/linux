@@ -3808,6 +3808,37 @@ static int bcsp_hdev_setup(struct hci_dev *hdev)
 		 "BCSP: hdev setup — reset host UART to init_speed=%u for re-handshake\n",
 		 bdev->init_speed);
 
+	/*
+	 * Replay the proto->open SYNC TX + retransmit-timer arm.  At probe
+	 * time bcsp_open() does this work, but at resume we only re-enter
+	 * via bcsp_setup() (HCI_QUIRK_NON_PERSISTENT_SETUP), and bcsp_setup
+	 * just waits for link_up to complete — it doesn't send the initial
+	 * SYNC byte sequence that wakes the chip's BCSP state machine.
+	 * Without this, the cold-booted chip waits indefinitely for host
+	 * SYNC and bcsp_setup hits its 5 s timeout.
+	 *
+	 * The SYNC packet (0xda 0xdc 0xed 0xed) goes on the unreliable
+	 * channel; the chip replies with SYNC_RSP and the bcsp_recv state
+	 * machine advances through UNINIT → INIT → ACTIVE.
+	 */
+	{
+		static const u8 sync_pkt[4] = { 0xda, 0xdc, 0xed, 0xed };
+		struct sk_buff *skb = alloc_skb(4, GFP_KERNEL);
+
+		if (skb) {
+			skb_put_data(skb, sync_pkt, 4);
+			hci_skb_pkt_type(skb) = BCSP_LE_PKT;
+			bcsp_wake_chip_rx(hu);
+			skb_queue_tail(&bcsp->unrel, skb);
+			hci_uart_tx_wakeup(hu);
+			BT_INFO("BCSP: hdev setup — re-sent initial sync to wake chip");
+		}
+
+		/* Arm the link-est retransmit timer (same cadence as bcsp_open). */
+		mod_timer(&bcsp->tbcsp,
+			  jiffies + (bt_linkest_burst > 0 ? 1 : HZ / 4));
+	}
+
 	return bcsp_setup(hu);
 }
 
