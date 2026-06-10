@@ -2586,8 +2586,30 @@ static struct footswitch gfx3d_gdsc = {
 	 * lands during an MDP client-switch underrun, hard-hanging the SoC.
 	 * Mirrors legacy KGSL, which parked the GPU in SLEEP (rail up, clocks
 	 * gated) during use and only power-collapsed (SLUMBER) on suspend.
+	 *
+	 * ALWAYS_ON workaround: also keep the rail powered across system
+	 * suspend. Without this the rail collapses at .suspend_noirq (via
+	 * genpd_finish_suspend, which overrides RPM_ALWAYS_ON for system
+	 * sleep), SW_RESET fires, and the entire a2xx register block +
+	 * loaded PM4 microcode + ringbuffer state goes to defaults. The
+	 * mainline msm_gpu_pm_resume -> needs_hw_init -> a2xx_hw_init
+	 * path does re-run on the next submit (now that 8c2e37a7fa13
+	 * forces gpu_cold=true at .suspend), but a2xx still wedges on the
+	 * first post-resume draw with rptr=0/wptr=33 -- there is some
+	 * additional silicon-side state lost on the rail collapse that
+	 * a2xx_hw_init does not restore (an MMU TLB, an AXI vote, or the
+	 * sticky soft_reset_done state machine taking the wrong reset
+	 * path on a true cold-resume). Keep the rail up until that is
+	 * properly diagnosed; cost is GPU leakage during s2idle.
+	 *
+	 * TODO: investigate per the panel-lvds / lcdc encoder PM hooks
+	 * angle in parallel; the same architectural pattern (state lost
+	 * on rail collapse, atomic helper resume skipping hardware writes
+	 * it believes are already applied) likely accounts for the GPU
+	 * hang too.
 	 */
-	.flags = FOOTSWITCH_SW_RESET | FOOTSWITCH_RPM_ALWAYS_ON,
+	.flags = FOOTSWITCH_SW_RESET | FOOTSWITCH_RPM_ALWAYS_ON |
+		 FOOTSWITCH_ALWAYS_ON,
 	/*
 	 * GFX3D owns one MMSS NoC master port (MSM_BUS_MASTER_GRAPHICS_3D,
 	 * bit 4 of the QCOM_RPM_MM_FABRIC_HALT mask). Halt it before
@@ -2655,7 +2677,34 @@ static struct footswitch mdp_gdsc = {
 		.name = "mdp",
 	},
 	.pwrsts = FOOTSWITCH_PWRSTS_OFF_ON,
-	.flags = FOOTSWITCH_SW_RESET,
+	/*
+	 * ALWAYS_ON workaround: keep the MDP rail powered across system
+	 * suspend as well as runtime PM. Without this the rail collapses
+	 * at .suspend_noirq (via genpd_finish_suspend, which overrides
+	 * RPM_ALWAYS_ON for system sleep) and SW_RESET fires, dropping
+	 * the entire MDP4 register block + LCDC encoder + LVDS PHY state
+	 * to power-on defaults. The mainline mdp4 / lcdc-encoder / panel-
+	 * lvds resume paths don't fully restore that state: the atomic
+	 * helper's resume modeset treats the driver-side state machine as
+	 * source-of-truth and skips the hardware writes it believes are
+	 * already applied. Result: screen stays black post-resume even
+	 * though card0-LVDS-1 reports enabled=enabled status=connected
+	 * dpms=On, and mdp4_irq_error_handler fires PRIMARY_INTF_UDERRUN
+	 * 0x100 + EXTERNAL_INTF_UDERRUN 0x400 because LCDC is enabled but
+	 * not actually clocking pixels out to the panel.
+	 *
+	 * Cost: ~30-100 mW of MDP4 leakage current during s2idle. On a
+	 * tablet-class device this is small relative to overall standby
+	 * drain (radio, RAM refresh, etc.).
+	 *
+	 * TODO: replace with proper per-subsystem resume-restore in mdp4
+	 * (top-level regs are handled via mdp4_program_init_regs() in
+	 * runtime_resume already; remaining work is LCDC encoder + LVDS
+	 * PHY + panel power sequence). See task #34 and the on-device
+	 * 2026-06-10 deep-dive findings.
+	 */
+	.flags = FOOTSWITCH_SW_RESET | FOOTSWITCH_RPM_ALWAYS_ON |
+		 FOOTSWITCH_ALWAYS_ON,
 	/*
 	 * MDP owns two MMSS NoC master ports (MDP_PORT0 + MDP_PORT1, bits
 	 * 0 + 1 of the QCOM_RPM_MM_FABRIC_HALT mask). Halt them around the
