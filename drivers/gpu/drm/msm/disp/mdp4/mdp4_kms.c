@@ -828,8 +828,27 @@ static int mdp4_resume_early(struct device *dev)
 static const struct dev_pm_ops mdp4_pm_ops = {
 	.prepare = msm_kms_pm_prepare,
 	.complete = msm_kms_pm_complete,
+	/*
+	 * Force a real runtime-suspend cycle across system sleep so that
+	 * mdp4_runtime_resume() runs on the resume side and re-programs the
+	 * MDP top-level / pipe / overlay regs via mdp4_program_init_regs()
+	 * (see mdp4_runtime_resume body). Without this, atomic_helper_resume
+	 * restores the saved CRTC state but the MDP-side registers that are
+	 * NOT part of the atomic state -- READ_CNFG, PORTMAP_MODE, FETCH_
+	 * CONFIG, LAYERMIXER_IN_CFG and friends -- stay at their post-
+	 * rail-collapse defaults and the first post-resume scanline starves.
+	 *
+	 * Mirrors dpu1's same idiom (drm/msm/disp/dpu1/dpu_kms.c) which
+	 * relies on pm_runtime_force_suspend/resume to drive its own
+	 * runtime-PM callbacks on the system-sleep path. mainline mdp5 has
+	 * the same architectural gap but never trips on it because no
+	 * mainline mdp5 SoC pairs an mdp_gdsc that actually collapses with
+	 * an active mdp5 setup; tenderloin is the first mdp4 platform to
+	 * exercise this.
+	 */
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 #if IS_ENABLED(CONFIG_QCOM_MMSS_PORT_HALT)
-	SET_LATE_SYSTEM_SLEEP_PM_OPS(mdp4_suspend_late, mdp4_resume_early)
+	LATE_SYSTEM_SLEEP_PM_OPS(mdp4_suspend_late, mdp4_resume_early)
 #endif
 	RUNTIME_PM_OPS(mdp4_runtime_suspend, mdp4_runtime_resume, NULL)
 };
