@@ -4,11 +4,13 @@
  * Copyright (C) 2016 Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  */
 
+#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 
@@ -24,6 +26,10 @@ struct lvds_codec {
 	struct drm_bridge_timings timings;
 	struct regulator *vcc;
 	struct gpio_desc *powerdown_gpio;
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *pins_default;
+	struct pinctrl_state *pins_sleep;
+	unsigned int powerup_settle_ms;
 	u32 connector_type;
 	unsigned int bus_format;
 };
@@ -48,20 +54,33 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 	int ret;
 
-	dev_info(lvds_codec->dev, "lvds_codec_enable: ENTER, powerdown_gpio=%p\n",
-		 lvds_codec->powerdown_gpio);
-
 	ret = regulator_enable(lvds_codec->vcc);
 	if (ret) {
 		dev_err(lvds_codec->dev,
 			"Failed to enable regulator \"vcc\": %d\n", ret);
 		return;
 	}
-	dev_info(lvds_codec->dev, "lvds_codec_enable: vcc on (ret=%d)\n", ret);
 
-	if (lvds_codec->powerdown_gpio) {
+	if (lvds_codec->powerdown_gpio)
 		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 0);
-		dev_info(lvds_codec->dev, "lvds_codec_enable: powerdown_gpio set to 0 (DEASSERT = chip ON)\n");
+
+	/*
+	 * Some encoders (e.g. TI SN75LVDS83B) refuse to acquire PLL lock if
+	 * the parallel-RGB input is already toggling when the chip comes out
+	 * of shutdown. When pinctrl "sleep"/"default" states are wired, the
+	 * input was parked at disable; hold the chip with quiescent inputs
+	 * for the configured settle window, then reconnect live signaling.
+	 */
+	if (lvds_codec->powerup_settle_ms)
+		msleep(lvds_codec->powerup_settle_ms);
+
+	if (lvds_codec->pins_default) {
+		ret = pinctrl_select_state(lvds_codec->pinctrl,
+					   lvds_codec->pins_default);
+		if (ret)
+			dev_err(lvds_codec->dev,
+				"Failed to select pinctrl default state: %d\n",
+				ret);
 	}
 }
 
@@ -70,19 +89,26 @@ static void lvds_codec_disable(struct drm_bridge *bridge)
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 	int ret;
 
-	dev_info(lvds_codec->dev, "lvds_codec_disable: ENTER, powerdown_gpio=%p\n",
-		 lvds_codec->powerdown_gpio);
-
-	if (lvds_codec->powerdown_gpio) {
-		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 1);
-		dev_info(lvds_codec->dev, "lvds_codec_disable: powerdown_gpio set to 1 (ASSERT = chip OFF)\n");
+	/*
+	 * Disconnect MDP signaling from the encoder input before the chip is
+	 * powered down so the next enable() can stage a clean PLL re-lock.
+	 */
+	if (lvds_codec->pins_sleep) {
+		ret = pinctrl_select_state(lvds_codec->pinctrl,
+					   lvds_codec->pins_sleep);
+		if (ret)
+			dev_err(lvds_codec->dev,
+				"Failed to select pinctrl sleep state: %d\n",
+				ret);
 	}
+
+	if (lvds_codec->powerdown_gpio)
+		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 1);
 
 	ret = regulator_disable(lvds_codec->vcc);
 	if (ret)
 		dev_err(lvds_codec->dev,
 			"Failed to disable regulator \"vcc\": %d\n", ret);
-	dev_info(lvds_codec->dev, "lvds_codec_disable: vcc off (ret=%d)\n", ret);
 }
 
 #define MAX_INPUT_SEL_FORMATS 1
@@ -148,6 +174,42 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	if (IS_ERR(lvds_codec->powerdown_gpio))
 		return dev_err_probe(dev, PTR_ERR(lvds_codec->powerdown_gpio),
 				     "powerdown GPIO failure\n");
+
+	/*
+	 * Optional pinctrl handles. When the parallel-RGB input pins are
+	 * owned by this bridge, we can disconnect them at disable() and
+	 * reconnect at enable() so the encoder's internal PLL acquires lock
+	 * on quiescent inputs. Both states are optional; absence leaves the
+	 * pin configuration entirely up to whoever else claims it.
+	 */
+	lvds_codec->pinctrl = devm_pinctrl_get(dev);
+	if (IS_ERR(lvds_codec->pinctrl)) {
+		ret = PTR_ERR(lvds_codec->pinctrl);
+		if (ret != -ENODEV)
+			return dev_err_probe(dev, ret,
+					     "pinctrl_get failed\n");
+		lvds_codec->pinctrl = NULL;
+	} else {
+		lvds_codec->pins_default =
+			pinctrl_lookup_state(lvds_codec->pinctrl, "default");
+		if (IS_ERR(lvds_codec->pins_default))
+			lvds_codec->pins_default = NULL;
+
+		lvds_codec->pins_sleep =
+			pinctrl_lookup_state(lvds_codec->pinctrl, "sleep");
+		if (IS_ERR(lvds_codec->pins_sleep))
+			lvds_codec->pins_sleep = NULL;
+	}
+
+	/*
+	 * Settle window inserted between regulator/powerdown-gpio assertion
+	 * and pinctrl-default selection. Lets the encoder's internal PLL
+	 * acquire lock on a quiescent input before live signaling resumes.
+	 * Required for parts like TI SN75LVDS83B that will not re-lock on
+	 * an already-toggling CLKIN after a shutdown cycle.
+	 */
+	if (of_property_read_u32(dev->of_node, "powerup-settle-ms", &val) == 0)
+		lvds_codec->powerup_settle_ms = val;
 
 	/* Locate the panel DT node. */
 	panel_node = of_graph_get_remote_node(dev->of_node, 1, 0);
