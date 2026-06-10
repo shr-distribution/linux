@@ -3160,7 +3160,7 @@ static const struct panel_desc lg_lb070wv8 = {
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
-static const struct drm_display_mode lg_xga_mode = {
+static const struct drm_display_mode lg_lp097x02_sln1_mode = {
 	.clock = 96000,
 	.hdisplay = 1024,
 	.hsync_start = 1024 + 272,
@@ -3172,13 +3172,13 @@ static const struct drm_display_mode lg_xga_mode = {
 	.vtotal = 768 + 10 + 7 + 6,
 };
 
-static const struct panel_desc lg_xga = {
-	.modes = &lg_xga_mode,
+static const struct panel_desc lg_lp097x02_sln1 = {
+	.modes = &lg_lp097x02_sln1_mode,
 	.num_modes = 1,
 	.bpc = 6,
 	.size = {
-		.width = 272,
-		.height = 181,
+		.width = 197,
+		.height = 148,
 	},
 	.bus_format = MEDIA_BUS_FMT_RGB666_1X7X3_SPWG,
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
@@ -5491,8 +5491,8 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "lg,lb070wv8",
 		.data = &lg_lb070wv8,
 	}, {
-		.compatible = "lg,xga",
-		.data = &lg_xga,
+		.compatible = "lg,lp097x02-sln1",
+		.data = &lg_lp097x02_sln1,
 	}, {
 		.compatible = "lincolntech,lcd185-101ct",
 		.data = &lincolntech_lcd185_101ct,

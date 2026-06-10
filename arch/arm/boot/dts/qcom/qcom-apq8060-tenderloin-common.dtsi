@@ -1609,7 +1609,7 @@
 	 * Since EVT1, the 5V boost (vdd50_boost) is always on.
 	 */
 	lg_panel: panel {
-		compatible = "hp,topaz-lvds", "panel-lvds";
+		compatible = "lg,lp097x02-sln1";
 		status = "okay";
 
 		/* Panel power control GPIOs */
@@ -1618,7 +1618,7 @@
 
 		/*
 		 * Note: power-supply intentionally omitted to avoid EPROBE_DEFER
-		 * chain: MDP4 -> panel-lvds -> pm8058_l10 regulator -> RPM.
+		 * chain: MDP4 -> panel-simple -> pm8058_l10 regulator -> RPM.
 		 * This caused 90+ second boot delays waiting for the regulator
 		 * driver to probe. Since pm8058_l10 has regulator-always-on,
 		 * the panel doesn't need to explicitly control it.
@@ -1630,33 +1630,8 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&panel_pins>;
 
-		/* Physical dimensions of 9.7" XGA display (4:3 aspect ratio) */
-		width-mm = <197>;
-		height-mm = <148>;
-
-		/* 18-bit JEIDA mapping to match webOS pinfo->bpp=18 configuration */
-		data-mapping = "jeida-18";
-
 		/* Panel is physically mounted inverted (upside-down) */
 		rotation = <180>;
-
-		/*
-		 * Timing verified from legacy kernel lcdc_lg_xga.c:
-		 * - clk_rate = 96000000
-		 * - h_back_porch = 400, h_front_porch = 272, h_pulse_width = 328
-		 * - v_back_porch = 6, v_front_porch = 10, v_pulse_width = 7
-		 */
-		panel-timing {
-			clock-frequency = <96000000>;
-			hactive = <1024>;
-			vactive = <768>;
-			hfront-porch = <272>;
-			hsync-len = <328>;
-			hback-porch = <400>;
-			vfront-porch = <10>;
-			vsync-len = <7>;
-			vback-porch = <6>;
-		};
 
 		port {
 			panel_in: endpoint {

@@ -200,6 +200,8 @@ properties:
       - lemaker,bl035-rgb-002
         # LG 7" (800x480 pixels) TFT LCD panel
       - lg,lb070wv8
+        # LG 9.7" (1024x768 pixels) XGA LVDS panel (HP TouchPad)
+      - lg,lp097x02-sln1
         # LG 6.1" (1440x3120) IPS LCD panel
       - lg,sw49410
         # Logic Technologies LT161010-2NHC 7" WVGA TFT Cap Touch Module
