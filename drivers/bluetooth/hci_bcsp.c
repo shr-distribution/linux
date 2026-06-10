@@ -3727,11 +3727,14 @@ static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
 
 	/* Chip is freshly cold-booted — reset our BCSP link state so the
 	 * chip's autonomous SYNC at 115,200 8-N-1 (chip factory default)
-	 * drives a fresh handshake.  Reset the host UART back to init_speed
-	 * to match.  bcsp_setup() will re-run the SHY → CURIOUS → GARRULOUS
-	 * + PSKEY + WARM_RESET sequence after link_up.
+	 * drives a fresh handshake.  bcsp_setup() (invoked via hdev->setup
+	 * with HCI_QUIRK_NON_PERSISTENT_SETUP) handles the UART baud reset
+	 * + parity + flow-control config + the full SYNC→CONF→PSKEY+
+	 * WARM_RESET sequence.  Don't touch the serdev baud here — the
+	 * underlying tty may still be in the just-resumed state and we'd
+	 * crash inside tty_set_termios; let hci_uart_open() (chained
+	 * below) re-establish the tty first.
 	 */
-	serdev_device_set_baudrate(bdev->serdev_hu.serdev, bdev->init_speed);
 	bcsp->link_state            = BCSP_LINK_UNINIT;
 	bcsp->bdaddr_state          = bdev->has_nvmem_bdaddr || bcsp->bdaddr_from_dt
 					? BCSP_BDADDR_PENDING : BCSP_BDADDR_NONE;
