@@ -3699,23 +3699,21 @@ static int bcsp_hdev_shutdown(struct hci_dev *hdev)
 
 	bdev = bcsp->serdev_bdev;
 	dev_info(bdev->dev,
-		 "BCSP: hdev shutdown — caller=%s pid=%d (chip stays alive due to gpio130 leak)\n",
+		 "BCSP: hdev shutdown — caller=%s pid=%d\n",
 		 current->comm, task_pid_nr(current));
-	dump_stack();
 	bcsp_serdev_set_power(bdev, false);
+	msleep(50);		/* let VDD start decaying */
 
 	/*
-	 * Deliberately do NOT set need_resetup.  On tenderloin hardware
-	 * gpio130 LOW doesn't actually collapse the chip's VDD rail (no
-	 * pinctrl 2 mA keeper flip), so the chip stays alive at its last
-	 * operational state.  When we re-open, the chip is still happily
-	 * sitting at oper_baud with all PSKEYs applied — re-running
-	 * bcsp_setup against it would TX SYNC at 115,200 against a chip
-	 * RX at 3.6864 M, garble the bytes, and time out at 5 s.
-	 *
-	 * Skipping setup means HCI commands flow straight through resume
-	 * because both sides of the BCSP link still match.
+	 * Empirical: on tenderloin the chip really does cold-boot back to
+	 * factory state after ~40 s with gpio130 LOW.  Tested by retrying
+	 * HCI Reset after the auto-off → bluetoothd open path with the
+	 * resume-preserves-state pivot: every attempt timed out -110 with
+	 * the chip not responding.  So mark need_resetup so the matched
+	 * hdev->setup hook re-runs bcsp_setup against the freshly
+	 * cold-booted chip.
 	 */
+	bdev->need_resetup = true;
 	return 0;
 }
 
@@ -3746,34 +3744,29 @@ static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
 	if (!bdev->orig_hdev_open)
 		return -ENODEV;
 
-	dev_info(bdev->dev, "BCSP: hdev open — re-asserting power lines\n");
+	dev_info(bdev->dev, "BCSP: hdev open — re-powering chip\n");
 
-	/*
-	 * Re-assert gpio130 (BT_POWER) and gpio131 (BT_WAKE) HIGH.  On
-	 * tenderloin gpio130 LOW alone does NOT collapse the chip's VDD
-	 * rail (no pinctrl 2 mA keeper flip), so the chip stayed alive at
-	 * its last operational state (3.6864 M 8-E-1, link ACTIVE, all
-	 * PSKEYs applied) through PM suspend.  Re-asserting the gpios is
-	 * just defensive — chip almost certainly never actually went down.
-	 *
-	 * We deliberately do NOT pulse gpio138 (BT_RST_N) here.  Memory
-	 * note `project_bt_reset_phantom_no_software_resettable` documents
-	 * that gpio138 writes don't actually move the line on this
-	 * hardware (the mapping is "phantom"), so a reset pulse would be
-	 * a no-op at best and a chip-wedger at worst.
-	 *
-	 * We also deliberately do NOT reset our BCSP link_state / sequence
-	 * numbers / use_crc here.  Since the chip stayed alive at link
-	 * ACTIVE with the same window/sequence/crc state we last sent it,
-	 * preserving our driver-side counterpart keeps both sides in sync
-	 * so HCI commands flow straight through after resume.
-	 *
-	 * Side effect: bcsp_hdev_shutdown intentionally does NOT set
-	 * need_resetup, so the matched hdev->setup hook below will skip
-	 * bcsp_setup() — the chip is already configured exactly as we
-	 * want it.
-	 */
 	bcsp_serdev_set_power(bdev, true);
+	msleep(20);		/* webOS sleeps a few ms before BT speaks */
+
+	/* Chip cold-booted back to 115,200 8-N-1 factory state.  Reset our
+	 * BCSP link state so chip's autonomous SYNC drives a fresh
+	 * handshake.  Don't touch the serdev UART here — tty may still be
+	 * in the just-resumed state and serdev_device_set_baudrate would
+	 * NULL-deref inside tty_set_termios.  bcsp_hdev_setup will do all
+	 * UART config (baud + parity + flow + RFR-force) after
+	 * hci_uart_open() has re-established the tty.
+	 */
+	bcsp->link_state            = BCSP_LINK_UNINIT;
+	bcsp->bdaddr_state          = bdev->has_nvmem_bdaddr || bcsp->bdaddr_from_dt
+					? BCSP_BDADDR_PENDING : BCSP_BDADDR_NONE;
+	bcsp->warm_reset_sent       = false;
+	bcsp->link_established      = false;
+	bcsp->rxseq_txack           = 0;
+	bcsp->rxack                 = 0;
+	bcsp->msgq_txseq            = 0;
+	bcsp->txack_req             = 0;
+	bcsp->use_crc               = 0;
 
 	return bdev->orig_hdev_open(hdev);
 }
@@ -3808,21 +3801,26 @@ static int bcsp_hdev_setup(struct hci_dev *hdev)
 	bdev->need_resetup = false;
 
 	/*
-	 * Reset the host UART back to init_speed (115,200) BEFORE bcsp_setup
-	 * runs.  The previous operational cycle left the UART at oper_speed
-	 * (3.6864 M post-WARM_RESET), but our hdev->shutdown collapsed the
-	 * chip rail so the chip re-cold-booted into its 115,200 8-N-1
-	 * factory state — without a baud reset here, bcsp_setup's SHY
-	 * handshake would TX at 3.6864 M against a 115,200 chip RX and
-	 * time out.  Safe to call here: hci_uart_open() has already returned
-	 * (we're chained behind it), so the underlying tty is live.
+	 * Reset the host UART to the full webOS link-est config before
+	 * bcsp_setup runs — baud=init_speed (115,200), 8-E-1 parity, HW
+	 * flow control, then re-assert RFR LOW through the CR-command
+	 * path.  This replicates the proto->open path bcsp_open does at
+	 * probe (which our hdev->setup does NOT chain through via
+	 * NON_PERSISTENT_SETUP — only proto->setup re-runs).  Without all
+	 * three of (baud, parity, flow) being right, the cold-booted chip
+	 * at 115,200 8-E-1 + HW flow won't see our SYNC bytes and
+	 * bcsp_setup hits the 5 s wait timeout.
 	 *
-	 * Parity / flow_control are re-set by bcsp_setup's proto->open path
-	 * (8-E-1 + HW flow for the SHY/CONF link-est phase).
+	 * Safe to call here: hci_uart_open() has already returned (we're
+	 * chained behind it via NON_PERSISTENT_SETUP), so the underlying
+	 * tty is live and set_baudrate / set_parity won't NULL-deref.
 	 */
 	serdev_device_set_baudrate(hu->serdev, bdev->init_speed);
+	serdev_device_set_parity(hu->serdev, SERDEV_PARITY_EVEN);
+	serdev_device_set_flow_control(hu->serdev, true);
+	msm_serial_bt_force_rfr(true);
 	dev_info(&hdev->dev,
-		 "BCSP: hdev setup — reset host UART to init_speed=%u for re-handshake\n",
+		 "BCSP: hdev setup — UART set to %u 8-E-1 + HW flow for re-handshake\n",
 		 bdev->init_speed);
 
 	/*
