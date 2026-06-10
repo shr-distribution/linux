@@ -3746,6 +3746,23 @@ static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
 	return bdev->orig_hdev_open(hdev);
 }
 
+/*
+ * hdev->setup wrapper — called every open under HCI_QUIRK_NON_PERSISTENT_SETUP.
+ *
+ * Re-runs the full BCSP setup (SHY → CURIOUS → GARRULOUS handshake, PSKEYs,
+ * BDADDR, WARM_RESET, host-baud bump to oper_speed).  Required after our
+ * hdev->open wrapper has re-powered the chip — the chip cold-boots back
+ * to factory defaults (115,200 8-N-1, no PSKEYs, factory BD address) and
+ * we have to reconfigure it from scratch, exactly like first probe.
+ */
+static int bcsp_hdev_setup(struct hci_dev *hdev)
+{
+	struct hci_uart *hu = hci_get_drvdata(hdev);
+
+	dev_info(&hdev->dev, "BCSP: hdev setup — re-running full BCSP bring-up\n");
+	return bcsp_setup(hu);
+}
+
 static int bcsp_serdev_probe(struct serdev_device *serdev)
 {
 	struct bcsp_serdev *bdev;
@@ -3932,7 +3949,17 @@ static int bcsp_serdev_probe(struct serdev_device *serdev)
 			bdev->orig_hdev_open = bdev->serdev_hu.hdev->open;
 			bdev->serdev_hu.hdev->open = bcsp_hdev_open_wrapper;
 			bdev->serdev_hu.hdev->shutdown = bcsp_hdev_shutdown;
-			dev_info(dev, "BCSP: hdev open/shutdown hooks wired for clean down/up\n");
+			/* Required so the chip-cold-boot path on every open
+			 * (after our shutdown collapsed the rail) re-runs the
+			 * full BCSP bring-up: SYNC→CONF, PSKEYs, BDADDR,
+			 * WARM_RESET, baud bump.  Without this the HCI core
+			 * skips setup() on second+ open and HCI Reset times
+			 * out against a chip that's at factory defaults.
+			 */
+			bdev->serdev_hu.hdev->setup = bcsp_hdev_setup;
+			hci_set_quirk(bdev->serdev_hu.hdev,
+				      HCI_QUIRK_NON_PERSISTENT_SETUP);
+			dev_info(dev, "BCSP: hdev open/shutdown/setup hooks wired for clean suspend-resume + down/up\n");
 		}
 	}
 
