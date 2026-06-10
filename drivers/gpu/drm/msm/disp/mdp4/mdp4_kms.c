@@ -9,7 +9,6 @@
 #include <linux/of_reserved_mem.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
-#include <linux/soc/qcom/qcom_mmss_porthalt.h>
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
@@ -743,58 +742,9 @@ static int mdp4_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_QCOM_MMSS_PORT_HALT)
-/*
- * MSM8x60-only system-suspend hook: halt the MDP MMSS NoC master ports
- * once scanout has drained.
- *
- * Why .suspend_late: the .prepare callback above (msm_kms_pm_prepare ->
- * drm_mode_config_helper_suspend) already runs the modeset to disable
- * every enabled CRTC, including the VSYNC wait inside the LCDC encoder
- * commit path. By the time .suspend_late fires the MDP master ports
- * have no in-flight AXI transactions, so the qcom_rpm
- * QCOM_RPM_MM_FABRIC_HALT request is safe -- and IRQs are still
- * enabled, so the RPM ack IRQ delivery used by qcom_rpm_write() works
- * normally.
- *
- * On SoCs other than MSM8x60 the helper is a no-op stub (returns
- * -ENODEV) and these callbacks compile to harmless invocations. Inside
- * the IS_ENABLED block to avoid hauling the helper symbol into
- * builds (e.g. APQ8064) that don't select CONFIG_QCOM_MMSS_PORT_HALT.
- *
- * Pair: .resume_early unhalts before .resume runs
- * drm_mode_config_helper_resume(), so by the time userspace resumes
- * scanout the master ports are admitting AXI again.
- */
-static int mdp4_suspend_late(struct device *dev)
-{
-	int ret = qcom_mmss_port_halt(QCOM_MMSS_PORT_MDP0 |
-				      QCOM_MMSS_PORT_MDP1, true);
-
-	if (ret && ret != -ENODEV)
-		dev_warn(dev, "MMSS MDP port halt at suspend_late failed (%d)\n",
-			 ret);
-	return 0;
-}
-
-static int mdp4_resume_early(struct device *dev)
-{
-	int ret = qcom_mmss_port_halt(QCOM_MMSS_PORT_MDP0 |
-				      QCOM_MMSS_PORT_MDP1, false);
-
-	if (ret && ret != -ENODEV)
-		dev_warn(dev, "MMSS MDP port unhalt at resume_early failed (%d)\n",
-			 ret);
-	return 0;
-}
-#endif
-
 static const struct dev_pm_ops mdp4_pm_ops = {
 	.prepare = msm_kms_pm_prepare,
 	.complete = msm_kms_pm_complete,
-#if IS_ENABLED(CONFIG_QCOM_MMSS_PORT_HALT)
-	SET_LATE_SYSTEM_SLEEP_PM_OPS(mdp4_suspend_late, mdp4_resume_early)
-#endif
 	RUNTIME_PM_OPS(mdp4_runtime_suspend, mdp4_runtime_resume, NULL)
 };
 
