@@ -13,7 +13,6 @@
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
-#include <drm/drm_modeset_helper.h>
 #include <drm/drm_vblank.h>
 
 #include "msm_drv.h"
@@ -826,46 +825,28 @@ static int mdp4_resume_early(struct device *dev)
 }
 #endif
 
-/*
- * On suspend, save the active modeset state and disable all CRTCs through
- * the atomic helpers. CRTC disable cascades into mdp4_crtc_atomic_disable
- * -> mdp4_disable + pm_runtime_put_sync, which drops the GDSC vote and
- * fires mdp4_runtime_suspend. On resume, drm_atomic_helper_resume re-enables
- * the CRTCs which calls mdp4_crtc_atomic_enable -> pm_runtime_get_sync +
- * mdp4_enable. That fires mdp4_runtime_resume so mdp4_program_init_regs
- * reprograms the post-rail-collapse defaults (READ_CNFG, PORTMAP_MODE,
- * FETCH_CONFIG, LAYERMIXER_IN_CFG, CS_CONTROLLER0/1) BEFORE the saved
- * commit re-pushes the per-CRTC modeset state (DMA_P_SRC_BASE, LayerMixer
- * staging, mode timings). Without forcing the atomic disable/restore cycle
- * here, the userspace compositor's first post-resume commit -- if and when
- * it issues one -- would race static-config reprogramming against active
- * scanout fetch and leave a black screen.
- *
- * Pattern matches mxsfb / lcdif which are the canonical reference for a
- * single-CRTC DRM driver paired with a power domain that collapses across
- * system sleep. dpu1's pm_runtime_force_suspend/resume idiom only works on
- * mdp5+ platforms where userspace reliably re-commits on wake; tenderloin
- * (mdp4 + surface-manager/eglfs) is the first MSM display driver to need
- * the explicit modeset-helper wrappers.
- */
-static int mdp4_pm_suspend(struct device *dev)
-{
-	struct msm_drm_private *priv = dev_get_drvdata(dev);
-
-	return drm_mode_config_helper_suspend(priv->dev);
-}
-
-static int mdp4_pm_resume(struct device *dev)
-{
-	struct msm_drm_private *priv = dev_get_drvdata(dev);
-
-	return drm_mode_config_helper_resume(priv->dev);
-}
-
 static const struct dev_pm_ops mdp4_pm_ops = {
 	.prepare = msm_kms_pm_prepare,
 	.complete = msm_kms_pm_complete,
-	SYSTEM_SLEEP_PM_OPS(mdp4_pm_suspend, mdp4_pm_resume)
+	/*
+	 * Force a real runtime-suspend cycle across system sleep so that
+	 * mdp4_runtime_resume() runs on the resume side and re-programs the
+	 * MDP top-level / pipe / overlay regs via mdp4_program_init_regs()
+	 * (see mdp4_runtime_resume body). Without this, atomic_helper_resume
+	 * restores the saved CRTC state but the MDP-side registers that are
+	 * NOT part of the atomic state -- READ_CNFG, PORTMAP_MODE, FETCH_
+	 * CONFIG, LAYERMIXER_IN_CFG and friends -- stay at their post-
+	 * rail-collapse defaults and the first post-resume scanline starves.
+	 *
+	 * Mirrors dpu1's same idiom (drm/msm/disp/dpu1/dpu_kms.c) which
+	 * relies on pm_runtime_force_suspend/resume to drive its own
+	 * runtime-PM callbacks on the system-sleep path. mainline mdp5 has
+	 * the same architectural gap but never trips on it because no
+	 * mainline mdp5 SoC pairs an mdp_gdsc that actually collapses with
+	 * an active mdp5 setup; tenderloin is the first mdp4 platform to
+	 * exercise this.
+	 */
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 #if IS_ENABLED(CONFIG_QCOM_MMSS_PORT_HALT)
 	LATE_SYSTEM_SLEEP_PM_OPS(mdp4_suspend_late, mdp4_resume_early)
 #endif
