@@ -1481,7 +1481,7 @@
 				port@0 {
 					reg = <0>;
 					mdp_lvds_out: endpoint {
-						remote-endpoint = <&lvds_encoder_in>;
+						remote-endpoint = <&panel_in>;
 					};
 				};
 
@@ -1608,74 +1608,24 @@
 	 * Note: GPIO 102 was used for 5V boost enable on pre-EVT1 boards.
 	 * Since EVT1, the 5V boost (vdd50_boost) is always on.
 	 */
-	/*
-	 * External LVDS serializer between MDP4 LCDC parallel RGB888 output
-	 * and the LG LP097X02-SLN1 LVDS panel. Schematic identifies the chip
-	 * as TI SN75LVDS83BZQLR (BGA-56), see
-	 *   schematics/Schematics-Topaz3G-6050A2428701-MB-X01.20101012.pdf.
-	 *
-	 * Pin-strap configured (no I2C/SPI), software-visible controls:
-	 *   - powerdown (GPIO 63 = LVDS_SHDN_N, active LOW): when asserted,
-	 *     the chip enters shutdown, LVDS outputs go Hi-Z and the internal
-	 *     PLL stops. Mainline lvds-codec.c drives this on every
-	 *     enable/disable cycle.
-	 *   - vcc (pm8058_l10 = VDD_LVDS_3V3): 3.3 V analog supply for the
-	 *     LVDS pads. Stays always-on (other consumers on the same rail)
-	 *     but we still hold a reference here for accounting.
-	 *
-	 * Why this node exists: SN75LVDS83B's PLL loses lock when LCD_PCLK
-	 * pauses (which happens briefly during s2idle). Without a SHDN
-	 * toggle after the clock resumes, the PLL stays unlocked and the
-	 * panel sees no LVDS data even though MDP4 LCDC is happily scanning
-	 * out parallel RGB at 60 Hz. The drm_bridge enable/disable cycle
-	 * triggered by atomic_helper_suspend/resume forces that SHDN toggle,
-	 * which forces a fresh PLL lock to the resumed LCD_PCLK.
-	 */
-	lvds_encoder: lvds-encoder {
-		compatible = "ti,sn75lvds83", "lvds-encoder";
-		powerdown-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
-		power-supply = <&pm8058_l10>;
-
-		ports {
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			port@0 {
-				reg = <0>;
-				/* parallel RGB888 input from MDP4 LCDC */
-				lvds_encoder_in: endpoint {
-					remote-endpoint = <&mdp_lvds_out>;
-				};
-			};
-
-			port@1 {
-				reg = <1>;
-				/* LVDS output to the panel */
-				lvds_encoder_out: endpoint {
-					remote-endpoint = <&panel_in>;
-				};
-			};
-		};
-	};
-
 	lg_panel: panel {
 		compatible = "lg,lp097x02-sln1";
 		status = "okay";
 
-		/*
-		 * GPIO 62 (LCD_PWR_EN) controls panel power; GPIO 63
-		 * (LVDS_SHDN_N) now belongs to the lvds_encoder bridge above.
-		 *
-		 * power-supply intentionally omitted: pm8058_l10 is the LVDS
-		 * transmitter's vcc (already referenced by lvds_encoder) and
-		 * is regulator-always-on. The panel itself is fed by VDD_PNL_3V3
-		 * which is wired to a separate always-on rail not exposed as a
-		 * named DT supply.
-		 *
-		 * Backlight reference removed to allow pwm-backlight to
-		 * initialize as ON at probe time.
-		 */
+		/* Panel power control GPIOs */
 		enable-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;	/* LCD_PWR_EN */
+		reset-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;	/* LVDS_SHDN_N */
+
+		/*
+		 * Note: power-supply intentionally omitted to avoid EPROBE_DEFER
+		 * chain: MDP4 -> panel-simple -> pm8058_l10 regulator -> RPM.
+		 * This caused 90+ second boot delays waiting for the regulator
+		 * driver to probe. Since pm8058_l10 has regulator-always-on,
+		 * the panel doesn't need to explicitly control it.
+		 *
+		 * Similarly, backlight reference removed to allow pwm-backlight
+		 * to initialize as ON at probe time.
+		 */
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&panel_pins>;
@@ -1685,7 +1635,7 @@
 
 		port {
 			panel_in: endpoint {
-				remote-endpoint = <&lvds_encoder_out>;
+				remote-endpoint = <&mdp_lvds_out>;
 			};
 		};
 	};
