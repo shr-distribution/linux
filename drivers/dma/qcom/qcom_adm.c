@@ -935,21 +935,37 @@ static void adm_start_dma(struct adm_chan *achan)
 	}
 
 	/*
-	 * Per-ADM-controller submit serialization, plus peripheral
-	 * exec_func atomic hook. Matches the legacy webOS msm_dmov
-	 * pattern: while we set up CRCI_CTL, call the peripheral's
-	 * pre-submit hook (e.g. mmci writes DATACTRL + CMD), and write
-	 * CMD_PTR, no other channel on this ADM controller can start
-	 * its own submission.
+	 * Per-ADM-controller submit serialization is needed ONLY for
+	 * channels that supply an exec_func — that hook drives the
+	 * peripheral's own MMIO (mmci writes DATATIMER+DATACTRL+CMD before
+	 * the CMD_PTR fires) and has to be atomic with the ADM start.
+	 * Without an exec_func, the only state touched here is per-CRCI
+	 * CRCI_CTL (unique per peripheral) and the channel-local CMD_PTR
+	 * register — no shared MMIO with any other channel.
 	 *
-	 * IRQs are saved/restored so adm_start_dma can also be called
-	 * from the IRQ handler (after a channel completion, picking up
-	 * the next pending descriptor).
+	 * Holding the lock unconditionally was the original design but
+	 * starved a real workload: BT-UART RX restarts at ~192/sec via
+	 * msm_complete_rx_dma -> msm_start_rx_dma -> adm_issue_pending,
+	 * none of which set exec_func.  Each BT-RX restart was blocking
+	 * an in-flight mmci submission (exec_func writes 5 SDCC regs over
+	 * ~6-8 µs of the slow APB bus) — long enough for SDCC's 64 B RX
+	 * FIFO to overflow before the next ADM CMD_PTR drains it.  Result:
+	 * RXOVERRUN-marked-as-fabric → DATATIMEOUT → CMD12/13/23 timeout
+	 * cascade → eMMC card stuck busy → HW-reset -110 → full eMMC death.
+	 *
+	 * Gate the lock on exec_func presence: BT RX submits run unlocked,
+	 * mmci submits keep their atomic CRCI_CTL+exec_func+CMD_PTR window.
+	 * IRQs are saved/restored only when we take the lock so adm_start_dma
+	 * can still be called from the IRQ completion path safely.
+	 *
+	 * See memory note: project_adm_submit_lock_starvation.
 	 */
 	{
 	unsigned long submit_flags;
+	bool need_submit_lock = async_desc->exec_func != NULL;
 
-	spin_lock_irqsave(&adev->submit_lock, submit_flags);
+	if (need_submit_lock)
+		spin_lock_irqsave(&adev->submit_lock, submit_flags);
 
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
@@ -1041,7 +1057,8 @@ static void adm_start_dma(struct adm_chan *achan)
 		       adev->regs + ADM_CH_CMD_PTR(achan->id, 0));
 	}
 
-	spin_unlock_irqrestore(&adev->submit_lock, submit_flags);
+	if (need_submit_lock)
+		spin_unlock_irqrestore(&adev->submit_lock, submit_flags);
 	}
 }
 
