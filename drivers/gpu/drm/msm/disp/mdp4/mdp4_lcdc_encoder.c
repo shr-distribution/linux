@@ -310,7 +310,16 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 			to_mdp4_lcdc_encoder(encoder);
 	struct mdp4_kms *mdp4_kms = get_kms(encoder);
 
-	if (WARN_ON(!mdp4_lcdc_encoder->enabled))
+	/*
+	 * Make the disable path idempotent. Skipping the work on
+	 * already-disabled is safe; WARNing was actively harmful because
+	 * any path that loses our driver-side enabled bool (e.g. after a
+	 * resume where the mdp_gdsc rail collapsed) sees an enabled=false
+	 * view and short-circuits, leaving REG_MDP4_LCDC_ENABLE bit set
+	 * on silicon at a point where the kernel believes the encoder is
+	 * off. Silent return is correct for an already-disabled encoder.
+	 */
+	if (!mdp4_lcdc_encoder->enabled)
 		return;
 
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
@@ -344,7 +353,17 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 	uint32_t config;
 	int bpc, ret;
 
-	if (WARN_ON(mdp4_lcdc_encoder->enabled))
+	/*
+	 * Idempotent: a re-enable on an already-enabled encoder is a no-op
+	 * rather than a WARN. atomic_helper_resume's modeset commit can
+	 * fire encoder.enable while our driver-side state still says
+	 * enabled=true if .prepare's drm_mode_config_helper_suspend was
+	 * not given a chance to drop us first (or if encoder_disable
+	 * short-circuited because something went wrong on the suspend
+	 * side). WARN-and-return loses the re-program and leaves the
+	 * post-rail-collapse silicon with stale timing registers.
+	 */
+	if (mdp4_lcdc_encoder->enabled)
 		return;
 
 	/*
