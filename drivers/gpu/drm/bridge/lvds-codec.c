@@ -48,15 +48,21 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 	int ret;
 
+	dev_info(lvds_codec->dev, "lvds_codec_enable: ENTER, powerdown_gpio=%p\n",
+		 lvds_codec->powerdown_gpio);
+
 	ret = regulator_enable(lvds_codec->vcc);
 	if (ret) {
 		dev_err(lvds_codec->dev,
 			"Failed to enable regulator \"vcc\": %d\n", ret);
 		return;
 	}
+	dev_info(lvds_codec->dev, "lvds_codec_enable: vcc on (ret=%d)\n", ret);
 
-	if (lvds_codec->powerdown_gpio)
+	if (lvds_codec->powerdown_gpio) {
 		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 0);
+		dev_info(lvds_codec->dev, "lvds_codec_enable: powerdown_gpio set to 0 (DEASSERT = chip ON)\n");
+	}
 }
 
 static void lvds_codec_disable(struct drm_bridge *bridge)
@@ -64,13 +70,19 @@ static void lvds_codec_disable(struct drm_bridge *bridge)
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 	int ret;
 
-	if (lvds_codec->powerdown_gpio)
+	dev_info(lvds_codec->dev, "lvds_codec_disable: ENTER, powerdown_gpio=%p\n",
+		 lvds_codec->powerdown_gpio);
+
+	if (lvds_codec->powerdown_gpio) {
 		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 1);
+		dev_info(lvds_codec->dev, "lvds_codec_disable: powerdown_gpio set to 1 (ASSERT = chip OFF)\n");
+	}
 
 	ret = regulator_disable(lvds_codec->vcc);
 	if (ret)
 		dev_err(lvds_codec->dev,
 			"Failed to disable regulator \"vcc\": %d\n", ret);
+	dev_info(lvds_codec->dev, "lvds_codec_disable: vcc off (ret=%d)\n", ret);
 }
 
 #define MAX_INPUT_SEL_FORMATS 1
