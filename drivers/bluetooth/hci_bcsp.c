@@ -3699,7 +3699,9 @@ static int bcsp_hdev_shutdown(struct hci_dev *hdev)
 
 	bdev = bcsp->serdev_bdev;
 	dev_info(bdev->dev,
-		 "BCSP: hdev shutdown — dropping gpio130/131 (chip stays alive due to gpio130 leak)\n");
+		 "BCSP: hdev shutdown — caller=%s pid=%d (chip stays alive due to gpio130 leak)\n",
+		 current->comm, task_pid_nr(current));
+	dump_stack();
 	bcsp_serdev_set_power(bdev, false);
 
 	/*
