@@ -3735,6 +3735,35 @@ static int bcsp_hdev_open_wrapper(struct hci_dev *hdev)
 	dev_info(bdev->dev, "BCSP: hdev open — re-powering chip\n");
 
 	bcsp_serdev_set_power(bdev, true);
+
+	/*
+	 * Force a clean chip cold-boot via gpio138 (BT_RST_N, active-low
+	 * per DT) reset pulse — required because gpio130 (BT_POWER) drop
+	 * alone does NOT reliably collapse the chip's VDD rail on this
+	 * hardware: without webOS's pinctrl flip to 2 mA keeper, the 8 mA
+	 * gpio130 LOW drive leaks enough current through the chip's
+	 * protection diodes that the chip stays alive at its last
+	 * operational state (3.6864 M 8-E-1 + HW flow), and our resume
+	 * SYNC TX at 115,200 hits a 3.6864 M chip RX and is ignored.
+	 *
+	 * webOS bt_power(1) does this exact gpio138 LOW→HIGH pulse after
+	 * driving gpio130 HIGH.  20 ms hold is enough on this chip per the
+	 * deep-dive memo; longer pulses (we previously used 100 ms) had
+	 * triggered an "autonomous SYNC" state at probe but the resume
+	 * window is different so it's safe here.
+	 *
+	 * Only do this from the resume open path; the probe-time first
+	 * power-on (via bcsp_serdev_set_power from probe) deliberately
+	 * doesn't pulse gpio138 since the chip is already running cleanly
+	 * from the boot regulators.
+	 */
+	if (bdev->reset_gpio) {
+		gpiod_set_value_cansleep(bdev->reset_gpio, 1);	/* assert reset */
+		msleep(20);
+		gpiod_set_value_cansleep(bdev->reset_gpio, 0);	/* deassert */
+		dev_info(bdev->dev,
+			 "BCSP: hdev open — gpio138 reset pulse for clean cold-boot\n");
+	}
 	msleep(20);		/* webOS sleeps a few ms before BT speaks */
 
 	/* Chip is freshly cold-booted — reset our BCSP link state so the
