@@ -1636,29 +1636,6 @@
 		powerdown-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
 		power-supply = <&pm8058_l10>;
 
-		/*
-		 * 28 LCDC parallel-RGB pins are owned by the lvds-codec bridge
-		 * so the bridge enable/disable callbacks can toggle them
-		 * synchronously with SHDN_N (powerdown-gpios). At disable, pins
-		 * are switched to "sleep" (function=gpio) which disconnects MDP
-		 * signaling. At enable, the chip is powered up first; "default"
-		 * is reselected only after a settle window so the SN75LVDS83B's
-		 * internal PLL can lock on a quiescent input before live RGB
-		 * data arrives.
-		 */
-		pinctrl-names = "default", "sleep";
-		pinctrl-0 = <&panel_pins>;
-		pinctrl-1 = <&panel_pins_sleep>;
-
-		/*
-		 * Hold the chip with quiescent inputs for 200ms after powerdown
-		 * deassertion so the SN75LVDS83B's internal PLL can lock before
-		 * live RGB data starts flowing. Matches the msleep(200) in
-		 * legacy webOS arch/arm/mach-msm/board-tenderloin.c's
-		 * lcdc_lg_panel_power().
-		 */
-		powerup-settle-ms = <200>;
-
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1700,11 +1677,8 @@
 		 */
 		enable-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;	/* LCD_PWR_EN */
 
-		/*
-		 * pinctrl for the 28 LCDC parallel-RGB pins now belongs to the
-		 * lvds_encoder bridge above, which toggles between "default" and
-		 * "sleep" states across SN75LVDS83B power cycles.
-		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_pins>;
 
 		/* Panel is physically mounted inverted (upside-down) */
 		rotation = <180>;
@@ -2027,30 +2001,6 @@
 			 * from mainline. Match legacy explicitly.
 			 */
 			drive-strength = <14>;
-			bias-disable;
-		};
-	};
-
-	/*
-	 * Sleep state for the 28 LCDC parallel-RGB pins. Switched to during
-	 * lvds-codec bridge disable and reselected at enable AFTER the
-	 * SN75LVDS83B has been powered on and given a settle window. The
-	 * external transmitter's internal PLL refuses to acquire lock on an
-	 * already-toggling CLKIN; legacy webOS muxes the pins away during the
-	 * chip's PLL-lock window for the same reason. function="gpio" parks
-	 * the pins as TLMM GPIOs (held by no consumer) so MDP signaling is
-	 * disconnected from the chip until pinctrl is selected back to
-	 * "default".
-	 */
-	panel_pins_sleep: lcdc-sleep-state {
-		mux-pins {
-			pins =
-			"gpio0",  "gpio1",  "gpio2",  "gpio3",  "gpio4",  "gpio5",  "gpio6",
-			"gpio7",  "gpio8",  "gpio9",  "gpio10", "gpio11", "gpio12", "gpio13",
-			"gpio14", "gpio15", "gpio16", "gpio17", "gpio18", "gpio19", "gpio20",
-			"gpio21", "gpio22", "gpio23", "gpio24", "gpio25", "gpio26", "gpio27";
-			function = "gpio";
-			drive-strength = <2>;
 			bias-disable;
 		};
 	};
