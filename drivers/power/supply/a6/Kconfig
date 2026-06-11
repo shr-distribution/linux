@@ -29,3 +29,19 @@ config BATTERY_PALM_A6_I2C_SINGLE_BYTE
 
 	  Only required on the legacy Palm PMIC-attached I2C bus topology.
 	  If unsure, say N.
+
+config BATTERY_PALM_A6_A2A_COMM
+	tristate "Palm A6 legacy A2A comm interface (Tap-to-Share)"
+	depends on BATTERY_PALM_A6 && AUXILIARY_BUS
+	help
+	  Re-exposes the legacy /dev/a6_N character device and
+	  /sys/class/misc/a6_N/regs/ sysfs attributes that the
+	  original webOS Tap-to-Share userspace (tap2shared) consumes.
+
+	  This interface is NOT for upstream submission; it exists only
+	  to keep legacy webOS userspace running on a mainline kernel.
+	  Modern webOS / LuneOS userspace does not consume this
+	  interface - they go through the standard power_supply class.
+
+	  Say M here unless you intend to boot legacy webOS / use
+	  Tap-to-Share between Palm/HP devices.

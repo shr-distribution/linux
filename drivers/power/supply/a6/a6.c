@@ -15,6 +15,7 @@
  * class adapter).
  */
 
+#include <linux/auxiliary_bus.h>
 #include <linux/bitops.h>
 #include <linux/device.h>
 #include <linux/errno.h>
@@ -35,6 +36,10 @@
 #include <linux/workqueue.h>
 
 #include "a6_internal.h"
+
+#if IS_ENABLED(CONFIG_BATTERY_PALM_A6_A2A_COMM)
+#include "palm-a6-aux.h"
+#endif
 
 /*
  * a6_init_state() - bring the A6 controller out of sleep and arm the
@@ -247,6 +252,101 @@ static void a6_workqueue_release(void *data)
 	destroy_workqueue(state->ka6d_workqueue);
 }
 
+#if IS_ENABLED(CONFIG_BATTERY_PALM_A6_A2A_COMM)
+/*
+ * Auxiliary-bus glue. Exposes a thin facade over a6_i2c_read_reg /
+ * a6_i2c_write_reg that the downstream-only a6_a2a_comm module
+ * consumes to re-create the legacy /dev/a6_N + sysfs ABI. Both
+ * callbacks take state->dev_mutex internally so the aux driver does
+ * not need access to a6_internal.h.
+ *
+ * This entire block compiles out when CONFIG_BATTERY_PALM_A6_A2A_COMM=n
+ * so the upstream-bound base driver carries no extra symbols.
+ */
+static int a6_aux_read_regs(struct i2c_client *client, const u16 *ids,
+			    u32 num_ids, u8 *out)
+{
+	struct a6_device_state *state = i2c_get_clientdata(client);
+	int ret;
+
+	mutex_lock(&state->dev_mutex);
+	ret = a6_i2c_read_reg(client, ids, num_ids, out);
+	mutex_unlock(&state->dev_mutex);
+	return ret;
+}
+
+static int a6_aux_write_regs(struct i2c_client *client, const u16 *ids,
+			     u32 num_ids, const u8 *in)
+{
+	struct a6_device_state *state = i2c_get_clientdata(client);
+	int ret;
+
+	mutex_lock(&state->dev_mutex);
+	ret = a6_i2c_write_reg(client, ids, num_ids, in);
+	mutex_unlock(&state->dev_mutex);
+	return ret;
+}
+
+static void a6_aux_dev_release(struct device *dev)
+{
+	struct auxiliary_device *adev = to_auxiliary_dev(dev);
+	struct a6_aux_dev *a6dev = to_a6_aux_dev(adev);
+
+	kfree(a6dev);
+}
+
+static void a6_aux_unregister(void *data)
+{
+	struct auxiliary_device *adev = data;
+
+	auxiliary_device_delete(adev);
+	auxiliary_device_uninit(adev);
+}
+
+static int a6_register_aux(struct a6_device_state *state)
+{
+	struct i2c_client *client = state->i2c_dev;
+	struct a6_aux_dev *a6dev;
+	struct auxiliary_device *adev;
+	int ret;
+
+	a6dev = kzalloc_obj(*a6dev);
+	if (!a6dev)
+		return -ENOMEM;
+
+	a6dev->client = client;
+	a6dev->device_index = state->device_index;
+	a6dev->read_regs = a6_aux_read_regs;
+	a6dev->write_regs = a6_aux_write_regs;
+
+	adev = &a6dev->adev;
+	adev->name = "a2a-comm";
+	adev->id = state->device_index;
+	adev->dev.parent = &client->dev;
+	adev->dev.release = a6_aux_dev_release;
+
+	ret = auxiliary_device_init(adev);
+	if (ret) {
+		kfree(a6dev);
+		return ret;
+	}
+
+	ret = auxiliary_device_add(adev);
+	if (ret) {
+		/*
+		 * uninit triggers the release() callback which frees
+		 * the wrapper - do not kfree() again here.
+		 */
+		auxiliary_device_uninit(adev);
+		return ret;
+	}
+
+	return devm_add_action_or_reset(&client->dev, a6_aux_unregister, adev);
+}
+#else
+static inline int a6_register_aux(struct a6_device_state *state) { return 0; }
+#endif /* CONFIG_BATTERY_PALM_A6_A2A_COMM */
+
 static int a6_probe(struct i2c_client *client)
 {
 	struct a6_device_state *state;
@@ -331,6 +431,21 @@ static int a6_probe(struct i2c_client *client)
 
 		device_init_wakeup(&client->dev, true);
 	}
+
+	/*
+	 * Spawn the legacy /dev/a6_N + sysfs ABI on the auxiliary bus
+	 * if CONFIG_BATTERY_PALM_A6_A2A_COMM is enabled. The aux module
+	 * binds to "a6_battery.a2a-comm.N" and re-creates the userspace
+	 * surface consumed by webOS tap2shared. Failure here is fatal:
+	 * by the time we return from probe the rest of devm is already
+	 * registered, and there is no graceful "downgrade" if the aux
+	 * registration fails on a system where the kernel was built
+	 * with the option enabled.
+	 */
+	ret = a6_register_aux(state);
+	if (ret)
+		return dev_err_probe(&client->dev, ret,
+				     "failed to register A2A aux device\n");
 
 	dev_info(&client->dev, "A6 battery controller initialised\n");
 	return 0;
