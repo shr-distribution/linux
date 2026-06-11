@@ -414,10 +414,16 @@ static int a6_probe(struct i2c_client *client)
 	 * below fails (controller not yet responsive at probe), userspace
 	 * just sees POWER_SUPPLY_PROP_PRESENT = 0 until the IRQ bottom
 	 * half successfully initialises the controller.
+	 *
+	 * The workqueue is non-devres at this point, so on a failure
+	 * return we must destroy it by hand — devres won't know about it
+	 * until devm_add_action_or_reset() below.
 	 */
 	ret = a6_register_power_supply(state);
-	if (ret)
+	if (ret) {
+		destroy_workqueue(state->ka6d_workqueue);
 		return ret;
+	}
 
 	/*
 	 * Register workqueue teardown AFTER power_supply registration so
@@ -433,6 +439,10 @@ static int a6_probe(struct i2c_client *client)
 	 * Registering workqueue_release before power_supply (the previous
 	 * order) inverted this — power_supply unregistered with IRQ work
 	 * potentially still in flight referencing state->battery (UAF).
+	 *
+	 * devm_add_action_or_reset() invokes a6_workqueue_release() on its
+	 * own failure path, so the workqueue is still cleaned up if the
+	 * devres add itself fails.
 	 */
 	ret = devm_add_action_or_reset(&client->dev, a6_workqueue_release,
 				       state);

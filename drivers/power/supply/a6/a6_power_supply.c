@@ -77,22 +77,14 @@ static int a6_current_uA(const struct a6_device_state *state, s16 raw)
 	return ((int)raw * 3125) / 2 / (int)state->cached_rsense_val;
 }
 
-static int a6_battery_get_property(struct power_supply *psy,
-				   enum power_supply_property psp,
-				   union power_supply_propval *val)
+static int a6_battery_get_property_locked(struct a6_device_state *state,
+					  enum power_supply_property psp,
+					  union power_supply_propval *val)
 {
-	struct a6_device_state *state = power_supply_get_drvdata(psy);
 	struct i2c_client *client = state->i2c_dev;
 	int ret;
 	s16 raw;
 	u8 byte;
-
-	/*
-	 * Serialise the per-property back-to-back A6 register reads against
-	 * the IRQ bottom-half (which may run a6_init_state) and any other
-	 * concurrent power_supply user.
-	 */
-	guard(mutex)(&state->dev_mutex);
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -209,6 +201,31 @@ static int a6_battery_get_property(struct power_supply *psy,
 		return -EINVAL;
 	}
 	return 0;
+}
+
+static int a6_battery_get_property(struct power_supply *psy,
+				   enum power_supply_property psp,
+				   union power_supply_propval *val)
+{
+	struct a6_device_state *state = power_supply_get_drvdata(psy);
+	int ret;
+
+	/*
+	 * Serialise the per-property back-to-back A6 register reads against
+	 * the IRQ bottom-half (which may run a6_init_state) and any other
+	 * concurrent power_supply user.
+	 */
+	guard(mutex)(&state->dev_mutex);
+
+	/*
+	 * Assert wakeup_gpio around the I2C transactions. The A6 firmware
+	 * can NAK accesses while in low-power mode, matching the same
+	 * hardware contract a6_init_state() / a6_irq_work_handler() honor.
+	 */
+	gpiod_set_value_cansleep(state->wakeup_gpio, 1);
+	ret = a6_battery_get_property_locked(state, psp, val);
+	gpiod_set_value_cansleep(state->wakeup_gpio, 0);
+	return ret;
 }
 
 /**
