@@ -6991,13 +6991,6 @@ L:	linux-input@vger.kernel.org
 S:	Maintained
 F:	drivers/input/touchscreen/cy8ctma140.c
 
-CYPRESS CY8CTMA395 TOUCHSCREEN DRIVER (HP TOUCHPAD)
-M:	Herman van Hazendonk <github.com@herrie.org>
-L:	linux-input@vger.kernel.org
-S:	Maintained
-F:	Documentation/devicetree/bindings/input/touchscreen/cypress,cy8ctma395.yaml
-F:	drivers/input/touchscreen/cy8ctma395_ts.c
-
 CYPRESS STREETFIGHTER TOUCHKEYS DRIVER
 M:	Yassine Oudjana <y.oudjana@protonmail.com>
 L:	linux-input@vger.kernel.org
@@ -20161,6 +20154,13 @@ PAGE STATE DEBUG SCRIPT
 M:	Ye Liu <liuye@kylinos.cn>
 S:	Maintained
 F:	tools/mm/show_page_info.py
+
+PALM A6 BATTERY/EC DRIVER (HP TOUCHPAD)
+M:	Herman van Hazendonk <github.com@herrie.org>
+L:	linux-pm@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/power/supply/palm,a6-battery.yaml
+F:	drivers/power/supply/a6/
 
 PANASONIC LAPTOP ACPI EXTRAS DRIVER
 M:	Kenneth Chan <kenneth.t.chan@gmail.com>
