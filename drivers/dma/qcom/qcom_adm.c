@@ -694,8 +694,20 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		 * STATUS=0x1120120c, terminate_sync hang).  is_adm1 was set
 		 * at probe time from the controller's MMIO base address.
 		 */
-		if (adev->is_adm1 && (crci == 1 || crci == 5))
+		if (adev->is_adm1 && (crci == 1 || crci == 5) &&
+		    direction == DMA_DEV_TO_MEM)
 			blk_size = 1;
+		/*
+		 * Scope refinement: apply only to DEV_TO_MEM (reads).
+		 * On WRITES with blk_size=1 we observed TXUNDERRUN in the
+		 * AR6003 BMI 128-byte CMD53 WRITE path: SDCC starts clocking
+		 * data to the chip immediately after CMDRESPEND, but ADM
+		 * gates the first push on the CRCI half-FIFO-empty signal,
+		 * leaving the SDCC TX FIFO empty at clock start.  Reads
+		 * don't have this race because SDCC clocks IN data and ADM
+		 * pulls when half-full — no pre-load timing constraint.
+		 * The original eMMC bug we fixed was also a read.
+		 */
 	}
 
 	/* iterate through sgs and compute allocation size of structures */
