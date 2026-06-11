@@ -3064,10 +3064,24 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	switch (ios->power_mode) {
 	case MMC_POWER_OFF:
-		/* Set low load on qcom variant before power off */
+		/*
+		 * Set low load on qcom variant before power off.
+		 *
+		 * SDIO consumers managed via mmc-pwrseq (e.g. AR6003 WiFi on
+		 * APQ8060/tenderloin) keep their chip alive across host
+		 * power-off and only resume cleanly if the I/O supply (vqmmc)
+		 * stays in LPM rather than dropping the consumer's load vote
+		 * to zero.  Legacy webOS tenderloin_wifi_power() sets 10000
+		 * uA (MIN_LOAD) on disable; matching that here prevents the
+		 * AR6003 SDIO state machine from desyncing across host
+		 * power-cycle.  Non-pwrseq hosts retain the historical
+		 * full-zero vote.
+		 */
 		if (variant->qcom_fifo && (mmc->caps & MMC_CAP_SDIO_IRQ)) {
+			u32 vqmmc_load = mmc->pwrseq ? 10000 : 0;
+
 			if (!IS_ERR(mmc->supply.vqmmc))
-				regulator_set_load(mmc->supply.vqmmc, 0);
+				regulator_set_load(mmc->supply.vqmmc, vqmmc_load);
 			if (!IS_ERR(mmc->supply.vmmc))
 				regulator_set_load(mmc->supply.vmmc, 0);
 		}
