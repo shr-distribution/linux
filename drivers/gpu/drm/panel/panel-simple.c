@@ -306,12 +306,9 @@ static int panel_simple_suspend(struct device *dev)
 {
 	struct panel_simple *p = dev_get_drvdata(dev);
 
-	dev_info(dev, "panel_simple_suspend: enable_gpio=%p supply=%p\n",
-		 p->enable_gpio, p->supply);
 	gpiod_set_value_cansleep(p->enable_gpio, 0);
 	regulator_disable(p->supply);
 	p->unprepared_time = ktime_get_boottime();
-	dev_info(dev, "panel_simple_suspend: enable_gpio=0, supply disabled\n");
 
 	drm_edid_free(p->drm_edid);
 	p->drm_edid = NULL;
@@ -336,8 +333,6 @@ static int panel_simple_resume(struct device *dev)
 	struct panel_simple *p = dev_get_drvdata(dev);
 	int err;
 
-	dev_info(dev, "panel_simple_resume: ENTER enable_gpio=%p supply=%p delay.prepare=%u\n",
-		 p->enable_gpio, p->supply, p->desc->delay.prepare);
 	panel_simple_wait(p->unprepared_time, p->desc->delay.unprepare);
 
 	err = regulator_enable(p->supply);
@@ -345,14 +340,11 @@ static int panel_simple_resume(struct device *dev)
 		dev_err(dev, "failed to enable supply: %d\n", err);
 		return err;
 	}
-	dev_info(dev, "panel_simple_resume: supply enabled\n");
 
 	gpiod_set_value_cansleep(p->enable_gpio, 1);
-	dev_info(dev, "panel_simple_resume: enable_gpio=1\n");
 
 	if (p->desc->delay.prepare)
 		msleep(p->desc->delay.prepare);
-	dev_info(dev, "panel_simple_resume: EXIT\n");
 
 	return 0;
 }
