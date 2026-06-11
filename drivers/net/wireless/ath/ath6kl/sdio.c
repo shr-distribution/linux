@@ -62,6 +62,19 @@ struct ath6kl_sdio {
 	bool scatter_enabled;
 
 	bool is_disabled;
+	/*
+	 * Set true at the end of ath6kl_sdio_probe() when ath6kl_core_init()
+	 * succeeded.  Used by ath6kl_sdio_power_off() to decide whether it is
+	 * safe to send a CMD52 to the chip via sdio_disable_func() on the
+	 * error/teardown path.  After a failed HTC handshake (e.g. the 128-
+	 * byte CMD53 RD BLOCK_FIX at mailbox 0x800 that returns mismatched
+	 * lookahead), the SDCC DPSM is left half-closed on this SoC and the
+	 * next CMD52's CMDRESPEND IRQ never fires — sdio_disable_func()
+	 * blocks in mmc_wait_for_req_done() indefinitely.  When
+	 * probe_completed is false we skip the disable and trust mmc-pwrseq
+	 * to reset the chip + unwedge the controller on the next attach.
+	 */
+	bool probe_completed;
 	const struct sdio_device_id *id;
 	struct work_struct wr_async_work;
 	struct list_head wr_asyncq;
@@ -568,6 +581,27 @@ static int ath6kl_sdio_power_off(struct ath6kl *ar)
 		return 0;
 
 	ath6kl_dbg(ATH6KL_DBG_BOOT, "sdio power off\n");
+
+	if (!ar_sdio->probe_completed) {
+		/*
+		 * Probe failed before ath6kl_core_init() completed; the chip
+		 * is in an unknown state and on this SoC the SDCC may have
+		 * been left wedged by the failing CMD53 (e.g. 128-byte BLOCK_
+		 * FIX read at mailbox 0x800 with mismatched lookahead — the
+		 * DPSM stays half-closed and the next CMD52's CMDRESPEND IRQ
+		 * never fires).  Sending sdio_disable_func() here would block
+		 * forever in mmc_wait_for_req_done(), wedging the unbind
+		 * thread and triggering the kernel hung_task watchdog at 122 s.
+		 *
+		 * Skip the disable; the chip will be properly reset by mmc-
+		 * pwrseq's reset-gpios on the next attach, which also unwedges
+		 * the SDCC because mmc_power_off() → mmci_set_ios MMC_POWER_
+		 * OFF resets the controller state.
+		 */
+		ath6kl_warn("Probe failure path: skipping sdio_disable_func() to avoid mmci CMD-completion hang; chip will be reset on next pwrseq cycle\n");
+		ar_sdio->is_disabled = true;
+		return 0;
+	}
 
 	/* Disable the card */
 	sdio_claim_host(ar_sdio->func);
@@ -1436,6 +1470,13 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 		ath6kl_err("Failed to init ath6kl core\n");
 		goto err_core_alloc;
 	}
+
+	/*
+	 * Mark probe as fully completed.  ath6kl_sdio_power_off() consults
+	 * this to decide whether sdio_disable_func() is safe to issue — see
+	 * the field comment + power_off() handler for the wedged-CMD path.
+	 */
+	ar_sdio->probe_completed = true;
 
 	return ret;
 
