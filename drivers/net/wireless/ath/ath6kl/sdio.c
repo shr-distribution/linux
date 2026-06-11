@@ -232,9 +232,15 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 			u32 off = 0;
 			const u32 chunk_sz = 32; /* < fifosize=64 -> PIO */
 
-			ath6kl_dbg(ATH6KL_DBG_SDIO,
-				   "mbox RD %u B @ 0x%x: splitting into %u-B PIO chunks (DMA path corrupts on AR6003/tenderloin)\n",
-				   len, addr, chunk_sz);
+			/*
+			 * Logged at pr_info so the trigger is visible in
+			 * dmesg without enabling debug_mask -- this confirms
+			 * the workaround actually fires on the failing path.
+			 * Will be downgraded to ath6kl_dbg once the underlying
+			 * DMA-path corruption is rooted.
+			 */
+			pr_info("ath6kl: mbox RD %u B @ 0x%x: splitting into %u-B PIO chunks (DMA path corrupts on AR6003/tenderloin)\n",
+				len, addr, chunk_sz);
 
 			while (off < len) {
 				u32 this_chunk = min(chunk_sz, len - off);
