@@ -153,8 +153,30 @@ int ath6kl_hif_poll_mboxmsg_rx(struct ath6kl_device *dev, u32 *lk_ahd,
 					     HIF_RD_SYNC_BYTE_INC);
 
 		if (status) {
-			ath6kl_err("failed to read reg table\n");
-			return status;
+			/*
+			 * Legacy ar6000 driver (DevPollMboxMsgRecv in
+			 * htc2/AR6000/ar6k_events.c) retries the read on
+			 * failure for the full timeout window, on the
+			 * premise that the target firmware may not yet be
+			 * answering on the SDIO CMD wire so soon after
+			 * BMI_DONE.  On APQ8060/tenderloin with AR6003 the
+			 * first reg-table CMD53 reliably CMDTIMEOUTs (chip
+			 * silent at CMD line), but retries within ~100 ms
+			 * succeed — see memory
+			 * project_wifi_legacy_trace_findings_2026_06_11.
+			 * Mainline previously bailed on the first failure,
+			 * turning a transient warm-up condition into a
+			 * permanent probe failure (failed to read reg table
+			 * → -110 at WMI CONTROL).  Match legacy: log once,
+			 * sleep one quantum, retry through the loop.  The
+			 * outer `i == 0` branch still escalates if the chip
+			 * never responds.
+			 */
+			ath6kl_dbg(ATH6KL_DBG_HIF,
+				   "reg-table poll attempt %d failed (%d), retrying\n",
+				   i, status);
+			mdelay(ATH6KL_TIME_QUANTUM);
+			continue;
 		}
 
 		/* check for MBOX data and valid lookahead */

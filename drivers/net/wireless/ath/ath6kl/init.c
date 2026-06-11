@@ -1846,30 +1846,6 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 		goto err_power_off;
 
 	/*
-	 * AR6003 on APQ8060/tenderloin needs wall-clock time between BMI_DONE
-	 * and the first HTC reg-table read for the firmware to transition out
-	 * of BMI mode and become responsive on the SDIO CMD wire.  Without
-	 * this settle, the first CMD53 to the host-interest area
-	 * (e.g. CMD53 RD addr=0x00400 24B arg=0x14080018) CMDTIMEOUTs — the
-	 * chip never acknowledges on the CMD line, so mmci-pl18x sees no
-	 * response within the SDCC hardware CMD timeout.
-	 *
-	 * Legacy webOS ar6000 driver gives the chip much more wall-clock time
-	 * implicitly: mmc1 enumeration happens during board_tenderloin.c init
-	 * seconds before userspace PmWiFiService talks to the chip.  Mainline
-	 * ath6kl_sdio probes ath6kl back-to-back with BMI_DONE, so we have to
-	 * add the settle explicitly.  100 ms matches the post-power-on settle
-	 * already in mmc-pwrseq (post-power-on-delay-ms = 200) and is far
-	 * below htc_wait_target's own timeout, so it doesn't affect the
-	 * normal path.
-	 *
-	 * See memory project_wifi_legacy_trace_findings_2026_06_11 for the
-	 * trace data establishing that the chip responds to this identical
-	 * CMD53 in ~27 us once it has had time to settle.
-	 */
-	msleep(100);
-
-	/*
 	 * The reason we have to wait for the target here is that the
 	 * driver layer has to init BMI in order to set the host block
 	 * size.
