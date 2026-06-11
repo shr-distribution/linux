@@ -50,16 +50,10 @@ static void setup_phy(struct drm_encoder *encoder)
 	uint32_t lvds_intf = 0, lvds_phy_cfg0 = 0;
 	int bpp, nchan, swap;
 
-	if (!connector) {
-		dev_info(dev->dev, "setup_phy: NO CONNECTOR -- BAIL\n");
+	if (!connector)
 		return;
-	}
 
 	bpp = 3 * connector->display_info.bpc;
-	dev_info(dev->dev, "setup_phy: connector->display_info.bpc=%d, computed bpp=%d, bus_formats[0]=0x%04x num_bus_formats=%d\n",
-		 connector->display_info.bpc, bpp,
-		 connector->display_info.num_bus_formats ? connector->display_info.bus_formats[0] : 0,
-		 connector->display_info.num_bus_formats);
 
 	if (!bpp)
 		bpp = 18;
@@ -316,10 +310,6 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 			to_mdp4_lcdc_encoder(encoder);
 	struct mdp4_kms *mdp4_kms = get_kms(encoder);
 
-	dev_info(encoder->dev->dev,
-		 "mdp4_lcdc_encoder_disable: ENTER enabled=%d\n",
-		 mdp4_lcdc_encoder->enabled);
-
 	/*
 	 * Make the disable path idempotent. Skipping the work on
 	 * already-disabled is safe; WARNing was actively harmful because
@@ -329,11 +319,8 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 	 * on silicon at a point where the kernel believes the encoder is
 	 * off. Silent return is correct for an already-disabled encoder.
 	 */
-	if (!mdp4_lcdc_encoder->enabled) {
-		dev_info(encoder->dev->dev,
-			 "mdp4_lcdc_encoder_disable: SKIP (already disabled)\n");
+	if (!mdp4_lcdc_encoder->enabled)
 		return;
-	}
 
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
 
@@ -353,8 +340,6 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 			       mdp4_lcdc_encoder->regs);
 
 	mdp4_lcdc_encoder->enabled = false;
-	dev_info(encoder->dev->dev,
-		 "mdp4_lcdc_encoder_disable: EXIT (full disable done)\n");
 }
 
 static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
@@ -368,9 +353,6 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 	uint32_t config;
 	int bpc, ret;
 
-	dev_info(dev->dev, "mdp4_lcdc_encoder_enable: ENTER pixclock=%lu enabled=%d connector=%p\n",
-		 pc, mdp4_lcdc_encoder->enabled, connector);
-
 	/*
 	 * Idempotent: a re-enable on an already-enabled encoder is a no-op
 	 * rather than a WARN. atomic_helper_resume's modeset commit can
@@ -381,10 +363,8 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 	 * side). WARN-and-return loses the re-program and leaves the
 	 * post-rail-collapse silicon with stale timing registers.
 	 */
-	if (mdp4_lcdc_encoder->enabled) {
-		dev_info(dev->dev, "mdp4_lcdc_encoder_enable: SKIP (already enabled)\n");
+	if (mdp4_lcdc_encoder->enabled)
 		return;
-	}
 
 	/*
 	 * Configure DMA output format based on panel's bits-per-channel.
@@ -393,7 +373,6 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 	 * - "vesa-18" -> bpc=6 (18-bit color, 6 bits per channel)
 	 */
 	bpc = connector ? connector->display_info.bpc : 0;
-	dev_info(dev->dev, "mdp4_lcdc_encoder_enable: connector bpc=%d (from display_info, before default)\n", bpc);
 	if (!bpc)
 		bpc = 6; /* Default to 18bpp if not specified */
 
@@ -429,22 +408,13 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 	ret = clk_set_rate(mdp4_lcdc_encoder->lcdc_clk, pc);
 	if (ret)
 		DRM_DEV_ERROR(dev->dev, "failed to configure lcdc_clk: %d\n", ret);
-	dev_info(dev->dev, "mdp4_lcdc_encoder_enable: clk_set_rate(%lu) -> %d, actual rate=%lu\n",
-		 pc, ret, clk_get_rate(mdp4_lcdc_encoder->lcdc_clk));
-
 	ret = clk_prepare_enable(mdp4_lcdc_encoder->lcdc_clk);
 	if (ret)
 		DRM_DEV_ERROR(dev->dev, "failed to enable lcdc_clk: %d\n", ret);
-	dev_info(dev->dev, "mdp4_lcdc_encoder_enable: clk_prepare_enable -> %d, lcdc_clk rate now=%lu\n",
-		 ret, clk_get_rate(mdp4_lcdc_encoder->lcdc_clk));
 
-	dev_info(dev->dev, "mdp4_lcdc_encoder_enable: calling setup_phy\n");
 	setup_phy(encoder);
 
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 1);
-	dev_info(dev->dev, "mdp4_lcdc_encoder_enable: wrote LCDC_ENABLE=1, readback=0x%x INTR_ENABLE=0x%x\n",
-		 mdp4_read(mdp4_kms, REG_MDP4_LCDC_ENABLE),
-		 mdp4_read(mdp4_kms, REG_MDP4_INTR_ENABLE));
 
 	mdp4_lcdc_encoder->enabled = true;
 }
