@@ -1636,25 +1636,6 @@
 		powerdown-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
 		power-supply = <&pm8058_l10>;
 
-		/*
-		 * SHDN_N "blip" after initial enable: wait 50ms for MDP4 CLKIN
-		 * to stabilise, then re-toggle powerdown low for 20ms before
-		 * returning high. Forces the SN75LVDS83B internal PLL to
-		 * re-acquire lock on the now-stable CLKIN.
-		 *
-		 * Required for s2idle recovery: the bridge enable cascade
-		 * runs lvds_codec_enable AFTER mdp4_lcdc_encoder_enable, so
-		 * SHDN_N goes high while CLKIN is already toggling. The chip
-		 * appears to wedge if it attempts PLL lock during the
-		 * MDP-startup transient; the blip gives it a clean second
-		 * attempt on a settled CLKIN.
-		 *
-		 * Does NOT power-cycle VCC, so chip internal state and HPBL
-		 * setup are preserved — cold boot safe.
-		 */
-		shdn-blip-settle-ms = <50>;
-		shdn-blip-low-ms = <20>;
-
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;

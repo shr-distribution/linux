@@ -4,7 +4,6 @@
  * Copyright (C) 2016 Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  */
 
-#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
@@ -27,8 +26,6 @@ struct lvds_codec {
 	struct gpio_desc *powerdown_gpio;
 	u32 connector_type;
 	unsigned int bus_format;
-	unsigned int shdn_blip_settle_ms;
-	unsigned int shdn_blip_low_ms;
 };
 
 static inline struct lvds_codec *to_lvds_codec(struct drm_bridge *bridge)
@@ -51,9 +48,7 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 	int ret;
 
-	dev_info(lvds_codec->dev,
-		 "lvds_codec_enable: ENTER blip_settle_ms=%u blip_low_ms=%u\n",
-		 lvds_codec->shdn_blip_settle_ms, lvds_codec->shdn_blip_low_ms);
+	dev_info(lvds_codec->dev, "lvds_codec_enable: ENTER\n");
 
 	ret = regulator_enable(lvds_codec->vcc);
 	if (ret) {
@@ -67,37 +62,6 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 		dev_info(lvds_codec->dev,
 			 "lvds_codec_enable: powerdown deasserted (chip ON)\n");
 	}
-
-	/*
-	 * Optional SHDN_N "blip": after the encoder is brought up alongside
-	 * a live MDP CLKIN, re-toggle powerdown low briefly to force a clean
-	 * PLL re-acquisition on the now-stable CLKIN. Used on the HP TouchPad
-	 * to recover from s2idle, where the chip wakes up while MDP4 LCDC is
-	 * already clocking and the SN75LVDS83B PLL appears to wedge if it
-	 * attempts to lock on the first transient. Does NOT power-cycle VCC,
-	 * so chip internal state is not lost — only PLL acquisition restarts.
-	 *
-	 * Settle: how long to wait after the initial powerdown deassert (let
-	 * MDP CLKIN stabilise). Low: how long to hold powerdown asserted
-	 * during the blip.
-	 */
-	if (lvds_codec->powerdown_gpio &&
-	    (lvds_codec->shdn_blip_settle_ms || lvds_codec->shdn_blip_low_ms)) {
-		if (lvds_codec->shdn_blip_settle_ms)
-			msleep(lvds_codec->shdn_blip_settle_ms);
-
-		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 1);
-		dev_info(lvds_codec->dev,
-			 "lvds_codec_enable: SHDN_N blip - asserted (chip OFF)\n");
-
-		if (lvds_codec->shdn_blip_low_ms)
-			msleep(lvds_codec->shdn_blip_low_ms);
-
-		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 0);
-		dev_info(lvds_codec->dev,
-			 "lvds_codec_enable: SHDN_N blip - deasserted (chip ON, PLL reacquire)\n");
-	}
-
 	dev_info(lvds_codec->dev, "lvds_codec_enable: EXIT\n");
 }
 
@@ -184,17 +148,6 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	if (IS_ERR(lvds_codec->powerdown_gpio))
 		return dev_err_probe(dev, PTR_ERR(lvds_codec->powerdown_gpio),
 				     "powerdown GPIO failure\n");
-
-	/*
-	 * Optional SHDN_N "blip" — after the chip is first enabled with the
-	 * MDP CLKIN already live, briefly re-toggle powerdown to force a
-	 * clean PLL re-acquisition. Both delays default to 0 (no blip); set
-	 * either or both via DT to enable.
-	 */
-	of_property_read_u32(dev->of_node, "shdn-blip-settle-ms",
-			     &lvds_codec->shdn_blip_settle_ms);
-	of_property_read_u32(dev->of_node, "shdn-blip-low-ms",
-			     &lvds_codec->shdn_blip_low_ms);
 
 	/* Locate the panel DT node. */
 	panel_node = of_graph_get_remote_node(dev->of_node, 1, 0);
