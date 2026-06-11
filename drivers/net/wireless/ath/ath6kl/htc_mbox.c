@@ -2469,13 +2469,21 @@ static int ath6kl_htc_mbox_conn_service(struct htc_target *target,
 		/* we want synchronous operation */
 		tx_pkt->completion = NULL;
 		ath6kl_htc_tx_prep_pkt(tx_pkt, 0, 0, 0);
+		pr_info("ath6kl-trace: conn_service(svc_id=0x%x): issuing TX connect request\n",
+			conn_req->svc_id);
 		status = ath6kl_htc_tx_issue(target, tx_pkt);
+		pr_info("ath6kl-trace: conn_service(svc_id=0x%x): TX issue returned %d\n",
+			conn_req->svc_id, status);
 
 		if (status)
 			goto fail_tx;
 
 		/* wait for response */
+		pr_info("ath6kl-trace: conn_service(svc_id=0x%x): waiting for ctrl msg response\n",
+			conn_req->svc_id);
 		rx_pkt = htc_wait_for_ctrl_msg(target);
+		pr_info("ath6kl-trace: conn_service(svc_id=0x%x): htc_wait_for_ctrl_msg returned %s\n",
+			conn_req->svc_id, rx_pkt ? "PACKET" : "NULL");
 
 		if (!rx_pkt) {
 			status = -ENOMEM;

@@ -288,7 +288,11 @@ static int ath6kl_connectservice(struct ath6kl *ar,
 
 	memset(&response, 0, sizeof(response));
 
+	pr_info("ath6kl-trace: connectservice(%s, svc_id=0x%x): calling htc_conn_service\n",
+		desc, con_req->svc_id);
 	status = ath6kl_htc_conn_service(ar->htc_target, con_req, &response);
+	pr_info("ath6kl-trace: connectservice(%s): htc_conn_service returned %d, response endpoint=%u\n",
+		desc, status, response.endpoint);
 	if (status) {
 		ath6kl_err("failed to connect to %s service status:%d\n",
 			   desc, status);
