@@ -1403,6 +1403,27 @@ static void mmci_qcom_dma_complete(void *param)
 		mmci_dma_error(host);
 	}
 
+	/*
+	 * WRITES on mmc1: poll for MCI_QCOM_PROGDONE before tearing down the
+	 * data path.  ADM-done means all bytes left the SDCC TX FIFO, but the
+	 * card's internal programming may still be in flight.  Without this
+	 * wait, mmci_stop_data() would truncate the write and the next CMD
+	 * would race PROG_DONE.  Mirrors the existing IRQ-side poll at
+	 * mmci_data_irq() that triggered when DATAEND DID fire.  PROG_DONE
+	 * arrives within microseconds for a 128-byte mailbox write; the 2 ms
+	 * bound only guards an error case.
+	 */
+	if (write && host->mmc->index == 1 && !data->error) {
+		unsigned int pd;
+
+		for (pd = 0; pd < 2000; pd++) {
+			if (readl(host->base + MMCISTATUS) & MCI_QCOM_PROGDONE)
+				break;
+			udelay(1);
+		}
+		writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
+	}
+
 	/* ADM RESULT=success ⇒ full transfer moved (to memory, or to card) */
 	mmci_dma_finalize(host, data);
 	mmci_stop_data(host);
@@ -1596,8 +1617,24 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 	 *    writes DO get DATAEND, so they complete correctly via
 	 *    mmci_data_irq() with no callback needed.
 	 */
-	if (host->variant->qcom_dml && host->mmc->index == 1 &&
-	    (data->flags & MMC_DATA_READ)) {
+	/*
+	 * Wire the ADM-done completion callback for ALL mmc1 DMA transfers,
+	 * not just reads.  The original gate restricted this to reads because
+	 * "WiFi writes DO get DATAEND" — but that is only true for BMI-phase
+	 * writes and post-HTC-ready steady-state writes.  The first post-BMI
+	 * WRITE (HTC SERVICE CONNECT) on AR6003 does NOT raise DATAEND: the
+	 * SDCC stays at TXACTIVE+DATABLOCKEND+TXFIFOEMPTY indefinitely
+	 * (status=0x00445400) and the 500 ms qcom_dma_data_timeout_work is
+	 * the only thing that clears it — see memory
+	 * project_wifi_post_bmi_dma_write_hang.  Wiring the callback for
+	 * writes routes completion through the ADM-done edge, matching
+	 * legacy webOS msm_sdcc.c's two-edge synchronisation
+	 * (got_dataend || dma_busy=0).  The callback handles PROG_DONE for
+	 * writes; if DATAEND does fire first on a normal write, the IRQ-side
+	 * path completes and the late callback sees host->data == NULL and
+	 * bails — no double-completion.
+	 */
+	if (host->variant->qcom_dml && host->mmc->index == 1) {
 		desc->callback = mmci_qcom_dma_complete;
 		desc->callback_param = host;
 	}
