@@ -17,6 +17,7 @@
 
 #include <linux/auxiliary_bus.h>
 #include <linux/bitops.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/gpio/consumer.h>
@@ -62,8 +63,12 @@ int a6_init_state(struct i2c_client *client)
 	u8 val;
 	int ret;
 
-	/* Force A6 awake while we touch its registers */
+	/*
+	 * Force A6 awake while we touch its registers, then settle so the
+	 * MSP430 has time to exit LPM3/4 before the first I2C transfer.
+	 */
 	gpiod_set_value_cansleep(state->wakeup_gpio, 1);
+	usleep_range(1000, 2000);
 
 	/* Early default: prevent divide-by-zero in power_supply readers */
 	state->cached_rsense_val = RSENSE_DEFAULT;
@@ -211,8 +216,11 @@ void a6_irq_work_handler(struct work_struct *work)
 	 * Assert wakeup_gpio around the status-register I2C transactions.
 	 * The A6 firmware can NAK accesses while in low-power mode; the
 	 * legacy driver always holds wake high before touching registers.
+	 * Settle delay so the MSP430 exits LPM3/4 before the I2C address
+	 * phase reaches it.
 	 */
 	gpiod_set_value_cansleep(state->wakeup_gpio, 1);
+	usleep_range(1000, 2000);
 
 	ret = a6_i2c_read_reg(client, status3_id, 1, &status3);
 	if (ret < 0)
