@@ -1,4 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * A6 / MSP430 Spy-Bi-Wire (SBW) JTAG host-adapter interface.
+ *
+ * The function names below (and in low_level_funcs, high_level_funcs,
+ * jtag_funcs) intentionally preserve the CamelCase convention from
+ * TI's MSP430 BSL ("BootStrap Loader") reference implementation. This
+ * is deliberate: the code paths transcribe TI's published JTAG / SBW
+ * programming sequences verbatim so that future bug fixes can be
+ * cross-referenced against the upstream vendor source by symbol name.
+ * Style-check tools will flag these as CamelCase warnings; they are
+ * preserved intentionally.
+ */
 #ifndef A6_HOST_ADAPTER_H
 #define A6_HOST_ADAPTER_H
 

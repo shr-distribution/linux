@@ -35,7 +35,7 @@
 /* #define A6_I2C_RETRY */
 
 #ifdef A6_DEBUG
-#define ASSERT(i)  BUG_ON(!(i))
+#define ASSERT(i)  WARN_ON_ONCE(!(i))
 #else
 #define ASSERT(x)  ((void)(x))
 #endif

@@ -233,14 +233,35 @@ struct adm_device {
 	spinlock_t pool_lock;			/* Protects free list */
 
 	/*
-	 * Per-controller submit serialization. Held across the
-	 * peripheral exec_func call and the CMD_PTR write in
-	 * adm_start_dma, so that submissions from different channels
-	 * on the same ADM controller don't interleave their SDCC/MMIO
-	 * setup with each other's ADM CMD_PTR write -- matching the
-	 * legacy webOS msm_dmov per-ADM spinlock behaviour.
+	 * Per-CRCI submit serialization. Held across the peripheral
+	 * exec_func call and the CMD_PTR write in adm_start_dma.
+	 *
+	 * Originally a single per-controller submit_lock (matching the
+	 * legacy webOS msm_dmov per-ADM spinlock), but that wedged eMMC
+	 * under concurrent WiFi load on tenderloin: both CRCI 1 (eMMC,
+	 * sdcc1/mmci) and CRCI 5 (WiFi, sdcc4/mmci) submit with
+	 * exec_func != NULL.  Holding a global lock across mmci's ~6-8 µs
+	 * SDCC-reg-write window in one peripheral's exec_func blocks the
+	 * other peripheral's submit long enough for its SDCC RX FIFO to
+	 * overflow (RXOVERRUN-marked-as-fabric -> DATATIMEOUT -> CMD
+	 * timeout cascade -> eMMC card stuck busy -> full eMMC death).
+	 *
+	 * CRCI 1 and CRCI 5 touch entirely separate state - different
+	 * CRCI_CTL MMIO addresses (per-CRCI cache lookup), different
+	 * peripheral MMIO in their exec_funcs (sdcc1 vs sdcc4 base
+	 * registers), different ADM channel CMD_PTR registers.  Nothing
+	 * is shared between them at this layer.  Per-CRCI locks let them
+	 * submit truly in parallel, matching legacy webOS dma.c:321
+	 * check_crci_conflict which never blocks non-overlapping CRCIs
+	 * against each other.
+	 *
+	 * 16 locks = one per possible CRCI on this SoC (CRCI index is
+	 * a 4-bit field in CRCI_CTL).  Index 0 is "no CRCI" and goes
+	 * unused for exec_func paths (which always have an SDCC CRCI).
+	 *
+	 * See memory note: project_adm_submit_lock_starvation.
 	 */
-	spinlock_t submit_lock;
+	spinlock_t submit_lock[16];
 
 	/*
 	 * CRCI_CTL write-cache (Fix 2 of project_adm_submit_lock_starvation).
@@ -985,9 +1006,18 @@ static void adm_start_dma(struct adm_chan *achan)
 	{
 	unsigned long submit_flags;
 	bool need_submit_lock = async_desc->exec_func != NULL;
+	/*
+	 * Per-CRCI lock: CRCI 1 (eMMC sdcc1) and CRCI 5 (WiFi sdcc4)
+	 * each get their own spinlock so concurrent submissions don't
+	 * block each other across mmci's slow ~6-8 µs SDCC-reg-write
+	 * window.  See the submit_lock[] declaration comment for the
+	 * full rationale.  Mask to 4 bits because CRCI is a 4-bit field
+	 * in CRCI_CTL.
+	 */
+	unsigned int lock_idx = async_desc->crci & 0xf;
 
 	if (need_submit_lock)
-		spin_lock_irqsave(&adev->submit_lock, submit_flags);
+		spin_lock_irqsave(&adev->submit_lock[lock_idx], submit_flags);
 
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
@@ -1099,7 +1129,7 @@ static void adm_start_dma(struct adm_chan *achan)
 	}
 
 	if (need_submit_lock)
-		spin_unlock_irqrestore(&adev->submit_lock, submit_flags);
+		spin_unlock_irqrestore(&adev->submit_lock[lock_idx], submit_flags);
 	}
 }
 
@@ -1406,10 +1436,13 @@ static int adm_dma_probe(struct platform_device *pdev)
 	adev->dev = &pdev->dev;
 
 	/*
-	 * Per-controller submit serialization (legacy msm_dmov pattern).
-	 * Initialised early so adm_start_dma can always take it.
+	 * Per-CRCI submit serialization (was a single per-controller
+	 * lock; see the submit_lock[] declaration comment for why this
+	 * is split per-CRCI now).  Initialised early so adm_start_dma
+	 * can always take whichever CRCI's lock it needs.
 	 */
-	spin_lock_init(&adev->submit_lock);
+	for (int i = 0; i < ARRAY_SIZE(adev->submit_lock); i++)
+		spin_lock_init(&adev->submit_lock[i]);
 
 	adev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(adev->regs))

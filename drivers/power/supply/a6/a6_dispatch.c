@@ -347,12 +347,14 @@ static int ai_dispatch_thread_fn(void *param)
 				A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: no ai.\n", __func__);
 			}
 		}
-		// wait interrupted by -ERESTARTSYS: let's exit
+		/*
+		 * wait interrupted by -ERESTARTSYS: let the do-while
+		 * condition (rc >= 0) take us out of the loop cleanly.
+		 */
 		else {
 			pr_err("%s: wait for action_item enq interrupted.\n",
 			       __func__);
-			// force a panic...
-			BUG_ON(rc < 0);
+			WARN_ON_ONCE(rc < 0);
 		}
 	} while (rc >= 0);
 

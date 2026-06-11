@@ -22,16 +22,26 @@ config BATTERY_PALM_A6_I2C_SINGLE_BYTE
 	bool "Enable A6 I2C single byte read"
 	depends on BATTERY_PALM_A6
 	help
-	  Enable single byte I2C read operations for A6 driver.
-	  This may be needed for compatibility with certain I2C controllers.
+	  Use single-byte I2C read transactions on every A6 register access
+	  instead of the chained N-byte read the A6 firmware normally
+	  expects. This is a workaround for I2C bus masters or PMICs that
+	  cannot generate (or correctly handle) a repeated-START sequence
+	  followed by an N-byte read, so the driver issues N independent
+	  single-byte reads instead.
 
+	  Only required on the legacy Palm PMIC-attached I2C bus topology.
 	  If unsure, say N.
 
 config BATTERY_PALM_A6_I2C_SINGLE_BYTE_WRITE
 	bool "Enable A6 I2C single byte write"
 	depends on BATTERY_PALM_A6
 	help
-	  Enable single byte I2C write operations for A6 driver.
-	  This may be needed for compatibility with certain I2C controllers.
+	  Use single-byte I2C write transactions on every A6 register access
+	  instead of the chained N-byte write the A6 firmware normally
+	  expects. This is the write-side counterpart to
+	  BATTERY_PALM_A6_I2C_SINGLE_BYTE and is needed only when the host
+	  I2C controller cannot drive a multi-byte (chained) write to the
+	  A6 in a single bus transaction.
 
+	  Only required on the legacy Palm PMIC-attached I2C bus topology.
 	  If unsure, say N.

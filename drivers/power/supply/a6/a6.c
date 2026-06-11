@@ -133,7 +133,16 @@ int32_t a6_init_state(struct i2c_client *client)
 			if (ret < 0)
 				goto err0;
 		} else {
-			BUG();
+			/*
+			 * CAP_PERIODIC_WAKE was set in DT/board flags but
+			 * neither external nor internal wake callback was
+			 * registered. This is a driver-configuration bug;
+			 * warn loudly and proceed with the wake feature
+			 * effectively disabled rather than panicking.
+			 */
+			WARN_ONCE(1,
+				  "%s: CAP_PERIODIC_WAKE set without wake_ops callback\n",
+				  __func__);
 		}
 	}
 	/* periodic wake capability not defined: force a6 awake using SBW_WAKEUP */
