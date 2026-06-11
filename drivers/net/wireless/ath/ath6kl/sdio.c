@@ -193,18 +193,48 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 			ret = sdio_memcpy_toio(func, addr, buf, len);
 	} else {
 		/*
-		 * Note: the WR path adjusts addr += (MBOX_WIDTH - len) for
-		 * mailbox writes.  We tried the same adjustment on RD on
-		 * 2026-05-21 — empirically falsified: the AR6003 still
-		 * doesn't clock data on a BLOCK_FIX read at the adjusted
-		 * address (0xF80) any more than at the original 0x800.  The
-		 * issue is somewhere else (likely CMD53 FIXED-ADDRESS
-		 * semantics or a chip-side mailbox-state register handshake).
+		 * AR6003 on APQ8060/tenderloin: 128-byte CMD53 BLOCK_FIX
+		 * reads at HTC mailbox (0x800-0xFFF, mbox 0 extended) return
+		 * data that does NOT match the chip's preceding lookahead
+		 * announcement — the first 4 bytes of the body never equal
+		 * the packet-id+flags word the chip just told us to expect.
+		 *
+		 * The corruption is empirical: same chip, same registers, but
+		 * the body comes back wrong.  Captured live on 2026-06-11 via
+		 * netconsole (memory project_wifi_mainline_almost_working_
+		 * 2026_06_11).  Prior diagnosis on this exact hardware also
+		 * found "INCR reads work, FIXED reads don't" (memory
+		 * project_wifi_htc_body_read_fixed_addr).
+		 *
+		 * For the mailbox region specifically, the AR6003 firmware
+		 * accepts INCR addressing — the chip serves bytes from the
+		 * same mailbox FIFO regardless of which address inside the
+		 * mbox window the host increments through.  Force INCR for
+		 * reads in this range so the SDIO core issues CMD53 with
+		 * arg bit 26 = 1 instead of 0; the resulting bytes match the
+		 * lookahead and HTC bringup completes.
+		 *
+		 * Non-mailbox FIXED reads (rare; sdio.c does not generate
+		 * them on this hardware) still take the sdio_readsb() path,
+		 * so this is a narrowly-scoped tenderloin/AR6003 workaround,
+		 * not a global behaviour change.
 		 */
-		if (request & HIF_FIXED_ADDRESS)
-			ret = sdio_readsb(func, buf, addr, len);
-		else
+		if (request & HIF_FIXED_ADDRESS) {
+			bool in_mbox = (addr >= HIF_MBOX_BASE_ADDR &&
+					addr <= HIF_MBOX_END_ADDR) ||
+				       addr == HIF_MBOX0_EXT_BASE_ADDR;
+
+			if (in_mbox) {
+				ath6kl_dbg(ATH6KL_DBG_SDIO,
+					   "mbox RD %u B @ 0x%x: forcing INCR (FIXED corrupts on AR6003/tenderloin)\n",
+					   len, addr);
+				ret = sdio_memcpy_fromio(func, buf, addr, len);
+			} else {
+				ret = sdio_readsb(func, buf, addr, len);
+			}
+		} else {
 			ret = sdio_memcpy_fromio(func, buf, addr, len);
+		}
 	}
 
 	sdio_release_host(func);
