@@ -4,6 +4,7 @@
  * Copyright (C) 2016 Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  */
 
+#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
@@ -26,6 +27,7 @@ struct lvds_codec {
 	struct gpio_desc *powerdown_gpio;
 	u32 connector_type;
 	unsigned int bus_format;
+	bool force_vcc_cycle;
 };
 
 static inline struct lvds_codec *to_lvds_codec(struct drm_bridge *bridge)
@@ -48,7 +50,31 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 	struct lvds_codec *lvds_codec = to_lvds_codec(bridge);
 	int ret;
 
-	dev_info(lvds_codec->dev, "lvds_codec_enable: ENTER\n");
+	dev_info(lvds_codec->dev, "lvds_codec_enable: ENTER force_vcc_cycle=%d\n",
+		 lvds_codec->force_vcc_cycle);
+
+	/*
+	 * Experimental: force a hard rail cycle on the encoder VCC before
+	 * bringing it back. Some encoders (e.g. TI SN75LVDS83B on the HP
+	 * TouchPad) appear unable to re-acquire PLL lock after a SHDN_N
+	 * power-down cycle if the actual VCC rail never collapsed. The DRM
+	 * suspend/resume framework only refcounts regulator_disable on
+	 * regulator-always-on rails, so the chip's VCC stays high across
+	 * s2idle and the chip retains corrupt internal state.
+	 *
+	 * regulator_force_disable bypasses the always-on flag and actually
+	 * drops the rail. This is only safe when the consumer is willing to
+	 * accept that other always-on consumers of the same rail will also
+	 * lose power for the duration of the cycle. Opt in via DT for the
+	 * specific board where this is known-safe.
+	 */
+	if (lvds_codec->force_vcc_cycle) {
+		ret = regulator_force_disable(lvds_codec->vcc);
+		dev_info(lvds_codec->dev,
+			 "lvds_codec_enable: force_disable(vcc) -> %d, sleep 50ms\n",
+			 ret);
+		msleep(50);
+	}
 
 	ret = regulator_enable(lvds_codec->vcc);
 	if (ret) {
@@ -56,6 +82,9 @@ static void lvds_codec_enable(struct drm_bridge *bridge)
 			"Failed to enable regulator \"vcc\": %d\n", ret);
 		return;
 	}
+	if (lvds_codec->force_vcc_cycle)
+		dev_info(lvds_codec->dev,
+			 "lvds_codec_enable: regulator_enable(vcc) after force-cycle\n");
 
 	if (lvds_codec->powerdown_gpio) {
 		gpiod_set_value_cansleep(lvds_codec->powerdown_gpio, 0);
@@ -148,6 +177,15 @@ static int lvds_codec_probe(struct platform_device *pdev)
 	if (IS_ERR(lvds_codec->powerdown_gpio))
 		return dev_err_probe(dev, PTR_ERR(lvds_codec->powerdown_gpio),
 				     "powerdown GPIO failure\n");
+
+	/*
+	 * Opt-in: force a real VCC rail cycle (bypassing regulator-always-on
+	 * refcount semantics) on every enable. Only set on boards that need
+	 * the encoder fully cold-reset and accept that other consumers of
+	 * the same rail will glitch briefly.
+	 */
+	lvds_codec->force_vcc_cycle =
+		of_property_read_bool(dev->of_node, "vcc-force-cycle-on-enable");
 
 	/* Locate the panel DT node. */
 	panel_node = of_graph_get_remote_node(dev->of_node, 1, 0);

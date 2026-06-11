@@ -1636,6 +1636,16 @@
 		powerdown-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
 		power-supply = <&pm8058_l10>;
 
+		/*
+		 * EXPERIMENTAL — force a real VCC rail cycle on every bridge
+		 * enable. The SN75LVDS83B on this board cannot re-acquire PLL
+		 * lock after s2idle if its VCC was kept up by the
+		 * regulator-always-on refcount semantics. pm8058_l10 is
+		 * shared with WiFi; the ~50ms glitch during display re-init
+		 * is accepted here as WiFi re-initialises post-resume anyway.
+		 */
+		vcc-force-cycle-on-enable;
+
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
