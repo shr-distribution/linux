@@ -2469,21 +2469,13 @@ static int ath6kl_htc_mbox_conn_service(struct htc_target *target,
 		/* we want synchronous operation */
 		tx_pkt->completion = NULL;
 		ath6kl_htc_tx_prep_pkt(tx_pkt, 0, 0, 0);
-		pr_info("ath6kl-trace: conn_service(svc_id=0x%x): issuing TX connect request\n",
-			conn_req->svc_id);
 		status = ath6kl_htc_tx_issue(target, tx_pkt);
-		pr_info("ath6kl-trace: conn_service(svc_id=0x%x): TX issue returned %d\n",
-			conn_req->svc_id, status);
 
 		if (status)
 			goto fail_tx;
 
 		/* wait for response */
-		pr_info("ath6kl-trace: conn_service(svc_id=0x%x): waiting for ctrl msg response\n",
-			conn_req->svc_id);
 		rx_pkt = htc_wait_for_ctrl_msg(target);
-		pr_info("ath6kl-trace: conn_service(svc_id=0x%x): htc_wait_for_ctrl_msg returned %s\n",
-			conn_req->svc_id, rx_pkt ? "PACKET" : "NULL");
 
 		if (!rx_pkt) {
 			status = -ENOMEM;
@@ -2761,25 +2753,18 @@ static int ath6kl_htc_mbox_start(struct htc_target *target)
 	memset(&target->dev->irq_proc_reg, 0,
 	       sizeof(target->dev->irq_proc_reg));
 
-	pr_info("ath6kl-trace: htc_mbox_start: disabling chip intrs\n");
 	/* Disable interrupts at the chip level */
 	ath6kl_hif_disable_intrs(target->dev);
-	pr_info("ath6kl-trace: htc_mbox_start: chip intrs disabled\n");
 
 	target->htc_flags = 0;
 	target->rx_st_flags = 0;
 
 	/* Push control receive buffers into htc control endpoint */
-	pr_info("ath6kl-trace: htc_mbox_start: pushing rx buffers\n");
 	while ((packet = htc_get_control_buf(target, false)) != NULL) {
 		status = htc_add_rxbuf(target, packet);
-		if (status) {
-			pr_info("ath6kl-trace: htc_mbox_start: add_rxbuf FAILED %d\n",
-				status);
+		if (status)
 			return status;
-		}
 	}
-	pr_info("ath6kl-trace: htc_mbox_start: rx buffers pushed OK\n");
 
 	/* NOTE: the first entry in the distribution list is ENDPOINT_0 */
 	ath6kl_credit_init(target->credit_info, &target->cred_dist_list,
@@ -2788,19 +2773,13 @@ static int ath6kl_htc_mbox_start(struct htc_target *target)
 	dump_cred_dist_stats(target);
 
 	/* Indicate to the target of the setup completion */
-	pr_info("ath6kl-trace: htc_mbox_start: sending setup_tx_complete\n");
 	status = htc_setup_tx_complete(target);
-	pr_info("ath6kl-trace: htc_mbox_start: setup_tx_complete returned %d\n",
-		status);
 
 	if (status)
 		return status;
 
-	pr_info("ath6kl-trace: htc_mbox_start: calling unmask_intrs\n");
 	/* unmask interrupts */
 	status = ath6kl_hif_unmask_intrs(target->dev);
-	pr_info("ath6kl-trace: htc_mbox_start: unmask_intrs returned %d\n",
-		status);
 
 	if (status)
 		ath6kl_htc_mbox_stop(target);

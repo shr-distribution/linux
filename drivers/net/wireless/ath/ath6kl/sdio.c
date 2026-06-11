@@ -192,76 +192,10 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 		else
 			ret = sdio_memcpy_toio(func, addr, buf, len);
 	} else {
-		/*
-		 * AR6003 on APQ8060/tenderloin: 128-byte CMD53 reads at the
-		 * HTC mailbox region (0x800-0xFFF + mbox0 extended base) come
-		 * back with the first dword of the body corrupted - it does
-		 * not match the lookahead the chip just announced.  Verified
-		 * empirically on 2026-06-11 via netconsole (memory project_
-		 * wifi_mainline_almost_working_2026_06_11) and reproduced with
-		 * both FIXED (sdio_readsb) and INCR (sdio_memcpy_fromio)
-		 * addressing - so the bug is NOT the address-increment mode.
-		 *
-		 * The 24-byte INCR poll of the reg-table at 0x400 (which sits
-		 * directly above this code in the call path) works correctly
-		 * - and the only relevant difference is the transfer size:
-		 * mmci.c:1594 only routes mmc1 transfers >= fifosize=64 B AND
-		 * a multiple of fifosize through the qcom_dml DMA path; sub-64
-		 * goes PIO.  So 24 B -> PIO -> works, 128 B -> DMA -> corrupts.
-		 * The bug is in the qcom_adm DMA path's handoff for SDIO-bus
-		 * reads, somewhere between the FIFO and the ADM box descriptor.
-		 *
-		 * Workaround until the DMA path is fixed: split mailbox reads
-		 * into sub-fifosize chunks (32 B each).  Each chunk's CMD53
-		 * goes through mmci's PIO path - which we have proven works on
-		 * this hardware - and gives a byte-correct mailbox read.  The
-		 * AR6003 chip-side mbox is a FIFO: every byte read from the
-		 * mailbox window (FIXED or INCR) pops one byte from the same
-		 * internal queue, so successive 32 B chunks at the same FIXED
-		 * mbox addr reassemble into a correct 128 B body.
-		 *
-		 * The performance cost (4 CMD53s instead of 1 for each HTC RX)
-		 * is acceptable; we will revisit once the DMA-path corruption
-		 * has a root-cause fix.
-		 */
-		bool in_mbox = (addr >= HIF_MBOX_BASE_ADDR &&
-				addr <= HIF_MBOX_END_ADDR) ||
-			       addr == HIF_MBOX0_EXT_BASE_ADDR;
-
-		if (in_mbox && len >= 64) {
-			u32 off = 0;
-			const u32 chunk_sz = 32; /* < fifosize=64 -> PIO */
-
-			/*
-			 * Logged at pr_info so the trigger is visible in
-			 * dmesg without enabling debug_mask -- this confirms
-			 * the workaround actually fires on the failing path.
-			 * Will be downgraded to ath6kl_dbg once the underlying
-			 * DMA-path corruption is rooted.
-			 */
-			pr_info("ath6kl: mbox RD %u B @ 0x%x: splitting into %u-B PIO chunks (DMA path corrupts on AR6003/tenderloin)\n",
-				len, addr, chunk_sz);
-
-			while (off < len) {
-				u32 this_chunk = min(chunk_sz, len - off);
-
-				if (request & HIF_FIXED_ADDRESS)
-					ret = sdio_readsb(func, buf + off,
-							  addr, this_chunk);
-				else
-					ret = sdio_memcpy_fromio(func,
-								 buf + off,
-								 addr + off,
-								 this_chunk);
-				if (ret)
-					break;
-				off += this_chunk;
-			}
-		} else if (request & HIF_FIXED_ADDRESS) {
+		if (request & HIF_FIXED_ADDRESS)
 			ret = sdio_readsb(func, buf, addr, len);
-		} else {
+		else
 			ret = sdio_memcpy_fromio(func, buf, addr, len);
-		}
 	}
 
 	sdio_release_host(func);
