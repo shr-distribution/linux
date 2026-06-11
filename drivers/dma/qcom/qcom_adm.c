@@ -682,27 +682,36 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		}
 
 		/*
-		 * SDCC eMMC CRCI 1 block-size override (half-FIFO).
+		 * SDCC block-size override (half-FIFO).
 		 *
 		 * Legacy webOS msm_dmov adm1_crci_conf[] hardcodes blk_size=1
-		 * for the eMMC CRCI: blk_size=1 = half-FIFO (32 B) = the SDCC
-		 * half-full CRCI trigger. adm_get_blksize() instead derives it
-		 * from burst (64 B FIFO -> 2 = full-FIFO), which mis-paces the
-		 * CRCI handshake against the SDCC FIFO and causes DATACRCFAIL /
-		 * RXOVERRUN on large eMMC reads.
+		 * for every SDCC CRCI:
+		 *   CRCI 1 = sdcc1 (eMMC),  CRCI 5 = sdcc4 (WiFi),
+		 *   CRCI 2 / 4 = other SDCCs on the same ADM.
+		 * blk_size=1 = half-FIFO (32 B) = matches the SDCC raising
+		 * CRCI at its half-full FIFO threshold (mainline derives
+		 * blk_size from burst, so a 64 B FIFO becomes blk_size=2 =
+		 * full-FIFO -> mis-paced CRCI handshake -> DATACRCFAIL /
+		 * RXOVERRUN on large eMMC reads, and silent DMA-data
+		 * corruption on the AR6003 HTC mailbox writes that broke
+		 * WPA-handshake EAPOL frames on tenderloin).
 		 *
-		 * CRCI 5 is QCE Crypto Engine 2 CE_OUT on MSM8x60 (not the
-		 * "WiFi mailbox" on other platforms). The engine signals
-		 * CE_OUT every 16 B, so blk_size MUST stay at 0 (16 B
-		 * handshake granularity). Forcing blk_size=1 here caused the
-		 * engine's DOUT FIFO to fill faster than ADM drained — engine
-		 * stalled in PROCESSING state with DOUT_AVAIL=4 dwords waiting
-		 * after ~6 AES blocks (STATUS=0x1120120c), DMA timed out, ADM
-		 * channel error-path terminate_sync deadlocked. The
-		 * adm_slave_config override below was already correctly scoped
-		 * to CRCI 1 only; this earlier slave-prep override was missed.
+		 * Gate the override on burst == 64 so it stays scoped to
+		 * SDCC consumers.  Other CRCI peripherals (QCE Crypto Engine
+		 * CE_OUT on some SoCs uses 16 B handshake granularity, so
+		 * leaves burst at 16 -> adm_get_blksize() returns 0 ->
+		 * blk_size already correct).  Without the burst guard, an
+		 * earlier CRCI-only override on CRCI 5 broke QCE on platforms
+		 * where CRCI 5 routed to the Crypto Engine: engine DOUT FIFO
+		 * fills faster than ADM drained, engine stalled in PROCESSING
+		 * state with DOUT_AVAIL=4 dwords after ~6 AES blocks
+		 * (STATUS=0x1120120c).
+		 *
+		 * On APQ8060/tenderloin specifically, CRCI 5 routes to
+		 * sdcc4 (WiFi) per qcom-apq8060-tenderloin-common.dtsi:2913
+		 * (qcom,sdcc-crci = <5>).
 		 */
-		if (crci == 1)
+		if (burst == 64)
 			blk_size = 1;
 	}
 
@@ -1043,15 +1052,24 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * All other CRCIs (crypto CE, etc.) keep the computed value.
 		 */
 		/*
-		 * SDCC override: eMMC = CRCI 1 wants blk_size=1 (half-FIFO).
-		 * The earlier override also included CRCI 5 for the "WiFi
-		 * mailbox" use case on a different platform — but on MSM8x60
-		 * (Tenderloin) CRCI 5 is the QCE Crypto Engine 2 CE_OUT line,
-		 * which uses 256-byte (blk_size=5) bursts for AES. Forcing
-		 * blk_size=1 mismatches the CRCI handshake pace against the
-		 * engine and stalls the DMA. Restrict the override to CRCI 1.
+		 * Defense-in-depth re-assert of the SDCC blk_size=1 override
+		 * for any descriptor whose computed blk_size is 2 (= burst 64
+		 * = SDCC FIFO).  The slave-prep path (adm_prep_slave_sg) is
+		 * the primary site for this; this catches paths that bypass
+		 * it.  Same rationale: SDCC raises CRCI at half-FIFO (32 B),
+		 * not full-FIFO, so the handshake granularity is blk_size=1.
+		 * QCE / other 16-byte-CRCI peripherals have blk_size=0 and
+		 * are untouched.
+		 *
+		 * On APQ8060/tenderloin the affected CRCIs are 1 (sdcc1
+		 * eMMC) and 5 (sdcc4 WiFi).  The earlier CRCI-only override
+		 * gated on `crci == 1` missed CRCI 5 and let the AR6003
+		 * mailbox writes corrupt: HTC service-connect TX returned 0
+		 * at the SDIO layer but the chip ignored the packet (bytes
+		 * mis-paced through the FIFO) and the WPA 4-way handshake
+		 * EAPOL frames timed out.
 		 */
-		if (async_desc->crci == 1)
+		if (blk_size == 2)
 			blk_size = 1;
 
 		/*
