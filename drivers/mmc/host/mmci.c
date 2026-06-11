@@ -1590,7 +1590,22 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		/* WiFi (sdcc4) ONLY — see note above. */
 		unsigned int len = data->blksz * data->blocks;
 
-		if (len < variant->fifosize || (len % variant->fifosize))
+		/*
+		 * 2026-06-11 workaround: AR6003 mailbox traffic at exactly the
+		 * block size (128 B) corrupts when routed through the qcom_dml
+		 * DMA path - confirmed for reads (lookahead-vs-body mismatch on
+		 * HTC RX) and suspected for writes (HTC service connect TX
+		 * returns "success" at SDIO layer but chip never responds).
+		 * Bump the mmc1 DMA threshold to 256 B so 128 B HTC mailbox
+		 * traffic uses PIO (proven byte-correct on this hardware via
+		 * the working 24 B reg-table poll and BMI writes).  Bulk WiFi
+		 * data frames are typically full MTU (1500 B + headers) and
+		 * still use DMA, so steady-state throughput is unaffected.
+		 *
+		 * Once the underlying DMA-path corruption is root-caused this
+		 * threshold can be lowered back to fifosize.
+		 */
+		if (len < 256 || (len % variant->fifosize))
 			return -EINVAL;
 	} else if (data->blksz * data->blocks <=
 		   (variant->dma_threshold ?: variant->fifosize)) {
