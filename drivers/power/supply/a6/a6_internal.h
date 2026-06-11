@@ -31,8 +31,11 @@
  */
 
 /* page 0x00 - host interrupts */
+#define TS2_I2C_INT_MASK_0				0x0000
+#define TS2_I2C_INT_MASK_1				0x0001
 #define TS2_I2C_INT_MASK_2				0x0002
 #define TS2_I2C_INT_MASK_3				0x0003
+#define TS2_I2C_INT_STATUS_0				0x0004
 #define TS2_I2C_INT_STATUS_1				0x0005
 #define TS2_I2C_INT_STATUS_2				0x0006
 #define TS2_I2C_INT_STATUS_3				0x0007

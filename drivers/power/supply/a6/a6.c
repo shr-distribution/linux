@@ -54,9 +54,9 @@ int a6_init_state(struct i2c_client *client)
 {
 	struct a6_device_state *state = i2c_get_clientdata(client);
 	static const u16 rsense_id[]	= { TS2_I2C_BAT_RSNSP };
-	static const u16 mask3_id[]	= { TS2_I2C_INT_MASK_3 };
+	static const u16 mask1_id[]	= { TS2_I2C_INT_MASK_1 };
 	static const u16 mask2_id[]	= { TS2_I2C_INT_MASK_2 };
-	static const u16 status1_id[]	= { TS2_I2C_INT_STATUS_1 };
+	static const u16 mask3_id[]	= { TS2_I2C_INT_MASK_3 };
 	static const u16 status2_id[]	= { TS2_I2C_INT_STATUS_2 };
 	static const u16 status3_id[]	= { TS2_I2C_INT_STATUS_3 };
 	u8 val;
@@ -105,10 +105,26 @@ int a6_init_state(struct i2c_client *client)
 		goto out_release_wakeup;
 
 	/*
+	 * MASK_1: explicitly disable every source. v1 has no consumer of
+	 * any INT_STATUS_1 bit (COMM_RX_FULL / COMM_TX_EMPTY are owned by
+	 * the optional T2S aux interface, not by this battery driver), so
+	 * leave them masked here instead of relying on whatever default
+	 * the firmware programmed. Without this, a stray STATUS_1 source
+	 * could fire an IRQ that the bottom half never acks, hanging on
+	 * a level-triggered line or producing storms on edge.
+	 */
+	val = 0xff;
+	ret = a6_i2c_write_reg(client, mask1_id, 1, &val);
+	if (ret < 0)
+		goto out_release_wakeup;
+
+	/*
 	 * Clear stale interrupt status latched while the controller was
 	 * powered up but no driver was listening. Userspace polls
 	 * power_supply for initial state, so a missed level IRQ from boot
 	 * would otherwise leave us deaf to the first real event.
+	 * Only STATUS_3 and STATUS_2 are cleared — STATUS_1 sources are
+	 * masked above, so there's no listener for them here.
 	 */
 	if (!test_bit(IS_INITIALIZED_BIT, state->flags)) {
 		val = 0xff;
@@ -116,9 +132,6 @@ int a6_init_state(struct i2c_client *client)
 		if (ret < 0)
 			goto out_release_wakeup;
 		ret = a6_i2c_write_reg(client, status2_id, 1, &val);
-		if (ret < 0)
-			goto out_release_wakeup;
-		ret = a6_i2c_write_reg(client, status1_id, 1, &val);
 		if (ret < 0)
 			goto out_release_wakeup;
 	}
@@ -137,11 +150,11 @@ out_release_wakeup:
 }
 
 /*
- * Top-half IRQ handler. The A6 IRQ is level-triggered through a GPIO,
- * so we defer the actual register dance to the bottom-half work item
- * and let request_threaded_irq()'s primary handler ack here. During
- * suspend, the IRQ is armed as a wake source and we latch INT_PENDING
- * so the bottom half runs at resume.
+ * Top-half IRQ handler. The A6 IRQ is exposed as edge-falling on the
+ * host GPIO (see DT binding), so we defer the actual register dance to
+ * the bottom-half work item — the threaded IRQ acks the edge by
+ * returning. During suspend, the IRQ is armed as a wake source and we
+ * latch INT_PENDING so the bottom half runs at resume.
  */
 irqreturn_t a6_irq(int irq, void *dev_id)
 {
@@ -182,6 +195,8 @@ void a6_irq_work_handler(struct work_struct *work)
 	 * try to initialise it now. The first IRQ after a Touchstone is
 	 * docked typically lands here. power_supply was registered at
 	 * probe; on success this lights up POWER_SUPPLY_PROP_PRESENT.
+	 *
+	 * a6_init_state() handles its own wakeup assert/release.
 	 */
 	if (!test_bit(IS_INITIALIZED_BIT, state->flags)) {
 		ret = a6_init_state(client);
@@ -192,14 +207,21 @@ void a6_irq_work_handler(struct work_struct *work)
 		}
 	}
 
+	/*
+	 * Assert wakeup_gpio around the status-register I2C transactions.
+	 * The A6 firmware can NAK accesses while in low-power mode; the
+	 * legacy driver always holds wake high before touching registers.
+	 */
+	gpiod_set_value_cansleep(state->wakeup_gpio, 1);
+
 	ret = a6_i2c_read_reg(client, status3_id, 1, &status3);
 	if (ret < 0)
-		goto out;
+		goto out_release_wakeup;
 	ret = a6_i2c_read_reg(client, status2_id, 1, &status2);
 	if (ret < 0)
-		goto out;
+		goto out_release_wakeup;
 
-	/* Ack: write-1-to-clear releases the level-triggered IRQ line */
+	/* Ack: write-1-to-clear releases the IRQ assertion */
 	if (status3)
 		a6_i2c_write_reg(client, status3_id, 1, &status3);
 	if (status2)
@@ -233,6 +255,8 @@ void a6_irq_work_handler(struct work_struct *work)
 	if (state->battery && (status3 || status2))
 		power_supply_changed(state->battery);
 
+out_release_wakeup:
+	gpiod_set_value_cansleep(state->wakeup_gpio, 0);
 out:
 	mutex_unlock(&state->dev_mutex);
 }
@@ -386,23 +410,32 @@ static int a6_probe(struct i2c_client *client)
 	INIT_WORK(&state->a6_irq_work, a6_irq_work_handler);
 
 	/*
-	 * Register workqueue teardown BEFORE the IRQ request so the
-	 * devres LIFO unwind frees the IRQ first; only then does
-	 * a6_workqueue_release() run cancel_work_sync() against an
-	 * already-quiesced source and call destroy_workqueue().
-	 */
-	ret = devm_add_action_or_reset(&client->dev, a6_workqueue_release,
-				       state);
-	if (ret)
-		return ret;
-
-	/*
 	 * Register the power_supply unconditionally. If a6_init_state()
 	 * below fails (controller not yet responsive at probe), userspace
 	 * just sees POWER_SUPPLY_PROP_PRESENT = 0 until the IRQ bottom
 	 * half successfully initialises the controller.
 	 */
 	ret = a6_register_power_supply(state);
+	if (ret)
+		return ret;
+
+	/*
+	 * Register workqueue teardown AFTER power_supply registration so
+	 * the devres LIFO unwind order is:
+	 *
+	 *   free_irq()         -> stops new a6_irq from queueing work,
+	 *                         and waits for the threaded handler;
+	 *   workqueue_release()-> cancel_work_sync() drains any in-flight
+	 *                         work that was already queued, THEN
+	 *                         destroys the workqueue;
+	 *   power_supply       -> unregisters with state->battery quiesced.
+	 *
+	 * Registering workqueue_release before power_supply (the previous
+	 * order) inverted this — power_supply unregistered with IRQ work
+	 * potentially still in flight referencing state->battery (UAF).
+	 */
+	ret = devm_add_action_or_reset(&client->dev, a6_workqueue_release,
+				       state);
 	if (ret)
 		return ret;
 

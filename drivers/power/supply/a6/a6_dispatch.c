@@ -67,6 +67,12 @@ int a6_i2c_read_reg(struct i2c_client *client, const u16 *ids,
 					    __func__, ret, ids[i]);
 			return ret;
 		}
+		if (ret != 2) {
+			dev_err_ratelimited(&client->dev,
+					    "%s: short i2c transfer %d/2 on id 0x%x\n",
+					    __func__, ret, ids[i]);
+			return -EIO;
+		}
 		/* MSP430 firmware needs a short recovery gap between txns */
 		usleep_range(700, 900);
 #endif
