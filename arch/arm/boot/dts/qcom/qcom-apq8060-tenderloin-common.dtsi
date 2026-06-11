@@ -1663,19 +1663,32 @@
 		status = "okay";
 
 		/*
-		 * GPIO 62 (LCD_PWR_EN) controls panel power; GPIO 63
-		 * (LVDS_SHDN_N) now belongs to the lvds_encoder bridge above.
+		 * GPIO 62 (LCD_PWR_EN) gates panel power via U24 FDC6331L
+		 * (VDD_PNL_3V3 out of VREG_L2B_3V3). HPBL leaves it HIGH and
+		 * we deliberately do NOT bind it as the panel-simple
+		 * enable-gpios: panel-simple's SET_SYSTEM_SLEEP_PM_OPS would
+		 * force-cycle the GPIO at every s2idle, dropping panel power
+		 * for the freeze duration. The LP097X02-SLN1 then expects
+		 * LVDS valid within ~50ms of power-on, but the lvds-codec
+		 * bridge's SHDN_N=1 doesn't fire until ~120ms later in the
+		 * resume cascade — panel times out and refuses to re-lock.
+		 *
+		 * Without enable-gpios, panel-simple's suspend/resume become
+		 * effective no-ops for GPIO 62; the pin stays HIGH (HPBL
+		 * state) through s2idle, so panel power is uninterrupted and
+		 * the chip's SHDN_N cycle alone is enough to re-establish the
+		 * LVDS link without tripping the panel's power-on watchdog.
+		 *
+		 * GPIO 63 (LVDS_SHDN_N) belongs to the lvds_encoder bridge.
 		 *
 		 * power-supply intentionally omitted: pm8058_l10 is the LVDS
 		 * transmitter's vcc (already referenced by lvds_encoder) and
 		 * is regulator-always-on. The panel itself is fed by VDD_PNL_3V3
-		 * which is wired to a separate always-on rail not exposed as a
-		 * named DT supply.
+		 * (gated by GPIO 62 above).
 		 *
 		 * Backlight reference removed to allow pwm-backlight to
 		 * initialize as ON at probe time.
 		 */
-		enable-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;	/* LCD_PWR_EN */
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&panel_pins>;
