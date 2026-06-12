@@ -1076,55 +1076,90 @@ static int ath6kl_sdio_resume(struct ath6kl *ar)
 /* set the window address register (using 4-byte register access ). */
 static int ath6kl_set_addrwin_reg(struct ath6kl *ar, u32 reg_addr, u32 addr)
 {
-	int status;
+	int status = 0;
 	u8 addr_val[4];
 	s32 i;
+	unsigned int retry;
 
 	/*
-	 * Write bytes 1,2,3 of the register to set the upper address bytes,
-	 * the LSB is written last to initiate the access cycle
+	 * Tenderloin / mmci-pl18x signal-integrity retry: the 4-byte FIXED
+	 * CMD53 writes below sometimes glitch (MCI_DATACRCFAIL on TX or
+	 * MCI_STARTBITERR on the subsequent IRQ-handler read) during the
+	 * narrow window right after BMI completes / firmware boots, when the
+	 * AR6003 has just exited its boot ROM and the SDIO output buffers
+	 * have not fully settled.  Confirmed via wire-level capture against
+	 * the legacy webOS msm_sdcc.c -- legacy avoids the failure window
+	 * entirely by keeping the chip's PSRAM live across reboots and never
+	 * doing BMI again after the first cold boot, so this path runs in
+	 * the legacy driver only ONCE per device lifetime.  Mainline does
+	 * BMI on every probe, so we hit it every time, and a one-shot
+	 * failure here aborts host_app_area_init -> chip stays in a
+	 * half-initialised state -> WMI ep1 starves credits and wlan0 is
+	 * inert.
+	 *
+	 * Retry the whole address-window-program sequence up to 4 times on
+	 * any of the transient SI error codes.  Each retry is a fresh
+	 * sequence of CMD53s; the chip's WINDOW_*_ADDR_ADDRESS register
+	 * just latches the last value written, so retries are idempotent.
 	 */
-
-	for (i = 1; i <= 3; i++) {
+	for (retry = 0; retry < 4; retry++) {
 		/*
-		 * Fill the buffer with the address byte value we want to
-		 * hit 4 times.
+		 * Write bytes 1,2,3 of the register to set the upper address
+		 * bytes, the LSB is written last to initiate the access cycle
 		 */
-		memset(addr_val, ((u8 *)&addr)[i], 4);
+		for (i = 1; i <= 3; i++) {
+			/*
+			 * Fill the buffer with the address byte value we want
+			 * to hit 4 times.
+			 */
+			memset(addr_val, ((u8 *)&addr)[i], 4);
 
-		/*
-		 * Hit each byte of the register address with a 4-byte
-		 * write operation to the same address, this is a harmless
-		 * operation.
-		 */
-		status = ath6kl_sdio_read_write_sync(ar, reg_addr + i, addr_val,
-					     4, HIF_WR_SYNC_BYTE_FIX);
-		if (status)
+			/*
+			 * Hit each byte of the register address with a 4-byte
+			 * write operation to the same address, this is a
+			 * harmless operation.
+			 */
+			status = ath6kl_sdio_read_write_sync(ar,
+							     reg_addr + i,
+							     addr_val, 4,
+							     HIF_WR_SYNC_BYTE_FIX);
+			if (status)
+				break;
+		}
+
+		if (!status) {
+			/*
+			 * Write the address register again, this time write
+			 * the whole 4-byte value.  The LSB write causes the
+			 * cycle to start; the extra 3 byte write to bytes
+			 * 1,2,3 has no effect since we are writing the same
+			 * values again.
+			 */
+			status = ath6kl_sdio_read_write_sync(ar, reg_addr,
+							     (u8 *)(&addr), 4,
+							     HIF_WR_SYNC_BYTE_INC);
+		}
+
+		if (!status)
+			return 0;
+
+		if (status != -EIO && status != -ETIMEDOUT &&
+		    status != -EILSEQ && status != -ECOMM)
 			break;
+
+		ath6kl_warn("set_addrwin_reg: transient SI error %d on retry %u (reg=0x%X addr=0x%x)\n",
+			    status, retry, reg_addr, addr);
+		/*
+		 * Brief settle: the AR6003 SDIO output is most marginal in
+		 * the first ~1 ms after fw boot.  By the second or third
+		 * retry the bus is normally clean.
+		 */
+		usleep_range(500, 1500);
 	}
 
-	if (status) {
-		ath6kl_err("%s: failed to write initial bytes of 0x%x to window reg: 0x%X\n",
-			   __func__, addr, reg_addr);
-		return status;
-	}
-
-	/*
-	 * Write the address register again, this time write the whole
-	 * 4-byte value. The effect here is that the LSB write causes the
-	 * cycle to start, the extra 3 byte write to bytes 1,2,3 has no
-	 * effect since we are writing the same values again
-	 */
-	status = ath6kl_sdio_read_write_sync(ar, reg_addr, (u8 *)(&addr),
-				     4, HIF_WR_SYNC_BYTE_INC);
-
-	if (status) {
-		ath6kl_err("%s: failed to write 0x%x to window reg: 0x%X\n",
-			   __func__, addr, reg_addr);
-		return status;
-	}
-
-	return 0;
+	ath6kl_err("%s: failed to write 0x%x to window reg: 0x%X (status=%d after %u retries)\n",
+		   __func__, addr, reg_addr, status, retry);
+	return status;
 }
 
 static int ath6kl_sdio_diag_read32(struct ath6kl *ar, u32 address, u32 *data)
