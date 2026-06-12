@@ -339,20 +339,45 @@
 	ath6kl_pwrseq: ath6kl-pwrseq {
 		compatible = "mmc-pwrseq-simple";
 
-		/* WLAN_RST_N (GPIO 135) - deasserted by mmc-pwrseq at SDIO power-on */
-		reset-gpios = <&tlmm 135 GPIO_ACTIVE_LOW>;
+		/*
+		 * LPM-preserve: do NOT pulse reset-gpios on attach.
+		 * Pulsing WLAN_RST_N (GPIO 135) wipes AR6003 chip PSRAM,
+		 * forcing fresh BMI on every mainline boot.  BMI's first
+		 * 128 B mailbox WR @ chip 0xF80 hits a signal-integrity
+		 * transient on tenderloin's mmci-pl18x SDCC that no settle
+		 * delay can clear (memory project_wifi_a3_split_required;
+		 * see CMDTIMEOUT cmd53 arg=0x941f0080 DataCrcFail
+		 * fingerprint).  Legacy webOS keeps the chip warm across
+		 * reboots via pm8058_s3 mode-1 LPM, so the BMI->HTC
+		 * transition is essentially a one-time per-device-lifetime
+		 * event in legacy and the SI window is never hit in
+		 * production (memory project_wifi_legacy_off_sequence_
+		 * 2026_06_11).
+		 *
+		 * GPIO 135's electrical state at kernel boot is inherited
+		 * from moboot, which itself inherits from the previous
+		 * webOS / LuneOS session that deasserted the line during
+		 * its own WiFi-off LPM sequence.  As long as the chip's
+		 * Vdd rail stays in mode-1 LPM (mmci.c vqmmc_load = 10000
+		 * uA), PSRAM survives and the chip continues running.
+		 *
+		 * Pair with: ath6kl probe path conditionally skips
+		 * ath6kl_configure_target/init_upload/bmi_done when chip
+		 * is detected in HTC mode (TBD).
+		 */
+		/* reset-gpios = <&tlmm 135 GPIO_ACTIVE_LOW>; */
 
 		/* 32kHz sleep clock for AR6003 low-power mode */
 		clocks = <&sleep_clk>;
 		clock-names = "ext_clock";
 
 		/*
-		 * AR6003 needs time after reset deassert to enter BMI
-		 * (Boot Mode Interface) for firmware download. Legacy
-		 * kernel uses 5ms; 200ms provides margin and was the
-		 * known-working value in Jan 2026 (37d55b9678c0).
+		 * No reset pulse means no post-reset delay needed -- but
+		 * keep this property at a small non-zero value so the
+		 * pwrseq core's wait still runs in case the post-power-on
+		 * timing matters for the SDIO core's enumeration.
 		 */
-		post-power-on-delay-ms = <200>;
+		post-power-on-delay-ms = <10>;
 	};
 
 	soc {
