@@ -1595,23 +1595,15 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 	 * factory ar6000.ko binary that webOS actually runs DOES make these writes
 	 * via ar6000_sysfs_bmi_get_config, and HP TouchPad WiFi was confirmed
 	 * working in Jan 2026 with this WAR enabled (commit 37d55b9678c0).
-	 *
-	 * Factory-exact values (Ghidra-verified from ar6000.ko reg_tbl offsets
-	 * 0xd0/0xd4/0xd8/0xdc): write 0x20 to PIN9..PIN12, four pins only. The
-	 * legacy 0x28 on PIN9 and the extra PIN13 write came from a different
-	 * mainline reference and produce intermittent post-BMI/post-fw-boot
-	 * StartBitErr (MMCISTATUS bit 9) on tenderloin's mmci-pl18x SDCC, which
-	 * then wedges the very first set_addrwin_reg CMD53 after WMI_READY
-	 * (host_app_area init -EIO -> chip stays half-initialised, WMI ep1
-	 * never returns credits, scans queue up but never run).
 	 */
 	if (ar->hw.flags & ATH6KL_HW_SDIO_CRC_ERROR_WAR) {
-		param = 0x20;
-
+		param = 0x28;
 		address = GPIO_BASE_ADDRESS + GPIO_PIN9_ADDRESS;
 		status = ath6kl_bmi_reg_write(ar, address, param);
 		if (status)
 			return status;
+
+		param = 0x20;
 
 		address = GPIO_BASE_ADDRESS + GPIO_PIN10_ADDRESS;
 		status = ath6kl_bmi_reg_write(ar, address, param);
@@ -1624,6 +1616,11 @@ static int ath6kl_init_upload(struct ath6kl *ar)
 			return status;
 
 		address = GPIO_BASE_ADDRESS + GPIO_PIN12_ADDRESS;
+		status = ath6kl_bmi_reg_write(ar, address, param);
+		if (status)
+			return status;
+
+		address = GPIO_BASE_ADDRESS + GPIO_PIN13_ADDRESS;
 		status = ath6kl_bmi_reg_write(ar, address, param);
 		if (status)
 			return status;
