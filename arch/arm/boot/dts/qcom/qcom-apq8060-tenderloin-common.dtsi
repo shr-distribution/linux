@@ -2812,21 +2812,25 @@
 	 *   .msmsdcc_fmin = 400000   (init clock)
 	 *   .msmsdcc_fmid = 24000000 (intermediate / sustained transfers)
 	 *   .msmsdcc_fmax = 48000000 (theoretical ceiling)
-	 * The driver picks fmid for normal operation; fmax is only used when
-	 * the card explicitly reports support for it. The AR6003 SDIO host
-	 * tops out below 48 MHz on this board, so legacy effectively ran at
-	 * 24 MHz. Raising max-frequency to 48 MHz lets mmci negotiate beyond
-	 * the chip's safe operating envelope and produces HTC look-ahead
-	 * data corruption (ath6kl_htc_rx_process_hdr "lk_ahd mismatch" with
-	 * "htc wait target failed: -12") even with the qcom RX-FIFO drain
-	 * check disabled — confirmed on-bench at 7.1.0-rc1-luneos.
+	 * 2026-06-12: wire-level capture from the instrumented legacy
+	 * msm_sdcc.c (uImage.webOSdebug AR6K-FULL trace, 169/169 lines
+	 * showed clk_rate=48000000 sustained, zero MCI_STARTBITERR over a
+	 * full AR6003 init + steady-state run) PROVES legacy actually
+	 * runs SDC4 at 48 MHz, not 24 MHz. The earlier 24 MHz reading was
+	 * a misinterpretation of msmsdcc_set_ios()'s clamp -- it clamps the
+	 * (fmid, fmax) OPEN interval down to fmid, but lets ios->clock=fmax
+	 * pass through unchanged. mmc-core asks for fmax (48 MHz) once the
+	 * SDIO card reports support, and host->clk_rate stays there.
 	 *
-	 * Conclusion: 24 MHz is the actual sustained ceiling on this AR6003
-	 * board. The earlier comment claiming "48 MHz works in webOS" was a
-	 * misreading of the fmax constant — fmax was a ceiling, fmid is what
-	 * was used.
+	 * The earlier 48 MHz mainline test that produced HTC lk_ahd
+	 * corruption pre-dated the A3 mailbox-read PIO split workaround
+	 * (8c33e7497683), the mmc1 DMA threshold bump (a0b5ddeeda4c) and
+	 * the mmci defensive stale-clear (e6bfb8e97687). Worth re-testing
+	 * 48 MHz with the full current workaround stack in place; the
+	 * residual StartBitErrs at 24 MHz appear to be a sampling-phase
+	 * mismatch that only happens at the lower MCLK rate.
 	 */
-	max-frequency = <24000000>;
+	max-frequency = <48000000>;
 
 	/*
 	 * SDIO requires data registers to be set up before command is sent.
