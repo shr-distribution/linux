@@ -295,6 +295,14 @@ static void a6_workqueue_release(void *data)
  * This entire block compiles out when CONFIG_BATTERY_PALM_A6_A2A_COMM=n
  * so the upstream-bound base driver carries no extra symbols.
  */
+/*
+ * Assert wakeup_gpio with the same ~1 ms LPM-exit settle the rest of
+ * the driver uses (a6_init_state(), a6_irq_work_handler(),
+ * a6_battery_get_property()). Without this the MSP430 NAKs the I2C
+ * address phase when the controller is sleeping — which is most of the
+ * time on a quiescent system. Touch-to-share sysfs writes from
+ * userspace hit this constantly.
+ */
 static int a6_aux_read_regs(struct i2c_client *client, const u16 *ids,
 			    u32 num_ids, u8 *out)
 {
@@ -302,7 +310,10 @@ static int a6_aux_read_regs(struct i2c_client *client, const u16 *ids,
 	int ret;
 
 	mutex_lock(&state->dev_mutex);
+	gpiod_set_value_cansleep(state->wakeup_gpio, 1);
+	usleep_range(1000, 2000);
 	ret = a6_i2c_read_reg(client, ids, num_ids, out);
+	gpiod_set_value_cansleep(state->wakeup_gpio, 0);
 	mutex_unlock(&state->dev_mutex);
 	return ret;
 }
@@ -314,7 +325,10 @@ static int a6_aux_write_regs(struct i2c_client *client, const u16 *ids,
 	int ret;
 
 	mutex_lock(&state->dev_mutex);
+	gpiod_set_value_cansleep(state->wakeup_gpio, 1);
+	usleep_range(1000, 2000);
 	ret = a6_i2c_write_reg(client, ids, num_ids, in);
+	gpiod_set_value_cansleep(state->wakeup_gpio, 0);
 	mutex_unlock(&state->dev_mutex);
 	return ret;
 }
