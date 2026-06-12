@@ -31,20 +31,6 @@
 #include "cfg80211.h"
 #include "trace.h"
 
-/*
- * Runtime knob to skip the 32 B PIO mailbox-read split (A3 workaround).
- * Default keeps the split.  Toggle via:
- *   echo 1 > /sys/module/ath6kl_sdio/parameters/skip_mbox_read_split
- * Used to A/B test whether the host-side DPSM-arm-timing fix
- * (mmci: write DATATIMER+DATALENGTH inside atomic exec_func) lets the
- * single-CMD53 128 B DMA mailbox read return correct data.
- */
-static bool ath6kl_sdio_skip_mbox_read_split;
-module_param_named(skip_mbox_read_split, ath6kl_sdio_skip_mbox_read_split,
-		   bool, 0644);
-MODULE_PARM_DESC(skip_mbox_read_split,
-		 "Skip the 32 B PIO split for >=64 B mailbox reads (A3 workaround retirement test)");
-
 struct ath6kl_sdio {
 	struct sdio_func *func;
 
@@ -206,67 +192,10 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 		else
 			ret = sdio_memcpy_toio(func, addr, buf, len);
 	} else {
-		/*
-		 * AR6003 on APQ8060/tenderloin: 128-byte CMD53 reads at the
-		 * HTC mailbox region (0x800-0xFFF + mbox0 extended base) come
-		 * back with the first dword of the body corrupted when routed
-		 * through DMA.  Verified empirically (memory
-		 * project_wifi_mainline_almost_working_2026_06_11).
-		 *
-		 * 2026-06-12 attempt at retiring this split (a967fd52f6fb)
-		 * once we were at 48 MHz + SI retry stack: removing the split
-		 * caused intermittent BMI -110 on cold boot at a small
-		 * (4 B INCR) mailbox WR @ 0xF80 that fails with DataCrcFail on
-		 * PIO and CMDTIMEOUT on DMA.  Hypothesis: removing the split
-		 * lets HTC RX traffic happen at a different cadence and the
-		 * chip hits a worse cold-boot transient that the SI retry
-		 * cannot cover (mailbox writes are gated out of the retry path
-		 * because the AR6003 mailbox is a FIFO and retrying a partial
-		 * transfer would desync HTC).  Keep the split for now.
-		 * Performance cost is ~3x lower sustained WiFi throughput than
-		 * legacy until the underlying mailbox-write DMA-side bug is
-		 * properly root-caused.
-		 *
-		 * Workaround: split mailbox reads into sub-fifosize chunks
-		 * (32 B each).  Each chunk's CMD53 goes through PIO and gives
-		 * a byte-correct mailbox read.  The AR6003 chip-side mbox is
-		 * a FIFO: every byte read from the mailbox window (FIXED or
-		 * INCR) pops one byte from the same internal queue, so
-		 * successive 32 B chunks at the same FIXED mbox addr
-		 * reassemble into a correct 128 B body.
-		 */
-		bool in_mbox = (addr >= HIF_MBOX_BASE_ADDR &&
-				addr <= HIF_MBOX_END_ADDR) ||
-			       addr == HIF_MBOX0_EXT_BASE_ADDR;
-
-		if (in_mbox && len >= 64 && !ath6kl_sdio_skip_mbox_read_split) {
-			u32 off = 0;
-			const u32 chunk_sz = 32; /* < fifosize=64 -> PIO */
-
-			ath6kl_dbg(ATH6KL_DBG_SDIO,
-				   "mbox RD %u B @ 0x%x: splitting into %u-B PIO chunks (DMA path corrupts on AR6003/tenderloin)\n",
-				   len, addr, chunk_sz);
-
-			while (off < len) {
-				u32 this_chunk = min(chunk_sz, len - off);
-
-				if (request & HIF_FIXED_ADDRESS)
-					ret = sdio_readsb(func, buf + off,
-							  addr, this_chunk);
-				else
-					ret = sdio_memcpy_fromio(func,
-								 buf + off,
-								 addr + off,
-								 this_chunk);
-				if (ret)
-					break;
-				off += this_chunk;
-			}
-		} else if (request & HIF_FIXED_ADDRESS) {
+		if (request & HIF_FIXED_ADDRESS)
 			ret = sdio_readsb(func, buf, addr, len);
-		} else {
+		else
 			ret = sdio_memcpy_fromio(func, buf, addr, len);
-		}
 	}
 
 	sdio_release_host(func);
