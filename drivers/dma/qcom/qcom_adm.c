@@ -711,28 +711,7 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		 * sdcc4 (WiFi) per qcom-apq8060-tenderloin-common.dtsi:2913
 		 * (qcom,sdcc-crci = <5>).
 		 */
-		/*
-		 * Direction guard (re-introduced 2026-06-12 audit): apply
-		 * blk_size=1 ONLY to DEV_TO_MEM (reads).  WRITES with
-		 * blk_size=1 hit a TXUNDERRUN-class race in the AR6003 BMI
-		 * 128 B CMD53 WRITE path: SDCC starts clocking data to the
-		 * chip immediately after CMDRESPEND, but ADM gates the first
-		 * push on the CRCI half-FIFO-empty signal, leaving the SDCC
-		 * TX FIFO empty at clock start.  Chip sees mis-paced bytes
-		 * and silently ignores the packet -- CMDTIMEOUT on the wire,
-		 * STATUS=0x00445400 (TxActive+DataBlockEnd+TxFifoEmpty).
-		 * Reads don't have this race because SDCC clocks IN data and
-		 * ADM pulls when half-full -- no pre-load timing constraint.
-		 * The 24-MHz-era documentation lived in commit 69c1cb5a00d7
-		 * ("limit ADM1 CRCI 1+5 half-FIFO override to reads") which
-		 * was reverted at e034f631582f without a regression rationale.
-		 * The empirical evidence (BMI 128 B WR @ chip 0xF80 fails
-		 * across a967fd52f6fb, b58767a138c8, 70b912b05dbf, 9a7aa3c6dbc5
-		 * with the same status fingerprint and "chip silently ignores
-		 * the packet" symptom that the original commit described)
-		 * justifies re-establishing the direction check here.
-		 */
-		if (burst == 64 && direction == DMA_DEV_TO_MEM)
+		if (burst == 64)
 			blk_size = 1;
 	}
 
@@ -1090,7 +1069,7 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * mis-paced through the FIFO) and the WPA 4-way handshake
 		 * EAPOL frames timed out.
 		 */
-		if (blk_size == 2 && async_desc->dir == DMA_DEV_TO_MEM)
+		if (blk_size == 2)
 			blk_size = 1;
 
 		/*
