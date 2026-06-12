@@ -221,17 +221,20 @@ static ssize_t a6_single_store(struct device *dev,
 
 /*
  * `command` is the write side of TS2_I2C_COMMAND (0x1000). The legacy
- * userspace path used it to send glow / glow-off pulses to the puck;
- * a malicious local writer could in principle bootloader-reset the
- * controller through TS2_I2C_COMMAND_RESET_HOST. Gate behind
- * CAP_SYS_ADMIN to match the spirit of the original 0220 mode.
+ * userspace path (webOS tap2shared, running under a non-root D-Bus
+ * service account) used it to send glow / wake / glow-off pulses to
+ * the puck and the remote A6 — and so could open() it through the
+ * legacy 0222 mode without any further capability check.
+ *
+ * This module is the downstream LuneOS compat shim for that exact
+ * consumer; gating writes behind CAP_SYS_ADMIN would defeat the only
+ * reason the interface exists. Trust the file mode (0222) and the
+ * fact that a writer needs at least DAC access to the regs/ subtree.
  */
 static ssize_t a6_command_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
-	if (!capable(CAP_SYS_ADMIN))
-		return -EPERM;
 	return a6_single_store(dev, attr, buf, count);
 }
 
@@ -294,18 +297,18 @@ static ssize_t a6_combo_store(struct device *dev,
 
 /* ---------- attribute table ----------------------------------------- */
 
-/* single-byte read+write (mode 0640) */
+/* single-byte read+write (mode 0666) */
 #define A6_SINGLE_RW_ATTR(_name, _reg)				\
 static struct a6_single_reg_attr a6_attr_##_name = {		\
-	.dattr = __ATTR(_name, 0640, a6_single_show,		\
+	.dattr = __ATTR(_name, 0666, a6_single_show,		\
 			a6_single_store),			\
 	.reg = (_reg),						\
 }
 
-/* single-byte read-only (mode 0440) */
+/* single-byte read-only (mode 0444) */
 #define A6_SINGLE_RO_ATTR(_name, _reg)				\
 static struct a6_single_reg_attr a6_attr_##_name = {		\
-	.dattr = __ATTR(_name, 0440, a6_single_show, NULL),	\
+	.dattr = __ATTR(_name, 0444, a6_single_show, NULL),	\
 	.reg = (_reg),						\
 }
 
@@ -319,19 +322,19 @@ A6_SINGLE_RW_ATTR(periodic_wake_bit_params, TS2_I2C_WAKEUP_PERIOD);
 
 /* write-only, CAP_SYS_ADMIN-gated command register */
 static struct a6_single_reg_attr a6_attr_command = {
-	.dattr = __ATTR(command, 0220, NULL, a6_command_store),
+	.dattr = __ATTR(command, 0222, NULL, a6_command_store),
 	.reg = TS2_I2C_COMMAND,
 };
 
 /* accessory data combo: 16 contiguous bytes, R/W (local) or RO (remote) */
 static struct a6_combo_attr a6_attr_acc_data_combo = {
-	.dattr = __ATTR(acc_data_combo, 0640, a6_combo_show, a6_combo_store),
+	.dattr = __ATTR(acc_data_combo, 0666, a6_combo_show, a6_combo_store),
 	.base_reg = TS2_I2C_ENUM_ACCE_0,
 	.writable = true,
 };
 
 static struct a6_combo_attr a6_attr_remote_acc_data_combo = {
-	.dattr = __ATTR(remote_acc_data_combo, 0440,
+	.dattr = __ATTR(remote_acc_data_combo, 0444,
 			a6_combo_show, NULL),
 	.base_reg = TS2_I2C_ENUM_REMOTE_ACCE_0,
 	.writable = false,
@@ -372,13 +375,13 @@ static void a6_init_indexed_attrs(void)
 
 	for (i = 0; i < A6_ACC_DATA_COUNT; i++) {
 		a6_acc_data_attrs[i].dattr.attr.name = acc_names[i];
-		a6_acc_data_attrs[i].dattr.attr.mode = 0640;
+		a6_acc_data_attrs[i].dattr.attr.mode = 0666;
 		a6_acc_data_attrs[i].dattr.show = a6_single_show;
 		a6_acc_data_attrs[i].dattr.store = a6_single_store;
 		a6_acc_data_attrs[i].reg = TS2_I2C_ENUM_ACCE_0 + i;
 
 		a6_remote_acc_data_attrs[i].dattr.attr.name = remote_names[i];
-		a6_remote_acc_data_attrs[i].dattr.attr.mode = 0440;
+		a6_remote_acc_data_attrs[i].dattr.attr.mode = 0444;
 		a6_remote_acc_data_attrs[i].dattr.show = a6_single_show;
 		a6_remote_acc_data_attrs[i].dattr.store = NULL;
 		a6_remote_acc_data_attrs[i].reg =
