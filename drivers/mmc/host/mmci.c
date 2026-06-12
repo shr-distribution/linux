@@ -1591,21 +1591,21 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		unsigned int len = data->blksz * data->blocks;
 
 		/*
-		 * 2026-06-11 workaround: AR6003 mailbox traffic at exactly the
-		 * block size (128 B) corrupts when routed through the qcom_dml
-		 * DMA path - confirmed for reads (lookahead-vs-body mismatch on
-		 * HTC RX) and suspected for writes (HTC service connect TX
-		 * returns "success" at SDIO layer but chip never responds).
-		 * Bump the mmc1 DMA threshold to 256 B so 128 B HTC mailbox
-		 * traffic uses PIO (proven byte-correct on this hardware via
-		 * the working 24 B reg-table poll and BMI writes).  Bulk WiFi
-		 * data frames are typically full MTU (1500 B + headers) and
-		 * still use DMA, so steady-state throughput is unaffected.
+		 * Vendor-faithful mmc1 PIO threshold: PIO if sub-fifosize OR
+		 * not a multiple of fifosize.  Matches legacy webOS msm_sdcc
+		 * validate_dma() so 128 B HTC mailbox traffic now uses DMA
+		 * just like the legacy driver does on ADM channel 21 with
+		 * 64-byte rows.
 		 *
-		 * Once the underlying DMA-path corruption is root-caused this
-		 * threshold can be lowered back to fifosize.
+		 * The 2026-06-11 256 B threshold workaround (force PIO < 256
+		 * to dodge mailbox DMA lookahead corruption at the then-active
+		 * 24 MHz MCLK) is dropped together with the ath6kl_sdio_io
+		 * mailbox-read PIO split.  With sdcc4 at 48 MHz (bc9052005979)
+		 * + mmci defensive stale-clear (e6bfb8e97687) + ath6kl SI
+		 * retry (db48f4b87bf9), the qcom_dml DMA path is byte-correct
+		 * on this hardware.
 		 */
-		if (len < 256 || (len % variant->fifosize))
+		if (len < variant->fifosize || (len % variant->fifosize))
 			return -EINVAL;
 	} else if (data->blksz * data->blocks <=
 		   (variant->dma_threshold ?: variant->fifosize)) {
