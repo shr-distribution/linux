@@ -1858,6 +1858,32 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 		goto err_power_off;
 
 	/*
+	 * Tenderloin / mmci-pl18x AR6003 cold-boot settle: after
+	 * ath6kl_bmi_done() the chip transitions out of BMI mode and into
+	 * HTC mode -- it has just exited its boot ROM, its SDIO output
+	 * buffers are re-tuning, and its internal mailbox FIFO is being
+	 * primed.  The very first CMD53 read of HOST_INT_STATUS (24 B
+	 * INCR @ 0x400) plus the first 128 B mailbox WR @ 0xF80 issued
+	 * by HTC handshake (HTC_READY response / HTC_CONNECT_SERVICE /
+	 * HTC_SETUP_COMPLETE) within ~50 ms of bmi_done() returning hit
+	 * the signal-integrity transient window and glitch with either
+	 * MCI_STARTBITERR or MCI_DATACRCFAIL.  The SI retry recovers the
+	 * small register-space reads (project_ath6kl_startbit_err_wedge
+	 * memory) but mailbox writes are gated out of the retry path
+	 * because of the chip-side FIFO sequencing.
+	 *
+	 * Legacy webOS msm_sdcc + ath6kl staging driver does NOT have this
+	 * delay because it keeps the chip's PSRAM live across reboots and
+	 * never re-runs the BMI->HTC transition in production
+	 * (project_wifi_legacy_off_sequence_2026_06_11 memory).  Until
+	 * mainline implements the equivalent LPM-preserve strategy
+	 * (project_wifi_power_sequence_authoritative memory), give the
+	 * chip a 200 ms window to stabilise its SDIO output before the
+	 * first HTC TX goes out.
+	 */
+	msleep(200);
+
+	/*
 	 * The reason we have to wait for the target here is that the
 	 * driver layer has to init BMI in order to set the host block
 	 * size.
