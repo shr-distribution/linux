@@ -55,6 +55,16 @@ static void ux500v2_variant_init(struct mmci_host *host);
 
 static unsigned int fmax = 515633;
 
+/*
+ * Runtime knob for the mmc1 (sdcc4/WiFi) SDIO DMA threshold (qcom variant).
+ * Default 256 keeps the historical AR6003 mailbox-WR workaround: writes
+ * below 256 B go through PIO.  Lower to 64 (= variant->fifosize) to match
+ * legacy webOS msm_sdcc validate_dma() and let 128 B HTC mailbox writes
+ * flow via ADM DMA.  Sysfs path on built-in:
+ *   /sys/module/mmci_pl180/parameters/mmc1_wr_dma_min
+ */
+static unsigned int mmci_mmc1_wr_dma_min = 256;
+
 static struct variant_data variant_arm = {
 	.fifosize		= 16 * 4,
 	.fifohalfsize		= 8 * 4,
@@ -1605,27 +1615,23 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		unsigned int len = data->blksz * data->blocks;
 
 		/*
-		 * 2026-06-11 workaround retained for mmc1 WRITES: AR6003
-		 * mailbox WRITES of exactly the HTC block size (128 B) routed
-		 * through qcom_dml DMA result in CMDTIMEOUT on the CMD53 (the
-		 * CMD53 is sent but the chip never responds), confirmed by
-		 * a967fd52f6fb regression: dropping this threshold caused
-		 * probe -110 with "DMA submit OK ... CMDTIMEOUT cmd53
-		 * arg=0x941f0080 ... DATACTRL=0x809 ... error during DMA
-		 * transfer".  arg=0x941f0080 decodes to WR func1 byte INCR
-		 * 128 B @ chip 0xF80 (mailbox 0 tail = HTC TX packet).
+		 * mmc1 (sdcc4 / WiFi) SDIO WR DMA threshold.
 		 *
-		 * The mailbox-READ-side A3 split was dropped (sdio.c) -- at
-		 * 48 MHz with the SI retry / mmci defensive clear stack, reads
-		 * via DMA at len >= 256 B are byte-correct.  Keep PIO for
-		 * len < 256 B mailbox writes via this threshold to match the
-		 * vendor msm_sdcc validate_dma() ceiling on what it routes
-		 * through ADM.
+		 * Default 256 is the historical AR6003 mailbox-WR workaround:
+		 * 128 B mailbox WRITEs at chip 0xF80 used to CMDTIMEOUT via
+		 * DMA (arg=0x941f0080, DATACTRL=0x809) and we forced them
+		 * through PIO.  Since the mmci atomic exec_func DATATIMER +
+		 * DATALENGTH fix (41f975cdc56c + 734a0002e6ed) and the
+		 * defer-DATACTRL-for-writes path (daafc06017e5), the host
+		 * arms DPSM in lockstep with CMD53 and the 128 B WR @ 0xF80
+		 * race should be gone -- letting us match legacy webOS
+		 * msm_sdcc validate_dma() which only gates on
+		 *   (len >= fifosize) && (len % fifosize == 0).
 		 *
-		 * If the underlying mailbox-WRITE DMA-path bug is ever
-		 * root-caused we can lower this threshold back to fifosize.
+		 * Runtime knob mmci_mmc1_wr_dma_min (default 256) lets us
+		 * A/B test: set to 64 to use the legacy-equivalent threshold.
 		 */
-		if (len < 256 || (len % variant->fifosize))
+		if (len < mmci_mmc1_wr_dma_min || (len % variant->fifosize))
 			return -EINVAL;
 	} else if (data->blksz * data->blocks <=
 		   (variant->dma_threshold ?: variant->fifosize)) {
@@ -4171,6 +4177,9 @@ static struct amba_driver mmci_driver = {
 module_amba_driver(mmci_driver);
 
 module_param(fmax, uint, 0444);
+module_param_named(mmc1_wr_dma_min, mmci_mmc1_wr_dma_min, uint, 0644);
+MODULE_PARM_DESC(mmc1_wr_dma_min,
+		 "Min mmc1 SDIO WR length routed through DMA on qcom variant (default 256, set 64 for legacy-equivalent)");
 
 MODULE_DESCRIPTION("ARM PrimeCell PL180/181 Multimedia Card Interface driver");
 MODULE_LICENSE("GPL");
