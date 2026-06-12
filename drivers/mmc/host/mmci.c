@@ -768,61 +768,47 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 		 */
 		host->atomic_submit.datactrl = datactrl;
 	} else {
-		bool defer_for_sdio_write =
-			host->ops && host->ops->dma_issue_pending &&
-			host->datactrl_first &&
-			!(data->flags & MMC_DATA_READ) &&
-			host->variant->qcom_dml &&
-			(host->mmc->caps & MMC_CAP_SDIO_IRQ);
+		/* Trigger the DMA transfer */
+		mmci_write_datactrlreg(host, datactrl);
 
-		if (defer_for_sdio_write) {
-			/*
-			 * Match legacy webOS msm_sdcc WRITE order for SDIO:
-			 * msmsdcc_request_start writes CMD53 first (no DATACTRL
-			 * yet); the CMDRESPEND IRQ calls msmsdcc_start_data,
-			 * which enqueues ADM with exec_func -- and only inside
-			 * that exec_func (just before ADM kicks CMD_PTR_LIST)
-			 * does DATACTRL get written.  DPSM is therefore NEVER
-			 * armed before the chip has accepted CMD53.
-			 *
-			 * Mainline historically wrote DATACTRL here, before
-			 * mmci_start_command issued CMD53.  That arms DPSM in
-			 * WRITE-direction + DMAENABLE several microseconds
-			 * before CMD53 reaches the wire.  On tenderloin /
-			 * AR6003 the chip silently NAKs CMD53 in that window
-			 * (CMDTIMEOUT, STATUS=0x00445400) for the cold-boot
-			 * 128 B mailbox WR @ 0xF80; the workaround was to force
-			 * <256 B SDIO writes through PIO (mmci.c:1614 / commit
-			 * c3081cab34f8 / 45716816e246).
-			 *
-			 * Stash DATACTRL here; mmci_cmd_irq writes it just
-			 * before dma_issue_pending() on CMDRESPEND -- matching
-			 * legacy exec_func: chip ACKs CMD53 -> DATACTRL ->
-			 * udelay -> ADM kicks -> CRCI handshake -> data on wire.
-			 */
-			host->deferred_datactrl = datactrl;
-			host->deferred_datactrl_pending = true;
-			host->dma_issue_deferred = true;
-		} else {
-			/* Trigger the DMA transfer */
-			mmci_write_datactrlreg(host, datactrl);
+		/*
+		 * Qualcomm SDCC requires a delay after writing DATACTRL to
+		 * allow the Data Path State Machine (DPSM) to initialize
+		 * before DMA starts pushing data into the FIFO. The legacy
+		 * msm_sdcc driver uses writel_delay() with 1us after
+		 * DATACTRL, followed by CMD register writes which add
+		 * additional delay before DMA data flow.
+		 */
+		if (host->variant->qcom_datactrl_delay) {
+			wmb();
+			udelay(1);
+		}
 
-			/*
-			 * Qualcomm SDCC requires a delay after writing DATACTRL
-			 * to allow the Data Path State Machine (DPSM) to
-			 * initialize before DMA starts pushing data into the
-			 * FIFO. The legacy msm_sdcc driver uses writel_delay()
-			 * with 1us after DATACTRL, followed by CMD register
-			 * writes which add additional delay before DMA data
-			 * flow.
-			 */
-			if (host->variant->qcom_datactrl_delay) {
-				wmb();
-				udelay(1);
-			}
-
-			if (host->ops && host->ops->dma_issue_pending)
+		/*
+		 * For Qualcomm ADM DMA with datactrl_first writes:
+		 * Defer DMA issue_pending to after CMD completes. The
+		 * correct sequence matching legacy msm_sdcc exec_func is:
+		 *   DMA submit → DATACTRL → CMD53 → DMA issue
+		 * This ensures:
+		 *   1. DPSM is initialized (DATACTRL written)
+		 *   2. Card knows data is coming (CMD53 sent)
+		 *   3. ADM fills FIFO (DMA issued after CMD)
+		 * Issuing DMA before CMD causes CRC errors (card not ready).
+		 * Writing DATACTRL after CMD causes hangs (DPSM won't start).
+		 *
+		 * GATED: only SDIO instances need the deferred path.
+		 * For non-datactrl_first writes, eMMC, and all reads,
+		 * issue immediately.
+		 */
+		if (host->ops && host->ops->dma_issue_pending) {
+			if (host->datactrl_first &&
+			    !(data->flags & MMC_DATA_READ) &&
+			    host->variant->qcom_dml &&
+			    (host->mmc->caps & MMC_CAP_SDIO_IRQ)) {
+				host->dma_issue_deferred = true;
+			} else {
 				host->ops->dma_issue_pending(host);
+			}
 		}
 	}
 
@@ -2580,12 +2566,9 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 			if (host->variant->cmdreg_stop && cmd->error) {
 				/*
 				 * Clear deferred DMA flag - the DMA was
-				 * terminated above, don't issue it.  Drop
-				 * any stashed DATACTRL too; the chip didn't
-				 * see CMD53 so DPSM never needs arming.
+				 * terminated above, don't issue it.
 				 */
 				host->dma_issue_deferred = false;
-				host->deferred_datactrl_pending = false;
 				mmci_stop_command(host);
 				return;
 			}
@@ -2593,7 +2576,6 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 
 		/* Clear deferred DMA flag on error/no-data path */
 		host->dma_issue_deferred = false;
-		host->deferred_datactrl_pending = false;
 
 		if (host->irq_action != IRQ_WAKE_THREAD)
 			mmci_request_end(host, host->mrq);
@@ -2607,32 +2589,12 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 
 	/*
 	 * Qualcomm ADM DMA with datactrl_first writes: issue deferred
-	 * DMA pending now that CMD has completed.
-	 *
-	 * For SDIO WRITES we also defer the DATACTRL write itself
-	 * (see mmci_dma_start defer_for_sdio_write branch).  The
-	 * matching write happens here, before dma_issue_pending,
-	 * so the order on the bus is exactly the legacy webOS
-	 * msm_sdcc msmsdcc_dma_exec_func sequence:
-	 *
-	 *   chip ACKs CMD53 -> DATACTRL -> udelay -> ADM kicks
-	 *   CMD_PTR_LIST -> CRCI handshake -> data on wire.
-	 *
-	 * The DPSM is never armed before CMD53 reaches the chip,
-	 * which avoids the AR6003 "silent CMD53 NAK" failure mode
-	 * that historically forced <256 B mmc1 SDIO writes through
-	 * PIO (mmci.c:1614).
+	 * DMA pending now that CMD has completed. The sequence is:
+	 *   DMA submit → DATACTRL → CMD → DMA issue (here)
+	 * This matches the legacy msm_sdcc exec_func atomic sequence.
 	 */
 	if (host->dma_issue_deferred) {
 		host->dma_issue_deferred = false;
-		if (host->deferred_datactrl_pending) {
-			host->deferred_datactrl_pending = false;
-			mmci_write_datactrlreg(host, host->deferred_datactrl);
-			if (host->variant->qcom_datactrl_delay) {
-				wmb();
-				udelay(1);
-			}
-		}
 		if (host->ops && host->ops->dma_issue_pending) {
 			host->ops->dma_issue_pending(host);
 			/*
@@ -3065,7 +3027,6 @@ static void __mmci_start_request(struct mmci_host *host,
 	host->mrq = mrq;
 	host->atomic_submit.armed = false;
 	host->atomic_submit.active = false;
-	host->deferred_datactrl_pending = false;
 
 	if (mrq->data)
 		mmci_get_next_data(host, mrq->data);

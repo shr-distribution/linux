@@ -477,9 +477,7 @@ struct mmci_host {
 	u8			dma_in_progress:1;
 	u8			datactrl_first:1;
 	u8			dma_issue_deferred:1;
-	u8			deferred_datactrl_pending:1;
 	u8			dma_engaged_once:1;	/* diagnostic flag */
-	u32			deferred_datactrl;
 	void			*dma_priv;
 
 	/*
