@@ -1878,13 +1878,10 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 	 * (project_wifi_legacy_off_sequence_2026_06_11 memory).  Until
 	 * mainline implements the equivalent LPM-preserve strategy
 	 * (project_wifi_power_sequence_authoritative memory), give the
-	 * chip a 1000 ms window to stabilise its SDIO output before the
-	 * first HTC TX goes out.  200 ms was insufficient (b58767a138c8
-	 * regression on-device retest, reverted at 1e10293be217); bump to
-	 * 1 s as the last cheap eliminator before committing to the
-	 * structural LPM-preserve work.
+	 * chip a 200 ms window to stabilise its SDIO output before the
+	 * first HTC TX goes out.
 	 */
-	msleep(1000);
+	msleep(200);
 
 	/*
 	 * The reason we have to wait for the target here is that the
