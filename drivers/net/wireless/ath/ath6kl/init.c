@@ -68,7 +68,19 @@ static const struct ath6kl_hw hw_list[] = {
 		.refclk_hz			= 26000000,
 		.uarttx_pin			= 8,
 		.testscript_addr		= 0x57ef74,
-		.flags				= ATH6KL_HW_SDIO_CRC_ERROR_WAR,
+		/*
+		 * No ATH6KL_HW_SDIO_CRC_ERROR_WAR for hw 2.1.1: the factory
+		 * webOS staging ath6kl driver gates that WAR strictly on
+		 * AR6003_REV2_VERSION (= hw 2.0, target_ver 0x30000384) via
+		 * ar6000_sysfs_bmi_get_config, and never touches the chip-side
+		 * GPIO_PIN10..PIN13 on hw 2.1.1 silicon. Forcing the WAR here
+		 * (which mainline did unconditionally) writes the chip's
+		 * SDIO pad-drive registers to values the factory deliberately
+		 * leaves at boot defaults, producing intermittent MCI_STARTBITERR
+		 * on tenderloin's mmci-pl18x SDCC during BMI/post-BMI CMD53s.
+		 * Match the factory gating: omit the flag.
+		 */
+		.flags				= 0,
 
 		.fw = {
 			.dir		= AR6003_HW_2_1_1_FW_DIR,
