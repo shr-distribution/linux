@@ -2005,8 +2005,30 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	timeout = data->timeout_clks + (unsigned int)clks;
 
 	base = host->base;
-	writel(timeout, base + MMCIDATATIMER);
-	writel(host->size, base + MMCIDATALENGTH);
+	/*
+	 * Defer DATATIMER + DATALENGTH writes when atomic-submit will be
+	 * taken (sdcc4 READS on qcom_dml + datactrl_first hosts).  Legacy
+	 * webOS msmsdcc_dma_exec_func writes DATATIMER + DATALENGTH +
+	 * DATACTRL + ARG + CMD all inside the IRQs-off exec_func window,
+	 * after the ADM descriptor is queued but before CMD_PTR fires --
+	 * so DPSM is armed in lockstep with CMD53 reaching the chip.
+	 * Writing DATALENGTH here, well before exec_func runs, would
+	 * mean DPSM picks up its byte-count register tens of µs before
+	 * CMD53 is on the wire; legacy's tight ordering produced clean
+	 * 128 B HTC mailbox reads while mainline corrupts them (root
+	 * cause of the A3 mailbox-read PIO split workaround at
+	 * ath6kl/sdio.c:228-250).
+	 *
+	 * Stash + suppress when atomic-submit qualifies; mmci_qcom_dml's
+	 * mmci_qcom_atomic_exec_func writes them inside the atomic window.
+	 */
+	if (mmci_should_atomic_submit(host, data)) {
+		host->atomic_submit.datatimer = timeout;
+		host->atomic_submit.datalen = host->size;
+	} else {
+		writel(timeout, base + MMCIDATATIMER);
+		writel(host->size, base + MMCIDATALENGTH);
+	}
 
 	datactrl = host->ops->get_datactrl_cfg(host);
 	datactrl |= host->data->flags & MMC_DATA_READ ? MCI_DPSM_DIRECTION : 0;

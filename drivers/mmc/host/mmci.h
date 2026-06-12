@@ -497,6 +497,8 @@ struct mmci_host {
 	 */
 	struct {
 		u32 datactrl;
+		u32 datatimer;
+		u32 datalen;
 		u32 cmd_arg;
 		u32 cmd_reg;
 		/*

@@ -109,6 +109,27 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 	delay_us = (host->variant->qcom_datactrl_delay) ?
 		(1 + 3000000 / (host->cclk ?: 1)) : 0;
 
+	/*
+	 * Match legacy webOS msmsdcc_dma_exec_func ordering:
+	 *
+	 *   MMCIDATATIMER  -> MMCIDATALENGTH  -> delay
+	 *   -> MMCIDATACTRL -> delay
+	 *   -> MMCIARGUMENT -> delay
+	 *   -> MMCICOMMAND
+	 *
+	 * DATATIMER + DATALENGTH MUST be written inside this atomic window
+	 * (ADM has the descriptor queued; we're inside the ADM submit_lock
+	 * just before CMD_PTR fires).  Writing them earlier in mmci_start_data
+	 * left DPSM with its byte-count loaded tens of microseconds before
+	 * CMD53 reached the chip on the wire, which on tenderloin/AR6003
+	 * corrupted single-CMD53 128 B HTC mailbox reads (root cause of
+	 * the A3 PIO split workaround at ath6kl/sdio.c:228-250).
+	 */
+	writel_relaxed(host->atomic_submit.datatimer, base + MMCIDATATIMER);
+	writel_relaxed(host->atomic_submit.datalen, base + MMCIDATALENGTH);
+	if (delay_us)
+		udelay(delay_us);
+
 	writel_relaxed(host->atomic_submit.datactrl, base + MMCIDATACTRL);
 	if (delay_us)
 		udelay(delay_us);
