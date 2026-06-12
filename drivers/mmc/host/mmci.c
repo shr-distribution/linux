@@ -1591,21 +1591,27 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 		unsigned int len = data->blksz * data->blocks;
 
 		/*
-		 * Vendor-faithful mmc1 PIO threshold: PIO if sub-fifosize OR
-		 * not a multiple of fifosize.  Matches legacy webOS msm_sdcc
-		 * validate_dma() so 128 B HTC mailbox traffic now uses DMA
-		 * just like the legacy driver does on ADM channel 21 with
-		 * 64-byte rows.
+		 * 2026-06-11 workaround retained for mmc1 WRITES: AR6003
+		 * mailbox WRITES of exactly the HTC block size (128 B) routed
+		 * through qcom_dml DMA result in CMDTIMEOUT on the CMD53 (the
+		 * CMD53 is sent but the chip never responds), confirmed by
+		 * a967fd52f6fb regression: dropping this threshold caused
+		 * probe -110 with "DMA submit OK ... CMDTIMEOUT cmd53
+		 * arg=0x941f0080 ... DATACTRL=0x809 ... error during DMA
+		 * transfer".  arg=0x941f0080 decodes to WR func1 byte INCR
+		 * 128 B @ chip 0xF80 (mailbox 0 tail = HTC TX packet).
 		 *
-		 * The 2026-06-11 256 B threshold workaround (force PIO < 256
-		 * to dodge mailbox DMA lookahead corruption at the then-active
-		 * 24 MHz MCLK) is dropped together with the ath6kl_sdio_io
-		 * mailbox-read PIO split.  With sdcc4 at 48 MHz (bc9052005979)
-		 * + mmci defensive stale-clear (e6bfb8e97687) + ath6kl SI
-		 * retry (db48f4b87bf9), the qcom_dml DMA path is byte-correct
-		 * on this hardware.
+		 * The mailbox-READ-side A3 split was dropped (sdio.c) -- at
+		 * 48 MHz with the SI retry / mmci defensive clear stack, reads
+		 * via DMA at len >= 256 B are byte-correct.  Keep PIO for
+		 * len < 256 B mailbox writes via this threshold to match the
+		 * vendor msm_sdcc validate_dma() ceiling on what it routes
+		 * through ADM.
+		 *
+		 * If the underlying mailbox-WRITE DMA-path bug is ever
+		 * root-caused we can lower this threshold back to fifosize.
 		 */
-		if (len < variant->fifosize || (len % variant->fifosize))
+		if (len < 256 || (len % variant->fifosize))
 			return -EINVAL;
 	} else if (data->blksz * data->blocks <=
 		   (variant->dma_threshold ?: variant->fifosize)) {
