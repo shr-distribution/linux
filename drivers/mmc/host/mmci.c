@@ -1939,9 +1939,37 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 	 * card programming. The DMA-write completion path polls for it (see
 	 * mmci_data_irq) to avoid issuing the next CMD53 while the AR6003 is
 	 * still programming the just-written mailbox.
+	 *
+	 * Also snapshot + clear any stale data-error latches (STARTBITERR,
+	 * DATATIMEOUT, DATACRCFAIL, TX/RX FIFO overflow). MMCISTATUS error bits
+	 * are sticky on the qcom SDCC variant; a residue from a prior glitched
+	 * transfer would otherwise feed straight into this transfer's IRQ path
+	 * and look like a fresh error.  Observed on tenderloin/AR6003 as
+	 * post-fw-boot CMD53 wedges: the chip's pin-drive misconfiguration left
+	 * STARTBITERR (bit 9) latched, the very next set_addrwin_reg CMD53 then
+	 * timed out -110.  We log the residue ratelimited so a real recurring
+	 * problem is still visible.
 	 */
-	if (host->mmc->index == 1)
+	if (host->mmc->index == 1) {
+		u32 stale;
+		u32 stale_mask = MCI_STARTBITERR | MCI_DATATIMEOUT |
+				 MCI_DATACRCFAIL | MCI_TXUNDERRUN |
+				 MCI_RXOVERRUN;
+
+		stale = readl(host->base + MMCISTATUS) & stale_mask;
+		if (stale) {
+			static DEFINE_RATELIMIT_STATE(rs, HZ, 5);
+
+			if (__ratelimit(&rs))
+				dev_warn(mmc_dev(host->mmc),
+					 "clearing stale data-error residue 0x%08x before CMD53 (DATACNT=%u DATACTRL=0x%08x)\n",
+					 stale,
+					 readl(host->base + MMCIDATACNT),
+					 readl(host->base + MMCIDATACTRL));
+			writel(stale, host->base + MMCICLEAR);
+		}
 		writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
+	}
 
 	clks = (unsigned long long)data->timeout_ns * host->cclk;
 	do_div(clks, NSEC_PER_SEC);
