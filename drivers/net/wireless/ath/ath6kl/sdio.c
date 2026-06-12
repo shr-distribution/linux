@@ -31,6 +31,20 @@
 #include "cfg80211.h"
 #include "trace.h"
 
+/*
+ * Runtime knob to skip the 32 B PIO mailbox-read split (A3 workaround).
+ * Default keeps the split.  Toggle via:
+ *   echo 1 > /sys/module/ath6kl_sdio/parameters/skip_mbox_read_split
+ * Used to A/B test whether the host-side DPSM-arm-timing fix
+ * (mmci: write DATATIMER+DATALENGTH inside atomic exec_func) lets the
+ * single-CMD53 128 B DMA mailbox read return correct data.
+ */
+static bool ath6kl_sdio_skip_mbox_read_split;
+module_param_named(skip_mbox_read_split, ath6kl_sdio_skip_mbox_read_split,
+		   bool, 0644);
+MODULE_PARM_DESC(skip_mbox_read_split,
+		 "Skip the 32 B PIO split for >=64 B mailbox reads (A3 workaround retirement test)");
+
 struct ath6kl_sdio {
 	struct sdio_func *func;
 
@@ -225,7 +239,7 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 				addr <= HIF_MBOX_END_ADDR) ||
 			       addr == HIF_MBOX0_EXT_BASE_ADDR;
 
-		if (in_mbox && len >= 64) {
+		if (in_mbox && len >= 64 && !ath6kl_sdio_skip_mbox_read_split) {
 			u32 off = 0;
 			const u32 chunk_sz = 32; /* < fifosize=64 -> PIO */
 
