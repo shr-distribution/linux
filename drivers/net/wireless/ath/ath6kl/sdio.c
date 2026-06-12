@@ -233,14 +233,16 @@ static int ath6kl_sdio_io(struct sdio_func *func, u32 request, u32 addr,
 			const u32 chunk_sz = 32; /* < fifosize=64 -> PIO */
 
 			/*
-			 * Logged at pr_info so the trigger is visible in
-			 * dmesg without enabling debug_mask -- this confirms
-			 * the workaround actually fires on the failing path.
-			 * Will be downgraded to ath6kl_dbg once the underlying
-			 * DMA-path corruption is rooted.
+			 * Trigger gated behind ath6kl_dbg so it doesn't fire
+			 * on every HTC RX packet at sustained download rates
+			 * (was pr_info during bring-up debugging; the resulting
+			 * console+syslog serialisation capped WiFi throughput
+			 * at ~3 Mbps on a 150 Mbit/s link).  Enable
+			 * ATH6KL_DBG_SDIO via debug_mask to see it again.
 			 */
-			pr_info("ath6kl: mbox RD %u B @ 0x%x: splitting into %u-B PIO chunks (DMA path corrupts on AR6003/tenderloin)\n",
-				len, addr, chunk_sz);
+			ath6kl_dbg(ATH6KL_DBG_SDIO,
+				   "mbox RD %u B @ 0x%x: splitting into %u-B PIO chunks (DMA path corrupts on AR6003/tenderloin)\n",
+				   len, addr, chunk_sz);
 
 			while (off < len) {
 				u32 this_chunk = min(chunk_sz, len - off);

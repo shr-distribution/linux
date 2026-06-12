@@ -288,11 +288,7 @@ static int ath6kl_connectservice(struct ath6kl *ar,
 
 	memset(&response, 0, sizeof(response));
 
-	pr_info("ath6kl-trace: connectservice(%s, svc_id=0x%x): calling htc_conn_service\n",
-		desc, con_req->svc_id);
 	status = ath6kl_htc_conn_service(ar->htc_target, con_req, &response);
-	pr_info("ath6kl-trace: connectservice(%s): htc_conn_service returned %d, response endpoint=%u\n",
-		desc, status, response.endpoint);
 	if (status) {
 		ath6kl_err("failed to connect to %s service status:%d\n",
 			   desc, status);
@@ -1831,37 +1827,30 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 	char buf[200];
 
 	ath6kl_dbg(ATH6KL_DBG_BOOT, "hw start\n");
-	pr_info("ath6kl-trace: __ath6kl_init_hw_start enter\n");
 
 	ret = ath6kl_hif_power_on(ar);
 	if (ret)
 		return ret;
-	pr_info("ath6kl-trace: hif power on OK\n");
 
 	ret = ath6kl_configure_target(ar);
 	if (ret)
 		goto err_power_off;
-	pr_info("ath6kl-trace: configure_target OK\n");
 
 	ret = ath6kl_init_upload(ar);
 	if (ret)
 		goto err_power_off;
-	pr_info("ath6kl-trace: init_upload (BMI download) OK\n");
 
 	/* Do we need to finish the BMI phase */
 	ret = ath6kl_bmi_done(ar);
 	if (ret)
 		goto err_power_off;
-	pr_info("ath6kl-trace: bmi_done OK\n");
 
 	/*
 	 * The reason we have to wait for the target here is that the
 	 * driver layer has to init BMI in order to set the host block
 	 * size.
 	 */
-	pr_info("ath6kl-trace: calling htc_wait_target\n");
 	ret = ath6kl_htc_wait_target(ar->htc_target);
-	pr_info("ath6kl-trace: htc_wait_target returned %d\n", ret);
 
 	if (ret == -ETIMEDOUT) {
 		/*
@@ -1878,27 +1867,22 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 		goto err_power_off;
 	}
 
-	pr_info("ath6kl-trace: calling init_service_ep\n");
 	ret = ath6kl_init_service_ep(ar);
 	if (ret) {
 		ath6kl_err("Endpoint service initialization failed: %d\n", ret);
 		goto err_cleanup_scatter;
 	}
-	pr_info("ath6kl-trace: init_service_ep OK\n");
 
 	/* setup credit distribution */
 	ath6kl_htc_credit_setup(ar->htc_target, &ar->credit_state_info);
-	pr_info("ath6kl-trace: credit_setup OK\n");
 
 	/* start HTC */
-	pr_info("ath6kl-trace: calling htc_start\n");
 	ret = ath6kl_htc_start(ar->htc_target);
 	if (ret) {
 		/* FIXME: call this */
 		ath6kl_cookie_cleanup(ar);
 		goto err_cleanup_scatter;
 	}
-	pr_info("ath6kl-trace: htc_start OK; waiting for WMI_READY...\n");
 
 	/*
 	 * Wait for Wmi event to be ready.
