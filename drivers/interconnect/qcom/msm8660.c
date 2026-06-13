@@ -1182,8 +1182,39 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 			       icc_units_to_bps(n->peak_bw));
 		bw_128k = (u16)min_t(u64, bw_bytes >> 17, ARB_BWMASK);
 
-		/* Set arb entry for masters at their default tiered slave */
-		if (qn->mas_port >= 0 && qn->mas_port < nm && def_ts > 0) {
+		/*
+		 * Set arb entry only for REAL masters (mas_port set AND no
+		 * slv_port).  Gateway / cross-fabric transit nodes have BOTH
+		 * mas_port and slv_port set -- they appear as masters on
+		 * their downstream fabric so the path-finder can route
+		 * traffic, but their bandwidth represents *traffic in transit*
+		 * not arbitration demand local to this fabric.
+		 *
+		 * Legacy webOS msm_bus_fabric_update_bw (msm_bus_fabric.c:427-457)
+		 * only accumulates arb entries from real masters -- gateway
+		 * nodes have no `.tier` field set in msm_bus_board_8660.c and
+		 * thus get default-tier treatment without an explicit arb slot.
+		 *
+		 * Including gateways in the arb write (previous mainline behaviour)
+		 * had a load-bearing side effect: gateways like afab_to_mmss
+		 * were elevated to ARB_TIER1 (msm8660.c:351 before this fix) to
+		 * preserve MDP's TIER1 priority across the AFAB boundary, but
+		 * with the simplified "all arb writes go to row (def_ts - 1)"
+		 * commit logic that TIER1 elevation ends up registered against
+		 * the EBI_CH0 arb row -- biasing EBI arbitration away from ADM
+		 * PORT0/PORT1 (TIER2) continuously, every time MMSS was alive.
+		 *
+		 * Symptom (resolved by this commit): concurrent eMMC WRITE +
+		 * WiFi DL hit DATATIMEOUT at ~11% of a 520 KB transfer
+		 * (DATALEN=532480 DATACNT=56320 errbits=(none latched)
+		 * RXOVERRUN=fabric/ADM drain starvation) because the ADM
+		 * couldn't drain the SDCC TX FIFO into EBI fast enough.
+		 *
+		 * See reports/icc-audit-2026-06-13.md Section 6 for the full
+		 * audit trail across legacy vs mainline tier programming.
+		 */
+		if (qn->mas_port >= 0 && qn->mas_port < nm && def_ts > 0 &&
+		    qn->slv_port < 0) {
 			int idx = (def_ts - 1) * nm + qn->mas_port;
 			u8 tier;
 
