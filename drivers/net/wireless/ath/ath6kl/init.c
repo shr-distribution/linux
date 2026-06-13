@@ -461,6 +461,15 @@ out:
 	return status;
 }
 
+/*
+ * Forward declarations for the BTCOEX DT helpers.  The real definitions
+ * live in the CONFIG_OF block below (and a stub pair in the #else
+ * branch); both forms need to be visible to ath6kl_target_config_wlan_params
+ * which calls them before either definition appears in the file.
+ */
+static int ath6kl_dt_btcoex_fe_ant(u8 *value);
+static int ath6kl_dt_btcoex_colocated_bt(u8 *value);
+
 static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 {
 	int ret;
