@@ -2962,30 +2962,6 @@
 		compatible = "atheros,ath6kl";
 		reg = <1>;
 		atheros,board-id = "SD32";
-
-		/*
-		 * AR6003 chip-internal 1.8 V supply (VDD_1V8 net).
-		 *
-		 * pm8058_l19 is declared regulator-always-on so the rail
-		 * is up at boot, but ALWAYS-ON only controls enable -- not
-		 * load mode.  Without a consumer requesting HPM (high
-		 * power mode), the PMIC keeps l19 in LPM (~ 10 mA ceiling).
-		 * AR6003's BMI firmware-upload path draws significantly
-		 * more than 10 mA on this rail; LPM droops the voltage
-		 * below the chip's POR threshold mid-upload and the chip
-		 * silently stays in a half-booted state where function 0
-		 * (CIS) still answers but function 1 (BMI register space
-		 * at 0x400 / HOST_INT_STATUS) returns CMDTIMEOUT.
-		 *
-		 * ath6kl_sdio_probe (drivers/net/wireless/ath/ath6kl/sdio.c:1438)
-		 * looks up "vdd-1v8" via devm_regulator_get_optional and,
-		 * if present, calls regulator_set_load(100000) before
-		 * regulator_enable() -- switching the PMIC to HPM for the
-		 * lifetime of the WiFi consumer.  Wiring it here is what
-		 * triggers that path; without this property the driver
-		 * silently sees -ENODEV and skips the HPM switch.
-		 */
-		vdd-1v8-supply = <&pm8058_l19>;
 	};
 };
 
