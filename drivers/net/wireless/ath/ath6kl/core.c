@@ -17,6 +17,7 @@
 
 #include "core.h"
 
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/export.h>
@@ -63,11 +64,45 @@ void ath6kl_core_rx_complete(struct ath6kl *ar, struct sk_buff *skb, u8 pipe)
 }
 EXPORT_SYMBOL(ath6kl_core_rx_complete);
 
+/*
+ * Per-probe wall-time budget.  We do not want a wedged chip to keep
+ * ath6kl_core_init() running forever -- it gets called with the device
+ * model's device_lock held, and the probe path takes rtnl_lock during
+ * netdev registration / vif cleanup.  Letting the probe drag on past
+ * the watchdog hung-task threshold (120 s default) means every
+ * subsequent getifaddrs() / rtnetlink dump from userspace blocks,
+ * killing sshd, connman, and any other network tooling.
+ *
+ * 10 s is more than enough for a real probe (~1 s on healthy hardware)
+ * and bounds the impact of a wedged chip to a single short stall.
+ *
+ * The budget is checked between major probe steps (each of which can
+ * itself burn several BMI_COMMUNICATION_TIMEOUT intervals); deeper
+ * checks would require threading a deadline through every BMI call
+ * site, which is out of proportion for an upper-bound safety net.
+ */
+#define ATH6KL_PROBE_BUDGET_MS	10000
+
+static int ath6kl_probe_budget_remaining(unsigned long deadline,
+					 const char *what)
+{
+	if (time_after_eq(jiffies, deadline)) {
+		ath6kl_err("probe budget exhausted before %s -- aborting (chip likely wedged)\n",
+			   what);
+		return -ETIMEDOUT;
+	}
+	return 0;
+}
+
 int ath6kl_core_init(struct ath6kl *ar, enum ath6kl_htc_type htc_type)
 {
 	struct ath6kl_bmi_target_info targ_info;
 	struct wireless_dev *wdev;
+	unsigned long probe_deadline;
 	int ret = 0, i;
+
+	probe_deadline = jiffies +
+			 msecs_to_jiffies(ATH6KL_PROBE_BUDGET_MS);
 
 	switch (htc_type) {
 	case ATH6KL_HTC_TYPE_MBOX:
@@ -97,6 +132,10 @@ int ath6kl_core_init(struct ath6kl *ar, enum ath6kl_htc_type htc_type)
 	ret = ath6kl_hif_power_on(ar);
 	if (ret)
 		goto err_bmi_cleanup;
+
+	ret = ath6kl_probe_budget_remaining(probe_deadline, "bmi_get_target_info");
+	if (ret)
+		goto err_power_off;
 
 	ret = ath6kl_bmi_get_target_info(ar, &targ_info);
 	if (ret)
@@ -187,6 +226,10 @@ int ath6kl_core_init(struct ath6kl *ar, enum ath6kl_htc_type htc_type)
 	set_bit(FIRST_BOOT, &ar->flag);
 
 	ath6kl_debug_init(ar);
+
+	ret = ath6kl_probe_budget_remaining(probe_deadline, "init_hw_start");
+	if (ret)
+		goto err_rxbuf_cleanup;
 
 	ret = ath6kl_init_hw_start(ar);
 	if (ret) {

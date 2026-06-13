@@ -214,7 +214,23 @@
  * Note: Not supported on all versions of ROM firmware.
  */
 
-#define BMI_COMMUNICATION_TIMEOUT       5000 /* in msec - increased for AR6003 */
+/*
+ * Per-BMI-command timeout in milliseconds.
+ *
+ * BMI is a tight-poll register-read protocol over SDIO; a healthy AR6003
+ * chip responds in < 5 ms.  The historic 5000 ms ceiling was chosen as a
+ * "long enough to never spuriously trip" upper bound, but in practice
+ * any chip taking more than ~100 ms to advance is wedged and won't
+ * recover by polling longer.  Meanwhile, while one BMI command is in
+ * progress, the surrounding ath6kl probe holds device_lock (and the
+ * probe's cleanup path holds rtnl_lock) -- so a wedged chip can block
+ * every userspace getifaddrs() call for tens of seconds, breaking sshd,
+ * connman and any other tooling that opens a netlink socket.
+ *
+ * Cut to 1000 ms so probe failure is bounded to a few seconds across
+ * all BMI cmds, releasing the locks before userspace impact is felt.
+ */
+#define BMI_COMMUNICATION_TIMEOUT       1000 /* in msec */
 
 struct ath6kl;
 struct ath6kl_bmi_target_info {
