@@ -1507,7 +1507,66 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	}
 
 	ret = ath6kl_core_init(ar, ATH6KL_HTC_TYPE_MBOX);
-	if (ret) {
+	if (ret == -ETIMEDOUT || ret == -110) {
+		/*
+		 * Cold-boot probe failure path -- the AR6003 BMI bootloader
+		 * is wedged (no response to register reads, BMI command
+		 * credit refresh stuck) and ath6kl_core_init() bailed out
+		 * via either the per-BMI-cmd 1 s timeout or the overall 10 s
+		 * probe budget added in 308bebc37231.  core_init()'s
+		 * err_power_off chain already tore the partial init back
+		 * down, so all wq/bmi/hif state is cleanly freed.
+		 *
+		 * Try once to unwedge via a proper mmc-pwrseq power-cycle.
+		 * mmc_hw_reset() drives the SDIO card through
+		 * mmc_sdio_hw_reset(), which calls mmc_power_cycle()
+		 * (toggles pwrseq-simple's reset-gpios -- gpio135 WLAN_RST_N
+		 * -- LOW for the documented post-power-up delay, then HIGH
+		 * again) and then mmc_sdio_reinit_card() to re-run
+		 * CMD52/CMD5/CMD3/CMD7 on the same struct sdio_func.
+		 * Crucially this does NOT touch the mmci-pl18x host driver
+		 * state, so the eMMC controller at the other mmci instance
+		 * (12400000.mmc) keeps running uninterrupted -- avoiding the
+		 * cross-controller eMMC CMD6 cmdtimeout cascade observed
+		 * when recovery was previously attempted by unbinding mmc1's
+		 * amba host.
+		 *
+		 * After the reset we re-run ath6kl_core_init() against a
+		 * fresh chip.  Only one retry is attempted -- a second wedge
+		 * after a clean power-cycle indicates something genuinely
+		 * broken, not the cold-boot BMI race, and we want to surface
+		 * that as a normal probe failure instead of looping.
+		 */
+		ath6kl_warn("BMI wedged at cold-boot probe (rv=%d); attempting mmc_hw_reset + retry\n",
+			    ret);
+
+		sdio_claim_host(func);
+		ret = mmc_hw_reset(func->card);
+		sdio_release_host(func);
+
+		if (ret) {
+			ath6kl_err("mmc_hw_reset failed: %d -- chip remains wedged\n",
+				   ret);
+			ret = -ETIMEDOUT;
+			goto err_core_alloc;
+		}
+
+		/*
+		 * Brief settle after the pwrseq HIGH edge.  Mirrors the
+		 * documented 100 ms AR6003 boot-stabilisation gap (see
+		 * a6fadc17e436 "ath6kl: add 100 ms BMI->HTC settle for
+		 * AR6003 on APQ8060").
+		 */
+		msleep(100);
+
+		ret = ath6kl_core_init(ar, ATH6KL_HTC_TYPE_MBOX);
+		if (ret) {
+			ath6kl_err("retry after mmc_hw_reset still failed: %d\n",
+				   ret);
+			goto err_core_alloc;
+		}
+		ath6kl_info("recovered from cold-boot BMI wedge via mmc_hw_reset\n");
+	} else if (ret) {
 		ath6kl_err("Failed to init ath6kl core\n");
 		goto err_core_alloc;
 	}
