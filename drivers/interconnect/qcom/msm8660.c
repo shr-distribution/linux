@@ -125,6 +125,19 @@ static const struct clk_bulk_data msm8660_dfab_clocks[] = {
  * @mas_port: master port index for RPM ARB (-1 if not a master)
  * @slv_port: slave port index for RPM bwsum (-1 if not a slave)
  * @mas_tier: master priority tier (ARB_TIER1 or ARB_TIER2, 0 if N/A)
+ * @no_arb: skip arb-row write for this master port even when @mas_port
+ *	    is valid.  Used for cross-fabric gateways that legacy webOS
+ *	    msm_bus_fabric (and the underlying RPM expectations) leaves
+ *	    at arb=0 on their parent fabric.  Their BWSum contributions
+ *	    are still aggregated so EBI / fabric clocks scale correctly;
+ *	    only the arb cell is suppressed so the RPM arbiter does not
+ *	    see them as competing masters competing with the real masters
+ *	    on the same fabric.  Confirmed against on-device legacy
+ *	    /sys/kernel/debug/msm-bus-dbg/commit-data dumps (2026-06-13):
+ *	    afab_to_mmss arb is TIER1+bw when MDP votes (no_arb=false);
+ *	    afab_to_system, sfab_to_appss, sfab_to_dfab, dfab_to_sfab,
+ *	    and mmfab_to_appss are all 0 in their respective fabrics'
+ *	    arb tables (no_arb=true).
  * @link_nodes: flexible array of pointers to qnodes reachable from this node
  */
 struct msm8660_icc_node {
@@ -135,6 +148,7 @@ struct msm8660_icc_node {
 	s8 mas_port;
 	s8 slv_port;
 	u8 mas_tier;
+	bool no_arb;
 	struct msm8660_icc_node *link_nodes[];
 };
 
@@ -338,36 +352,39 @@ static struct msm8660_icc_node slv_ampss_l2 = {
  * AFAB_TO_MMSS doubles as AFAB master port 2 (the FAB_MMSS master). MDP
  * scanout and GPU traffic enter AFAB through this gateway.
  *
- * 2026-06-13: Reverted from ARB_TIER1 -> ARB_TIER2 to restore legacy
- * webOS msm_bus_fabric semantics (msm_bus_board_8660.c:222-228 -- gateway
- * has no `.tier` field, defaults to TIER2 per msm_bus_fabric.c:427-429).
+ * 2026-06-13: TIER1 RESTORED on afab_to_mmss after live legacy webOS
+ * capture (/sys/kernel/debug/msm-bus-dbg/commit-data/msm_apps_fab on
+ * topaz running webOS 3.0.5) showed the EBI_CH0 arb cell for AFAB
+ * master port 2 contains TIER1+bw whenever MDP votes EBI traffic:
  *
- * The previous TIER1 elevation was intended to preserve MDP TIER1
- * priority across the AFAB boundary, but mainline's arb-row addressing
- * (msm8660.c:1186-1194) writes ALL master arb entries -- including
- * gateways -- into the SAME row (def_ts-1 = EBI_CH0 row for AFAB).
- * The TIER1 elevation therefore registered against the EBI_CH0 arb
- * row, biasing EBI arbitration AWAY from ADM PORT0/PORT1 (TIER2) every
- * cycle the MMSS subsystem was alive (i.e., always while the display
- * is scanning out).
+ *   msm_apps_fab BWSum:
+ *     0x9f4  0x0  0x0  0x0
+ *   Arb TSlave 0 (EBI_CH0 row):
+ *     0x0   0x0   0x89f4   0x0
+ *                  ^^^^^^
+ *                  TIER1 bit (0x8000) + 0x9f4 BW
+ *                  (afab_to_mmss master port carrying MDP fetch traffic)
  *
- * Symptom: concurrent eMMC + WiFi DL hit DATATIMEOUT / DATACRCFAIL with
- *   adm-dma-engine: ADM-DIAG ch2 FLUSH result=0x80000004
- *                   FLUSH_STATE0=0x8000c003 (SDCC drain stalled)
- *   mmci-pl18x: DIAG[DATACRCFAIL]: errbits: (none latched)
- *               (RXOVERRUN=fabric/ADM drain starvation)
- *   CMDTIMEOUT cmd12/cmd13 cascade -> jbd2 hung_task
- * The ADM could not drain the SDCC FIFO into EBI fast enough because
- * AFAB cycles were TIER1-biased toward MMSS-bound traffic.
+ * The legacy msm_bus_board_8660.c gateway nodes have no static `.tier`
+ * field, but the runtime path-traversal in msm_bus_fabric_update_bw
+ * accumulates the SLAVE's tier (EBI_CH0 = TIER1) onto each transit
+ * master arb cell.  Mainline must mirror this so MDP TIER1 priority is
+ * preserved across the MMFAB->AFAB boundary as legacy intended.
  *
- * Full audit at Documentation/icc-msm8660-audit-2026-06-13.md.
+ * The earlier concern that TIER1 on this gateway would starve ADM/SDC
+ * is addressed by @no_arb on afab_to_system (gateway carrying SDC/ADM
+ * traffic) -- in legacy that gateway has 0 arb entry because SDC/ADM
+ * don't vote msm_bus_scale at all (they drive EBI via clk_set_rate on
+ * ebi1_clk directly).  Mainline mmci + qcom_adm DO icc_set_bw, which
+ * would propagate BW into afab_to_system's arb cell at TIER2 and create
+ * the contention legacy never had.  Suppressing the arb cell on the
+ * SDC/ADM gateway (while keeping its BWSum aggregation so EBI clock
+ * still scales) restores the legacy ordering: MDP fetches at TIER1
+ * unopposed, SDC/ADM drain on hardware-default round-robin at the EBI
+ * floor clock rate (314 MHz min observed live on legacy).
  *
- * Trade-off: MDP fetches lose the TIER1 elevation at the AFAB boundary,
- * matching legacy webOS behaviour where MDP TIER1 priority was confined
- * to MMFAB-local arbitration.  If PRIMARY_INTF_UDERRUN reappears under
- * heavy concurrent I/O, the proper fix is per-slave-tier arb addressing
- * (audit Section 7 Fix 3 -- multi-row arb so MDP TIER1 stays in the
- * SMI/MMSS arb row without leaking into EBI), not re-elevating gateways.
+ * Full audit at Documentation/icc-msm8660-audit-2026-06-13.md;
+ * legacy state capture in reports/icc-legacy-live-state-2026-06-13.md.
  */
 static struct msm8660_icc_node afab_to_mmss = {
 	.name = "afab_to_mmss",
@@ -375,10 +392,39 @@ static struct msm8660_icc_node afab_to_mmss = {
 	.buswidth = 8,
 	.mas_port = 2,
 	.slv_port = 2,
-	.mas_tier = ARB_TIER2,
+	.mas_tier = ARB_TIER1,
 	.link_nodes = { &mmfab_to_appss, &slv_ebi_ch0 },
 };
 
+/*
+ * afab_to_system: SFAB->AFAB gateway -- the AFAB-side master that
+ * receives all SFAB-originated traffic (mmci sdcc1, mmci sdcc4,
+ * qcom_adm channels) and propagates it to slv_ebi_ch0.
+ *
+ * @no_arb = true: legacy webOS keeps this AFAB arb cell at 0 because
+ * msm_bus_fabric never sees any consumer voting through it -- SDC and
+ * ADM drivers in legacy use clock-tree voting (clk_set_rate on
+ * ebi1_clk, dfab_pclk) rather than msm_bus_scale.  Live capture
+ * confirms:
+ *
+ *   Arb TSlave 0 (EBI_CH0 row):
+ *     0x0   0x0   0x89f4   0x0
+ *                          ^^^
+ *                          port 3 (afab_to_system) = 0 (legacy)
+ *
+ * Mainline mmci + qcom_adm DO icc_set_bw, so path traversal would
+ * accumulate (SDC1 + SDC4 + ADM1 PORT0 + ADM1 PORT1) bandwidth into
+ * this gateway's arb cell at ARB_TIER2.  That mainline-only arb entry
+ * competes against afab_to_mmss (TIER1, MDP) for EBI -- but more
+ * critically, when MDP is NOT voting (afab_to_mmss arb=0) the gateway
+ * still represents a large TIER2 demand that confuses the RPM arbiter
+ * relative to the legacy fabric where this cell is always 0.
+ *
+ * Setting no_arb = true tells msm8660_rpm_commit() to skip the arb
+ * write for this node while still aggregating BWSum on slv_ebi_ch0
+ * (so EBI clock scales with SDC/ADM bandwidth demand, matching what
+ * legacy's separate ebi1_clk path achieves).
+ */
 static struct msm8660_icc_node afab_to_system = {
 	.name = "afab_to_system",
 	.num_links = 2,
@@ -386,6 +432,7 @@ static struct msm8660_icc_node afab_to_system = {
 	.mas_port = 3,
 	.slv_port = 3,
 	.mas_tier = ARB_TIER2,
+	.no_arb = true,
 	.link_nodes = { &sfab_to_appss, &slv_ebi_ch0 },
 };
 
@@ -867,19 +914,28 @@ static struct msm8660_icc_node mmfab_mas_hd_codec_port1 = {
 
 /*
  * Gateway from APPSS into MMSS: slave (port 1) for outbound traffic
- * leaving MMSS, AND master (port 2) for inbound traffic arriving from
+ * leaving MMSS, AND master (port 11) for inbound traffic arriving from
  * APPSS (e.g. CPU memremap_wc accesses to SMI BOs). Without the master
  * port and the forward links into MMFAB slaves (SMI / MM_IMEM), the
  * ICC path-finder has no route from AMPSS_M0 to MMFAB_SLV_SMI; the
  * cross-fabric gateway only worked for outbound traffic (MMSS masters
  * reaching APPSS slaves like EBI).
  *
- * 2026-06-13: Reverted from ARB_TIER1 -> ARB_TIER2 (same rationale as
- * afab_to_mmss above): mainline's arb-row addressing leaks the gateway
- * TIER1 elevation into the MMFAB default tiered slave row (def_ts=2 =
- * APPSS gateway), de-prioritising every other MMFAB master for AMPSS-
- * bound traffic.  Legacy webOS msm_bus_board_8660.c gateway nodes have
- * no `.tier` field set.  Restoring TIER2 to match.
+ * @no_arb = true: legacy live capture of MMFAB arb at port 11 (this
+ * gateway's master port within MMFAB) is always 0 regardless of MDP,
+ * GPU, codec or camera activity:
+ *
+ *   msm_mm_fab Arb TSlave 1 (APPSS gateway row):
+ *     0x89f4 0x0 0x0 0x0 0x3bd7 0x0 ... 0x0
+ *     ^^^^^^                              ^^
+ *     port 0 = MDP_PORT0 (TIER1+bw)       port 11 = mmfab_to_appss = 0
+ *
+ * Legacy populates only the real MMSS master arb cells (MDP, GPU);
+ * the gateway port is not a "competing master" against them within
+ * MMFAB.  Mirroring that here keeps the arb cells representing the
+ * actual MMFAB-local arbitration ordering.  BWSum on slv_port 1 still
+ * aggregates the outbound MMSS->AFAB traffic (so the MMFAB clock
+ * scales correctly).
  */
 static struct msm8660_icc_node mmfab_to_appss = {
 	.name = "mmfab_to_appss",
@@ -888,6 +944,7 @@ static struct msm8660_icc_node mmfab_to_appss = {
 	.mas_port = 11,
 	.slv_port = 1,
 	.mas_tier = ARB_TIER2,
+	.no_arb = true,
 	.link_nodes = { &afab_to_mmss, &mmfab_slv_smi, &mmfab_slv_mm_imem },
 };
 
@@ -1213,8 +1270,21 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 			       icc_units_to_bps(n->peak_bw));
 		bw_128k = (u16)min_t(u64, bw_bytes >> 17, ARB_BWMASK);
 
-		/* Set arb entry for masters at their default tiered slave */
-		if (qn->mas_port >= 0 && qn->mas_port < nm && def_ts > 0) {
+		/*
+		 * Set arb entry for masters at their default tiered slave.
+		 *
+		 * @no_arb gateways are skipped here per legacy webOS live
+		 * arb captures (commit-data/msm_apps_fab on running webOS
+		 * 3.0.5, 2026-06-13): cross-fabric gateways carrying
+		 * SDC/ADM-class traffic that legacy never sees via
+		 * msm_bus_scale -- mainline's icc_set_bw votes would
+		 * propagate their accumulated bw into a phantom TIER2 arb
+		 * cell that competes with the legitimate TIER1 master
+		 * arbitration (afab_to_mmss/MDP).  Their BWSum contribution
+		 * is still applied below so EBI / fabric clocks scale.
+		 */
+		if (qn->mas_port >= 0 && qn->mas_port < nm && def_ts > 0 &&
+		    !qn->no_arb) {
 			int idx = (def_ts - 1) * nm + qn->mas_port;
 			u8 tier;
 
