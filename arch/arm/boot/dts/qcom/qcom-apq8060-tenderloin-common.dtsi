@@ -2116,6 +2116,20 @@
 		 */
 		drive-strength = <8>;
 		bias-disable;
+		/*
+		 * Explicitly clear the TLMM GPIO_OE bit (bit 9 of TLMM_GPIO_CFG)
+		 * so transitions back from gsbi6_uart_txrts_gpio_pins -- which
+		 * sets output-high on gpio53/56 for the BT wake glitch -- don't
+		 * leave bit 9 latched.  With function=gsbi6 the alt function
+		 * drives the signals anyway, so input-enable here is purely
+		 * cosmetic for the register state, but matters for matching
+		 * the legacy live capture (CFG=0x000000c4 on legacy vs
+		 * 0x000002c4 on mainline without this clear -- see
+		 * reports/board-audit/pvt-{legacy,mainline}-FULL-2026-06-13.txt).
+		 * Verified on PVT Topaz Wifi 2026-06-13: gpio53/56 settle to
+		 * CFG=0x000000c4 with this property, matching legacy webOS.
+		 */
+		input-enable;
 	};
 
 	/*
