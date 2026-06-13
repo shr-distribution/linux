@@ -778,6 +778,33 @@ void ath6kl_cfg80211_connect_event(struct ath6kl_vif *vif, u16 channel,
 				   "%s: ath6k not in station mode\n", __func__);
 			return;
 		}
+
+		/*
+		 * ath6kl_cfg80211_connect() inflates the listen interval to
+		 * ATH6KL_MAX_WOW_LISTEN_INTL (300 TUs) before issuing
+		 * WMI_CONNECT_CMD so the value advertised to the AP in the
+		 * (Re)Association Request honours the maximum the chip might
+		 * need during a future WoW suspend.  The factory Palm
+		 * ar6000.ko (legacy webOS staging ath6kl) immediately resets
+		 * the chip-side listen interval back to the per-VIF default
+		 * (typically 100 TUs) once the chip raises WMI_CONNECT_EVENT
+		 * -- see legacy ar6000_connect_event() in
+		 * webos/drivers/staging/ath6kl/os/linux/ar6000_drv.c:4407.
+		 *
+		 * Mainline ath6kl forgot to issue that second
+		 * wmi_listeninterval_cmd, so the active session was stuck at
+		 * 300 TUs after association.  Even in MAX_PERF_POWER mode
+		 * the AR6003 firmware uses the listen interval for its
+		 * internal RX scheduler / Block-Ack window pacing, which
+		 * starves bulk RX: a 100 MB DL at 5 GHz / -50 dBm dropped
+		 * from legacy's 27 Mbps to mainline's 13-17 Mbps with the
+		 * chip-side stats reporting 15.6 % CRC errors and the AP
+		 * rate-adapting RX from 135 Mbps down to 27 Mbps.
+		 *
+		 * Replicating the legacy reset closes that throughput gap.
+		 */
+		ath6kl_wmi_listeninterval_cmd(ar->wmi, vif->fw_vif_idx,
+					      vif->listen_intvl_t, 0);
 	}
 
 	chan = ieee80211_get_channel(ar->wiphy, (int) channel);
