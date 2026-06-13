@@ -306,11 +306,49 @@ static int touchpad_tokens_load_storage(struct touchpad_tokens_priv *priv,
 		return -ENOMEM;
 	}
 
-	r = kernel_read(fp, priv->raw, priv->raw_size, &pos);
+	/*
+	 * Disable page-cache readahead on /dev/mmcblk0p12 -- mmcblk0p12 is
+	 * a tiny 504-block (~258 KB) partition on the eMMC user data
+	 * area, smaller than the default readahead window.  When we
+	 * kernel_read() 64 KB from it, the block layer treats the
+	 * remaining ~194 KB as cheap prefetch and issues a single
+	 * 504-block DMA request to the mmci-pl18x controller (visible in
+	 * dmesg as "blocks=504 flags=0x200").  That single big read
+	 * regularly exceeds the SDC1 RX FIFO drain rate while the fabric
+	 * is still scaling under early-boot load -- ADM ch2 reports
+	 * FLUSH_STATE0=0x8000c003 (SDCC drain stalled), mmci-pl18x raises
+	 * DATACRCFAIL with DATACNT==~100864 / DATALEN==258048 (~40 %
+	 * drained), and the subsequent CMD12/CMD13 recovery commands
+	 * cmdtimeout-cascade because the chip is mid-stream.  The
+	 * touchpad-tokens driver itself only needs 64 KB worth of token
+	 * data -- it never touches the prefetched tail -- so the simplest
+	 * fix is to tell the block layer "do not prefetch" and then read
+	 * the 64 KB in smaller chunks so each individual DMA submit is
+	 * comfortably within sustained fabric drain capability.
+	 */
+	fp->f_ra.ra_pages = 0;
+
+	{
+		size_t remaining = priv->raw_size;
+		size_t total = 0;
+
+		while (remaining) {
+			size_t chunk = min(remaining, (size_t)(32 * 1024));
+
+			r = kernel_read(fp, priv->raw + total, chunk, &pos);
+			if (r < 0) {
+				filp_close(fp, NULL);
+				return r;
+			}
+			if (r == 0)	/* short read -- partition smaller than max */
+				break;
+			total += r;
+			remaining -= r;
+		}
+		priv->raw_size = total;
+	}
+
 	filp_close(fp, NULL);
-	if (r < 0)
-		return r;
-	priv->raw_size = r;
 	dev_info(priv->dev, "read %zu bytes from %s\n", priv->raw_size, path);
 	return 0;
 }
