@@ -244,6 +244,39 @@ void a6_irq_work_handler(struct work_struct *work)
 			else
 				clear_bit(A2A_CONNECTED, state->flags);
 		}
+
+#if IS_ENABLED(CONFIG_BATTERY_PALM_A6_A2A_COMM)
+		/*
+		 * Tap-to-share notify: the legacy webOS tap2shared daemon
+		 * watches for two env strings on the kernel-uevent netlink:
+		 *
+		 *   A6_ACTION=A2A_CONNECT_NOTIFY  - matches the 2.6.35 driver
+		 *   A6_INDEX=<0|1>                - tells userspace which A6
+		 *                                   chip raised the event;
+		 *                                   the legacy driver carried
+		 *                                   this implicitly in the
+		 *                                   i2c-client name (a6_0,
+		 *                                   a6_1) which mainline now
+		 *                                   collapses to "a6-battery"
+		 *                                   in MODALIAS.
+		 *
+		 * Compiled out when CONFIG_BATTERY_PALM_A6_A2A_COMM=n so the
+		 * upstream-bound base driver carries no Tap-to-Share-specific
+		 * symbols (matches the existing convention in this file).
+		 */
+		{
+			char a6_idx_env[16];
+			char *envp[] = {
+				"A6_ACTION=A2A_CONNECT_NOTIFY",
+				a6_idx_env,
+				NULL,
+			};
+
+			snprintf(a6_idx_env, sizeof(a6_idx_env),
+				 "A6_INDEX=%d", state->device_index);
+			kobject_uevent_env(&client->dev.kobj, KOBJ_CHANGE, envp);
+		}
+#endif /* CONFIG_BATTERY_PALM_A6_A2A_COMM */
 	}
 
 	if (status3 & TS2_I2C_INT_3_RESET)
