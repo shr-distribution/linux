@@ -336,11 +336,38 @@ static struct msm8660_icc_node slv_ampss_l2 = {
  * can't route from MMSS/System fabric masters to main memory.
  *
  * AFAB_TO_MMSS doubles as AFAB master port 2 (the FAB_MMSS master). MDP
- * scanout and GPU traffic enter AFAB through this gateway. Mark it
- * ARB_TIER1 so display/multimedia traffic keeps priority over CPU L2
- * misses inside the APPSS fabric — without this, MDP TIER1 priority
- * earned in MMFAB is dropped at the AFAB boundary and MDP fetches lose
- * arbitration to CPU traffic, producing PRIMARY_INTF_UDERRUN.
+ * scanout and GPU traffic enter AFAB through this gateway.
+ *
+ * 2026-06-13: Reverted from ARB_TIER1 -> ARB_TIER2 to restore legacy
+ * webOS msm_bus_fabric semantics (msm_bus_board_8660.c:222-228 -- gateway
+ * has no `.tier` field, defaults to TIER2 per msm_bus_fabric.c:427-429).
+ *
+ * The previous TIER1 elevation was intended to preserve MDP TIER1
+ * priority across the AFAB boundary, but mainline's arb-row addressing
+ * (msm8660.c:1186-1194) writes ALL master arb entries -- including
+ * gateways -- into the SAME row (def_ts-1 = EBI_CH0 row for AFAB).
+ * The TIER1 elevation therefore registered against the EBI_CH0 arb
+ * row, biasing EBI arbitration AWAY from ADM PORT0/PORT1 (TIER2) every
+ * cycle the MMSS subsystem was alive (i.e., always while the display
+ * is scanning out).
+ *
+ * Symptom: concurrent eMMC + WiFi DL hit DATATIMEOUT / DATACRCFAIL with
+ *   adm-dma-engine: ADM-DIAG ch2 FLUSH result=0x80000004
+ *                   FLUSH_STATE0=0x8000c003 (SDCC drain stalled)
+ *   mmci-pl18x: DIAG[DATACRCFAIL]: errbits: (none latched)
+ *               (RXOVERRUN=fabric/ADM drain starvation)
+ *   CMDTIMEOUT cmd12/cmd13 cascade -> jbd2 hung_task
+ * The ADM could not drain the SDCC FIFO into EBI fast enough because
+ * AFAB cycles were TIER1-biased toward MMSS-bound traffic.
+ *
+ * Full audit at Documentation/icc-msm8660-audit-2026-06-13.md.
+ *
+ * Trade-off: MDP fetches lose the TIER1 elevation at the AFAB boundary,
+ * matching legacy webOS behaviour where MDP TIER1 priority was confined
+ * to MMFAB-local arbitration.  If PRIMARY_INTF_UDERRUN reappears under
+ * heavy concurrent I/O, the proper fix is per-slave-tier arb addressing
+ * (audit Section 7 Fix 3 -- multi-row arb so MDP TIER1 stays in the
+ * SMI/MMSS arb row without leaking into EBI), not re-elevating gateways.
  */
 static struct msm8660_icc_node afab_to_mmss = {
 	.name = "afab_to_mmss",
@@ -348,7 +375,7 @@ static struct msm8660_icc_node afab_to_mmss = {
 	.buswidth = 8,
 	.mas_port = 2,
 	.slv_port = 2,
-	.mas_tier = ARB_TIER1,
+	.mas_tier = ARB_TIER2,
 	.link_nodes = { &mmfab_to_appss, &slv_ebi_ch0 },
 };
 
@@ -847,8 +874,12 @@ static struct msm8660_icc_node mmfab_mas_hd_codec_port1 = {
  * cross-fabric gateway only worked for outbound traffic (MMSS masters
  * reaching APPSS slaves like EBI).
  *
- * ARB_TIER1 keeps AMPSS->SMI traffic high-priority within MMFAB so
- * CPU mmap reads/writes to SMI BOs don't get starved by MDP scanout.
+ * 2026-06-13: Reverted from ARB_TIER1 -> ARB_TIER2 (same rationale as
+ * afab_to_mmss above): mainline's arb-row addressing leaks the gateway
+ * TIER1 elevation into the MMFAB default tiered slave row (def_ts=2 =
+ * APPSS gateway), de-prioritising every other MMFAB master for AMPSS-
+ * bound traffic.  Legacy webOS msm_bus_board_8660.c gateway nodes have
+ * no `.tier` field set.  Restoring TIER2 to match.
  */
 static struct msm8660_icc_node mmfab_to_appss = {
 	.name = "mmfab_to_appss",
@@ -856,7 +887,7 @@ static struct msm8660_icc_node mmfab_to_appss = {
 	.buswidth = 8,
 	.mas_port = 11,
 	.slv_port = 1,
-	.mas_tier = ARB_TIER1,
+	.mas_tier = ARB_TIER2,
 	.link_nodes = { &afab_to_mmss, &mmfab_slv_smi, &mmfab_slv_mm_imem },
 };
 
