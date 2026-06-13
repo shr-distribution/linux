@@ -2579,12 +2579,15 @@
 	wlan_gpios: wlan-state {
 		/*
 		 * WL_HOST_WAKE (GPIO 93) - WiFi signals host for wake events
-		 * Input with pull-down, WiFi drives high to wake host
+		 * Input with pull-down, WiFi drives high to wake host.
+		 * Direction is forced to input via wl-host-wake-hog gpio-hog;
+		 * drive-strength = 8 matches legacy gpiomux GPIO_IN_8M_PD (irrelevant
+		 * to input behaviour but kept identical for full legacy parity).
 		 */
 		host-wake-pins {
 			pins = "gpio93";
 			function = "gpio";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-pull-down;
 		};
 
@@ -2804,7 +2807,7 @@
 &sdcc4 {
 	status = "okay";
 	pinctrl-names = "default";
-	pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>;
+	pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>, <&wlan_gpios_reset>;
 
 	/*
 	 * 4-bit SDIO bus to the AR6003 (matches legacy
