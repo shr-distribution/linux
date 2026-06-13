@@ -647,12 +647,29 @@
 					regulator-max-microvolt = <1200000>;
 					bias-pull-down;
 				};
-				/* WiFi main 3.3V supply (VDD_WLAN_3V3) */
+				/*
+				 * WiFi main 3.3V supply (VDD_WLAN_3V3).
+				 *
+				 * NOT regulator-always-on -- legacy webOS
+				 * tenderloin_wifi_power() enable-cycles this rail
+				 * per WiFi ON/OFF transition (board-tenderloin.c:
+				 * regulator_enable(wifi_L1B_3V3) at power-on,
+				 * regulator_disable at power-off).  Always-on
+				 * kept the AR6003 main rail up across reboots so
+				 * the chip's PSRAM and BMI state survived, and a
+				 * stale HTC-mode state from a prior session
+				 * caused the next boot's BMI handshake to silently
+				 * fail at the function 1 HOST_INT_STATUS poll
+				 * (24 B RD @ chip 0x400 -> CMDTIMEOUT -> probe
+				 * -110).  Letting the rail off-cycle (driven by
+				 * mmci vmmc-supply at MMC_POWER_OFF/ON around the
+				 * mmc-pwrseq reset pulse) gives the chip a real
+				 * cold-start each boot and restores reliable BMI.
+				 */
 				pm8901_l1: l1 {
 					regulator-min-microvolt = <3300000>;
 					regulator-max-microvolt = <3300000>;
 					bias-pull-down;
-					regulator-always-on;
 					regulator-allow-set-load;
 				};
 				pm8901_l2: l2 {
