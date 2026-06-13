@@ -588,6 +588,33 @@ int ath6kl_bmi_init(struct ath6kl *ar)
 	if (!ar->bmi.cmd_buf)
 		return -ENOMEM;
 
+	/*
+	 * The .done_sent flag is set by ath6kl_bmi_done() once the host has
+	 * issued BMI_DONE to the chip; subsequent BMI cmds are rejected with
+	 * "bmi done sent already, cmd N disallowed".  ath6kl_bmi_cleanup()
+	 * only frees the buffer -- the flag persists across cleanup/init
+	 * pairs in the same struct ath6kl.  That's fine in the normal
+	 * probe-then-remove lifecycle (cleanup happens on remove, when the
+	 * struct is about to be freed) but breaks the new
+	 * ath6kl_sdio_probe() retry path added in 04242d0dbf5e: after a
+	 * cold-boot BMI wedge we mmc_hw_reset() the chip into a fresh BMI
+	 * state and re-enter ath6kl_core_init(), which calls
+	 * ath6kl_bmi_init() again -- but if the first attempt advanced far
+	 * enough to call ath6kl_bmi_done() (typically inside
+	 * ath6kl_init_hw_start()'s firmware-upload sequence) then done_sent
+	 * stays true and the second BMI_GET_TARGET_INFO cmd is rejected
+	 * with -EACCES (-13), exactly as observed:
+	 *
+	 *   ath6kl: bmi done sent already, cmd 8 disallowed
+	 *   ath6kl: retry after mmc_hw_reset still failed: -13
+	 *
+	 * Reset done_sent unconditionally on every bmi_init -- a fresh BMI
+	 * cmd_buf and a fresh chip mean BMI is not done yet.  No effect on
+	 * the normal lifecycle (done_sent is already false on the initial
+	 * boot probe).
+	 */
+	ath6kl_bmi_reset(ar);
+
 	return 0;
 }
 
