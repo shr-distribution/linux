@@ -2598,7 +2598,31 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 		 * by the original timeout, so their clock readings are after
 		 * the chip has already wedged).
 		 */
-		if (host->mmc->index == 0 && cmd->opcode != SD_IO_RW_EXTENDED &&
+		/*
+		 * Filter out the SDIO-card-detection probe commands that the mmc
+		 * core legitimately issues to every host at boot, including the
+		 * eMMC host (mmc0).  The eMMC chip only responds to MMC-class
+		 * commands (CMD1, CMD2, ..., CMD23 for SET_BLOCK_COUNT) so these
+		 * SDIO discovery cmds always cmdtimeout -- they're not the real
+		 * failure we are chasing, and they would consume the one-shot
+		 * cmdto_diag_seen flag before the real cmd23 cascade fires.
+		 *
+		 * Excluded opcodes:
+		 *   CMD5  (SD_IO_SEND_OP_COND, opcode 5)  -- SDIO init
+		 *   CMD8  (SEND_IF_COND, opcode 8)        -- SD interface check
+		 *   CMD52 (SD_IO_RW_DIRECT, opcode 52)    -- SDIO IO_RW
+		 *   CMD53 (SD_IO_RW_EXTENDED, opcode 53)  -- SDIO IO_RW (handled
+		 *                                            by the mmc1-specific
+		 *                                            CMD53 diag above)
+		 *   CMD55 (APP_CMD, opcode 55)            -- SD-specific app-cmd
+		 *                                            prefix
+		 */
+		if (host->mmc->index == 0 &&
+		    cmd->opcode != SD_IO_SEND_OP_COND &&
+		    cmd->opcode != SD_SEND_IF_COND &&
+		    cmd->opcode != SD_IO_RW_DIRECT &&
+		    cmd->opcode != SD_IO_RW_EXTENDED &&
+		    cmd->opcode != MMC_APP_CMD &&
 		    !host->cmdto_diag_seen) {
 			unsigned long hclk_hz = host->clk ?
 						 clk_get_rate(host->clk) : 0UL;
