@@ -554,7 +554,46 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 		return ret;
 	}
 
-	return ret;
+	/*
+	 * Initialise the AR6003 chip's BTCOEX configuration to match the
+	 * platform's PCB layout.  Without these two commands the chip
+	 * boots with default coexistence + RF front-end routing that
+	 * doesn't match the HP TouchPad's dual-antenna layout next to a
+	 * CSR BlueCore6 Bluetooth chip -- 5 GHz RX sensitivity drops by
+	 * ~30 dB (live capture: -50 dBm legacy webOS vs -81 dBm mainline
+	 * at the same location) and the chip raises 15-28 % air-side CRC
+	 * errors, prompting the AP's rate adapter to drop RX rate from
+	 * 121.5 Mbps (MCS 6 / 40 MHz) down to 27 Mbps.
+	 *
+	 * Legacy webOS issues the equivalent commands from userspace
+	 * (PmWiFiService logs "BtCoex antenna setting: dual-antenna"
+	 * before sending AR6000_XIOCTL_WMI_SET_BTCOEX_FE_ANT and
+	 * AR6000_XIOCTL_WMI_SET_BTCOEX_COLOCATED_BT_DEV via ioctl on
+	 * every probe).  Mainline LuneOS has no equivalent daemon -- we
+	 * mirror the same values from kernel init.
+	 *
+	 * Values match legacy CONFIG_AR600x_DUAL_ANTENNA +
+	 * CONFIG_AR600x_BT_CSR in webos staging ath6kl Kconfig.  These
+	 * are TouchPad-correct; if mainline ath6kl grows other AR6003
+	 * boards they may need DT-property gating to override.
+	 */
+	ret = ath6kl_wmi_set_btcoex_fe_ant_cmd(ar->wmi, idx,
+					       ATH6KL_BTCOEX_FE_ANT_DUAL);
+	if (ret)
+		ath6kl_warn("unable to set BTCOEX front-end antenna type=DUAL: %d\n",
+			    ret);
+	else
+		ath6kl_info("BTCOEX: front-end antenna type = DUAL (2)\n");
+
+	ret = ath6kl_wmi_set_btcoex_colocated_bt_dev_cmd(ar->wmi, idx,
+					ATH6KL_BTCOEX_COLOC_BT_CSR);
+	if (ret)
+		ath6kl_warn("unable to set BTCOEX colocated BT dev=CSR: %d\n",
+			    ret);
+	else
+		ath6kl_info("BTCOEX: colocated BT chip = CSR (2)\n");
+
+	return 0;
 }
 
 int ath6kl_configure_target(struct ath6kl *ar)

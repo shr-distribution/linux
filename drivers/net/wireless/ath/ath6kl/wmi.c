@@ -3148,6 +3148,65 @@ int ath6kl_wmi_set_wmm_txop(struct wmi *wmi, u8 if_idx, enum wmi_txop_cfg cfg)
 	return ret;
 }
 
+/*
+ * WMI BTCOEX configuration -- send a single-byte FE antenna configuration
+ * (single vs dual) to the AR6003 firmware so the chip's RF front-end
+ * arbitration knows whether BT and WiFi share an antenna.  Legacy webOS
+ * PmWiFiService logs "BtCoex antenna setting: dual-antenna" then sends
+ * this via AR6000_XIOCTL_WMI_SET_BTCOEX_FE_ANT on every probe; mainline
+ * has no userspace equivalent so the equivalent kernel-side call is
+ * issued at the end of ath6kl_target_config_wlan_params (init.c).
+ *
+ * fe_ant_type values: see ATH6KL_BTCOEX_FE_ANT_{SINGLE,DUAL}.
+ */
+int ath6kl_wmi_set_btcoex_fe_ant_cmd(struct wmi *wmi, u8 if_idx,
+				     u8 fe_ant_type)
+{
+	struct sk_buff *skb;
+	struct wmi_set_btcoex_fe_ant_cmd *cmd;
+	int ret;
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_set_btcoex_fe_ant_cmd *) skb->data;
+	cmd->fe_ant_type = fe_ant_type;
+
+	ret = ath6kl_wmi_cmd_send(wmi, if_idx, skb,
+				  WMI_SET_BTCOEX_FE_ANT_CMDID,
+				  NO_SYNC_WMIFLAG);
+	return ret;
+}
+
+/*
+ * WMI BTCOEX configuration -- tell the AR6003 firmware which Bluetooth
+ * chip is colocated on the same PCB so the chip picks the correct PTA
+ * protocol to coordinate with it.  Legacy webOS picks coloc_bt_dev=2
+ * (CSR BC06) via CONFIG_AR600x_BT_CSR in the staging ath6kl Kconfig.
+ *
+ * coloc_bt_dev values: see ATH6KL_BTCOEX_COLOC_BT_*.
+ */
+int ath6kl_wmi_set_btcoex_colocated_bt_dev_cmd(struct wmi *wmi, u8 if_idx,
+					       u8 coloc_bt_dev)
+{
+	struct sk_buff *skb;
+	struct wmi_set_btcoex_colocated_bt_dev_cmd *cmd;
+	int ret;
+
+	skb = ath6kl_wmi_get_new_buf(sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_set_btcoex_colocated_bt_dev_cmd *) skb->data;
+	cmd->coloc_bt_dev = coloc_bt_dev;
+
+	ret = ath6kl_wmi_cmd_send(wmi, if_idx, skb,
+				  WMI_SET_BTCOEX_COLOCATED_BT_DEV_CMDID,
+				  NO_SYNC_WMIFLAG);
+	return ret;
+}
+
 int ath6kl_wmi_set_keepalive_cmd(struct wmi *wmi, u8 if_idx,
 				 u8 keep_alive_intvl)
 {

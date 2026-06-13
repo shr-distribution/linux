@@ -2032,6 +2032,20 @@ struct wmi_set_keepalive_cmd {
 	u8 keep_alive_intvl;
 } __packed;
 
+/*
+ * Single-byte WMI BTCOEX configuration commands.  Mirrors the legacy
+ * Atheros vendor wmi.h structs WMI_SET_BTCOEX_FE_ANT_CMD and
+ * WMI_SET_BTCOEX_COLOCATED_BT_DEV_CMD.  See ATH6KL_BTCOEX_FE_ANT_*
+ * and ATH6KL_BTCOEX_COLOC_BT_* for the valid byte values.
+ */
+struct wmi_set_btcoex_fe_ant_cmd {
+	u8 fe_ant_type;
+} __packed;
+
+struct wmi_set_btcoex_colocated_bt_dev_cmd {
+	u8 coloc_bt_dev;
+} __packed;
+
 struct wmi_get_keepalive_cmd {
 	__le32 configured;
 	u8 keep_alive_intvl;
@@ -2619,6 +2633,30 @@ int ath6kl_wmi_set_keepalive_cmd(struct wmi *wmi, u8 if_idx,
 int ath6kl_wmi_set_htcap_cmd(struct wmi *wmi, u8 if_idx,
 			     enum nl80211_band band,
 			     struct ath6kl_htcap *htcap);
+
+/*
+ * WMI BTCOEX configuration commands -- both single-byte arguments that
+ * tell the AR6003 firmware (a) which Bluetooth chip we are colocated
+ * with and (b) whether the front-end uses one or two antennas.  Legacy
+ * Palm webOS PmWiFiService userspace daemon sends these via ioctl on
+ * every probe; mainline ath6kl had the WMI command IDs defined but no
+ * helpers to issue them, and no init-time caller.  See
+ * Documentation/networking/device_drivers/wireless/ath6kl-btcoex.rst
+ * for the platform-specific values.
+ */
+#define ATH6KL_BTCOEX_FE_ANT_SINGLE	1
+#define ATH6KL_BTCOEX_FE_ANT_DUAL	2
+
+#define ATH6KL_BTCOEX_COLOC_BT_QCOM	1
+#define ATH6KL_BTCOEX_COLOC_BT_CSR	2
+#define ATH6KL_BTCOEX_COLOC_BT_AR3001	3
+#define ATH6KL_BTCOEX_COLOC_BT_STE	4
+#define ATH6KL_BTCOEX_COLOC_BT_AR3002	5
+
+int ath6kl_wmi_set_btcoex_fe_ant_cmd(struct wmi *wmi, u8 if_idx,
+				     u8 fe_ant_type);
+int ath6kl_wmi_set_btcoex_colocated_bt_dev_cmd(struct wmi *wmi, u8 if_idx,
+					       u8 coloc_bt_dev);
 int ath6kl_wmi_test_cmd(struct wmi *wmi, void *buf, size_t len);
 
 s32 ath6kl_wmi_get_rate(struct wmi *wmi, s8 rate_index);
