@@ -442,13 +442,40 @@
 			 *
 			 * The legacy webOS kernel used ebi1_adm_clk clock voter
 			 * to ensure minimum EBI bandwidth during DMA operations.
-			 * This interconnect path provides equivalent functionality.
+			 * The interconnect framework provides equivalent functionality,
+			 * AND -- crucially -- programs per-SFAB-port RPM bandwidth
+			 * arbitration that the legacy clock-only voter could not.
 			 *
 			 * Path: ADM1 -> SFAB -> AFAB -> EBI (system memory)
+			 *
+			 * ADM1 has TWO SFAB master ports (PORT0 mas_port=4,
+			 * PORT1 mas_port=5) and the ADM hardware routes channel
+			 * traffic across BOTH based on its internal channel ->
+			 * port mapping (cf. drivers/interconnect/qcom/msm8660.c
+			 * sfab_mas_adm1_port0 / sfab_mas_adm1_port1).
+			 *
+			 * Declaring only PORT0 left PORT1's RPM ARB at zero
+			 * bandwidth.  When ADM serviced both channels concurrently
+			 * (eMMC on ch2 + WiFi on ch5) and the HW routed any traffic
+			 * through PORT1, SFAB QoS would starve PORT1 under SFAB
+			 * contention.  Symptom: under sustained concurrent
+			 * eMMC + WiFi DMA, the eMMC SDCC FIFO would fail to drain
+			 * fast enough mid-transfer and latch DATACRCFAIL --
+			 *
+			 *   error during DMA transfer!
+			 *   ADM-DIAG ch2 FLUSH ... (SDCC drain stalled)
+			 *   DATACRCFAIL: blksz=512 blocks=2048 DATALEN=1048576
+			 *                DATACNT=278528  errbits: (none latched)
+			 *   (RXOVERRUN=fabric/ADM drain starvation)
+			 *
+			 * Declaring BOTH ports gets RPM ARB to program both, so
+			 * neither port starves under load.
 			 */
 			interconnects = <&system_fabric SFAB_MAS_ADM1_PORT0
+					 &apps_fabric AFAB_SLV_EBI_CH0>,
+					<&system_fabric SFAB_MAS_ADM1_PORT1
 					 &apps_fabric AFAB_SLV_EBI_CH0>;
-			interconnect-names = "memory";
+			interconnect-names = "memory", "memory-p1";
 		};
 
 		/*

@@ -223,6 +223,7 @@ struct adm_device {
 	struct reset_control *c1_reset;
 	struct reset_control *c2_reset;
 	struct icc_path *icc_path;
+	struct icc_path *icc_path_p1;
 	int irq;
 
 	/* Descriptor pool for reduced per-transfer allocation overhead */
@@ -1555,6 +1556,39 @@ static int adm_dma_probe(struct platform_device *pdev)
 		ret = icc_set_bw(adev->icc_path, 128000, 128000);
 		if (ret) {
 			dev_err(adev->dev, "failed to set interconnect bandwidth: %d\n", ret);
+			goto err_disable_clks;
+		}
+	}
+
+	/*
+	 * ADM1 has two SFAB master ports (PORT0 = mas_port 4, PORT1 = mas_port 5).
+	 * The hardware routes channel traffic across both based on its
+	 * internal channel -> port mapping.  Without an ICC vote on PORT1,
+	 * RPM ARB programs zero bandwidth on it -- which under sustained
+	 * concurrent eMMC + WiFi DMA starves whichever channel the HW
+	 * routed through PORT1.  Symptom: "ADM-DIAG chX FLUSH ...
+	 * (SDCC drain stalled)" + DATACRCFAIL on a 1 MB eMMC read mid-
+	 * transfer.  Match PORT1's vote to PORT0 so both ports stay alive.
+	 *
+	 * The DT exposes this second path via interconnect-names = "memory-p1";
+	 * it is optional for backwards compatibility (older DTs without the
+	 * second entry simply skip this vote, matching the previous behaviour).
+	 */
+	adev->icc_path_p1 = devm_of_icc_get(adev->dev, "memory-p1");
+	if (IS_ERR(adev->icc_path_p1)) {
+		ret = PTR_ERR(adev->icc_path_p1);
+		if (ret != -ENODATA && ret != -ENOENT) {
+			dev_err(adev->dev,
+				"failed to get PORT1 interconnect path: %d\n", ret);
+			goto err_disable_clks;
+		}
+		adev->icc_path_p1 = NULL;
+	}
+	if (adev->icc_path_p1) {
+		ret = icc_set_bw(adev->icc_path_p1, 128000, 128000);
+		if (ret) {
+			dev_err(adev->dev,
+				"failed to set PORT1 interconnect bw: %d\n", ret);
 			goto err_disable_clks;
 		}
 	}
