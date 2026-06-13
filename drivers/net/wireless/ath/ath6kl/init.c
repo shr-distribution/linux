@@ -2008,65 +2008,11 @@ static int ath6kl_init_hw_reset(struct ath6kl *ar)
 				   cpu_to_le32(RESET_CONTROL_COLD_RST));
 }
 
-/*
- * LPM-preserve chip-warm detection (tenderloin AR6003).
- *
- * After reset-gpios was removed from ath6kl-pwrseq (DT change paired with
- * this code), the chip's PSRAM survives across mainline kernel reboots as
- * long as the previous session left the chip's WLAN_RST_N pin deasserted
- * and the Vdd rail stayed in mode-1 LPM (mmci.c vqmmc_load = 10000 uA on
- * MMC_POWER_OFF, already in tree).  A "warm" chip is one whose firmware
- * is still running and is in HTC mode.  A "cold" chip is one that just
- * exited its boot ROM (BMI mode) -- this is what mainline currently
- * assumes on every probe.
- *
- * Detection: peek at the chip's HTC_HOST_INT_STATUS register.  In BMI
- * mode the boot ROM leaves it at 0; in HTC mode the firmware has
- * configured it with non-zero int-enable bits.  This read uses the
- * existing chip-register-space CMD53 path which already has SI retry
- * coverage, so it's reliable on either mode.
- */
-static bool ath6kl_lpm_chip_warm(struct ath6kl *ar)
-{
-	struct ath6kl_irq_enable_reg irq_en_reg = { 0 };
-	int ret;
-
-	/*
-	 * Read the chip's INT_STATUS_ENABLE register at chip 0x418.  In BMI
-	 * mode the boot ROM leaves this at 0; in HTC mode the previous boot's
-	 * ath6kl_hif_enable_intrs() wrote it with the mbox-data / counter /
-	 * error / CPU enable bits and the chip stored that value in PSRAM.
-	 * Surviving across mainline reboots IFF reset-gpios stayed unpulsed
-	 * (DT change) AND the Vdd rail stayed in mode-1 LPM (mmci vqmmc=10000
-	 * uA, already in tree).
-	 */
-	ret = hif_read_write_sync(ar, INT_STATUS_ENABLE_ADDRESS,
-				  (u8 *) &irq_en_reg, sizeof(irq_en_reg),
-				  HIF_RD_SYNC_BYTE_INC);
-	if (ret) {
-		ath6kl_dbg(ATH6KL_DBG_BOOT,
-			   "LPM-preserve: INT_STATUS_ENABLE read failed (%d) -- assume cold\n",
-			   ret);
-		return false;
-	}
-
-	if (irq_en_reg.int_status_en) {
-		ath6kl_info("LPM-preserve: detected warm chip (int_status_en=0x%x), skipping BMI\n",
-			    irq_en_reg.int_status_en);
-		return true;
-	}
-
-	ath6kl_dbg(ATH6KL_DBG_BOOT,
-		   "LPM-preserve: chip in BMI mode (int_status_en=0), full cold-boot init\n");
-	return false;
-}
-
 static int __ath6kl_init_hw_start(struct ath6kl *ar)
 {
 	long timeleft;
 	int ret, i;
 	char buf[200];
-	bool chip_warm;
 
 	ath6kl_dbg(ATH6KL_DBG_BOOT, "hw start\n");
 
@@ -2074,79 +2020,51 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 	if (ret)
 		return ret;
 
-	chip_warm = ath6kl_lpm_chip_warm(ar);
+	ret = ath6kl_configure_target(ar);
+	if (ret)
+		goto err_power_off;
 
-	if (chip_warm) {
-		/*
-		 * LPM-preserve fast path: chip is in HTC mode from a prior
-		 * boot.  Skip BMI -- configure_target, init_upload, bmi_done
-		 * would all fail with mailbox-WR DataCrcFail because the chip
-		 * is no longer listening for BMI commands.
-		 *
-		 * Mark BMI as done so any later bmi_*() call returns -EACCES
-		 * cleanly instead of trying to issue a BMI command.
-		 */
-		ar->bmi.done_sent = true;
+	ret = ath6kl_init_upload(ar);
+	if (ret)
+		goto err_power_off;
 
-		/*
-		 * Hardcode the HTC target parameters that ath6kl_htc_wait_target
-		 * would normally extract from the chip's HTC_READY message.  We
-		 * cannot wait for HTC_READY on warm boot because the chip
-		 * emitted it once during the original cold-boot session and
-		 * the HTC protocol does not provide a way to request a re-
-		 * emission.  Values are specific to AR6003 hw 2.1.1 fw 3.2.0.144
-		 * (mainline-supported firmware) and come from a successful
-		 * cold-boot capture: target->tgt_creds=6, tgt_cred_sz=1664,
-		 * htc_tgt_ver=HTC_VERSION_2P1.  If the firmware version is
-		 * ever bumped these need to be re-captured.
-		 */
-		ar->htc_target->tgt_creds = 6;
-		ar->htc_target->tgt_cred_sz = 1664;
-		ar->htc_target->htc_tgt_ver = HTC_VERSION_2P1;
-		ar->htc_target->msg_per_bndl_max = 0;
+	/* Do we need to finish the BMI phase */
+	ret = ath6kl_bmi_done(ar);
+	if (ret)
+		goto err_power_off;
 
-		ath6kl_dbg(ATH6KL_DBG_BOOT,
-			   "LPM-preserve: warm chip, hardcoded HTC creds=%d size=%d ver=%d\n",
-			   ar->htc_target->tgt_creds,
-			   ar->htc_target->tgt_cred_sz,
-			   ar->htc_target->htc_tgt_ver);
-	} else {
-		ret = ath6kl_configure_target(ar);
-		if (ret)
-			goto err_power_off;
-
-		ret = ath6kl_init_upload(ar);
-		if (ret)
-			goto err_power_off;
-
-		/* Do we need to finish the BMI phase */
-		ret = ath6kl_bmi_done(ar);
-		if (ret)
-			goto err_power_off;
-
-		/*
-		 * Cold-boot settle: chip exited BMI mode just now, give its
-		 * SDIO output buffers a window to stabilise before the first
-		 * HTC TX.  See project_ath6kl_startbit_err_wedge memory.
-		 */
-		msleep(200);
-	}
+	/*
+	 * Tenderloin / mmci-pl18x AR6003 cold-boot settle: after
+	 * ath6kl_bmi_done() the chip transitions out of BMI mode and into
+	 * HTC mode -- it has just exited its boot ROM, its SDIO output
+	 * buffers are re-tuning, and its internal mailbox FIFO is being
+	 * primed.  The very first CMD53 read of HOST_INT_STATUS (24 B
+	 * INCR @ 0x400) plus the first 128 B mailbox WR @ 0xF80 issued
+	 * by HTC handshake (HTC_READY response / HTC_CONNECT_SERVICE /
+	 * HTC_SETUP_COMPLETE) within ~50 ms of bmi_done() returning hit
+	 * the signal-integrity transient window and glitch with either
+	 * MCI_STARTBITERR or MCI_DATACRCFAIL.  The SI retry recovers the
+	 * small register-space reads (project_ath6kl_startbit_err_wedge
+	 * memory) but mailbox writes are gated out of the retry path
+	 * because of the chip-side FIFO sequencing.
+	 *
+	 * Legacy webOS msm_sdcc + ath6kl staging driver does NOT have this
+	 * delay because it keeps the chip's PSRAM live across reboots and
+	 * never re-runs the BMI->HTC transition in production
+	 * (project_wifi_legacy_off_sequence_2026_06_11 memory).  Until
+	 * mainline implements the equivalent LPM-preserve strategy
+	 * (project_wifi_power_sequence_authoritative memory), give the
+	 * chip a 200 ms window to stabilise its SDIO output before the
+	 * first HTC TX goes out.
+	 */
+	msleep(200);
 
 	/*
 	 * The reason we have to wait for the target here is that the
 	 * driver layer has to init BMI in order to set the host block
 	 * size.
-	 *
-	 * LPM-preserve: skip the wait on warm boot since the chip emitted
-	 * HTC_READY exactly once at original cold-boot time and won't
-	 * re-emit it.  We hardcoded the values it would have provided
-	 * above.
 	 */
-	if (chip_warm) {
-		ret = 0;
-	} else {
-		ret = ath6kl_htc_wait_target(ar->htc_target);
-	}
+	ret = ath6kl_htc_wait_target(ar->htc_target);
 
 	if (ret == -ETIMEDOUT) {
 		/*
@@ -2184,20 +2102,10 @@ static int __ath6kl_init_hw_start(struct ath6kl *ar)
 	 * Wait for Wmi event to be ready.
 	 * Use non-interruptible wait to avoid signal interruption during
 	 * module init (e.g., from system watchdogs or init scripts).
-	 *
-	 * LPM-preserve: skip on warm boot.  Chip emitted WMI_READY once at
-	 * original cold-boot time and won't re-emit; force the host flag
-	 * so downstream code (wmi event handlers, cfg80211 attach) doesn't
-	 * deadlock on an event that already happened.
 	 */
-	if (chip_warm) {
-		set_bit(WMI_READY, &ar->flag);
-		timeleft = 1;
-	} else {
-		timeleft = wait_event_timeout(ar->event_wq,
-					      test_bit(WMI_READY, &ar->flag),
-					      WMI_TIMEOUT);
-	}
+	timeleft = wait_event_timeout(ar->event_wq,
+				      test_bit(WMI_READY, &ar->flag),
+				      WMI_TIMEOUT);
 	if (timeleft == 0) {
 		clear_bit(WMI_READY, &ar->flag);
 		ath6kl_err("wmi is not ready (timeout waiting for firmware)\n");
