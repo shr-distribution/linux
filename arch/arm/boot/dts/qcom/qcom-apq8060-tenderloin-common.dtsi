@@ -1895,6 +1895,37 @@
 		line-name = "WL_HOST_WAKE";
 	};
 
+	/*
+	 * HOST_WAKE_WL (GPIO 137) - host signals chip to stay awake.
+	 *
+	 * Cross-checked against instrumented legacy webOS kernel boot:
+	 * the legacy gpiomux SUSPEND config (GPIO_OUTH_2M_PN) drives this
+	 * line HIGH at 2 mA from the very first TLMM apply, so the chip
+	 * sees host signalling "stay awake" continuously from boot.
+	 *
+	 * In mainline the wlan_gpios pinctrl group applies output-high
+	 * only when its consumer (sdcc4) probes, leaving gpio137 in
+	 * whatever state moboot left it for the entire window from
+	 * kernel-start to mmc1 attach.  If moboot left it LOW or floating,
+	 * the AR6003 interprets it as "host wants me to sleep" and enters
+	 * a low-power state before BMI; the first 24 B HOST_INT_STATUS
+	 * read at chip 0x400 then CMDTIMEOUTs because the chip is asleep,
+	 * not in BMI mode.
+	 *
+	 * The gpio-hog runs at gpiochip add time -- much earlier than
+	 * sdcc4 probe -- and pins the line HIGH from boot.  Once sdcc4's
+	 * wlan_gpios pinctrl applies on top, drive strength bumps from
+	 * the default 2 mA up to the active 8 mA (see wlan_gpios:
+	 * device-wake-pins), so we keep the legacy ACT vs SUSP semantics
+	 * for runtime power transitions.
+	 */
+	host-wake-wl-hog {
+		gpio-hog;
+		gpios = <137 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "HOST_WAKE_WL";
+	};
+
 	/* Camera powerdown GPIO (107) is now controlled by the mt9m114 driver */
 
 	/* eMMC pins, all 8 data lines connected */
