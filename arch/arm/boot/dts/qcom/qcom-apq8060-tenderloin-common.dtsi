@@ -2559,10 +2559,19 @@
 	 *   GPIO 28:  WLAN_RST_N_3G
 	 */
 	wlan_gpios_reset: wlan-reset-state {
-		/* WLAN_RST_N - handled by mmc-pwrseq, configure as GPIO */
+		/*
+		 * WLAN_RST_N (GPIO 135) - chip hard reset, handled by mmc-pwrseq.
+		 * 8 mA drive matches legacy webOS gpiomux pattern for all AR6003
+		 * chip-enable/reset/wake outputs.  The 2 mA default left the
+		 * reset pulse weak enough that the chip's internal reset latch
+		 * intermittently failed to fully clear on cold boot, leaving
+		 * function 1's BMI register space silent
+		 * (RD @ 0x400 -> CMDTIMEOUT -> probe -110).
+		 */
 		reset-pins {
 			pins = "gpio135";
 			function = "gpio";
+			drive-strength = <8>;
 			bias-disable;
 		};
 	};
@@ -2582,12 +2591,16 @@
 		/*
 		 * HOST_WAKE_WL (GPIO 137) - Host signals WiFi to stay awake
 		 * Output high keeps WiFi awake, low allows sleep
-		 * Active: 8mA drive, Suspend: 2mA drive (from legacy kernel)
+		 * Legacy webOS: Active 8 mA, Suspend 2 mA.  Honor the active
+		 * value here -- the 2 mA we used previously could not source
+		 * enough current to hold the chip-side input cleanly at logic
+		 * high under load, contributing to the cold-boot probe-time
+		 * BMI-register silence (memory project_webos_gpio_8ma_pattern).
 		 */
 		device-wake-pins {
 			pins = "gpio137";
 			function = "gpio";
-			drive-strength = <2>;
+			drive-strength = <8>;
 			bias-disable;
 			output-high;
 		};
