@@ -555,43 +555,75 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 	}
 
 	/*
-	 * Initialise the AR6003 chip's BTCOEX configuration to match the
-	 * platform's PCB layout.  Without these two commands the chip
-	 * boots with default coexistence + RF front-end routing that
-	 * doesn't match the HP TouchPad's dual-antenna layout next to a
-	 * CSR BlueCore6 Bluetooth chip -- 5 GHz RX sensitivity drops by
-	 * ~30 dB (live capture: -50 dBm legacy webOS vs -81 dBm mainline
-	 * at the same location) and the chip raises 15-28 % air-side CRC
-	 * errors, prompting the AP's rate adapter to drop RX rate from
-	 * 121.5 Mbps (MCS 6 / 40 MHz) down to 27 Mbps.
+	 * BTCOEX configuration -- driven by per-board DT properties on
+	 * the atheros,ath6kl node.  Without these commands the AR6003
+	 * firmware defaults its RF front-end arbitration and PTA
+	 * protocol to values that may not match the host PCB, which on
+	 * HP TouchPad manifests as a ~30 dB drop in 5 GHz RX sensitivity
+	 * (-50 dBm legacy webOS vs -81 dBm mainline at a fixed physical
+	 * location) and 15-28 % air-side CRC errors, prompting the AP
+	 * rate adapter to drop RX rate from 121.5 Mbps (MCS 6 / 40 MHz)
+	 * down to 27 Mbps.
 	 *
 	 * Legacy webOS issues the equivalent commands from userspace
 	 * (PmWiFiService logs "BtCoex antenna setting: dual-antenna"
 	 * before sending AR6000_XIOCTL_WMI_SET_BTCOEX_FE_ANT and
 	 * AR6000_XIOCTL_WMI_SET_BTCOEX_COLOCATED_BT_DEV via ioctl on
-	 * every probe).  Mainline LuneOS has no equivalent daemon -- we
-	 * mirror the same values from kernel init.
+	 * every probe).  Mainline ath6kl has no equivalent daemon, so
+	 * we issue them from kernel init using the per-board DT values.
 	 *
-	 * Values match legacy CONFIG_AR600x_DUAL_ANTENNA +
-	 * CONFIG_AR600x_BT_CSR in webos staging ath6kl Kconfig.  These
-	 * are TouchPad-correct; if mainline ath6kl grows other AR6003
-	 * boards they may need DT-property gating to override.
+	 * Boards opt in by adding to their atheros,ath6kl node:
+	 *
+	 *   atheros,btcoex-fe-ant       = "single" or "dual"
+	 *   atheros,btcoex-colocated-bt = "qcom" / "csr" / "ar3001" /
+	 *                                 "ste" / "ar3002"
+	 *
+	 * Both are optional.  If absent the corresponding WMI command
+	 * is not issued, preserving previous mainline behaviour for any
+	 * AR6003 board that hasn't been characterised yet.
 	 */
-	ret = ath6kl_wmi_set_btcoex_fe_ant_cmd(ar->wmi, idx,
-					       ATH6KL_BTCOEX_FE_ANT_DUAL);
-	if (ret)
-		ath6kl_warn("unable to set BTCOEX front-end antenna type=DUAL: %d\n",
-			    ret);
-	else
-		ath6kl_info("BTCOEX: front-end antenna type = DUAL (2)\n");
+	{
+		u8 fe_ant = 0, coloc_bt = 0;
 
-	ret = ath6kl_wmi_set_btcoex_colocated_bt_dev_cmd(ar->wmi, idx,
-					ATH6KL_BTCOEX_COLOC_BT_CSR);
-	if (ret)
-		ath6kl_warn("unable to set BTCOEX colocated BT dev=CSR: %d\n",
-			    ret);
-	else
-		ath6kl_info("BTCOEX: colocated BT chip = CSR (2)\n");
+		if (ath6kl_dt_btcoex_fe_ant(&fe_ant) < 0)
+			ath6kl_warn("atheros,btcoex-fe-ant invalid value; skipping\n");
+		if (ath6kl_dt_btcoex_colocated_bt(&coloc_bt) < 0)
+			ath6kl_warn("atheros,btcoex-colocated-bt invalid value; skipping\n");
+
+		if (fe_ant) {
+			ret = ath6kl_wmi_set_btcoex_fe_ant_cmd(ar->wmi, idx,
+							       fe_ant);
+			if (ret)
+				ath6kl_warn("BTCOEX FE_ANT cmd failed: %d\n",
+					    ret);
+			else
+				ath6kl_info("BTCOEX: front-end antenna = %s (%u)\n",
+					    fe_ant == ATH6KL_BTCOEX_FE_ANT_DUAL ?
+						"dual" : "single",
+					    fe_ant);
+		}
+
+		if (coloc_bt) {
+			ret = ath6kl_wmi_set_btcoex_colocated_bt_dev_cmd(ar->wmi,
+									 idx,
+									 coloc_bt);
+			if (ret)
+				ath6kl_warn("BTCOEX COLOCATED_BT_DEV cmd failed: %d\n",
+					    ret);
+			else {
+				static const char * const names[] = {
+					[ATH6KL_BTCOEX_COLOC_BT_QCOM]   = "qcom",
+					[ATH6KL_BTCOEX_COLOC_BT_CSR]    = "csr",
+					[ATH6KL_BTCOEX_COLOC_BT_AR3001] = "ar3001",
+					[ATH6KL_BTCOEX_COLOC_BT_STE]    = "ste",
+					[ATH6KL_BTCOEX_COLOC_BT_AR3002] = "ar3002",
+				};
+				ath6kl_info("BTCOEX: colocated BT chip = %s (%u)\n",
+					    names[coloc_bt] ? names[coloc_bt] : "?",
+					    coloc_bt);
+			}
+		}
+	}
 
 	return 0;
 }
@@ -781,6 +813,92 @@ static bool ath6kl_dt_skip_otp(void)
 }
 
 /*
+ * BTCOEX configuration from the device tree.
+ *
+ * Two optional string-valued properties on any atheros,ath6kl DT node:
+ *
+ *   atheros,btcoex-fe-ant   = "single" | "dual"
+ *   atheros,btcoex-colocated-bt = "qcom" | "csr" | "ar3001" | "ste"
+ *                                 | "ar3002"
+ *
+ * Both correspond to single-byte values fed to WMI_SET_BTCOEX_FE_ANT
+ * and WMI_SET_BTCOEX_COLOCATED_BT_DEV.  The AR6003 firmware uses them
+ * to drive its RF front-end arbitration and PTA protocol selection;
+ * boards must specify the values that match their PCB.  When a
+ * property is absent the corresponding WMI command is not sent --
+ * preserving the historical mainline-default behaviour for boards
+ * that haven't been characterised yet.
+ *
+ * Helpers return 0 when the property is absent or maps to a known
+ * value; non-zero on unknown string (logged as a warn).  Output
+ * values are written through @value; zero means "do not send".
+ *
+ * The mapping is shared with the staging Atheros vendor tree.  See
+ * CONFIG_AR600x_DUAL_ANTENNA / CONFIG_AR600x_BT_CSR Kconfig defaults
+ * in the upstream webOS staging ath6kl tree at github.com/openwebos
+ * (drivers/staging/ath6kl/Kconfig in 2.6.35 kernel) for the canonical
+ * mapping.
+ */
+static int ath6kl_dt_btcoex_fe_ant(u8 *value)
+{
+	struct device_node *node;
+	const char *s;
+	int rc;
+
+	*value = 0;
+
+	for_each_compatible_node(node, NULL, "atheros,ath6kl") {
+		rc = of_property_read_string(node, "atheros,btcoex-fe-ant", &s);
+		if (rc == -EINVAL || rc == -ENODATA)
+			continue;
+		of_node_put(node);
+		if (rc)
+			return rc;
+		if (!strcmp(s, "single"))
+			*value = ATH6KL_BTCOEX_FE_ANT_SINGLE;
+		else if (!strcmp(s, "dual"))
+			*value = ATH6KL_BTCOEX_FE_ANT_DUAL;
+		else
+			return -EINVAL;
+		return 0;
+	}
+	return 0;
+}
+
+static int ath6kl_dt_btcoex_colocated_bt(u8 *value)
+{
+	struct device_node *node;
+	const char *s;
+	int rc;
+
+	*value = 0;
+
+	for_each_compatible_node(node, NULL, "atheros,ath6kl") {
+		rc = of_property_read_string(node,
+					     "atheros,btcoex-colocated-bt", &s);
+		if (rc == -EINVAL || rc == -ENODATA)
+			continue;
+		of_node_put(node);
+		if (rc)
+			return rc;
+		if (!strcmp(s, "qcom"))
+			*value = ATH6KL_BTCOEX_COLOC_BT_QCOM;
+		else if (!strcmp(s, "csr"))
+			*value = ATH6KL_BTCOEX_COLOC_BT_CSR;
+		else if (!strcmp(s, "ar3001"))
+			*value = ATH6KL_BTCOEX_COLOC_BT_AR3001;
+		else if (!strcmp(s, "ste"))
+			*value = ATH6KL_BTCOEX_COLOC_BT_STE;
+		else if (!strcmp(s, "ar3002"))
+			*value = ATH6KL_BTCOEX_COLOC_BT_AR3002;
+		else
+			return -EINVAL;
+		return 0;
+	}
+	return 0;
+}
+
+/*
  * Read "atheros,app-start-override-addr" (u32) from any atheros,ath6kl
  * DT node. Returns 0 if no node has the property. Used together with
  * atheros,skip-otp-upload: on boards with chip-internal OTP we cannot
@@ -853,6 +971,16 @@ static bool ath6kl_dt_skip_otp(void)
 }
 static u32 ath6kl_dt_app_start_override(void)
 {
+	return 0;
+}
+static int ath6kl_dt_btcoex_fe_ant(u8 *value)
+{
+	*value = 0;
+	return 0;
+}
+static int ath6kl_dt_btcoex_colocated_bt(u8 *value)
+{
+	*value = 0;
 	return 0;
 }
 #endif /* CONFIG_OF */

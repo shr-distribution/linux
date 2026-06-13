@@ -3020,6 +3020,26 @@
 		compatible = "atheros,ath6kl";
 		reg = <1>;
 		atheros,board-id = "SD32";
+
+		/*
+		 * Tenderloin (HP TouchPad) PCB layout:
+		 *   - dual antenna front-end shared between AR6003 WiFi
+		 *     and CSR BlueCore6 Bluetooth (gsbi7 BCSP UART);
+		 *   - colocated BT chip is CSR (= ATH6KL_BTCOEX_COLOC_BT_CSR
+		 *     in mainline ath6kl, = CONFIG_AR600x_BT_CSR in the
+		 *     legacy webOS staging ath6kl Kconfig).
+		 *
+		 * Without these properties the AR6003 firmware boots with
+		 * default RF front-end arbitration that mis-routes the LNA
+		 * for this PCB layout, dropping 5 GHz RX sensitivity by
+		 * ~30 dB and triggering 15-28 % air-side CRC errors which
+		 * the AP responds to by halving the negotiated rate.
+		 * Driver applies them in ath6kl_target_config_wlan_params
+		 * via WMI_SET_BTCOEX_FE_ANT_CMDID and
+		 * WMI_SET_BTCOEX_COLOCATED_BT_DEV_CMDID.
+		 */
+		atheros,btcoex-fe-ant = "dual";
+		atheros,btcoex-colocated-bt = "csr";
 	};
 };
 
