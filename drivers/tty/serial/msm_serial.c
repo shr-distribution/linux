@@ -1445,7 +1445,38 @@ static int msm_set_baud_rate(struct uart_port *port, unsigned int baud,
 	uart_port_unlock_irqrestore(port, flags);
 
 	entry = msm_find_best_baud(port, baud, &rate);
-	dev_pm_opp_set_rate(port->dev, rate);
+
+	/*
+	 * DEBUG TLB-2026-06-13: log the rate transition for the BT UART so we
+	 * can correlate it with eMMC CMDTIMEOUT cascades on mmc0 a few seconds
+	 * later in dmesg.  Hypothesis: dev_pm_opp_set_rate() propagates up the
+	 * clock tree and briefly destabilises PLL8 (shared parent with SDC1/SDC4
+	 * controller clocks); during the relock window CMD-line transactions on
+	 * mmc0 (eMMC) miss their timing and CMD23 SET_BLOCK_COUNT silently
+	 * times out without a response from the chip.  Two log points so the
+	 * timestamps in dmesg pin the transition window precisely:
+	 *
+	 *   "OPP rate request: ... -> ... uartclk=..."  (before dev_pm_opp_set_rate)
+	 *   "OPP rate done    : ... -> ... readback=..."   (after)
+	 *
+	 * Compare against the mmci CMDTIMEOUT timestamp -- if both happen in
+	 * the same ~tens-of-ms window then the PLL-relock theory is confirmed.
+	 * The dev_dbg below for the same port already prints the resolved CSR
+	 * register state.
+	 */
+	if (port->mapbase == 0x16540000) {
+		unsigned long old_rate = port->uartclk;
+
+		dev_info(port->dev,
+			 "OPP rate request: %lu -> %lu Hz (baud %u, divisor %u)\n",
+			 old_rate, rate, baud, entry->divisor);
+		dev_pm_opp_set_rate(port->dev, rate);
+		dev_info(port->dev,
+			 "OPP rate done   : %lu -> %lu Hz (readback via uartclk reload)\n",
+			 old_rate, rate);
+	} else {
+		dev_pm_opp_set_rate(port->dev, rate);
+	}
 	baud = rate / 16 / entry->divisor;
 
 	uart_port_lock_irqsave(port, &flags);

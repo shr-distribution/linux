@@ -2577,6 +2577,42 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 				readl(host->base + MMCICOMMAND),
 				host->atomic_submit.active,
 				host->dma_issue_deferred);
+
+		/*
+		 * DEBUG TLB-2026-06-13: eMMC (mmc0) CMDTIMEOUT diag.  When the
+		 * chip silently drops a CMD on the cmd line (no response at
+		 * all -- not even a CRC error), the controller logs CMDTIMEOUT
+		 * but we don't know whether the cmd line clock was even
+		 * driving correctly at the moment of failure.  Dump the
+		 * actual clk_get_rate() on host->clk plus the MMCICLOCK
+		 * divider register and the MMCISTATUS bits so we can correlate
+		 * with msm_serial's OPP-rate transition timestamps for
+		 * 16540000.serial (the BT UART, which retunes through PLL8 --
+		 * the same PLL parent as sdc1_clk -- during BCSP WARM_RESET +
+		 * baud switch).  If both happen in the same ~tens-of-ms window
+		 * the PLL-relock-glitch theory is confirmed.
+		 *
+		 * One-shot per mmci instance to keep the log small (only the
+		 * first CMDTIMEOUT carries meaningful clock-state context --
+		 * subsequent ones are cmd12/cmd13 recovery cascade triggered
+		 * by the original timeout, so their clock readings are after
+		 * the chip has already wedged).
+		 */
+		if (host->mmc->index == 0 && cmd->opcode != SD_IO_RW_EXTENDED &&
+		    !host->cmdto_diag_seen) {
+			unsigned long hclk_hz = host->clk ?
+						 clk_get_rate(host->clk) : 0UL;
+
+			dev_err(mmc_dev(host->mmc),
+				"DIAG[eMMC-CMDTO]: cmd%d arg=0x%08x  clk_get_rate=%lu Hz  MMCICLOCK=0x%08x  STATUS=0x%08x  DATACTRL=0x%08x  DATACNT=%u  jiffies=%lu\n",
+				cmd->opcode, cmd->arg, hclk_hz,
+				readl(host->base + MMCICLOCK),
+				readl(host->base + MMCISTATUS),
+				readl(host->base + MMCIDATACTRL),
+				readl(host->base + MMCIDATACNT),
+				jiffies);
+			host->cmdto_diag_seen = true;
+		}
 	} else if (status & MCI_CMDCRCFAIL && cmd->flags & MMC_RSP_CRC) {
 		cmd->error = -EILSEQ;
 	} else if (host->variant->busy_timeout && busy_resp &&
