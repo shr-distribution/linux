@@ -989,6 +989,54 @@ static void adm_start_dma(struct adm_chan *achan)
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
 
+		/*
+		 * Set CH_CONF_SHADOW_EN (bit 12) on every channel at first
+		 * use, matching legacy webOS arch/arm/mach-msm/dma.c
+		 * config_datamover() and Mako 3.4's identical sequence:
+		 *
+		 *   conf = readl(DMOV_REG(DMOV_CONF(i), adm));
+		 *   conf &= ~DMOV_CONF_SD(7);
+		 *   conf |= DMOV_CONF_SD(chan_conf[i].sd);
+		 *   writel(conf | DMOV_CONF_SHADOW_EN,
+		 *          DMOV_REG(DMOV_CONF(i), adm));
+		 *
+		 * Both vendor trees run this on every Scorpion-class channel
+		 * (sd <= 1) at ADM probe under CONFIG_MSM_ADM3.  Bootloader
+		 * does NOT set SHADOW_EN (verified by /dev/mem on tenderloin:
+		 * ch2 = 0x000008D5, ch5 = 0x000008D6 -- bit 12 clear).  The
+		 * captured ADM-DIAG ch2 SDCC drain stall
+		 * (project_adm_flush_state_decode_2026_06_14) has
+		 * FLUSH_STATE5 = 0x00000003, which is the pipeline state
+		 * machine wedged at "drain stage 3" mid-burst.  This is the
+		 * symptom of a channel running without register shadowing
+		 * between EE=0 (where SD bits live) and EE=1 (where the
+		 * command engine operates): mid-transfer CH_CONF reads from
+		 * the engine can return stale values, the burst dispatcher
+		 * loses track of its current row count, and the channel
+		 * stalls without setting an error -- exactly what we see.
+		 *
+		 * Use plain OR -- read CH_CONF at EE=0 (the only EE where
+		 * writes stick for SD-sensitive bits on MSM8660), set
+		 * SHADOW_EN, write back.  Never clear any bits, so the
+		 * bootloader's priority + SD + MPU_DISABLE remain intact and
+		 * we do not repeat the historical SEC_DOMAIN(7)-clear bug
+		 * that flipped SD bit 4 from 1 -> 0 and bricked the eMMC
+		 * channel (CMDTIMEOUT cascade on every transfer).
+		 *
+		 * One-shot per channel via achan->initialized, so we read +
+		 * conditionally write only once per channel lifetime.
+		 */
+		{
+			u32 chconf = readl_relaxed(adev->regs +
+					ADM_CH_CONF(achan->id, 0));
+
+			if (!(chconf & ADM_CH_CONF_SHADOW_EN)) {
+				writel_relaxed(chconf | ADM_CH_CONF_SHADOW_EN,
+					adev->regs +
+					ADM_CH_CONF(achan->id, 0));
+			}
+		}
+
 		achan->initialized = 1;
 	}
 
