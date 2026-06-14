@@ -199,20 +199,6 @@ struct adm_chan {
 
 	int error;
 	int initialized;
-
-	/*
-	 * DEBUG: per-channel arm/complete timestamps for SDCC-drain-stall
-	 * root-cause investigation (TLB-2026-06-14 ADM1 ch2 vs ch7 contention).
-	 * Updated:
-	 *   - ts_arm_jiffies / arms_total  in adm_start_dma right after CMD_PTR
-	 *   - ts_complete_jiffies / complete_total  in adm_dma_irq at result-valid
-	 * Dumped from the FLUSH-stall path so we can see which channels were
-	 * armed simultaneously with the stalled one and how recently each fired.
-	 */
-	unsigned long ts_arm_jiffies;
-	unsigned long ts_complete_jiffies;
-	u32 arms_total;
-	u32 complete_total;
 };
 
 static inline struct adm_chan *to_adm_chan(struct dma_chan *common)
@@ -1161,10 +1147,6 @@ static void adm_start_dma(struct adm_chan *achan)
 		       adev->regs + ADM_CH_CMD_PTR(achan->id, 0));
 	}
 
-	/* DEBUG: per-channel arm timestamp for SDCC-stall investigation */
-	achan->ts_arm_jiffies = jiffies;
-	achan->arms_total++;
-
 	if (need_submit_lock)
 		spin_unlock_irqrestore(&adev->submit_lock[lock_idx], submit_flags);
 	}
@@ -1215,10 +1197,6 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		if (!(result & ADM_CH_RSLT_VALID))
 			continue;
 
-		/* DEBUG: per-channel completion timestamp for SDCC-stall investigation */
-		achan->ts_complete_jiffies = jiffies;
-		achan->complete_total++;
-
 		/*
 		 * Fix #2 (lightweight): surface the FLUSH state for visibility.
 		 * Legacy msm_dmov read FLUSH0..5 (fill_errdata) and handed the
@@ -1242,46 +1220,14 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			 * SDCC RXOVERRUN means the ADM stopped draining the FIFO
 			 * (fabric/EBI drain starvation) rather than a card error.
 			 */
-			if (i == 2 || i == 5) {
-				int j;
-
+			if (i == 2 || i == 5)
 				dev_warn(adev->dev,
 					"ADM-DIAG ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x (SDCC drain stalled)\n",
 					i, result, fstate);
-
-				/*
-				 * DEBUG snapshot: dump every channel that has
-				 * ever been armed.  At an SDCC drain stall this
-				 * reveals which other channels were concurrently
-				 * active (last_arm close to now, no recent
-				 * complete) so we can identify the contention
-				 * source.  Look for channels where arms_total >
-				 * complete_total (currently in flight) and
-				 * ts_arm_jiffies is close to the stall jiffy.
-				 *
-				 * TLB-2026-06-14: hunting ADM1 ch2 (eMMC, CRCI1)
-				 * vs ch7 (BT GSBI6 RX, CRCI9) interaction.
-				 */
-				for (j = 0; j < ADM_MAX_CHANNELS; j++) {
-					struct adm_chan *jc = &adev->channels[j];
-
-					if (!jc->arms_total)
-						continue;
-					dev_warn(adev->dev,
-						"  ADM-DIAG ch%d crci=%u arms=%u completes=%u arm@%lu compl@%lu now=%lu inflight=%c\n",
-						j, jc->crci,
-						jc->arms_total,
-						jc->complete_total,
-						jc->ts_arm_jiffies,
-						jc->ts_complete_jiffies,
-						jiffies,
-						jc->curr_txd ? 'Y' : 'N');
-				}
-			} else {
+			else
 				dev_dbg(adev->dev,
 					"ADM ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x\n",
 					i, result, fstate);
-			}
 		}
 
 		/*
