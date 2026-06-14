@@ -1137,8 +1137,34 @@ static void adm_start_dma(struct adm_chan *achan)
 		(u32)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
 		async_desc->length);
 
-	/* write next command list out to the CMD FIFO */
-	writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
+	/*
+	 * Write CMD_PTR with the ADM_CPLE_CMD_PTR_LIST flag (bit 29) so the
+	 * ADM treats async_desc->dma_addr as a "command pointer list" pointer
+	 * (i.e. address of a CPLE array whose entries each point to a
+	 * descriptor chain), matching legacy webOS msm_dmov dma.c:465:
+	 *
+	 *   hdr.cmdptr = DMOV_CMD_PTR_LIST | DMOV_CMD_ADDR(cmdptr_busaddr);
+	 *   writel(cmd->cmdptr, DMOV_REG(DMOV_CMD_PTR(ch), adm));
+	 *
+	 * where DMOV_CMD_PTR_LIST = (1 << 29) = ADM_CPLE_CMD_PTR_LIST here.
+	 *
+	 * Without the bit, ADM treats the address as a "single command"
+	 * pointer and tries to parse the bytes at that address as the four
+	 * words of a TYPE_SINGLE descriptor.  Our CPL buffer layout starts
+	 * with the CPLE word (ADM_CPLE_LP | (desc_addr>>3)) which has bit 31
+	 * set; ADM reads that as CMD_LC + TYPE_SINGLE + garbage CRCI bits
+	 * and limps along by accidentally fetching our actual BOX descriptors
+	 * from the address bits.  It "mostly works" for solo workloads but
+	 * loses robustness under fabric contention: the ADM ch2 (eMMC) FLUSH
+	 * stall captured on 2026-06-14 (FLUSH_STATE0=0x8000c003 mid-transfer
+	 * with STATE2=0 indicating no next-cmd queued) is consistent with
+	 * the single-command-mode pipeline running out at descriptor stage
+	 * 3 (STATE5=3) instead of traversing the full CPL list.
+	 *
+	 * See project_adm_flush_state_decode_2026_06_14 memory.
+	 */
+	writel(ADM_CPLE_CMD_PTR_LIST |
+	       (ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
 	       adev->regs + ADM_CH_CMD_PTR(achan->id, adev->ee));
 
 	/*
@@ -1148,7 +1174,8 @@ static void adm_start_dma(struct adm_chan *achan)
 	 * This is a workaround pending proper root-cause analysis.
 	 */
 	if (adev->ee == 1) {
-		writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
+		writel(ADM_CPLE_CMD_PTR_LIST |
+		       (ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
 		       adev->regs + ADM_CH_CMD_PTR(achan->id, 0));
 	}
 
