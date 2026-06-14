@@ -1381,7 +1381,18 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 				callback_param = async_desc->vd.tx.callback_param;
 			}
 
-			/* Return pooled descriptor immediately without vchan */
+			/*
+			 * Free / return the descriptor SYNCHRONOUSLY here.
+			 * Sashiko Critical #3: queueing dynamic descriptors to
+			 * vc.desc_completed + scheduling the vchan tasklet
+			 * while ALSO invoking the callback inline (below) causes
+			 * the vchan tasklet to run vchan_complete() and call the
+			 * SAME callback a second time.  Doing both work paths
+			 * (free here + callback below) keeps the lifetimes
+			 * symmetric between pool and dynamic descriptors and
+			 * matches the msm_dmov-style synchronous completion
+			 * pattern this driver is replicating.
+			 */
 			if (async_desc->pool_index >= 0) {
 				spin_lock(&adev->pool_lock);
 				list_add_tail(&async_desc->pool_node,
@@ -1389,12 +1400,12 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 				spin_unlock(&adev->pool_lock);
 			} else {
 				/*
-				 * Dynamic descriptor - use vchan for cleanup.
-				 * vchan_vdesc_fini() will be called by tasklet.
+				 * adm_dma_free_desc() routes through pool_index
+				 * to either the pool free-list (already handled
+				 * above) or dma_free_coherent + kfree for the
+				 * dynamic path.
 				 */
-				list_add_tail(&async_desc->vd.node,
-					      &achan->vc.desc_completed);
-				tasklet_schedule(&achan->vc.task);
+				achan->vc.desc_free(&async_desc->vd);
 			}
 
 			/* kick off next DMA */
