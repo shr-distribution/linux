@@ -472,17 +472,17 @@ static int adm_get_blksize(unsigned int burst)
 	int ret;
 
 	/*
-	 * Burst is in bytes. Map to ADM block size encoding:
-	 * 8 bytes -> 1 (MMCI qcom variant uses burst 8 for src_maxburst)
-	 * 16 bytes -> 0, 32 bytes -> 1, 64 bytes -> 2, 128 bytes -> 3
-	 * 192 bytes -> 4, 256 bytes -> 5
+	 * Burst is in bytes.  ADM blk_size encoding:
+	 *   0 = 16 B, 1 = 32 B, 2 = 64 B, 3 = 128 B, 4 = 192 B, 5 = 256 B
+	 *
+	 * The ADM has no encoding for sub-16-byte bursts; an 8 B burst would
+	 * be silently rounded by callers that ignore the error, producing a
+	 * mis-paced CRCI handshake.  Reject explicitly so the consumer is
+	 * forced to fix its slave config (e.g. mmci's src_maxburst=8 with
+	 * addr_width=4 already yields a 32 B burst -- correct -- so any
+	 * caller arriving here with burst < 16 is misconfigured).
 	 */
 	switch (burst) {
-	case 8:
-		/* MMCI qcom variant uses src_maxburst=8 words * addr_width=4 = 32 bytes
-		 * which results in burst=32, but some paths may send burst=8 bytes */
-		ret = 1;
-		break;
 	case 16:
 	case 32:
 	case 64:
