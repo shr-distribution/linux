@@ -1400,9 +1400,25 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			 * Replicate webOS msm_dmov synchronous completion pattern:
 			 * complete cookie, invoke callback, recycle descriptor, and
 			 * start next DMA - all in hardirq without vchan tasklet
-			 * deferral. MMCI expects immediate notification and can't
+			 * deferral.  MMCI expects immediate notification and can't
 			 * tolerate vchan's deferred cleanup racing with next
 			 * transfer setup in adm_start_dma().
+			 *
+			 * KNOWN ABI NOTE (Sashiko High #1): mainline dmaengine
+			 * documents tx callbacks as running in softirq / tasklet
+			 * context.  Consumers other than mmci's atomic_submit
+			 * (msm_serial UART RX, qpic NAND, qce crypto) call back
+			 * via the standard dmaengine_desc_callback / vchan path
+			 * and may set up locking against soft-IRQ rather than
+			 * hard-IRQ.  We call the callback OUTSIDE the channel's
+			 * vc.lock to allow lock nesting, but the caller is still
+			 * in hardirq context.  Long-term the right split is to
+			 * gate the inline callback on a per-channel flag (e.g.
+			 * achan->atomic_completion = exec_func != NULL) and
+			 * defer through vchan_complete() for non-atomic-submit
+			 * consumers; tracked as a follow-up so this Sashiko-pass
+			 * stays scoped to the fixes that don't require auditing
+			 * every existing consumer's lock-class assumptions.
 			 */
 			dma_cookie_complete(&async_desc->vd.tx);
 
