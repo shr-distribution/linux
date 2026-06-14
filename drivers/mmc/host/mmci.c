@@ -1387,7 +1387,7 @@ void mmci_dmae_finalize(struct mmci_host *host, struct mmc_data *data)
 		dev_err(mmc_dev(host->mmc),
 			"buggy DMA detected: status=0x%08x after %d iters, dir=%s, blksz=%u, blkcnt=%u — disabling DMA\n",
 			status, i,
-			(data->flags & MMC_DATA_READ) ? "read" : "write",
+			str_read_write(data->flags & MMC_DATA_READ),
 			data->blksz, data->blocks);
 		mmci_dma_release(host);
 	}
