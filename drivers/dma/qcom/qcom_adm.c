@@ -54,7 +54,8 @@
 #define ADM_CRCI_CTL(crci, ee)		(0x400 + (crci) * ADM_CRCI_MULTI + \
 						ADM_EE_OFFS(ee))
 
-/* channel status */
+/* channel status (STATUS_SD register) */
+#define ADM_CH_STATUS_CMD_PTR_RDY	BIT(0)
 #define ADM_CH_STATUS_VALID		BIT(1)
 
 /* channel flush command (written to ADM_CH_FLUSH_STATE0) */
@@ -204,6 +205,15 @@ struct adm_chan {
 
 	int error;
 	int initialized;
+
+	/*
+	 * CMD_PTR_RDY busy-wait tracking (legacy webOS parity, see comment in
+	 * adm_start_dma).  Counter increments every time we found the channel
+	 * NOT ready at CMD_PTR write time; logged flag is set after the first
+	 * one-shot dev_warn so subsequent occurrences do not burn IRQ latency.
+	 */
+	u32 cmd_ptr_not_rdy_count;
+	u8 cmd_ptr_not_rdy_logged;
 };
 
 static inline struct adm_chan *to_adm_chan(struct dma_chan *common)
@@ -1136,6 +1146,65 @@ static void adm_start_dma(struct adm_chan *achan)
 		achan->id, async_desc->crci,
 		(u32)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
 		async_desc->length);
+
+	/*
+	 * Check CMD_PTR_RDY before writing CMD_PTR (legacy webOS parity).
+	 *
+	 * Legacy webOS arch/arm/mach-msm/dma.c msm_dmov_enqueue_cmd_ext()
+	 * and start_ready_cmds() always read DMOV_STATUS(ch) and gate the
+	 * CMD_PTR write on bit 0 (CMD_PTR_RDY).  If the channel is not
+	 * ready, the command goes onto a ready_commands list and the next
+	 * RSLT_VALID IRQ drains it.
+	 *
+	 * Mainline qcom_adm.c writes CMD_PTR unconditionally.  Under heavy
+	 * concurrent multi-channel traffic on ADM1 the IRQ handler may
+	 * call adm_start_dma after RSLT_VALID is set but before CMD_PTR_RDY
+	 * actually transitions to 1 (the channel pipeline state machine
+	 * has not fully cleared).  Writing CMD_PTR in that window leaves
+	 * the channel with two partial chains and FLUSH fires with
+	 * STATE5 = 0x00000003 ("drain stage 3").  That is exactly the
+	 * SDCC drain stall we captured in
+	 * project_adm_flush_state_decode_2026_06_14: eMMC ch2 vs WiFi ch5
+	 * (resolved by 105ed93a7cd3 enabling list-mode CMD_PTR -> cleaner
+	 * descriptor chain look-ahead) and eMMC ch2 vs BT-RX ch7 (still
+	 * reproducible after that fix, with the same STATE5 = 3 wedge).
+	 *
+	 * Tight busy-wait up to ~20 us inside the per-CRCI submit_lock we
+	 * already hold (IRQs off).  If the channel becomes ready within
+	 * that window we proceed cleanly; if not, log one-shot per channel
+	 * + per "count of recurrences" and write CMD_PTR anyway (worst
+	 * case == current mainline behaviour, no functional regression).
+	 *
+	 * The one-shot log structure is intentional: do NOT emit
+	 * unbounded dev_warn lines inside the ADM hardirq -- see
+	 * feedback_no_devwarn_in_adm_irq (b97ca25f4615 burned 15-35 ms
+	 * per stall in IRQ and wedged mmci's busy-poll deadline).
+	 */
+	{
+		u32 status = readl_relaxed(adev->regs +
+				ADM_CH_STATUS_SD(achan->id, adev->ee));
+
+		if (!(status & ADM_CH_STATUS_CMD_PTR_RDY)) {
+			unsigned int wait_us;
+
+			for (wait_us = 0; wait_us < 20; wait_us++) {
+				udelay(1);
+				status = readl_relaxed(adev->regs +
+					ADM_CH_STATUS_SD(achan->id, adev->ee));
+				if (status & ADM_CH_STATUS_CMD_PTR_RDY)
+					break;
+			}
+
+			achan->cmd_ptr_not_rdy_count++;
+
+			if (!achan->cmd_ptr_not_rdy_logged) {
+				achan->cmd_ptr_not_rdy_logged = 1;
+				dev_warn(adev->dev,
+					"ADM ch%d STATUS_SD=0x%08x not ready at CMD_PTR write; waited %u us (one-shot)\n",
+					achan->id, status, wait_us);
+			}
+		}
+	}
 
 	/*
 	 * Write CMD_PTR with the ADM_CPLE_CMD_PTR_LIST flag (bit 29) so the
