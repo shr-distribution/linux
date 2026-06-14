@@ -2232,7 +2232,7 @@ mmci_start_command(struct mmci_host *host, struct mmc_command *cmd, u32 c)
 	 * Using the full formula restores the timing the hardware expects.
 	 */
 	if (host->variant->qcom_datactrl_delay)
-		udelay(1 + 3000000 / (host->cclk ?: 1));
+		udelay(mmci_qcom_settle_us(host));
 
 	writel(c, base + MMCICOMMAND);
 }
@@ -3214,7 +3214,7 @@ static void __mmci_start_request(struct mmci_host *host,
 		 * that issues the EXT_CSD READ on Samsung PRV=0x90.
 		 */
 		if (host->variant->qcom_datactrl_delay)
-			udelay(1 + 3000000 / (host->cclk ?: 1));
+			udelay(mmci_qcom_settle_us(host));
 	}
 
 	if (mrq->sbc)

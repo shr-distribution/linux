@@ -564,6 +564,29 @@ static inline u32 mmci_dctrl_blksz(struct mmci_host *host)
 	return (ffs(host->data->blksz) - 1) << 4;
 }
 
+/*
+ * Legacy webOS msm_sdcc clock-dependent register-write settle delay.
+ * Returns microseconds to udelay() after writing a DATACTRL / ARG / CMD
+ * register on the qcom variant; scales inversely with cclk so the
+ * settle window is held proportional to the SDCC sample edge spacing.
+ *
+ * Floor cclk at 400 kHz (the minimum mmc init clock) to bound the
+ * worst-case delay at ~8 us.  Without this floor a stale cclk == 0
+ * (early probe before set_ios runs) hit the literal formula
+ * `udelay(1 + 3000000 / (cclk ?: 1))` which evaluated to
+ * udelay(3000001) -- ~3 seconds of busy-spin under host->lock with
+ * IRQs disabled, a system-killer that Sashiko AI review (Critical #4
+ * on submit/mmci-qcom-tenderloin, 2026-06-14) flagged before it
+ * could fire on a slow boot path.  Return 0 when cclk is genuinely
+ * zero: with no clock, there is no SDCC sample edge to settle for.
+ */
+static inline unsigned int mmci_qcom_settle_us(struct mmci_host *host)
+{
+	if (!host->cclk)
+		return 0;
+	return 1 + 3000000 / max(host->cclk, 400000U);
+}
+
 #ifdef CONFIG_DMA_ENGINE
 int mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 			bool next);

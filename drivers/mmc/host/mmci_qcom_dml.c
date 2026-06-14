@@ -107,7 +107,7 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 	 * had switched from the OTP block to the dynamic EXT_CSD block.
 	 */
 	delay_us = (host->variant->qcom_datactrl_delay) ?
-		(1 + 3000000 / (host->cclk ?: 1)) : 0;
+		mmci_qcom_settle_us(host) : 0;
 
 	/*
 	 * Match legacy webOS msmsdcc_dma_exec_func ordering:
