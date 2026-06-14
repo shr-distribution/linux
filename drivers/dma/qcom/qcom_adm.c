@@ -214,6 +214,18 @@ struct adm_chan {
 	 */
 	u32 cmd_ptr_not_rdy_count;
 	u8 cmd_ptr_not_rdy_logged;
+
+	/*
+	 * One-shot FLUSH-state full dump.  The ADM-DIAG SDCC-drain-stall path
+	 * reads all six FLUSH_STATE registers on the first FLUSH per channel
+	 * and emits them in a single dev_warn; subsequent FLUSHes on the same
+	 * channel fall back to the single-register variant.  Tracked
+	 * per-channel here (was previously a function-static u8 bitmask in
+	 * adm_dma_irq, which had program-wide lifetime and let the first
+	 * stall on any controller silence the diagnostic on every other
+	 * controller's matching channel index).
+	 */
+	u8 flush_state_dumped;
 };
 
 static inline struct adm_chan *to_adm_chan(struct dma_chan *common)
@@ -1294,8 +1306,7 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			 * the one-shot caps the cost on later stalls.
 			 */
 			if (i == 2 || i == 5) {
-				static u8 fs_dumped_mask;
-				bool dump_full = !(fs_dumped_mask & BIT(i));
+				bool dump_full = !achan->flush_state_dumped;
 
 				if (dump_full) {
 					u32 fs1 = readl_relaxed(adev->regs +
@@ -1309,7 +1320,7 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 					u32 fs5 = readl_relaxed(adev->regs +
 						ADM_CH_FLUSH_STATE5(i, adev->ee));
 
-					fs_dumped_mask |= BIT(i);
+					achan->flush_state_dumped = 1;
 					dev_warn(adev->dev,
 						"ADM-DIAG ch%d FLUSH result=0x%08x STATE 0..5: %08x %08x %08x %08x %08x %08x (one-shot)\n",
 						i, result,
