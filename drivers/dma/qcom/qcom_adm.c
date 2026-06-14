@@ -749,6 +749,20 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 		 * On APQ8060/tenderloin specifically, CRCI 5 routes to
 		 * sdcc4 (WiFi) per qcom-apq8060-tenderloin-common.dtsi:2913
 		 * (qcom,sdcc-crci = <5>).
+		 *
+		 * Assumption / limitation: burst == 64 is taken as a proxy for
+		 * "this CRCI is an SDCC controller" because every known
+		 * Qualcomm SoC routes SDCC CRCIs to qcom_adm with a 64-byte
+		 * half-FIFO handshake, while every other CRCI peripheral
+		 * (QCE 16, UART 16, NAND variable but != 64) has a smaller
+		 * granularity.  A peripheral with a 64-byte burst that ISN'T
+		 * an SDCC would silently receive this override and likely run
+		 * with mis-paced CRCI handshake -- no such peripheral exists
+		 * on the SoCs currently bound to qcom_adm (IPQ8064 NAND,
+		 * APQ8060/MSM8660 SDCC1+SDCC4, MSM8960 SDCC).  Long-term this
+		 * heuristic should be replaced with a per-SoC CRCI table
+		 * keyed off OF match data identifying SDCC CRCI numbers
+		 * explicitly; tracked in task #31 (per-compat gating).
 		 */
 		if (burst == 64)
 			blk_size = 1;
