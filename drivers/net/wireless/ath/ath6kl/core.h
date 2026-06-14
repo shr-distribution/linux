@@ -197,8 +197,29 @@ enum ath6kl_hw_flags {
 #define AR6003_HW_2_1_1_TESTSCRIPT_FILE	"nullTestFlow.bin"
 #define AR6003_HW_2_1_1_PATCH_FILE		"data.patch.bin"
 #define AR6003_HW_2_1_1_BOARD_DATA_FILE AR6003_HW_2_1_1_FW_DIR "/bdata.bin"
+/*
+ * Default fall-back board data: prefer the SD32 variant.  AR6003 ships
+ * with multiple per-board-ID calibrations (SD31, SD32, WB31, etc.); the
+ * driver tries bdata.bin first, then falls through to this default if
+ * the board-ID-specific file is not present.  Mainline historically
+ * picked SD31 here, but the HP TouchPad (the most widely-deployed
+ * AR6003 hw 2.1.1 platform in mainline) is an SD32 board:
+ *
+ *   - LuneOS / webOS-ports ship bdata.SD32.bin from the factory webOS
+ *     /lib/firmware/ath6k/hw2.1.1/ directory; md5 999762b1922a... matches
+ *     bit-for-bit on every TouchPad we've inspected (2026-06-14).
+ *   - Loading the SD31 calibration instead produces wrong RF params:
+ *     -50 dBm → -81 dBm RX drop and 15-28% air CRC have been observed
+ *     in past on-device tests (see project_ath6kl_btcoex_init_2026_06_13).
+ *
+ * For boards that are genuinely SD31 (or any other variant) the upstream
+ * request_firmware fallback chain still works: ship bdata.bin or
+ * bdata.SD31.bin in /lib/firmware and ath6kl will load whichever exists.
+ * Changing only the fall-back doesn't break any board that ships its own
+ * matching bdata file.
+ */
 #define AR6003_HW_2_1_1_DEFAULT_BOARD_DATA_FILE	\
-			AR6003_HW_2_1_1_FW_DIR "/bdata.SD31.bin"
+			AR6003_HW_2_1_1_FW_DIR "/bdata.SD32.bin"
 
 /* AR6004 1.0 definitions */
 #define AR6004_HW_1_0_VERSION                 0x30000623
