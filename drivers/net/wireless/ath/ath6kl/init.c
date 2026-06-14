@@ -249,9 +249,34 @@ static const struct ath6kl_hw hw_list[] = {
  * Firmware delays sending the disconnect event to the host for this
  * timeout after is gets disconnected from the current AP.
  * If the firmware successly roams within the disconnect timeout
- * it sends a new connect event
+ * it sends a new connect event.
+ *
+ * Lowered from 10 to 5 to match the value PmWiFiService writes on
+ * legacy webOS via AR6000_IOCTL_WMI_SET_DISC_TIMEOUT (decoded from
+ * PmWiFiService::LoadDefaultConfigs disassembly, 2026-06-14).  5 s
+ * lets the chip declare a disconnect faster when an AP genuinely
+ * disappears, which matters more for handheld use than the
+ * mainline-default extra roam window does for stationary use.
  */
-#define WLAN_CONFIG_DISCONNECT_TIMEOUT 10
+#define WLAN_CONFIG_DISCONNECT_TIMEOUT 5
+
+/*
+ * Beacon-miss thresholds sent at WMI ready.  Legacy webOS
+ * PmWiFiService::LoadDefaultConfigs sends WMI_SET_BMISS_TIME with
+ * bmiss_time=5000 TUs and num_beacons=50 -- the documented maxima
+ * MAX_BMISS_TIME / MAX_BMISS_BEACONS.  Mainline ath6kl never sent
+ * the command, so the chip ran with firmware-default thresholds
+ * (significantly tighter), making roaming flakier under marginal
+ * RX conditions.
+ *
+ * Match webOS at the max: tolerate up to 5 s / 50 missed beacons
+ * before the firmware decides the AP is gone.  At a 100 ms beacon
+ * interval this is roughly half-second pauses across 50 beacons,
+ * which is well within normal interference patterns.  See
+ * ar6000_drv.c / wmi.h MAX_BMISS_TIME / MAX_BMISS_BEACONS.
+ */
+#define WLAN_CONFIG_BMISS_TIME		5000
+#define WLAN_CONFIG_BMISS_NUM_BEACONS	50
 
 
 #define ATH6KL_DATA_OFFSET    64
@@ -546,6 +571,23 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 	if (ret) {
 		ath6kl_err("unable to set disconnect timeout: %d\n", ret);
 		return ret;
+	}
+
+	/*
+	 * Beacon-miss tolerance.  See WLAN_CONFIG_BMISS_TIME +
+	 * WLAN_CONFIG_BMISS_NUM_BEACONS comment for the legacy webOS
+	 * reference.  Non-fatal if the firmware doesn't accept the
+	 * command -- log and continue; older AR6004 variants reject it
+	 * but the rest of init still completes.
+	 */
+	ret = ath6kl_wmi_bmisstime_cmd(ar->wmi, idx,
+				       WLAN_CONFIG_BMISS_TIME,
+				       WLAN_CONFIG_BMISS_NUM_BEACONS);
+	if (ret) {
+		ath6kl_warn("unable to set bmiss time (non-fatal): %d\n", ret);
+	} else {
+		ath6kl_info("bmiss: time=%u TU num_beacons=%u (legacy webOS defaults)\n",
+			    WLAN_CONFIG_BMISS_TIME, WLAN_CONFIG_BMISS_NUM_BEACONS);
 	}
 
 	if (!(ar->conf_flags & ATH6KL_CONF_ENABLE_TX_BURST)) {
