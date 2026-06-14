@@ -2591,7 +2591,7 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 			dev_err(mmc_dev(host->mmc),
 				"CMDTIMEOUT: cmd%d arg=0x%08x status=0x%08x data=%s\n",
 				cmd->opcode, cmd->arg, status,
-				host->data ? "yes" : "no");
+				str_yes_no(host->data));
 		/*
 		 * WiFi (mmc1) CMD53 timeout diag: dump the CPSM/DPSM state to
 		 * understand why the command after a DMA write gets no response
