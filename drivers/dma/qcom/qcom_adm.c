@@ -1881,9 +1881,9 @@ static int adm_dma_probe(struct platform_device *pdev)
 		ch_conf = readl_relaxed(adev->regs + ADM_CH_CONF(i, 0));
 		rslt_conf = readl_relaxed(adev->regs +
 					  ADM_CH_RSLT_CONF(i, 0));
-		dev_info(adev->dev,
-			 "ADM ch%d (EE=0 live): CH_CONF=0x%08x RSLT_CONF=0x%08x\n",
-			 i, ch_conf, rslt_conf);
+		dev_dbg(adev->dev,
+			"ADM ch%d (EE=0 live): CH_CONF=0x%08x RSLT_CONF=0x%08x\n",
+			i, ch_conf, rslt_conf);
 	}
 
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
