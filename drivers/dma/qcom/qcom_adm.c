@@ -871,6 +871,18 @@ static int adm_terminate_all(struct dma_chan *chan)
 	 * an IRQ, and the IRQ handler needs curr_txd to call the completion
 	 * callback. The UART driver relies on this callback to restart RX DMA.
 	 * The IRQ handler will clear curr_txd after completing the descriptor.
+	 *
+	 * LIMITATION (Sashiko High #6): if the channel is wedged at the
+	 * hardware level the FLUSH IRQ may never fire and curr_txd will
+	 * stay set indefinitely, holding a reference to the descriptor and
+	 * blocking the next submission.  There is currently no watchdog
+	 * timer / fallback path; the channel must be re-armed at the SoC
+	 * level (e.g. ADM reset_control sequence on platforms that allow
+	 * it -- not tenderloin, see commit b49e0b8b0ac4).  Adding a
+	 * delayed_work-based recovery -- 'force-clear curr_txd if no
+	 * FLUSH IRQ within Nms' -- is the proper fix and is tracked as a
+	 * follow-up; intentionally omitted here to keep the
+	 * tenderloin-stress refactor series scoped.
 	 */
 
 	/*
