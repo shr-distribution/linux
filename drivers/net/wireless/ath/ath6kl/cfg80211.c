@@ -647,8 +647,26 @@ static int ath6kl_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
 		sme->bg_scan_period = DEFAULT_BG_SCAN_PERIOD;
 	}
 
-	ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx, 0, 0,
-				  sme->bg_scan_period, 0, 0, 0, 3, 0, 0, 0);
+	/*
+	 * bg_scan_period override (debug knob).  Legacy webOS sends 0
+	 * (background scan disabled) via PmWiFiService::LoadDefaultConfigs;
+	 * mainline default is 60 s.  Every BG scan steals air-time from
+	 * the data path, so disabling it materially improves sustained DL
+	 * throughput on AR6003.  Default -1 preserves mainline behaviour.
+	 */
+	{
+		u16 bg_period = sme->bg_scan_period;
+
+		if (ath6kl_bg_scan_period_override >= 0)
+			bg_period = ath6kl_bg_scan_period_override;
+
+		ath6kl_info("scanparams: bg_scan_period=%u (sme=%d override=%d)\n",
+			    bg_period, sme->bg_scan_period,
+			    ath6kl_bg_scan_period_override);
+
+		ath6kl_wmi_scanparams_cmd(ar->wmi, vif->fw_vif_idx, 0, 0,
+					  bg_period, 0, 0, 0, 3, 0, 0, 0);
+	}
 
 	up(&ar->sem);
 
