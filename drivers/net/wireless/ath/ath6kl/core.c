@@ -206,8 +206,29 @@ int ath6kl_core_init(struct ath6kl *ar, enum ath6kl_htc_type htc_type)
 
 	ath6kl_cookie_init(ar);
 
+	/*
+	 * IGNORE_PS_FAIL_EVT_IN_SCAN is critical for AR6003 + SDIO + REC_POWER.
+	 * Without it the firmware raises a power-save-fail event whenever a
+	 * scan can't TX during a sleep window and the host-side SDIO mailbox
+	 * goes silent, manifesting as a CMDTIMEOUT storm on 24-byte mailbox
+	 * reads (cmd53 arg=0x14080018) within ~500 ms of REC_POWER being set.
+	 *
+	 * Legacy webOS ar6000_drv.c unconditionally enables this via
+	 * WLAN_CONFIG_IGNORE_POWER_SAVE_FAIL_EVENT_DURING_SCAN=1 and pairs the
+	 * pmparams_cmd with WMI_SETPWR every time PmWiFiService toggles
+	 * power_save -- decoded from the on-device
+	 * AtherosDriverController::SetPowerSave disassembly (PmWiFiService
+	 * @ /usr/bin/PmWiFiService, 2026-06-14).  Mainline gates the
+	 * pmparams_cmd at init.c:489 on this flag but never sets it by
+	 * default, leaving REC_POWER unusable on this chip + HIF combination.
+	 *
+	 * Set unconditionally: there is no downside on chips/HIFs where the
+	 * power-save fail event was wanted (a tester can still observe it
+	 * via WMI event traces).
+	 */
 	ar->conf_flags = ATH6KL_CONF_IGNORE_ERP_BARKER |
-			 ATH6KL_CONF_ENABLE_11N | ATH6KL_CONF_ENABLE_TX_BURST;
+			 ATH6KL_CONF_ENABLE_11N | ATH6KL_CONF_ENABLE_TX_BURST |
+			 ATH6KL_CONF_IGNORE_PS_FAIL_EVT_IN_SCAN;
 
 	if (suspend_mode &&
 	    suspend_mode >= WLAN_POWER_STATE_CUT_PWR &&

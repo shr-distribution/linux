@@ -494,6 +494,7 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 				   ret);
 			return ret;
 		}
+		ath6kl_info("pmparams: idle=0 psPoll=1 dtim=0 tx_wakeup=0 num_tx=1 ps_fail=IGNORE_DURING_SCAN (legacy webOS defaults)\n");
 	}
 
 	if (!(ar->conf_flags & ATH6KL_CONF_IGNORE_ERP_BARKER)) {
