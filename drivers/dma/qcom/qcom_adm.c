@@ -1690,22 +1690,34 @@ static int adm_dma_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * Skip reset sequence - webOS kernel doesn't reset ADM in probe.
-	 * The ADM may be pre-configured by bootloader/TrustZone.
+	 * Probe-time reset: IPQ8064 (the original upstream user) needs this
+	 * to bring the ADM into a known state before any peripheral CRCI is
+	 * armed.  MSM8660 / APQ8060 must NOT reset here -- the bootloader
+	 * pre-programs CRCI_CTL at the EE=0 aperture for eMMC, NAND, SDC,
+	 * WiFi-SDIO, and the reset would wipe those entries; the consumer
+	 * peripherals do not currently know how to re-populate them, so the
+	 * first CRCI handshake would hang.
+	 *
+	 * Use the board (root) compat string rather than a new ADM compat
+	 * variant for now: the proper long-term fix is to add a per-SoC OF
+	 * match entry with .data = { .probe_reset = false } and key off
+	 * of_device_get_match_data(); tracked as a follow-up for the
+	 * msm8660-adm DT binding series.
 	 */
-#if 0
-	reset_control_assert(adev->clk_reset);
-	reset_control_assert(adev->c0_reset);
-	reset_control_assert(adev->c1_reset);
-	reset_control_assert(adev->c2_reset);
+	if (!of_machine_is_compatible("qcom,msm8660") &&
+	    !of_machine_is_compatible("qcom,apq8060")) {
+		reset_control_assert(adev->clk_reset);
+		reset_control_assert(adev->c0_reset);
+		reset_control_assert(adev->c1_reset);
+		reset_control_assert(adev->c2_reset);
 
-	udelay(2);
+		udelay(2);
 
-	reset_control_deassert(adev->clk_reset);
-	reset_control_deassert(adev->c0_reset);
-	reset_control_deassert(adev->c1_reset);
-	reset_control_deassert(adev->c2_reset);
-#endif
+		reset_control_deassert(adev->clk_reset);
+		reset_control_deassert(adev->c0_reset);
+		reset_control_deassert(adev->c1_reset);
+		reset_control_deassert(adev->c2_reset);
+	}
 
 	adev->channels = devm_kcalloc(adev->dev, ADM_MAX_CHANNELS,
 				      sizeof(*adev->channels), GFP_KERNEL);
