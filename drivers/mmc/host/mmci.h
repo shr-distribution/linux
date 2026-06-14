@@ -484,6 +484,13 @@ struct mmci_host {
 						 * diag dump
 						 * (TLB-2026-06-13)
 						 */
+	u8			qcom_pending_reset_stop:1; /* set by data IRQ
+						 * when a data error needs
+						 * the SDCC reset + CMD12
+						 * stop dispatched from
+						 * the threaded IRQ handler
+						 * (reset_control may sleep,
+						 * not safe in hardirq) */
 	u32			deferred_datactrl;
 	void			*dma_priv;
 
