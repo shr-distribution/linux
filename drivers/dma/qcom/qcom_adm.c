@@ -40,6 +40,11 @@
 #define ADM_CH_CMD_PTR(chan, ee)	(ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_RSLT(chan, ee)		(0x40 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_FLUSH_STATE0(chan, ee)	(0x80 + ADM_CHAN_EE_OFFS(chan, ee))
+#define ADM_CH_FLUSH_STATE1(chan, ee)	(0xc0 + ADM_CHAN_EE_OFFS(chan, ee))
+#define ADM_CH_FLUSH_STATE2(chan, ee)	(0x100 + ADM_CHAN_EE_OFFS(chan, ee))
+#define ADM_CH_FLUSH_STATE3(chan, ee)	(0x140 + ADM_CHAN_EE_OFFS(chan, ee))
+#define ADM_CH_FLUSH_STATE4(chan, ee)	(0x180 + ADM_CHAN_EE_OFFS(chan, ee))
+#define ADM_CH_FLUSH_STATE5(chan, ee)	(0x1c0 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_STATUS_SD(chan, ee)	(0x200 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_CONF(chan, ee)		(0x240 + ADM_CHAN_EE_OFFS(chan, ee))
 #define ADM_CH_RSLT_CONF(chan, ee)	(0x300 + ADM_CHAN_EE_OFFS(chan, ee))
@@ -1219,15 +1224,48 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			 * dump. A FLUSH on the SDCC channel coincident with an
 			 * SDCC RXOVERRUN means the ADM stopped draining the FIFO
 			 * (fabric/EBI drain starvation) rather than a card error.
+			 *
+			 * One-shot per channel: read all 6 FLUSH_STATE registers
+			 * (matching legacy webOS msm_dmov fill_errdata) and emit
+			 * in a SINGLE dev_warn so we don't burn IRQ latency with
+			 * multiple printks (see feedback_no_devwarn_in_adm_irq:
+			 * b97ca25f4615 emitted 2-3 dev_warns per stall, blocked
+			 * the ADM IRQ for 15-35 ms, made mmci miss its busy-poll
+			 * deadline -> eMMC wedge).  Two printks per first-time
+			 * stall is still much cheaper than the 3-line loop, and
+			 * the one-shot caps the cost on later stalls.
 			 */
-			if (i == 2 || i == 5)
-				dev_warn(adev->dev,
-					"ADM-DIAG ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x (SDCC drain stalled)\n",
-					i, result, fstate);
-			else
+			if (i == 2 || i == 5) {
+				static u8 fs_dumped_mask;
+				bool dump_full = !(fs_dumped_mask & BIT(i));
+
+				if (dump_full) {
+					u32 fs1 = readl_relaxed(adev->regs +
+						ADM_CH_FLUSH_STATE1(i, adev->ee));
+					u32 fs2 = readl_relaxed(adev->regs +
+						ADM_CH_FLUSH_STATE2(i, adev->ee));
+					u32 fs3 = readl_relaxed(adev->regs +
+						ADM_CH_FLUSH_STATE3(i, adev->ee));
+					u32 fs4 = readl_relaxed(adev->regs +
+						ADM_CH_FLUSH_STATE4(i, adev->ee));
+					u32 fs5 = readl_relaxed(adev->regs +
+						ADM_CH_FLUSH_STATE5(i, adev->ee));
+
+					fs_dumped_mask |= BIT(i);
+					dev_warn(adev->dev,
+						"ADM-DIAG ch%d FLUSH result=0x%08x STATE 0..5: %08x %08x %08x %08x %08x %08x (one-shot)\n",
+						i, result,
+						fstate, fs1, fs2, fs3, fs4, fs5);
+				} else {
+					dev_warn(adev->dev,
+						"ADM-DIAG ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x (SDCC drain stalled)\n",
+						i, result, fstate);
+				}
+			} else {
 				dev_dbg(adev->dev,
 					"ADM ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x\n",
 					i, result, fstate);
+			}
 		}
 
 		/*
