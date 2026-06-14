@@ -556,11 +556,37 @@ static int ath6kl_target_config_wlan_params(struct ath6kl *ar, int idx)
 	 * entering power save after initialization.  Without this, the
 	 * AR6003 firmware on msm8x60 stops responding to WMI commands
 	 * (scan, etc.) and raises WAKEUP error interrupts.
+	 *
+	 * Override: ath6kl_prefer_rec_power=1 (module param) selects
+	 * REC_POWER instead.  Legacy webOS PmWiFiService runs the chip
+	 * in REC_POWER and reaches ~27 Mbps at -52 dBm 5 GHz; mainline
+	 * MAX_PERF_POWER on the same chip + same AP lands at ~14 Mbps.
+	 * The AR6003 firmware uses listen_intvl for its internal RX
+	 * scheduler regardless of the powermode (see commit 15b02858b229
+	 * for the listen_interval reset), but REC_POWER additionally
+	 * enables PSPOLL-based AP coordination that lets the chip
+	 * negotiate higher PHY rates.
+	 *
+	 * Gated to default off so we can A/B test on-device without
+	 * rebuilding -- the "stops responding to WMI scan" failure is
+	 * preserved as a fallback if REC_POWER turns out to need
+	 * additional setup we haven't yet ported.
 	 */
-	ret = ath6kl_wmi_powermode_cmd(ar->wmi, idx, MAX_PERF_POWER);
-	if (ret) {
-		ath6kl_err("unable to set max perf power mode: %d\n", ret);
-		return ret;
+	{
+		u8 init_pwr_mode = ath6kl_prefer_rec_power ?
+				   REC_POWER : MAX_PERF_POWER;
+
+		ret = ath6kl_wmi_powermode_cmd(ar->wmi, idx, init_pwr_mode);
+		if (ret) {
+			ath6kl_err("unable to set %s power mode: %d\n",
+				   init_pwr_mode == REC_POWER ? "rec" : "max-perf",
+				   ret);
+			return ret;
+		}
+		ath6kl_info("init power mode = %s (ath6kl_prefer_rec_power=%u)\n",
+			    init_pwr_mode == REC_POWER ? "REC_POWER" :
+							 "MAX_PERF_POWER",
+			    ath6kl_prefer_rec_power);
 	}
 
 	/*

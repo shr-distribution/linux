@@ -805,6 +805,8 @@ void ath6kl_cfg80211_connect_event(struct ath6kl_vif *vif, u16 channel,
 		 */
 		ath6kl_wmi_listeninterval_cmd(ar->wmi, vif->fw_vif_idx,
 					      vif->listen_intvl_t, 0);
+		ath6kl_info("listen interval reset to %u TUs after CONNECT_EVENT (was 300 during WMI_CONNECT_CMD)\n",
+			    vif->listen_intvl_t);
 	}
 
 	chan = ieee80211_get_channel(ar->wiphy, (int) channel);
@@ -1522,6 +1524,22 @@ static int ath6kl_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 	if (pmgmt && ar->hif_type != ATH6KL_HIF_TYPE_SDIO) {
 		ath6kl_dbg(ATH6KL_DBG_WLAN_CFG, "%s: rec power\n", __func__);
 		mode.pwr_mode = REC_POWER;
+	} else if (pmgmt && ath6kl_prefer_rec_power) {
+		/*
+		 * SDIO + user explicitly opted in via module param:
+		 * honour pmgmt=true with REC_POWER.  Legacy webOS
+		 * PmWiFiService runs the chip in REC_POWER on the same
+		 * AR6003+MSM8x60 combination and reaches ~27 Mbps at
+		 * -52 dBm 5 GHz (vs ~14 Mbps under MAX_PERF_POWER) --
+		 * the chip-side PSPOLL-based AP coordination lets the
+		 * firmware negotiate higher PHY rates.  The historical
+		 * "stops responding to WMI scan" failure mode may
+		 * resurface; if it does, set ath6kl_prefer_rec_power=0
+		 * to revert to the safe MAX_PERF_POWER override below.
+		 */
+		ath6kl_info("%s: rec power (SDIO + ath6kl_prefer_rec_power=1)\n",
+			    __func__);
+		mode.pwr_mode = REC_POWER;
 	} else {
 		/*
 		 * Force MAX_PERF_POWER for SDIO devices.  On Qualcomm SDCC
@@ -1545,6 +1563,11 @@ static int ath6kl_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 		ath6kl_err("wmi_powermode_cmd failed\n");
 		return -EIO;
 	}
+
+	ath6kl_info("power mgmt set: pmgmt=%d hif=%s pwr_mode=%s\n",
+		    pmgmt,
+		    ar->hif_type == ATH6KL_HIF_TYPE_SDIO ? "sdio" : "other",
+		    mode.pwr_mode == REC_POWER ? "REC_POWER" : "MAX_PERF_POWER");
 
 	return 0;
 }

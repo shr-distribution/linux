@@ -50,6 +50,7 @@ enum ATH6K_DEBUG_MASK {
 };
 
 extern unsigned int debug_mask;
+extern unsigned int ath6kl_prefer_rec_power;
 __printf(2, 3) void ath6kl_printk(const char *level, const char *fmt, ...);
 __printf(1, 2) void ath6kl_info(const char *fmt, ...);
 __printf(1, 2) void ath6kl_err(const char *fmt, ...);
