@@ -11,6 +11,7 @@
 #include <linux/ioport.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
@@ -1493,23 +1494,32 @@ static void mmci_qcom_dma_complete(void *param)
 	}
 
 	/*
-	 * WRITES on mmc1: poll for MCI_QCOM_PROGDONE before tearing down the
-	 * data path.  ADM-done means all bytes left the SDCC TX FIFO, but the
-	 * card's internal programming may still be in flight.  Without this
-	 * wait, mmci_stop_data() would truncate the write and the next CMD
-	 * would race PROG_DONE.  Mirrors the existing IRQ-side poll at
-	 * mmci_data_irq() that triggered when DATAEND DID fire.  PROG_DONE
-	 * arrives within microseconds for a 128-byte mailbox write; the 2 ms
-	 * bound only guards an error case.
+	 * WRITES on mmc1: poll for MCI_QCOM_PROGDONE before tearing down
+	 * the data path.  ADM-done means all bytes left the SDCC TX FIFO,
+	 * but the card's internal programming may still be in flight.
+	 * Without this wait mmci_stop_data() would truncate the write and
+	 * the next CMD would race PROG_DONE.  PROG_DONE arrives within
+	 * microseconds for a 128 B mailbox write under healthy fabric.
+	 *
+	 * Bound at 200 us so we do not busy-spin in hardirq for
+	 * milliseconds while holding host->lock with IRQs off (Sashiko
+	 * High #3 on submit/mmci-qcom-tenderloin, 2026-06-14).  If
+	 * PROG_DONE never asserts within that window we ack and continue
+	 * -- the next CMD will fail visibly with a CMDTIMEOUT and the
+	 * existing recovery path handles it, which is preferable to
+	 * starving every other IRQ on the system.
 	 */
 	if (write && host->mmc->index == 1 && !data->error) {
-		unsigned int pd;
+		u32 status;
+		int ret;
 
-		for (pd = 0; pd < 2000; pd++) {
-			if (readl(host->base + MMCISTATUS) & MCI_QCOM_PROGDONE)
-				break;
-			udelay(1);
-		}
+		ret = readl_poll_timeout_atomic(host->base + MMCISTATUS,
+						status,
+						status & MCI_QCOM_PROGDONE,
+						1, 200);
+		if (ret)
+			dev_warn_ratelimited(mmc_dev(host->mmc),
+				"PROG_DONE not asserted within 200 us; CMD-path recovery will fire if next CMD fails\n");
 		writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
 	}
 
@@ -2473,14 +2483,20 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		 */
 		if (host->mmc->index == 1 && host->dma_in_progress &&
 		    !(data->flags & MMC_DATA_READ) && !data->error) {
-			unsigned int pd;
+			u32 status;
+			int ret;
 
-			for (pd = 0; pd < 2000; pd++) {
-				if (readl(host->base + MMCISTATUS) &
-				    MCI_QCOM_PROGDONE)
-					break;
-				udelay(1);
-			}
+			/* See companion comment in mmci_qcom_dma_complete:
+			 * bound to 200 us to avoid millisecond-scale busy-spin
+			 * in hardirq (Sashiko High #3).
+			 */
+			ret = readl_poll_timeout_atomic(host->base + MMCISTATUS,
+							status,
+							status & MCI_QCOM_PROGDONE,
+							1, 200);
+			if (ret)
+				dev_warn_ratelimited(mmc_dev(host->mmc),
+					"PROG_DONE not asserted within 200 us at data IRQ; CMD-path recovery will fire if next CMD fails\n");
 			writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
 		}
 
