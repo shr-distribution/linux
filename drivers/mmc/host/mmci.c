@@ -840,9 +840,51 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	 * Let the MMCI say when the data is ended and it's time
 	 * to fire next DMA request. When that happens, MMCI will
 	 * call mmci_data_end()
+	 *
+	 * Legacy webOS msm_sdcc parity (tenderloin AR6003/eMMC concurrent
+	 * stress fix): ALSO enable the FIFO half-full/half-empty mask even
+	 * on the DMA success path.  Legacy webOS sets pio_irqmask to
+	 * MCI_RXFIFOHALFFULLMASK (reads) or MCI_TXFIFOHALFEMPTYMASK (writes)
+	 * before kicking the DMA, giving SDCC a safety net: if the ADM
+	 * stalls mid-burst (FLUSH_STATE5 = drain-stage-3, see
+	 * project_adm_flush_state_decode_2026_06_14), the FIFO IRQ fires
+	 * with the channel pipeline frozen, and the host gets a chance to
+	 * notice and react rather than wait for DATATIMER to expire (which
+	 * is what we observed: DATACRCFAIL with errbits "(none latched)
+	 * (RXOVERRUN=fabric/ADM drain starvation)").
+	 *
+	 * Live /dev/mem dump on running webOS confirms: SDC1 MCIMASK0 =
+	 * 0x008001ff (low 9 bits + bit 15 RXFIFOHALFFULLMASK + bit 23
+	 * CEATAENDMASK).  Mainline's DIAG[DATACRCFAIL] capture at the same
+	 * stall instant: MASK0 = 0x000001ff (bit 15 NOT set).
+	 *
+	 * The CEATA mask is irrelevant on eMMC; the load-bearing bit is
+	 * RXFIFOHALFFULLMASK / TXFIFOHALFEMPTYMASK for the safety net.
+	 *
+	 * mmci_pio_irq() bails out early when host->dma_in_progress is set
+	 * (see that handler), so this extra mask cannot drive the PIO drain
+	 * path into an uninitialised sg_miter.  The cost is one extra IRQ
+	 * per FIFO half-transition during normal DMA reads (~100 kHz on a
+	 * 4-bit 48 MHz bus with 64 B FIFO -- fast, but harmless: each IRQ
+	 * is just an ACK that returns IRQ_HANDLED immediately).
+	 *
+	 * Gated on qcom_dml_atomic_submit so non-qcom variants are unaffected.
 	 */
-	writel(readl(host->base + MMCIMASK0) | MCI_DATAENDMASK,
-	       host->base + MMCIMASK0);
+	if (host->variant->qcom_dml_atomic_submit) {
+		u32 extra_mask;
+
+		if (data->flags & MMC_DATA_READ)
+			extra_mask = MCI_RXFIFOHALFFULLMASK;
+		else
+			extra_mask = MCI_TXFIFOHALFEMPTYMASK;
+
+		writel(readl(host->base + MMCIMASK0) | MCI_DATAENDMASK |
+				extra_mask,
+		       host->base + MMCIMASK0);
+	} else {
+		writel(readl(host->base + MMCIMASK0) | MCI_DATAENDMASK,
+		       host->base + MMCIMASK0);
+	}
 
 	/* Trace mask setup for WiFi SDCC4 debugging */
 	if (host->mmc->index == 1)
@@ -2947,6 +2989,25 @@ static irqreturn_t mmci_pio_irq(int irq, void *dev_id)
 	struct variant_data *variant = host->variant;
 	void __iomem *base = host->base;
 	u32 status;
+
+	/*
+	 * Legacy webOS parity safety net: when the qcom variant arms the
+	 * RX/TX FIFO half-full/half-empty mask alongside DMA (see
+	 * mmci_dma_start, gated on qcom_dml_atomic_submit), the FIFO IRQ
+	 * will fire during a normal DMA transfer too.  The PIO drain path
+	 * below uses host->sg_miter which is only initialised by
+	 * mmci_init_sg() on the PIO fallback path -- entering it while DMA
+	 * is in flight would dereference an uninitialised iterator.
+	 *
+	 * Just ACK the IRQ and return: ADM is draining (or the DATAEND /
+	 * DATACRCFAIL / DATATIMEOUT path will fire next if it isn't).  The
+	 * value of arming the mask at all is the BACKSTOP behaviour: if the
+	 * ADM truly stalls mid-burst the FIFO stays full, this IRQ keeps
+	 * firing harmlessly, and the next DATATIMEOUT / DATACRCFAIL still
+	 * arrives on schedule via the existing mmci_data_irq path.
+	 */
+	if (host->dma_in_progress)
+		return IRQ_HANDLED;
 
 	status = readl(base + MMCISTATUS);
 
