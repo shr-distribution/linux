@@ -1652,18 +1652,29 @@ static int adm_dma_probe(struct platform_device *pdev)
 		/*
 		 * Vote a SUSTAINED EBI floor to keep the ADM->SFAB->AFAB->EBI
 		 * path from collapsing while the ADM drains the SDCC FIFOs.
-		 * Legacy webOS used clk_set_rate(ebi1_adm_clk, 27) — a minimal
+		 * Legacy webOS used clk_set_rate(ebi1_adm_clk, 27) -- a minimal
 		 * EBI keep-alive (the heavy data-path vote was the per-SDCC
-		 * dfab=64MHz in msm_sdcc, not the ADM). Vote it as avg_bw too
+		 * dfab=64MHz in msm_sdcc, not the ADM).  Vote it as avg_bw too
 		 * (not just peak) so the floor holds across RPM active/sleep
-		 * contexts during sustained concurrent eMMC+WiFi DMA; with avg=0
-		 * the ADM's own EBI floor lapsed and the drain could starve.
-		 * 128 MB/s is comfortably above legacy's keep-alive.
+		 * contexts during sustained concurrent eMMC + WiFi DMA; with
+		 * avg=0 the ADM's own EBI floor lapsed and the drain could
+		 * starve.  128 MB/s is comfortably above legacy's keep-alive.
+		 *
+		 * Gated on the board (root) compat string -- IPQ8064 NAND is
+		 * low-bandwidth (single ADM channel, infrequent large bursts)
+		 * and was working without any sustained vote in mainline before
+		 * this driver gained ICC paths; voting a 128 MB/s floor there
+		 * needlessly pins EBI bandwidth.  Long-term should move to
+		 * per-SoC OF match data with .data = { .icc_vote_mbps = 128 };
+		 * tracked alongside the other per-SoC quirk gates in task #31.
 		 */
-		ret = icc_set_bw(adev->icc_path, 128000, 128000);
-		if (ret) {
-			dev_err(adev->dev, "failed to set interconnect bandwidth: %d\n", ret);
-			goto err_disable_clks;
+		if (of_machine_is_compatible("qcom,msm8660") ||
+		    of_machine_is_compatible("qcom,apq8060")) {
+			ret = icc_set_bw(adev->icc_path, 128000, 128000);
+			if (ret) {
+				dev_err(adev->dev, "failed to set interconnect bandwidth: %d\n", ret);
+				goto err_disable_clks;
+			}
 		}
 	}
 
@@ -1691,7 +1702,9 @@ static int adm_dma_probe(struct platform_device *pdev)
 		}
 		adev->icc_path_p1 = NULL;
 	}
-	if (adev->icc_path_p1) {
+	if (adev->icc_path_p1 &&
+	    (of_machine_is_compatible("qcom,msm8660") ||
+	     of_machine_is_compatible("qcom,apq8060"))) {
 		ret = icc_set_bw(adev->icc_path_p1, 128000, 128000);
 		if (ret) {
 			dev_err(adev->dev,
