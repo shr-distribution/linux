@@ -1143,39 +1143,28 @@ static void adm_start_dma(struct adm_chan *achan)
 	 * descriptor chain look-ahead) and eMMC ch2 vs BT-RX ch7 (still
 	 * reproducible after that fix, with the same STATE5 = 3 wedge).
 	 *
-	 * Tight busy-wait up to ~20 us inside the per-CRCI submit_lock we
-	 * already hold (IRQs off).  If the channel becomes ready within
-	 * that window we proceed cleanly; if not, log one-shot per channel
-	 * + per "count of recurrences" and write CMD_PTR anyway (worst
-	 * case == current mainline behaviour, no functional regression).
-	 *
-	 * The one-shot log structure is intentional: do NOT emit
-	 * unbounded dev_warn lines inside the ADM hardirq -- see
-	 * feedback_no_devwarn_in_adm_irq (b97ca25f4615 burned 15-35 ms
-	 * per stall in IRQ and wedged mmci's busy-poll deadline).
+	 * Diagnostic only -- no busy-wait.  The empirical evidence is that
+	 * CMD_PTR_RDY is set every time we get here under our reproducer:
+	 * the original 20 us udelay(1) loop never fired in any captured
+	 * stall.  Keep the read + one-shot warn so we have a tripwire if a
+	 * future workload exposes the race that legacy webOS guarded
+	 * against, without incurring up-to-20 us of IRQ-off latency on a
+	 * hot path that is also invoked from the hardirq completion
+	 * chain.  See feedback_no_devwarn_in_adm_irq for the broader
+	 * "no unbounded dev_warns inside ADM hardirq" rule.
 	 */
 	{
 		u32 status = readl_relaxed(adev->regs +
 				ADM_CH_STATUS_SD(achan->id, adev->ee));
 
 		if (!(status & ADM_CH_STATUS_CMD_PTR_RDY)) {
-			unsigned int wait_us;
-
-			for (wait_us = 0; wait_us < 20; wait_us++) {
-				udelay(1);
-				status = readl_relaxed(adev->regs +
-					ADM_CH_STATUS_SD(achan->id, adev->ee));
-				if (status & ADM_CH_STATUS_CMD_PTR_RDY)
-					break;
-			}
-
 			achan->cmd_ptr_not_rdy_count++;
 
 			if (!achan->cmd_ptr_not_rdy_logged) {
 				achan->cmd_ptr_not_rdy_logged = 1;
 				dev_warn(adev->dev,
-					"ADM ch%d STATUS_SD=0x%08x not ready at CMD_PTR write; waited %u us (one-shot)\n",
-					achan->id, status, wait_us);
+					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set at submit (one-shot diagnostic)\n",
+					achan->id, status);
 			}
 		}
 	}
