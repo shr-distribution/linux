@@ -18,6 +18,7 @@
 #include <linux/err.h>
 #include <linux/highmem.h>
 #include <linux/log2.h>
+#include <linux/string_choices.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/pm.h>
 #include <linux/mmc/host.h>
@@ -590,7 +591,7 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 			desired, clk,
 			host->datactrl_first,
 			host->mmc->card ? host->mmc->card->type : -1,
-			(clk & MCI_CLK_PWRSAVE) ? "on" : "off");
+			str_on_off(clk & MCI_CLK_PWRSAVE));
 
 	mmci_write_clkreg(host, clk);
 
@@ -1017,16 +1018,6 @@ static u32 mmci_get_dctrl_cfg(struct mmci_host *host)
 static u32 ux500v2_get_dctrl_cfg(struct mmci_host *host)
 {
 	return MCI_DPSM_ENABLE | (host->data->blksz << 16);
-}
-
-/*
- * Qualcomm SDCC uses raw block size in bytes (bits 4-15), not log2 exponent.
- * The legacy msm_sdcc driver uses: datactrl = MCI_DPSM_ENABLE | (data->blksz << 4)
- * This allows arbitrary block sizes for SDIO byte mode transfers.
- */
-static u32 qcom_get_dctrl_cfg(struct mmci_host *host)
-{
-	return MCI_DPSM_ENABLE | (host->data->blksz << 4);
 }
 
 static void ux500_busy_clear_mask_done(struct mmci_host *host)
@@ -3107,9 +3098,7 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 	host->irq_action = IRQ_HANDLED;
 
 	do {
-		u32 raw_status;
 		status = readl(host->base + MMCISTATUS);
-		raw_status = status;
 
 		/* Trace IRQ entry for WiFi SDCC4 debugging */
 		if (host->mmc->index == 1 && status)
