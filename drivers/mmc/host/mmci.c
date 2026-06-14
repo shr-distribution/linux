@@ -1996,6 +1996,78 @@ static void ux500v2_variant_init(struct mmci_host *host)
 	host->ops->get_datactrl_cfg = ux500v2_get_dctrl_cfg;
 }
 
+/*
+ * Dynamic ICC bandwidth voting (Qualcomm variant).  Called from
+ * mmci_pre_request when a data transfer is about to be dispatched.
+ * Bumps the SDC ICC vote to the active level and records last activity
+ * jiffies so the idle worker keeps the vote held while traffic is
+ * sustained.  Always runs in process context (blk-mq dispatch), so
+ * icc_set_bw is safe.
+ */
+static void mmci_qcom_icc_bump_active(struct mmci_host *host)
+{
+	bool need_set;
+	unsigned long flags;
+
+	if (!host->icc_path || !host->icc_active_bw)
+		return;
+
+	spin_lock_irqsave(&host->icc_vote_lock, flags);
+	host->icc_last_active = jiffies;
+	need_set = !host->icc_voted_active;
+	if (need_set)
+		host->icc_voted_active = true;
+	spin_unlock_irqrestore(&host->icc_vote_lock, flags);
+
+	if (need_set)
+		icc_set_bw(host->icc_path,
+			   host->icc_active_bw, host->icc_active_bw);
+
+	/* Re-arm the idle worker so it fires icc_idle_ms after this point. */
+	mod_delayed_work(system_wq, &host->icc_idle_work,
+			 msecs_to_jiffies(host->icc_idle_ms));
+}
+
+/*
+ * Idle worker: if no traffic has touched icc_last_active within the
+ * hysteresis window, drop the SDC ICC vote back to the keep-alive
+ * level.  Re-armed by mmci_qcom_icc_bump_active on every bump so a
+ * sustained burst keeps the vote held until quiet.
+ */
+static void mmci_qcom_icc_idle_work(struct work_struct *work)
+{
+	struct mmci_host *host = container_of(work, struct mmci_host,
+					      icc_idle_work.work);
+	unsigned long flags, deadline;
+	bool need_lower = false;
+
+	if (!host->icc_path)
+		return;
+
+	spin_lock_irqsave(&host->icc_vote_lock, flags);
+	deadline = host->icc_last_active +
+		   msecs_to_jiffies(host->icc_idle_ms);
+	if (time_before(jiffies, deadline)) {
+		/*
+		 * Activity bumped us between schedule and fire.  Re-arm
+		 * for the residual interval.
+		 */
+		spin_unlock_irqrestore(&host->icc_vote_lock, flags);
+		mod_delayed_work(system_wq, &host->icc_idle_work,
+				 deadline - jiffies);
+		return;
+	}
+	if (host->icc_voted_active) {
+		host->icc_voted_active = false;
+		need_lower = true;
+	}
+	spin_unlock_irqrestore(&host->icc_vote_lock, flags);
+
+	if (need_lower)
+		icc_set_bw(host->icc_path,
+			   host->icc_idle_bw, host->icc_idle_bw);
+}
+
 static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct mmci_host *host = mmc_priv(mmc);
@@ -2010,6 +2082,14 @@ static void mmci_pre_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		return;
 
 	mmci_prep_data(host, data, true);
+
+	/*
+	 * Bump ICC vote AFTER prep validation -- if the prep failed we have
+	 * nothing to bump for, and we want to avoid bumping for cmd-only
+	 * requests (already filtered above by !data).
+	 */
+	if (host->variant->qcom_dml)
+		mmci_qcom_icc_bump_active(host);
 }
 
 static void mmci_post_request(struct mmc_host *mmc, struct mmc_request *mrq,
@@ -3911,12 +3991,42 @@ static int mmci_probe(struct amba_device *dev,
 		 * DATACRCFAIL/RXOVERRUN (the recurring eMMC-under-WiFi failure).
 		 * avg=peak=512000 replicates legacy's persistent 64 MHz hold.
 		 */
-		ret = icc_set_bw(host->icc_path, 512000, 512000);
+		/*
+		 * Dynamic vote (Qualcomm variant): start at idle, bump in
+		 * pre_request, lower again via delayed_work after icc_idle_ms
+		 * of inactivity.  Matches legacy webOS per-transaction
+		 * msm_bus_scale_client_update_request semantics.  For
+		 * non-Qualcomm variants we just hold the historic 512 MB/s
+		 * sustained vote.
+		 *
+		 * Numbers (calibrated against legacy webOS reference, on-device
+		 * /proc/interrupts measured 2026-06-14):
+		 *   idle  =  64 MBps  -- DFAB keep-alive (legacy minimum hold)
+		 *   active = 1024 MBps -- 128 MHz on the 8-byte DFAB, headroom
+		 *                         for sustained concurrent eMMC+WiFi
+		 *                         DMA without ADM ch2 drain starvation.
+		 *   hysteresis = 200 ms -- generous enough that bursty SDIO
+		 *                         I/O does not bounce votes; tight
+		 *                         enough that DFAB drops back to keep-
+		 *                         alive between activity bursts.
+		 */
+		spin_lock_init(&host->icc_vote_lock);
+		INIT_DELAYED_WORK(&host->icc_idle_work, mmci_qcom_icc_idle_work);
+		host->icc_idle_bw = 64000;
+		host->icc_active_bw = 1024000;
+		host->icc_idle_ms = 200;
+		host->icc_voted_active = false;
+
+		ret = icc_set_bw(host->icc_path,
+				 variant->qcom_dml ? host->icc_idle_bw : 512000,
+				 variant->qcom_dml ? host->icc_idle_bw : 512000);
 		if (ret) {
 			dev_err(&dev->dev, "failed to set interconnect bw: %d\n", ret);
 			goto clk_disable;
 		}
-		dev_dbg(&dev->dev, "interconnect bandwidth voting enabled\n");
+		dev_dbg(&dev->dev,
+			"interconnect bandwidth voting enabled (idle=%u active=%u kBps)\n",
+			host->icc_idle_bw, host->icc_active_bw);
 	}
 
 	if (variant->qcom_fifo)
@@ -4273,6 +4383,9 @@ static void mmci_remove(struct amba_device *dev)
 
 		if (host->dummy52_required)
 			cancel_delayed_work_sync(&host->qcom_dummy52_watchdog);
+
+		if (host->icc_path && host->variant->qcom_dml)
+			cancel_delayed_work_sync(&host->icc_idle_work);
 
 		mmci_dma_release(host);
 		clk_disable_unprepare(host->clk);

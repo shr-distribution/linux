@@ -434,6 +434,27 @@ struct mmci_host {
 	struct mmc_host		*mmc;
 	struct clk		*clk;
 	struct icc_path		*icc_path;
+	/*
+	 * Dynamic ICC bandwidth voting for the Qualcomm variant.  Legacy
+	 * webOS msm_sdcc + msm_bus did per-transaction bandwidth bumps;
+	 * mainline mmci has only a static probe-time vote that is held
+	 * sustained.  Under the trio (eMMC + WiFi SDIO + BT BCSP softirq)
+	 * the static vote is not enough headroom and ADM ch2 starves
+	 * mid-drain (project_adm_submit_lock_starvation).  This pair of
+	 * fields drives a hysteresis-based active/idle vote: bump in
+	 * mmci_pre_request, lower via delayed_work after icc_idle_ms of
+	 * inactivity.  Both bumps are issued from process context
+	 * (mmci_pre_request runs from the blk-mq dispatch path); the
+	 * delayed_work also runs in process context, so icc_set_bw is
+	 * always safe to call here.
+	 */
+	unsigned int		icc_active_bw;	/* burst vote in kBps */
+	unsigned int		icc_idle_bw;	/* idle vote in kBps */
+	unsigned int		icc_idle_ms;	/* hysteresis window */
+	bool			icc_voted_active;
+	spinlock_t		icc_vote_lock;
+	unsigned long		icc_last_active;
+	struct delayed_work	icc_idle_work;
 	u8			singleirq:1;
 
 	struct reset_control	*rst;

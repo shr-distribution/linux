@@ -1734,7 +1734,7 @@ static int adm_dma_probe(struct platform_device *pdev)
 		 */
 		if (of_machine_is_compatible("qcom,msm8660") ||
 		    of_machine_is_compatible("qcom,apq8060")) {
-			ret = icc_set_bw(adev->icc_path, 128000, 128000);
+			ret = icc_set_bw(adev->icc_path, 1024000, 1024000);
 			if (ret) {
 				dev_err(adev->dev, "failed to set interconnect bandwidth: %d\n", ret);
 				goto err_disable_clks;
@@ -1769,7 +1769,7 @@ static int adm_dma_probe(struct platform_device *pdev)
 	if (adev->icc_path_p1 &&
 	    (of_machine_is_compatible("qcom,msm8660") ||
 	     of_machine_is_compatible("qcom,apq8060"))) {
-		ret = icc_set_bw(adev->icc_path_p1, 128000, 128000);
+		ret = icc_set_bw(adev->icc_path_p1, 1024000, 1024000);
 		if (ret) {
 			dev_err(adev->dev,
 				"failed to set PORT1 interconnect bw: %d\n", ret);
