@@ -64,7 +64,34 @@ static const struct ath6kl_hw hw_list[] = {
 		.dataset_patch_addr		= 0x57ff74,
 		.app_load_addr			= 0x1234,
 		.board_ext_data_addr		= 0x542330,
-		.reserved_ram_size		= 512,
+		/*
+		 * reserved_ram_size: legacy webOS ar6000_drv.c writes 6656
+		 * (6.5 KB) to hi_end_RAM_reserve_sz for AR6003 REV2+ silicon
+		 * (which includes hw 2.1.1).  See legacy
+		 * webos-linux-kernel-touchpad/drivers/staging/ath6kl/os/linux/
+		 * ar6000_drv.c:1357-1361.
+		 *
+		 * This default was previously 512, which is what the chip's
+		 * firmware sees if no FW_IE_RESERVED_RAM_SIZE override comes
+		 * from the API 3/4/5 firmware container.  With API 3
+		 * (fw-3.bin) the IE *does* override this to ~6656, so the
+		 * bug was latent; with API 1 (athwlan.bin) there are no IEs
+		 * and the bogus 512 gets written, the chip's firmware then
+		 * uses RAM the hardware needs reserved -> assertion ->
+		 * "firmware crashed".
+		 *
+		 * Empirical reproduction 2026-06-14: removing fw-3.bin from
+		 * the initramfs so the ath6kl waterfall falls through to
+		 * athwlan.bin (API 1) reliably triggered "timeout waiting for
+		 * recv message" + "firmware crashed" with hw=0x30000582 and
+		 * an empty fw version string, within 5 s of probe.
+		 *
+		 * Update the default to 6912 to match the AR6003 hw 2.0
+		 * entry above (which uses the same legacy memory layout) and
+		 * to leave a small margin over legacy's 6656.  API 3 still
+		 * wins via IE override; API 1 now boots correctly.
+		 */
+		.reserved_ram_size		= 6912,
 		.refclk_hz			= 26000000,
 		.uarttx_pin			= 8,
 		.testscript_addr		= 0x57ef74,
