@@ -1569,8 +1569,8 @@ static int ath6kl_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 	 * pairs WMI_SETPWR with WMI_SET_PMPARAMS.  Decoded from
 	 * AtherosDriverController::SetPowerSave (PmWiFiService @ 0xc8b4):
 	 *
-	 *   ioctl(fd, AR6000_IOCTL_WMI_SETPWR,       &pwrmode);  /* 0x8bec */
-	 *   ioctl(fd, AR6000_IOCTL_WMI_SET_PMPARAMS, &pmparams); /* 0x8bf2 */
+	 *   ioctl(fd, AR6000_IOCTL_WMI_SETPWR,       &pwrmode);   // 0x8bec
+	 *   ioctl(fd, AR6000_IOCTL_WMI_SET_PMPARAMS, &pmparams);  // 0x8bf2
 	 *
 	 * Where pmparams differs from the init-time defaults only in the
 	 * pspoll_number field, which legacy sets per-mode:
