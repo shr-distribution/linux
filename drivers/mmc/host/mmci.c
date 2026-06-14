@@ -2535,46 +2535,34 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 
 		/*
 		 * Qualcomm SDCC: on data CRC/timeout, mirror legacy
-		 * msm_sdcc's msmsdcc_reset_and_restore() -- clk_reset the
-		 * SDCC IP (wipes stale DPSM/CPSM state from the half-
-		 * finished transfer) then restore MMCICLOCK / MMCIPOWER /
-		 * MMCIMASK0 identically (same 8-bit/48 MHz settings).
+		 * msm_sdcc's msmsdcc_reset_and_restore() — clk_reset the
+		 * SDCC IP (wipes stale DPSM/CPSM state from the
+		 * half-finished transfer) then restore MMCICLOCK / MMCIPOWER
+		 * / MMCIMASK0 identically (same 8-bit/48 MHz settings).
 		 * Without this, the upcoming CMD12 / data->stop typically
 		 * CMDTIMEOUTs (CPSM is still in DATA-state response window),
-		 * mmc-core cascades through mmc_blk_reset -> mmc_power_cycle
-		 * -> mmc_init_card -> mmc_select_bus_width's verification
-		 * path -> second read CRC-fails under fabric contention ->
-		 * card falls back to 1-bit irreversibly.
+		 * mmc-core cascades through mmc_blk_reset → mmc_power_cycle
+		 * → mmc_init_card → mmc_select_bus_width's verification path
+		 * → second read CRC-fails under fabric contention → card
+		 * falls back to 1-bit irreversibly.
 		 *
-		 * reset_control_assert/deassert may sleep (the reset
-		 * framework backend can take mutexes / call regmap APIs);
-		 * we are in hardirq with host->lock held + IRQs off, so
-		 * the reset must NOT happen here.  Defer to the threaded
-		 * IRQ handler by setting the qcom_pending_reset_stop flag
-		 * and returning IRQ_WAKE_THREAD; mmci_irq_thread() does the
-		 * reset + register restore + CMD12 stop dispatch in
-		 * process context.  (Sashiko Critical #5 on
-		 * submit/mmci-qcom-tenderloin, 2026-06-14.)
+		 * Reset is 2 MMIO writes + udelay(2); cheap inside the data
+		 * IRQ path, and crucial that it happens BEFORE CMD12 below.
 		 */
 		if (data->error && host->variant->qcom_datactrl_delay &&
 		    host->rst) {
-			host->qcom_pending_reset_stop = 1;
-			host->irq_action = IRQ_WAKE_THREAD;
+			reset_control_assert(host->rst);
+			udelay(2);
+			reset_control_deassert(host->rst);
+			writel(host->clk_reg, host->base + MMCICLOCK);
+			writel(host->pwr_reg, host->base + MMCIPOWER);
+			writel(MCI_IRQENABLE | host->variant->start_err,
+			       host->base + MMCIMASK0);
 		}
 
 		if (!data->error)
 			/* The error clause is handled above, success! */
 			data->bytes_xfered = data->blksz * data->blocks;
-
-		/*
-		 * Skip the stop dispatch here when qcom_pending_reset_stop
-		 * is set: the threaded IRQ handler will do the SDCC reset
-		 * THEN dispatch the stop in process context.  Dispatching
-		 * here before the reset would CMDTIMEOUT (CPSM still in
-		 * DATA-state response window).
-		 */
-		if (host->qcom_pending_reset_stop)
-			return;
 
 		if (!data->stop) {
 			if (host->variant->cmdreg_stop && data->error)
@@ -3296,7 +3284,6 @@ static irqreturn_t mmci_irq_thread(int irq, void *dev_id)
 {
 	struct mmci_host *host = dev_id;
 	unsigned long flags;
-	bool reset_for_stop;
 
 	if (host->rst) {
 		reset_control_assert(host->rst);
@@ -3311,25 +3298,7 @@ static irqreturn_t mmci_irq_thread(int irq, void *dev_id)
 	       host->base + MMCIMASK0);
 
 	host->irq_action = IRQ_HANDLED;
-
-	/*
-	 * Deferred SDCC reset + CMD12 stop from mmci_data_irq's
-	 * qcom_datactrl_delay error path (Sashiko Critical #5).
-	 * Dispatch the stop now that we are in process context and
-	 * the reset has been applied above.  Do not call
-	 * mmci_request_end -- the stop's own completion IRQ will run
-	 * mmci_cmd_irq's normal mrq-end path.  Always clear the flag.
-	 */
-	reset_for_stop = host->qcom_pending_reset_stop;
-	host->qcom_pending_reset_stop = 0;
-
-	if (reset_for_stop && host->data && host->data->stop) {
-		host->atomic_submit.armed = false;
-		host->atomic_submit.active = false;
-		mmci_start_command(host, host->data->stop, 0);
-	} else {
-		mmci_request_end(host, host->mrq);
-	}
+	mmci_request_end(host, host->mrq);
 	spin_unlock_irqrestore(&host->lock, flags);
 
 	return host->irq_action;
