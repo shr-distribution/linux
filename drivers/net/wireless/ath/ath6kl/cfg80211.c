@@ -1564,6 +1564,42 @@ static int ath6kl_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 		return -EIO;
 	}
 
+	/*
+	 * Mirror legacy webOS PmWiFiService::SetPowerSave: every PM toggle
+	 * pairs WMI_SETPWR with WMI_SET_PMPARAMS.  Decoded from
+	 * AtherosDriverController::SetPowerSave (PmWiFiService @ 0xc8b4):
+	 *
+	 *   ioctl(fd, AR6000_IOCTL_WMI_SETPWR,       &pwrmode);  /* 0x8bec */
+	 *   ioctl(fd, AR6000_IOCTL_WMI_SET_PMPARAMS, &pmparams); /* 0x8bf2 */
+	 *
+	 * Where pmparams differs from the init-time defaults only in the
+	 * pspoll_number field, which legacy sets per-mode:
+	 *
+	 *   mode 1 (MAX_PERF + light PS):  pspoll = 1
+	 *   mode 2 (REC_POWER, normal):    pspoll = 2
+	 *   mode 3 (REC_POWER, aggressive):pspoll = 1
+	 *
+	 * Match mode 2 for "iw set power_save on" -- the iwconfig "Power
+	 * Management: on" path on stock webOS.  Without this re-send, the
+	 * AR6003 firmware retains the init-time pspoll=1 baseline but the
+	 * powermode transition resets its internal PS scheduler, leaving
+	 * the chip in a state where it stops responding to mailbox reads
+	 * within ~500 ms (CMDTIMEOUT storm on cmd53 arg=0x14080018).
+	 *
+	 * Only emit on the REC_POWER path: MAX_PERF_POWER does not need
+	 * the re-send (chip is awake, ignores pspoll), and unconditionally
+	 * issuing two WMI cmds per PM toggle would add latency to the
+	 * common scan-during-MAX_PERF flow.
+	 */
+	if (mode.pwr_mode == REC_POWER) {
+		if (ath6kl_wmi_pmparams_cmd(ar->wmi, vif->fw_vif_idx,
+					    0, 2, 0, 0, 1,
+					    IGNORE_PS_FAIL_DURING_SCAN) != 0)
+			ath6kl_warn("pmparams_cmd failed after REC_POWER -- chip may wedge\n");
+		else
+			ath6kl_info("pmparams: pspoll_number=2 sent after REC_POWER (mode 2 / legacy webOS PM=on)\n");
+	}
+
 	ath6kl_info("power mgmt set: pmgmt=%d hif=%s pwr_mode=%s\n",
 		    pmgmt,
 		    ar->hif_type == ATH6KL_HIF_TYPE_SDIO ? "sdio" : "other",
