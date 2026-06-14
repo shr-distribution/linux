@@ -395,6 +395,17 @@ static void adm_desc_pool_destroy(struct adm_device *adev)
 	}
 }
 
+/* devm-action wrapper so any probe-error path after pool_init implicitly
+ * unwinds the pool (~256 KB coherent DMA buffer + struct array).  Without
+ * this, the goto err_disable_clks paths between pool_init and
+ * dma_async_device_register would silently leak the entire pool on
+ * probe failure.
+ */
+static void adm_desc_pool_destroy_action(void *data)
+{
+	adm_desc_pool_destroy((struct adm_device *)data);
+}
+
 /**
  * adm_desc_get - Get a descriptor from the pool
  * @adev: ADM device
@@ -1753,6 +1764,20 @@ static int adm_dma_probe(struct platform_device *pdev)
 		goto err_disable_clks;
 	}
 
+	/* Wire pool cleanup into device-managed unwind so any subsequent
+	 * probe-error goto (err_disable_clks, etc.) automatically frees the
+	 * pool without an explicit adm_desc_pool_destroy() call on every
+	 * error label.
+	 */
+	ret = devm_add_action_or_reset(&pdev->dev,
+				       adm_desc_pool_destroy_action, adev);
+	if (ret) {
+		dev_err(adev->dev,
+			"failed to register pool-destroy devm action: %d\n",
+			ret);
+		goto err_disable_clks;
+	}
+
 	/* reset CRCIs */
 	for (i = 0; i < 16; i++)
 		writel(ADM_CRCI_CTL_RST, adev->regs +
@@ -1861,7 +1886,7 @@ static int adm_dma_probe(struct platform_device *pdev)
 	ret = dma_async_device_register(&adev->common);
 	if (ret) {
 		dev_err(adev->dev, "failed to register dma async device\n");
-		goto err_pool_destroy;
+		goto err_disable_clks;
 	}
 
 	ret = of_dma_controller_register(pdev->dev.of_node, adm_dma_xlate,
@@ -1873,8 +1898,10 @@ static int adm_dma_probe(struct platform_device *pdev)
 
 err_unregister_dma:
 	dma_async_device_unregister(&adev->common);
-err_pool_destroy:
-	adm_desc_pool_destroy(adev);
+	/* Pool cleanup is now wired via devm_add_action_or_reset so it
+	 * runs automatically when devres unwinds.  No err_pool_destroy
+	 * label needed.
+	 */
 err_disable_clks:
 	clk_disable_unprepare(adev->iface_clk);
 err_disable_core_clk:
@@ -1904,8 +1931,7 @@ static void adm_dma_remove(struct platform_device *pdev)
 
 	devm_free_irq(adev->dev, adev->irq, adev);
 
-	/* Free descriptor pool */
-	adm_desc_pool_destroy(adev);
+	/* Descriptor pool is freed via the devm action registered at probe. */
 
 	clk_disable_unprepare(adev->core_clk);
 	clk_disable_unprepare(adev->iface_clk);
