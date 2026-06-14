@@ -520,18 +520,16 @@ static int a6_probe(struct i2c_client *client)
 		return ret;
 
 	/*
-	 * Try to initialise the controller now. Continue on failure: the
-	 * IRQ may still arrive later (e.g. on Touchstone connect) and the
-	 * bottom-half handler will retry a6_init_state().
+	 * Request the IRQ BEFORE a6_init_state(). The MSP430's IRQ-output
+	 * state machine asserts the line when a still-latched STATUS_x bit
+	 * is unmasked by the MASK_x writes in init_state. The legacy 2.6.35
+	 * webOS driver and the pre-rework upstream submission both requested
+	 * the IRQ before init for this reason. v1 moved init_state earlier
+	 * and silently lost that first assert: with no handler installed
+	 * the falling edge falls on the floor, the bottom half never acks
+	 * via status3 W1C, and subsequent A2A_CONNECT_CHANGE events never
+	 * fire IRQ because the chip's IRQ output stays latched-but-ignored.
 	 */
-	mutex_lock(&state->dev_mutex);
-	ret = a6_init_state(client);
-	mutex_unlock(&state->dev_mutex);
-	if (ret < 0)
-		dev_warn(&client->dev,
-			 "A6 not responding (%d); will retry on first IRQ\n",
-			 ret);
-
 	if (client->irq > 0) {
 		ret = devm_request_threaded_irq(&client->dev, client->irq, NULL,
 						a6_irq,
@@ -544,6 +542,19 @@ static int a6_probe(struct i2c_client *client)
 
 		device_init_wakeup(&client->dev, true);
 	}
+
+	/*
+	 * Try to initialise the controller now. Continue on failure: the
+	 * IRQ may still arrive later (e.g. on Touchstone connect) and the
+	 * bottom-half handler will retry a6_init_state().
+	 */
+	mutex_lock(&state->dev_mutex);
+	ret = a6_init_state(client);
+	mutex_unlock(&state->dev_mutex);
+	if (ret < 0)
+		dev_warn(&client->dev,
+			 "A6 not responding (%d); will retry on first IRQ\n",
+			 ret);
 
 	/*
 	 * Spawn the legacy /dev/a6_N + sysfs ABI on the auxiliary bus
