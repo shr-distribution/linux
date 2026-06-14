@@ -388,14 +388,13 @@ static int qce_crypto_probe(struct platform_device *pdev)
 	/*
 	 * NOTE: On CE2 (MSM8x60) the per-channel CRCI burst size needs to
 	 * be programmed at EE=0 before the first transfer (CRCI 4 = CE_IN,
-	 * CRCI 5 = CE_OUT, burst = 32 bytes / 2). The original out-of-tree
-	 * version of this driver called qcom_adm_program_crci_ee0() to do
-	 * that, but no such helper exists in mainline qcom-adm.c. Wiring
-	 * this up properly belongs in drivers/dma/qcom/qcom-adm.c (likely
-	 * as a per-channel DT property the ADM driver applies in its own
-	 * probe), not here. Left as a TODO for the qce CE2 follow-up
-	 * series; the existing driver behaves correctly when the previous
-	 * boot stage has left CRCI burst at its default.
+	 * CRCI 5 = CE_OUT, burst = 32 bytes / 2).  Mainline qcom-adm.c has
+	 * no public helper for this; the proper home for it is the ADM
+	 * driver's own probe (likely via a per-channel DT property the ADM
+	 * driver applies before exposing the channel).  Left as a TODO for
+	 * the qce CE2 follow-up series; the existing driver behaves
+	 * correctly when the previous boot stage has left CRCI burst at
+	 * its default.
 	 */
 
 	ret = qce_check_version(qce);
