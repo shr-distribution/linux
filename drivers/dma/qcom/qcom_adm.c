@@ -1428,16 +1428,24 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			}
 
 			/*
-			 * Free / return the descriptor SYNCHRONOUSLY here.
-			 * Sashiko Critical #3: queueing dynamic descriptors to
-			 * vc.desc_completed + scheduling the vchan tasklet
-			 * while ALSO invoking the callback inline (below) causes
-			 * the vchan tasklet to run vchan_complete() and call the
-			 * SAME callback a second time.  Doing both work paths
-			 * (free here + callback below) keeps the lifetimes
-			 * symmetric between pool and dynamic descriptors and
-			 * matches the msm_dmov-style synchronous completion
-			 * pattern this driver is replicating.
+			 * Pool descriptors are returned to the free list inline
+			 * (no allocator hop, no sleeping).  Dynamic descriptors
+			 * MUST be queued to the vchan tasklet because their
+			 * cleanup path (adm_dma_free_desc) calls
+			 * dma_free_coherent(), which warns when invoked from
+			 * hardirq context (kernel/dma/mapping.c:689 WARN_ON in
+			 * dma_free_attrs).
+			 *
+			 * We already inline-call the consumer's tx.callback
+			 * below; NULL out vd.tx.callback first so vchan_complete()
+			 * in the tasklet doesn't call it a SECOND time when it
+			 * processes desc_completed (Sashiko Critical #3 was the
+			 * double-completion -- 3272cece1bad fixed it by freeing
+			 * dynamic inline, but that introduced the
+			 * dma_free_coherent-in-hardirq WARN; the correct split
+			 * is: inline-call the callback, defer cleanup to the
+			 * tasklet, but don't let the tasklet re-fire the
+			 * callback).
 			 */
 			if (async_desc->pool_index >= 0) {
 				spin_lock(&adev->pool_lock);
@@ -1445,13 +1453,12 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 					      &adev->desc_free_list);
 				spin_unlock(&adev->pool_lock);
 			} else {
-				/*
-				 * adm_dma_free_desc() routes through pool_index
-				 * to either the pool free-list (already handled
-				 * above) or dma_free_coherent + kfree for the
-				 * dynamic path.
-				 */
-				achan->vc.desc_free(&async_desc->vd);
+				/* Defer free to tasklet; suppress double callback. */
+				async_desc->vd.tx.callback = NULL;
+				async_desc->vd.tx.callback_param = NULL;
+				list_add_tail(&async_desc->vd.node,
+					      &achan->vc.desc_completed);
+				tasklet_schedule(&achan->vc.task);
 			}
 
 			/* kick off next DMA */
