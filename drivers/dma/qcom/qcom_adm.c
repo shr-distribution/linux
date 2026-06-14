@@ -877,22 +877,26 @@ static int adm_terminate_all(struct dma_chan *chan)
 	writel_relaxed(ADM_CH_FLUSH_GRACEFUL,
 		       adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
 
+	spin_unlock_irqrestore(&achan->vc.lock, flags);
+
 	/*
-	 * Free descriptors while holding the lock to prevent race conditions.
-	 * Without this, a descriptor could be submitted between lock release
-	 * and vchan_dma_desc_free_list, causing list corruption (LIST_POISON
-	 * values in node pointers) and kernel crashes.
+	 * Walk the local 'head' list and free descriptors OUTSIDE the
+	 * spinlock.  For dynamic descriptors achan->vc.desc_free() routes
+	 * to adm_dma_free_desc -> dma_free_coherent(), which may sleep
+	 * under PREEMPT_RT / KASAN -- the previous in-lock loop violated
+	 * the "no sleeping under spin_lock_irqsave" rule (Sashiko High #2).
 	 *
-	 * We inline vchan_dma_desc_free_list logic here and clear REUSE flag
-	 * to ensure desc_free is called directly without re-taking the lock.
+	 * The old "race against fresh submission" concern does not apply
+	 * here: vchan_get_all_descriptors() spliced the entire pending
+	 * list onto 'head' (a stack local) under the lock; any new submit
+	 * goes into the freshly empty vc.desc_submitted -- it cannot
+	 * race-add to the local list we are about to walk.
 	 */
 	list_for_each_entry_safe(vd, _vd, &head, node) {
 		list_del(&vd->node);
 		dmaengine_desc_clear_reuse(&vd->tx);
 		achan->vc.desc_free(vd);
 	}
-
-	spin_unlock_irqrestore(&achan->vc.lock, flags);
 
 	return 0;
 }
