@@ -60,6 +60,17 @@ properties:
               - st,stm32mp25-sdmmc2
           - const: arm,pl18x
           - const: arm,primecell
+      - description: Qualcomm SDCC v4 PrimeCell as wired on MSM8660 /
+          APQ8060.  Selects the MSM8660-specific MMCI variant which
+          enables the ADM exec_func atomic-submit hook, a 250 us
+          DATACTRL settle delay, a 2x data timeout, and in-band SDIO
+          IRQ routing.  Modern Qualcomm SoCs (MSM8916, MSM8974,
+          SDM845, ...) do not need this and should use the generic
+          arm,pl18x compatible.
+        items:
+          - const: qcom,msm8660-sdcc-v4
+          - const: arm,pl18x
+          - const: arm,primecell
 
   clocks:
     description: One or two clocks, the "apb_pclk" and the "MCLK"
@@ -180,20 +191,47 @@ properties:
   qcom,sdcc-crci:
     $ref: /schemas/types.yaml#/definitions/uint32
     description:
-      Client Rate Control Interface identifier for the SDCC FIFO when
-      driven by qcom_adm DMA (MSM8x60-class boards).
+      Client Rate Control Interface identifier the qcom_adm DMA channel
+      uses to handshake with this SDCC FIFO.  Required on MSM8x60-class
+      boards where ADM (not BAM) is the DMA back-end; the value must
+      match the SDCC-instance row in the SoC's ADM CRCI table (e.g.
+      sdcc1=2/3, sdcc2=4/5, sdcc3=6/7, sdcc4=8/9 on MSM8660).  Without
+      it qcom_adm has no peripheral handshake signal and the channel
+      either deadlocks or overflows the FIFO.
 
   qcom,datactrl-first:
     type: boolean
     description:
-      Quirk to write DATACTRL before issuing the data command, matching
-      legacy webOS hsmmc on MSM8x60.
+      Program SDCC DATACTRL before writing CMD register, matching the
+      legacy Qualcomm msm_sdcc driver behaviour on the MSM8x60 / APQ8060
+      SDCC v4 controller.  Required for SDIO (mmc1) on MSM8660 where the
+      AR6003 + ADM1 race condition is otherwise visible -- the data
+      path state machine arms before the command starts so the first
+      CMD53 transfer does not miss the first FIFO fill.  Default-off
+      because it changes register-write ordering and is not safe on
+      every Qualcomm SDCC instance.
 
   qcom,dummy52-required:
     type: boolean
     description:
-      Send the dummy 52 cycles required by certain BSP-derived SDCC4
-      controllers before issuing commands.
+      Inject a dummy SDIO CMD52 (CCCR register 0 read on function 0)
+      after every CMD53/CMD54 WRITE so the SDCC v4 DPSM residual state
+      gets drained before the next command on the bus.  Without this,
+      the next CMD on the same SDCC instance can see DATACRCFAIL or
+      CMDTIMEOUT.  Only the SDCC instance(s) that carry SDIO traffic
+      need this; eMMC-only instances do not.
+
+  qcom,max-req-kb:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Cap mmc->max_req_size (in KB) to constrain the size of a single
+      DMA request.  Used on MSM8660 to keep individual qcom_adm
+      transfers below the AHB / fabric back-pressure threshold that
+      otherwise triggers RXOVERRUN under concurrent eMMC + WiFi load.
+      Typical value 64 (= 64 KB).  Default (property absent) keeps the
+      MMC-core inferred maximum.
+    minimum: 4
+    maximum: 1024
 
 dependencies:
   st,cmd-gpios: [ "st,use-ckin" ]
@@ -276,4 +314,24 @@ examples:
       cap-sd-highspeed;
       cap-mmc-highspeed;
       max-frequency = <120000000>;
+    };
+
+  - |
+    /* Qualcomm SDCC v4 on MSM8660 / APQ8060, SDIO instance (WiFi). */
+    mmc@121c0000 {
+      compatible = "qcom,msm8660-sdcc-v4", "arm,pl18x", "arm,primecell";
+      arm,primecell-periphid = <0x00051180>;
+      reg = <0x121c0000 0x8000>;
+      interrupts = <0 187 0x4>;
+      clocks = <&gcc 0>, <&gcc 1>;
+      clock-names = "mclk", "apb_pclk";
+      dmas = <&adm_dma 8>, <&adm_dma 9>;
+      dma-names = "rx", "tx";
+      qcom,sdcc-crci = <8>;
+      qcom,datactrl-first;
+      qcom,dummy52-required;
+      qcom,max-req-kb = <64>;
+      bus-width = <4>;
+      non-removable;
+      cap-sdio-irq;
     };
