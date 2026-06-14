@@ -4155,9 +4155,17 @@ static void mmci_remove(struct amba_device *dev)
 
 		mmc_remove_host(mmc);
 
-		if (variant->qcom_dml)
-			cancel_delayed_work_sync(&host->qcom_dma_timeout_work);
-
+		/*
+		 * Order of operations matters here (Sashiko High #5).  We
+		 * must mask all hardware IRQ sources BEFORE
+		 * cancel_delayed_work_sync() so that no remaining
+		 * mmci_data_irq / mmci_qcom_dma_complete can re-arm
+		 * qcom_dma_timeout_work between the cancel_sync and the
+		 * IRQ teardown.  Cancelling first would leave a window
+		 * where the still-armed hardware fires, the IRQ handler
+		 * re-schedules the work, and the work executes after
+		 * mmci_dma_release()/clk_disable have torn down the host.
+		 */
 		writel(0, host->base + MMCIMASK0);
 
 		if (variant->mmcimask1)
@@ -4165,6 +4173,9 @@ static void mmci_remove(struct amba_device *dev)
 
 		writel(0, host->base + MMCICOMMAND);
 		writel(0, host->base + MMCIDATACTRL);
+
+		if (variant->qcom_dml)
+			cancel_delayed_work_sync(&host->qcom_dma_timeout_work);
 
 		mmci_dma_release(host);
 		clk_disable_unprepare(host->clk);
