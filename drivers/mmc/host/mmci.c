@@ -3024,8 +3024,12 @@ static irqreturn_t mmci_pio_irq(int irq, void *dev_id)
 	 * ADM truly stalls mid-burst the FIFO stays full, this IRQ keeps
 	 * firing harmlessly, and the next DATATIMEOUT / DATACRCFAIL still
 	 * arrives on schedule via the existing mmci_data_irq path.
+	 *
+	 * Use READ_ONCE: the field is written under host->lock elsewhere
+	 * but read here without the lock; the qualifier prevents the
+	 * compiler from re-loading / tearing the access.
 	 */
-	if (host->dma_in_progress)
+	if (READ_ONCE(host->dma_in_progress))
 		return IRQ_HANDLED;
 
 	status = readl(base + MMCISTATUS);

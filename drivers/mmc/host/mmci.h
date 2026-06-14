@@ -474,7 +474,19 @@ struct mmci_host {
 	int (*get_rx_fifocnt)(struct mmci_host *h, u32 status, int remain);
 
 	u8			use_dma:1;
-	u8			dma_in_progress:1;
+	/*
+	 * dma_in_progress is read from mmci_pio_irq() without host->lock
+	 * (the early-return safety net for the legacy-parity FIFO mask).
+	 * Packing it as a u8:1 bit-field shares a byte with the surrounding
+	 * fields, so a locked write to any of them would non-atomically
+	 * read-modify-write the byte containing dma_in_progress, racing
+	 * the unlocked reader.  Promote to a standalone unsigned int so
+	 * each access is naturally atomic at word granularity, and use
+	 * READ_ONCE / WRITE_ONCE at the unlocked read site to keep the
+	 * compiler from re-ordering it.  (Sashiko High #7 on
+	 * submit/mmci-qcom-tenderloin, 2026-06-14.)
+	 */
+	unsigned int		dma_in_progress;
 	u8			datactrl_first:1;
 	u8			dma_issue_deferred:1;
 	u8			deferred_datactrl_pending:1;
