@@ -1899,24 +1899,16 @@ static int adm_dma_probe(struct platform_device *pdev)
 		goto err_disable_clks;
 
 	/*
-	 * Pin the ADM completion IRQ to CPU1 on MSM8660/APQ8060 (Scorpion-MP
-	 * dual-core).  Tenderloin (APQ8060) shares adm_dma1 between sdcc1
-	 * (eMMC, DMA) and sdcc4 (WiFi, PIO for BMI).  When both IRQs land on
-	 * CPU0, the ADM hardirq + tasklet path delays the sdcc4 PIO
-	 * TXFIFOHALFEMPTY refill IRQ enough that DPSM underflows the 64 B
-	 * FIFO and the AR6003 BMI write times out.  Moving the ADM IRQ to
-	 * the second core lets the two run in parallel.
+	 * Pin the ADM completion IRQ to CPU1 when available.
 	 *
-	 * Other platforms binding to qcom_adm (IPQ8064 NAND, etc.) have
-	 * different topologies and no comparable contention pattern --
-	 * pinning the IRQ to CPU1 there hurts more than it helps.  Gate
-	 * on the board (root) compat string for now; long-term should
-	 * move to per-SoC OF match data alongside the probe_reset gate
-	 * (Sashiko Critical #2 / task #31).
+	 * Tenderloin (APQ8060) shares adm_dma1 between sdcc1 (eMMC, DMA) and
+	 * sdcc4 (WiFi, PIO for BMI). When both IRQs land on CPU0, the ADM
+	 * hardirq + tasklet path delays the sdcc4 PIO TXFIFOHALFEMPTY refill
+	 * IRQ enough that DPSM underflows the 64-byte FIFO and the AR6003
+	 * BMI write times out. Moving the ADM IRQ to the second core lets the
+	 * two run in parallel.
 	 */
-	if ((of_machine_is_compatible("qcom,msm8660") ||
-	     of_machine_is_compatible("qcom,apq8060")) &&
-	    num_online_cpus() > 1 && cpu_online(1)) {
+	if (num_online_cpus() > 1 && cpu_online(1)) {
 		int aff_ret = irq_set_affinity_and_hint(adev->irq,
 							cpumask_of(1));
 		if (aff_ret)
