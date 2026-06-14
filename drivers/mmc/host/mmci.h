@@ -571,6 +571,19 @@ struct mmci_host {
 	bool			dummy52_in_progress;
 	struct mmc_command	dummy52_cmd;
 	struct mmc_request	*pending_mrq;
+	/*
+	 * Watchdog backstop for the dummy CMD52 dispatch path.  CMD52 must
+	 * complete within microseconds (no data phase); if CPSM wedges and
+	 * neither CMDSENT/CMDRESPEND/CMDTIMEOUT fire, the CPSM stays in
+	 * progress, host->dummy52_in_progress stays true and host->pending_mrq
+	 * never gets started -- mmc_wait_for_req_done() hangs in D-state until
+	 * the MMC core timer (~1s) eventually retries.  This watchdog detects
+	 * the hang at 100 ms, logs SDCC register state and force-recovers by
+	 * dispatching the pending request with -ETIMEDOUT.  Companion of
+	 * qcom_dma_timeout_work which covers the deferred-DMA / suppressed-
+	 * DATAEND path.  (Sashiko Medium #46.)
+	 */
+	struct delayed_work	qcom_dummy52_watchdog;
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)

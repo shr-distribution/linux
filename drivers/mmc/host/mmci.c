@@ -2608,6 +2608,7 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 		mmci_qcom_diag("dummy52: CMD52 completed, status=0x%08x\n", status);
 		host->cmd = NULL;
 		host->dummy52_in_progress = false;
+		cancel_delayed_work(&host->qcom_dummy52_watchdog);
 
 		if (host->pending_mrq) {
 			struct mmc_request *real_mrq = host->pending_mrq;
@@ -2921,6 +2922,63 @@ static void qcom_dma_data_timeout_work(struct work_struct *work)
 
 	if (host->mrq)
 		mmci_request_end(host, host->mrq);
+
+	spin_unlock_irqrestore(&host->lock, flags);
+}
+
+/*
+ * Qualcomm SDCC dummy-CMD52 watchdog.
+ *
+ * The dummy CMD52 errata workaround injects a CCCR-reg-0 read between a
+ * preceding CMD53 and the real request that mmc-core handed us, so the
+ * controller's residual DPSM state gets drained.  CMD52 carries no data
+ * phase so it normally completes within microseconds.  If the CPSM
+ * wedges (no CMDSENT / CMDRESPEND / CMDTIMEOUT), the in-progress
+ * stashed mmc_request never reaches mmc_request_done and the caller
+ * hangs in D-state until mmc-core's own ~1 s timeout kicks in.
+ *
+ * Catch it at 100 ms here, dump SDCC state, and force-recover by
+ * dispatching the pending real request with -ETIMEDOUT so the SDIO
+ * stack can issue its own retry / reset.
+ */
+static void qcom_dummy52_watchdog_work(struct work_struct *work)
+{
+	struct mmci_host *host = container_of(work, struct mmci_host,
+					      qcom_dummy52_watchdog.work);
+	struct mmc_request *mrq;
+	unsigned long flags;
+	u32 status;
+
+	spin_lock_irqsave(&host->lock, flags);
+
+	if (!host->dummy52_in_progress) {
+		/* Normal completion already fired -- nothing to do. */
+		spin_unlock_irqrestore(&host->lock, flags);
+		return;
+	}
+
+	status = readl(host->base + MMCISTATUS);
+	dev_err(mmc_dev(host->mmc),
+		"dummy52 watchdog: CPSM wedged, status=0x%08x command=0x%08x\n",
+		status, readl(host->base + MMCICOMMAND));
+
+	host->dummy52_in_progress = false;
+	host->cmd = NULL;
+	mrq = host->pending_mrq;
+	host->pending_mrq = NULL;
+
+	if (mrq) {
+		/*
+		 * Fail the real request rather than re-dispatching: the CPSM
+		 * is in an unknown state and starting another command would
+		 * likely wedge again.  Returning -ETIMEDOUT lets the SDIO
+		 * stack run its own recovery (which may reset the host).
+		 */
+		mrq->cmd->error = -ETIMEDOUT;
+		spin_unlock_irqrestore(&host->lock, flags);
+		mmc_request_done(host->mmc, mrq);
+		return;
+	}
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
@@ -3366,6 +3424,14 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 				dev_dbg(mmc_dev(mmc),
 					"dummy52: dispatching before CMD53 WRITE\n");
 				mmci_start_command(host, &host->dummy52_cmd, 0);
+				/*
+				 * 100 ms backstop -- CMD52 normally completes
+				 * in microseconds; we only need to catch a
+				 * wedged CPSM (Sashiko Medium #46).
+				 */
+				schedule_delayed_work(
+					&host->qcom_dummy52_watchdog,
+					msecs_to_jiffies(100));
 				spin_unlock_irqrestore(&host->lock, flags);
 				return;
 			}
@@ -4140,6 +4206,10 @@ static int mmci_probe(struct amba_device *dev,
 		INIT_DELAYED_WORK(&host->qcom_dma_timeout_work,
 				  qcom_dma_data_timeout_work);
 
+	if (host->dummy52_required)
+		INIT_DELAYED_WORK(&host->qcom_dummy52_watchdog,
+				  qcom_dummy52_watchdog_work);
+
 	writel(MCI_IRQENABLE | variant->start_err, host->base + MMCIMASK0);
 
 	amba_set_drvdata(dev, mmc);
@@ -4205,6 +4275,9 @@ static void mmci_remove(struct amba_device *dev)
 
 		if (variant->qcom_dml)
 			cancel_delayed_work_sync(&host->qcom_dma_timeout_work);
+
+		if (host->dummy52_required)
+			cancel_delayed_work_sync(&host->qcom_dummy52_watchdog);
 
 		mmci_dma_release(host);
 		clk_disable_unprepare(host->clk);
