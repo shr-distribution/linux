@@ -375,12 +375,69 @@ static struct variant_data variant_qcom = {
 				  MCI_QCOM_CLK_SELECT_IN_FBCLK,
 	.clkreg_8bit_bus_enable = MCI_QCOM_CLK_WIDEBUS_8,
 	.datactrl_mask_ddrmode	= MCI_QCOM_CLK_SELECT_IN_DDR_MODE,
-	/*
-	 * Note: Do NOT set datactrl_mask_sdio for Qualcomm.
-	 * MCI_DPSM_ST_SDIOEN (bit 11) is ST Micro specific and
-	 * causes CRC errors on Qualcomm SDCC. SDIO mode is handled
-	 * automatically by the Qualcomm controller.
-	 */
+	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
+	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
+	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
+	.cmdreg_srsp		= MCI_CPSM_RESPONSE,
+	.data_cmd_enable	= MCI_CPSM_QCOM_DATCMD,
+	.datalength_bits	= 24,
+	.datactrl_blocksz	= 11,
+	.datactrl_any_blocksz	= true,
+	.pwrreg_powerup		= MCI_PWR_UP,
+	.f_max			= 208000000,
+	.explicit_mclk_control	= true,
+	.qcom_fifo		= true,
+	.qcom_dml		= true,
+	.mmcimask1		= true,
+	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
+	.start_err		= MCI_STARTBITERR,
+	.opendrain		= MCI_ROD,
+	.init			= qcom_variant_init,
+};
+
+/*
+ * MSM8660-specific variant.  Layered on top of variant_qcom to keep all
+ * known-to-work behavior for modern Qualcomm SDCC instances (MSM8916,
+ * MSM8974, SDM845, ...) untouched.  Selected only when the DT node
+ * carries the "qcom,msm8660-sdcc-v4" compatible (see mmci_probe), which
+ * is exclusive to the v4 PrimeCell wired to MSM8660/APQ8060.  Sashiko
+ * High #44 on submit/mmci-qcom-tenderloin (2026-06-14): the original
+ * code mutated variant_qcom in place, which would propagate to every
+ * Qualcomm SoC sharing the amba_id 0x00051180 entry.
+ *
+ * Differences vs variant_qcom:
+ *  - qcom_datactrl_delay:    250 us settle after every DATACTRL write
+ *                            because the v4 SDCC needs the FBCLK
+ *                            domain to re-sync before CPSM kick.
+ *  - qcom_data_timeout_2x:   v4 SDCC undercounts DATALENGTH-derived
+ *                            timeout vs actual MCLK; doubling matches
+ *                            legacy msm_sdcc behaviour.
+ *  - qcom_dml_atomic_submit: ADM exec_func atomic-submit hook for
+ *                            datactrl_first hosts.  Sub-gated on
+ *                            host->datactrl_first (per-host DT flag)
+ *                            inside mmci_should_atomic_submit().
+ *  - dma_flow_controller:    qcom_adm is the flow controller on v4.
+ *  - dma_threshold:          32 B floor; anything above the half-FIFO
+ *                            goes through ADM.  Avoids the PIO IRQ
+ *                            storm during AR6003 firmware download
+ *                            that delays sdcc1 mmci CMD/RESP processing
+ *                            on the same CPU and trips DATACRCFAIL.
+ *  - supports_sdio_irq:      legacy msm_sdcc routes the in-band SDIO
+ *                            DAT1 IRQ -- required for AR6003 CMD53
+ *                            RX scheduling.
+ *  - start_err cleared:      MCI_STARTBITERR is a false positive on v4
+ *                            (legacy msm_sdcc never enables it).
+ *                            Enabling it produces spurious -ECOMM on
+ *                            otherwise-good SDIO commands.
+ */
+static struct variant_data variant_qcom_msm8660 = {
+	.fifosize		= 16 * 4,
+	.fifohalfsize		= 8 * 4,
+	.clkreg			= MCI_CLK_ENABLE,
+	.clkreg_enable		= MCI_QCOM_CLK_FLOWENA |
+				  MCI_QCOM_CLK_SELECT_IN_FBCLK,
+	.clkreg_8bit_bus_enable = MCI_QCOM_CLK_WIDEBUS_8,
+	.datactrl_mask_ddrmode	= MCI_QCOM_CLK_SELECT_IN_DDR_MODE,
 	.cmdreg_cpsm_enable	= MCI_CPSM_ENABLE,
 	.cmdreg_lrsp_crc	= MCI_CPSM_RESPONSE | MCI_CPSM_LONGRSP,
 	.cmdreg_srsp_crc	= MCI_CPSM_RESPONSE,
@@ -396,56 +453,12 @@ static struct variant_data variant_qcom = {
 	.qcom_dml		= true,
 	.qcom_datactrl_delay	= true,
 	.qcom_data_timeout_2x	= true,
-	/*
-	 * Use the qcom_adm "exec_func" hook to perform SDCC
-	 * DATACTRL + ARG + CMD register writes atomically with the
-	 * ADM channel's CMD_PTR write. Replicates the legacy
-	 * msm_sdcc/msm_dmov pattern and closes a documented race
-	 * under heavy AHB-fabric contention when two ADM channels
-	 * (e.g. eMMC on sdcc1 + WiFi on sdcc4) are both bursting.
-	 *
-	 * Only kicks in for DMA-eligible WRITE requests on hosts with
-	 * datactrl_first + SDIO_IRQ caps -- the same condition that
-	 * previously triggered the "deferred via cmd_irq" fallback,
-	 * which this replaces with a more robust mechanism.
-	 */
 	.qcom_dml_atomic_submit	= true,
 	.dma_flow_controller	= true,
-	/*
-	 * Route everything above the half-FIFO size (32 B) through ADM
-	 * DMA.  Only genuinely tiny transfers stay on PIO because DMA
-	 * setup overhead dominates at that size and a single FIFO fill
-	 * is enough by construction.
-	 *
-	 * Previous attempts kept this at 256 B to "force PIO for BMI"
-	 * based on the belief that AR6003 BMI required PIO.  This was
-	 * a misdiagnosis: Atheros's own bmi_msg.h defines
-	 * BMI_DATASZ_MAX = 256, webOS legacy msm_sdcc pushes 256-byte
-	 * BMI chunks via DMA, and the AR6003 sees CMD53 traffic at the
-	 * SDIO bus regardless of how the host sources the data.  The
-	 * real failure mode of the earlier DMA-on-BMI experiments was
-	 * shared-controller contention on adm_dma1 — which has since
-	 * been closed by qcom_adm's submit_lock, hardirq-only
-	 * completion (no tasklet), CPU1 IRQ pin, and B+F+G shaving.
-	 *
-	 * Keeping WiFi BMI on PIO has its own cost: every 52-byte
-	 * CMD53 needs an mmci PIO FIFO-refill IRQ on CPU0, and the
-	 * resulting IRQ storm during the AR6003 firmware download
-	 * delays sdcc1's mmci CMD/RESP processing on the same CPU
-	 * enough that eMMC DATACRCFAILs.  Routing BMI through DMA
-	 * eliminates the storm entirely.
-	 */
 	.dma_threshold		= 32,
 	.mmcimask1		= true,
 	.irq_pio_mask		= MCI_IRQ_PIO_MASK,
-	/*
-	 * Note: Do NOT set start_err for Qualcomm SDCC.
-	 * The legacy msm_sdcc driver does not enable STARTBITERR in the
-	 * interrupt mask (MCI_IRQENABLE). Enabling it causes spurious
-	 * -ECOMM errors on SDIO operations that work fine with the legacy
-	 * driver. The start bit "errors" appear to be false positives on
-	 * this hardware.
-	 */
+	/* No .start_err -- see above. */
 	.opendrain		= MCI_ROD,
 	.supports_sdio_irq	= true,
 	.init			= qcom_variant_init,
@@ -3825,6 +3838,19 @@ static int mmci_probe(struct amba_device *dev,
 		dev_err(&dev->dev, "No plat data or DT found\n");
 		return -EINVAL;
 	}
+
+	/*
+	 * Qualcomm SDCC v4 (MSM8660/APQ8060) needs a different variant from
+	 * the generic Qualcomm SDCC because of several MSM8660-only
+	 * behaviours (ADM exec_func atomic submit, DATACTRL settle delay,
+	 * 2x data timeout, no STARTBITERR IRQ, supports_sdio_irq).  The
+	 * amba_id (0x00051180) is shared with all Qualcomm PrimeCell SDCC
+	 * revisions, so DT compatible is the only way to disambiguate
+	 * without affecting MSM8916/MSM8974/SDM845/...  Sashiko High #44.
+	 */
+	if (variant == &variant_qcom && np &&
+	    of_device_is_compatible(np, "qcom,msm8660-sdcc-v4"))
+		variant = &variant_qcom_msm8660;
 
 	if (!plat) {
 		plat = devm_kzalloc(&dev->dev, sizeof(*plat), GFP_KERNEL);

@@ -1423,7 +1423,7 @@
 			ranges;
 			sdcc1: mmc@12400000 {
 				status = "disabled";
-				compatible = "arm,pl18x", "arm,primecell";
+				compatible = "qcom,msm8660-sdcc-v4", "arm,pl18x", "arm,primecell";
 				arm,primecell-periphid = <0x00051180>;
 				reg = <0x12400000 0x8000>;
 				interrupts = <GIC_SPI 104 IRQ_TYPE_LEVEL_HIGH>;
@@ -1442,7 +1442,7 @@
 
 			sdcc2: mmc@12140000 {
 				status = "disabled";
-				compatible = "arm,pl18x", "arm,primecell";
+				compatible = "qcom,msm8660-sdcc-v4", "arm,pl18x", "arm,primecell";
 				arm,primecell-periphid = <0x00051180>;
 				reg = <0x12140000 0x8000>;
 				interrupts = <GIC_SPI 103 IRQ_TYPE_LEVEL_HIGH>;
@@ -1455,7 +1455,7 @@
 			};
 
 			sdcc3: mmc@12180000 {
-				compatible = "arm,pl18x", "arm,primecell";
+				compatible = "qcom,msm8660-sdcc-v4", "arm,pl18x", "arm,primecell";
 				arm,primecell-periphid = <0x00051180>;
 				status = "disabled";
 				reg = <0x12180000 0x8000>;
@@ -1470,7 +1470,7 @@
 			};
 
 			sdcc4: mmc@121c0000 {
-				compatible = "arm,pl18x", "arm,primecell";
+				compatible = "qcom,msm8660-sdcc-v4", "arm,pl18x", "arm,primecell";
 				arm,primecell-periphid = <0x00051180>;
 				status = "disabled";
 				reg = <0x121c0000 0x8000>;
@@ -1498,7 +1498,7 @@
 			};
 
 			sdcc5: mmc@12200000 {
-				compatible = "arm,pl18x", "arm,primecell";
+				compatible = "qcom,msm8660-sdcc-v4", "arm,pl18x", "arm,primecell";
 				arm,primecell-periphid = <0x00051180>;
 				status = "disabled";
 				reg = <0x12200000 0x8000>;
