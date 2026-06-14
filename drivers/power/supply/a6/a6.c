@@ -58,6 +58,7 @@ int a6_init_state(struct i2c_client *client)
 	static const u16 mask1_id[]	= { TS2_I2C_INT_MASK_1 };
 	static const u16 mask2_id[]	= { TS2_I2C_INT_MASK_2 };
 	static const u16 mask3_id[]	= { TS2_I2C_INT_MASK_3 };
+	static const u16 status1_id[]	= { TS2_I2C_INT_STATUS_1 };
 	static const u16 status2_id[]	= { TS2_I2C_INT_STATUS_2 };
 	static const u16 status3_id[]	= { TS2_I2C_INT_STATUS_3 };
 	u8 val;
@@ -128,8 +129,15 @@ int a6_init_state(struct i2c_client *client)
 	 * powered up but no driver was listening. Userspace polls
 	 * power_supply for initial state, so a missed level IRQ from boot
 	 * would otherwise leave us deaf to the first real event.
-	 * Only STATUS_3 and STATUS_2 are cleared — STATUS_1 sources are
-	 * masked above, so there's no listener for them here.
+	 *
+	 * STATUS_1 must be cleared even though we mask all of its sources
+	 * above: the A6's IRQ pin is the wired-OR of latched status bits
+	 * across all four banks, so a STATUS_1 bit that the bootloader (or
+	 * a previous kernel) left pending holds the GPIO asserted forever.
+	 * On an edge-falling line that means the SoC never sees any
+	 * subsequent A2A_CONNECT_CHANGE / FLAGS_CHANGE transition. The
+	 * legacy 2.6.35 webOS driver cleared STATUS_1 here for exactly
+	 * the same reason.
 	 */
 	if (!test_bit(IS_INITIALIZED_BIT, state->flags)) {
 		val = 0xff;
@@ -137,6 +145,9 @@ int a6_init_state(struct i2c_client *client)
 		if (ret < 0)
 			goto out_release_wakeup;
 		ret = a6_i2c_write_reg(client, status2_id, 1, &val);
+		if (ret < 0)
+			goto out_release_wakeup;
+		ret = a6_i2c_write_reg(client, status1_id, 1, &val);
 		if (ret < 0)
 			goto out_release_wakeup;
 	}
