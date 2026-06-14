@@ -247,15 +247,24 @@ static int qcom_dma_setup(struct mmci_host *host)
 	ret = mmci_dmae_setup(host);
 	if (ret) {
 		/*
-		 * Propagate -EPROBE_DEFER to allow deferred probe when
-		 * DMA controller isn't ready yet. Other errors fall back
-		 * to PIO mode.
+		 * Propagate ALL errors up (Sashiko Critical #1).  The
+		 * previous 'return 0' on non-EPROBE_DEFER errors silently
+		 * swallowed -ENOMEM where mmci_dmae_setup failed before
+		 * allocating struct mmci_dmae_priv -- leaving host->dma_priv
+		 * NULL while mmci_dma_setup would still set host->use_dma
+		 * to true, and any subsequent code path touching dma_priv
+		 * (mmci_dmae_prep_data, mmci_dmae_submit, etc.) hit a NULL
+		 * dereference.
+		 *
+		 * Returning the error here lets mmci_dma_setup leave
+		 * host->use_dma = false; the host operates in PIO mode for
+		 * non-deferred failures as the previous comment intended,
+		 * but without the half-initialised DMA state landmine.
 		 */
-		if (ret == -EPROBE_DEFER)
-			return ret;
-		/* Fall through to PIO mode for other errors */
-		dev_dbg(host->mmc->parent, "DMA setup failed, using PIO mode\n");
-		return 0;
+		dev_dbg(host->mmc->parent,
+			"DMA setup failed (%d), falling back to PIO mode\n",
+			ret);
+		return ret;
 	}
 
 	/*
