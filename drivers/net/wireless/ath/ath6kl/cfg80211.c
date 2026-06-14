@@ -1592,12 +1592,17 @@ static int ath6kl_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 	 * common scan-during-MAX_PERF flow.
 	 */
 	if (mode.pwr_mode == REC_POWER) {
+		u16 pspoll = ath6kl_rec_power_pspoll ? ath6kl_rec_power_pspoll : 2;
+
 		if (ath6kl_wmi_pmparams_cmd(ar->wmi, vif->fw_vif_idx,
-					    0, 2, 0, 0, 1,
+					    0, pspoll, 0, 0, 1,
 					    IGNORE_PS_FAIL_DURING_SCAN) != 0)
 			ath6kl_warn("pmparams_cmd failed after REC_POWER -- chip may wedge\n");
 		else
-			ath6kl_info("pmparams: pspoll_number=2 sent after REC_POWER (mode 2 / legacy webOS PM=on)\n");
+			ath6kl_info("pmparams: pspoll_number=%u sent after REC_POWER (legacy mode %s)\n",
+				    pspoll,
+				    pspoll == 1 ? "3 (aggressive PS)" :
+				    pspoll == 2 ? "2 (normal PS, PM=on)" : "custom");
 	}
 
 	ath6kl_info("power mgmt set: pmgmt=%d hif=%s pwr_mode=%s\n",
