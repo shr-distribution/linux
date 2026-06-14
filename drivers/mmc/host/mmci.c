@@ -1525,6 +1525,16 @@ static void mmci_qcom_dma_complete(void *param)
 	} else if (host->mrq->sbc && !data->error) {
 		mmci_request_end(host, data->mrq);
 	} else {
+		/*
+		 * Clear atomic_submit before dispatching the stop CMD.
+		 * mmci_start_command() stashes ARG/CMD into atomic_submit
+		 * instead of writing MMCICOMMAND when .active is set; if
+		 * we leave .active set from the data-phase submit, the
+		 * CMD12 stop is silently swallowed.  (Sashiko Critical #3
+		 * on submit/mmci-qcom-tenderloin, 2026-06-14.)
+		 */
+		host->atomic_submit.armed = false;
+		host->atomic_submit.active = false;
 		mmci_start_command(host, data->stop, 0);
 	}
 
@@ -2520,6 +2530,12 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		} else if (host->mrq->sbc && !data->error) {
 			mmci_request_end(host, data->mrq);
 		} else {
+			/* See same-block comment in mmci_qcom_dma_complete:
+			 * clear atomic_submit so the stop CMD12 is actually
+			 * issued instead of being swallowed by the stash path.
+			 */
+			host->atomic_submit.armed = false;
+			host->atomic_submit.active = false;
 			mmci_start_command(host, data->stop, 0);
 		}
 	}
