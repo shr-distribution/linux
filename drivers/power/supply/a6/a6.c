@@ -157,11 +157,26 @@ int a6_init_state(struct i2c_client *client)
 
 out_release_wakeup:
 	/*
-	 * Release the keep-awake assertion: on success the A6 will drop
-	 * back to its low-power state and wake on its own when the IRQ
-	 * line asserts; on error we still must not pin it awake.
+	 * On error we must not pin the chip awake — drop the assert so it
+	 * can re-power on the next hot-plug attempt.
+	 *
+	 * On success we leave wakeup_gpio held HIGH. The A6's interrupt
+	 * output pin is gated by the wake-from-sleep state machine: while
+	 * the chip is in LPM3/4 it can still latch internal status bits but
+	 * its GPIO output goes high-Z. The SoC then sees no edge transition
+	 * when status3 / status2 update, and we lose every
+	 * A2A_CONNECT_CHANGE / FLAGS_CHANGE event silently.
+	 *
+	 * The legacy 2.6.35 webOS driver held sbw_wkup_gpio HIGH for the
+	 * whole device lifetime in the no-periodic-wake path (see
+	 * gpio_set_value() near the bottom of its a6_init_state) for
+	 * exactly this reason. We don't currently consume the periodic-wake
+	 * platform data, so behave the same: keep the chip awake post-init
+	 * and let the threaded IRQ shorten/extend the assertion when it
+	 * actually needs to talk to the chip.
 	 */
-	gpiod_set_value_cansleep(state->wakeup_gpio, 0);
+	if (ret < 0)
+		gpiod_set_value_cansleep(state->wakeup_gpio, 0);
 	return ret;
 }
 
