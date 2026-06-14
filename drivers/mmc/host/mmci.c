@@ -51,6 +51,19 @@
 
 #define DRIVER_NAME "mmci-pl18x"
 
+/*
+ * Hot-path bring-up diagnostics for the Qualcomm variant.  trace_printk()
+ * prints into the ftrace ring buffer (no console latency) but pollutes
+ * the buffer and prints a one-shot WARN at boot, so gate the calls
+ * behind a Kconfig that defaults to N (Sashiko Medium #49,
+ * submit/mmci-qcom-tenderloin, 2026-06-14).
+ */
+#ifdef CONFIG_MMC_ARMMMCI_QCOM_DEBUG
+#define mmci_qcom_diag(fmt, ...)	trace_printk(fmt, ##__VA_ARGS__)
+#else
+#define mmci_qcom_diag(fmt, ...)	do { } while (0)
+#endif
+
 static void mmci_variant_init(struct mmci_host *host);
 static void ux500_variant_init(struct mmci_host *host);
 static void ux500v2_variant_init(struct mmci_host *host);
@@ -890,7 +903,7 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 
 	/* Trace mask setup for WiFi SDCC4 debugging */
 	if (host->mmc->index == 1)
-		trace_printk("MMCI-DMA-START: MASK0=0x%08x (enabled DATAENDMASK) blksz=%u blocks=%u\n",
+		mmci_qcom_diag("MMCI-DMA-START: MASK0=0x%08x (enabled DATAENDMASK) blksz=%u blocks=%u\n",
 			     readl(host->base + MMCIMASK0), data->blksz, data->blocks);
 
 	return 0;
@@ -927,7 +940,7 @@ mmci_request_end(struct mmci_host *host, struct mmc_request *mrq)
 {
 	/* Trace request end for WiFi SDCC4 debugging */
 	if (host->mmc->index == 1 && mrq && mrq->data)
-		trace_printk("MMCI-REQ-END: cmd=%u blksz=%u blocks=%u\n",
+		mmci_qcom_diag("MMCI-REQ-END: cmd=%u blksz=%u blocks=%u\n",
 			     mrq->cmd->opcode, mrq->data->blksz, mrq->data->blocks);
 
 	writel(0, host->base + MMCICOMMAND);
@@ -1445,7 +1458,7 @@ static void mmci_qcom_dma_complete(void *param)
 	data = host->data;
 	if (!data) {
 		/* Already completed (DATAEND raced in, or error path ran) */
-		trace_printk("MMCI-DMA-CB: mmc%u callback LATE (DATAEND already completed)\n",
+		mmci_qcom_diag("MMCI-DMA-CB: mmc%u callback LATE (DATAEND already completed)\n",
 			     host->mmc->index);
 		spin_unlock_irqrestore(&host->lock, flags);
 		return;
@@ -1469,7 +1482,7 @@ static void mmci_qcom_dma_complete(void *param)
 			       MCI_DATACRCFAIL | MCI_DATATIMEOUT |
 			       MCI_TXUNDERRUN | MCI_RXOVERRUN);
 
-	trace_printk("MMCI-DMA-CB: mmc%u callback COMPLETES %s (no DATAEND) blksz=%u blocks=%u status=0x%08x err=0x%08x\n",
+	mmci_qcom_diag("MMCI-DMA-CB: mmc%u callback COMPLETES %s (no DATAEND) blksz=%u blocks=%u status=0x%08x err=0x%08x\n",
 		     host->mmc->index, write ? "WRITE" : "read",
 		     data->blksz, data->blocks, status, status_err);
 
@@ -2368,7 +2381,7 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 
 	/* Trace data IRQ for WiFi SDCC4 debugging */
 	if (host->mmc->index == 1)
-		trace_printk("MMCI-DATA-IRQ: status=0x%08x blksz=%u blocks=%u\n",
+		mmci_qcom_diag("MMCI-DATA-IRQ: status=0x%08x blksz=%u blocks=%u\n",
 			     status, data->blksz, data->blocks);
 
 	/* First check for errors */
@@ -2451,7 +2464,7 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		 */
 		if (host->mmc->index == 1 && host->dma_in_progress &&
 		    (data->flags & MMC_DATA_READ) && !data->error) {
-			trace_printk("MMCI-DATAEND: mmc1 read DATAEND IGNORED, defer to ADM callback blksz=%u blocks=%u\n",
+			mmci_qcom_diag("MMCI-DATAEND: mmc1 read DATAEND IGNORED, defer to ADM callback blksz=%u blocks=%u\n",
 				     data->blksz, data->blocks);
 			return;
 		}
@@ -2464,7 +2477,7 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		 * DMA-done callback.
 		 */
 		if (host->dma_in_progress)
-			trace_printk("MMCI-DATAEND: mmc%u completes %s via DATAEND status=0x%08x blksz=%u blocks=%u err=%d\n",
+			mmci_qcom_diag("MMCI-DATAEND: mmc%u completes %s via DATAEND status=0x%08x blksz=%u blocks=%u err=%d\n",
 				     host->mmc->index,
 				     (data->flags & MMC_DATA_READ) ? "read" : "WRITE",
 				     status, data->blksz, data->blocks, data->error);
@@ -2592,7 +2605,7 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 				MCI_CMDCRCFAIL | MCI_CMDTIMEOUT)))
 			return;
 
-		trace_printk("dummy52: CMD52 completed, status=0x%08x\n", status);
+		mmci_qcom_diag("dummy52: CMD52 completed, status=0x%08x\n", status);
 		host->cmd = NULL;
 		host->dummy52_in_progress = false;
 
@@ -2600,7 +2613,7 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 			struct mmc_request *real_mrq = host->pending_mrq;
 
 			host->pending_mrq = NULL;
-			trace_printk("dummy52: dispatching pending request cmd=%u\n",
+			mmci_qcom_diag("dummy52: dispatching pending request cmd=%u\n",
 				     real_mrq->cmd->opcode);
 			__mmci_start_request(host, real_mrq);
 		}
@@ -3150,7 +3163,7 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 
 		/* Trace IRQ entry for WiFi SDCC4 debugging */
 		if (host->mmc->index == 1 && status)
-			trace_printk("MMCI-IRQ: status=0x%08x mask0=0x%08x\n",
+			mmci_qcom_diag("MMCI-IRQ: status=0x%08x mask0=0x%08x\n",
 				     status, readl(host->base + MMCIMASK0));
 
 		if (!status)

@@ -44,6 +44,24 @@ config MMC_QCOM_DML
 
 	  if unsure, say N.
 
+config MMC_ARMMMCI_QCOM_DEBUG
+	bool "MMCI Qualcomm variant: hot-path trace_printk diagnostics"
+	depends on MMC_ARMMMCI
+	depends on TRACING
+	default n
+	help
+	  Enable trace_printk() instrumentation in the Qualcomm variant of
+	  the ARM PrimeCell MMCI driver.  Used during bring-up on MSM8660
+	  (HP TouchPad) to correlate ADM DMA completions, SDCC DATAEND,
+	  PROG_DONE and dummy52 sequencing in /sys/kernel/tracing/trace.
+
+	  Has no effect at runtime when disabled; the trace_printk() calls
+	  compile out entirely.  Leave disabled in production builds --
+	  trace_printk() pollutes the ftrace ring buffer and prints a
+	  warning at boot.
+
+	  If unsure, say N.
+
 config MMC_STM32_SDMMC
 	bool "STMicroelectronics STM32 SDMMC Controller"
 	depends on MMC_ARMMMCI
