@@ -25,11 +25,22 @@ static int qce_dma_configure_crci(struct qce_device *qce, struct dma_chan *chan,
 				  u32 crci)
 {
 	struct qcom_adm_peripheral_config periph_conf = {};
-	/* CE2 FIFO operates in 16-byte chunks per CRCI handshake.  maxburst is
-	 * in dword units, so 4 dwords = 16 bytes matches CE2's burst size. v5
-	 * BAM hardware historically uses 8-dword bursts so keep that branch.
+	/*
+	 * Burst size in dwords (maxburst is dword-unit per dmaengine ABI).
+	 *
+	 * CE2 (MSM8x60): the CE2 FIFO is 16 bytes wide, but the CRCI
+	 * handshake fires at the half-FIFO mark — 32 bytes — matching the
+	 * SDCC half-FIFO pattern. Programmed as ADM CRCI_CTL blk_size=1
+	 * (= 32-byte burst, encoded by adm_get_blksize(32) = 1). Setting
+	 * burst=4 (16 bytes) yields adm_get_blksize() = 0, which mismatches
+	 * the EE=0 CRCI_CTL=0x1 the consumer programmed at probe and causes
+	 * adm_start_dma's cache-compare to overwrite it on the first
+	 * transfer, leaving the engine waiting for a handshake that never
+	 * fires (DMA timeout, engine STATUS frozen at post-reset).
+	 *
+	 * v5 BAM uses 8-dword (32-byte) bursts natively.
 	 */
-	unsigned int burst = (qce->version == QCE_VERSION_CE2) ? 4 : 8;
+	unsigned int burst = 8;
 	struct dma_slave_config conf = {
 		.device_fc = true,
 		.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
