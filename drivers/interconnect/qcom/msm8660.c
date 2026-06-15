@@ -1281,25 +1281,39 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 }
 
 /*
- * Vote one fabric/EBI/SMI bus-clock rate to RPM.
+ * Vote one fabric/EBI/SMI bus-clock active-state rate to RPM.
  *
  * The clock framework's rpmcc node used to own these resources for
  * MSM8x60, but exposing them in both rpmcc and the interconnect
  * provider lets two writers race the same RPM resource.  This driver
- * is now the single source of truth: each fabric writes its bus rate
- * to the RPM ACTIVE_STATE / SLEEP_STATE entries directly, matching the
- * units (kHz) that the legacy clk-rpm path already used.
+ * is now the single source of truth: it writes the ACTIVE_STATE rate
+ * in kHz, matching the units the legacy clk-rpm path used.
+ *
+ * SLEEP_STATE is intentionally left at zero (see probe()) so RPM can
+ * gate the fabric clock during deep cluster idle -- mirroring what the
+ * legacy active-only `*_a_clk` peer used to do via to_active_sleep().
+ * Holding SLEEP_STATE at the active rate would wedge cluster sleep:
+ * SPM and RPM negotiate the deepest safe state from the SLEEP vote
+ * set, and a non-zero fabric vote there blocks the transition.
  */
 static int msm8660_rpm_set_bus_rate(struct qcom_rpm *rpm, u32 resource,
 				    u64 rate)
 {
 	u32 khz = DIV_ROUND_UP_ULL(rate, 1000);
-	int ret;
 
-	ret = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE, resource, &khz, 1);
-	if (ret)
-		return ret;
-	return qcom_rpm_write(rpm, QCOM_RPM_SLEEP_STATE, resource, &khz, 1);
+	return qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE, resource, &khz, 1);
+}
+
+/*
+ * Clear the bus-clock SLEEP_STATE vote for one RPM resource.  Called
+ * once per fabric at probe to make sure RPM has a known SLEEP value
+ * (0) regardless of what the bootloader or earlier driver left there.
+ */
+static int msm8660_rpm_clear_sleep_clk(struct qcom_rpm *rpm, u32 resource)
+{
+	u32 zero = 0;
+
+	return qcom_rpm_write(rpm, QCOM_RPM_SLEEP_STATE, resource, &zero, 1);
 }
 
 /*
@@ -1479,25 +1493,26 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 
 	/*
 	 * Kickstart the fabric bus clocks at MSM8660_FABRIC_MIN_RATE
-	 * before any consumer can call provider->set().
+	 * before any consumer can call provider->set(), and clear the
+	 * SLEEP_STATE vote so RPM can gate the fabric during deep
+	 * cluster idle.
 	 *
-	 * The legacy clk-rpm path used to write QCOM_RPM_ACTIVE_STATE +
-	 * QCOM_RPM_SLEEP_STATE for the fabric/EBI/SMI clocks at handoff
-	 * (INT_MAX), so the fabrics were always alive even before any
-	 * icc consumer voted.  Now that those resources are no longer
-	 * exposed through rpmcc, the icc driver has to seed them itself
-	 * or RPM may leave the fabric clock at whatever the bootloader
-	 * left it -- which on tenderloin is low enough to RXOVERRUN the
-	 * SDC1/ADM drain during eMMC traffic before the first consumer
-	 * vote ever arrives.  Same pattern Konrad documented for the
-	 * smd-rpm interconnect drivers in commit d6edc31f3a68
+	 * The v4 driver got both behaviours for free through rpmcc's
+	 * clk_rpm_handoff() (INT_MAX active+sleep at probe) followed by
+	 * the active-only `*_a_clk` peer's to_active_sleep() override
+	 * (SLEEP -> 0) once the consumer prepared the clock.  Now that
+	 * those rpmcc entries are gone, the icc driver has to seed
+	 * ACTIVE itself or the first SDC1+ADM drain RXOVERRUNs before
+	 * any consumer has voted Daytona; and it has to drive SLEEP
+	 * back to 0 itself or SPM/RPM cluster idle wedges because
+	 * SLEEP_STATE != 0 blocks the deepest sleep transition.  Same
+	 * pattern Konrad documented for smd-rpm in commit d6edc31f3a68
 	 * ("clk: qcom: smd-rpm: Separate out interconnect bus clocks").
-	 *
-	 * Both ACTIVE and SLEEP states are written via
-	 * msm8660_rpm_set_bus_rate().  qp->rate is seeded so
-	 * msm8660_icc_set() skips a redundant re-vote on the very first
-	 * call.
 	 */
+	ret = msm8660_rpm_clear_sleep_clk(qp->rpm, desc->bus_clk_id);
+	if (ret)
+		dev_warn(dev, "RPM bus clk %u sleep clear failed: %d\n",
+			 desc->bus_clk_id, ret);
 	ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->bus_clk_id,
 				       MSM8660_FABRIC_MIN_RATE);
 	if (ret)
@@ -1505,6 +1520,11 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 				     "RPM bus clk %u kickstart vote failed\n",
 				     desc->bus_clk_id);
 	if (desc->extra_clk_id) {
+		ret = msm8660_rpm_clear_sleep_clk(qp->rpm, desc->extra_clk_id);
+		if (ret)
+			dev_warn(dev,
+				 "RPM bus clk %u sleep clear failed: %d\n",
+				 desc->extra_clk_id, ret);
 		ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->extra_clk_id,
 					       MSM8660_FABRIC_MIN_RATE);
 		if (ret)
