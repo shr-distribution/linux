@@ -55,7 +55,6 @@ int a6_init_state(struct i2c_client *client)
 {
 	struct a6_device_state *state = i2c_get_clientdata(client);
 	static const u16 rsense_id[]	= { TS2_I2C_BAT_RSNSP };
-	static const u16 mask1_id[]	= { TS2_I2C_INT_MASK_1 };
 	static const u16 mask2_id[]	= { TS2_I2C_INT_MASK_2 };
 	static const u16 mask3_id[]	= { TS2_I2C_INT_MASK_3 };
 	static const u16 status1_id[]	= { TS2_I2C_INT_STATUS_1 };
@@ -111,18 +110,18 @@ int a6_init_state(struct i2c_client *client)
 		goto out_release_wakeup;
 
 	/*
-	 * MASK_1: explicitly disable every source. v1 has no consumer of
-	 * any INT_STATUS_1 bit (COMM_RX_FULL / COMM_TX_EMPTY are owned by
-	 * the optional T2S aux interface, not by this battery driver), so
-	 * leave them masked here instead of relying on whatever default
-	 * the firmware programmed. Without this, a stray STATUS_1 source
-	 * could fire an IRQ that the bottom half never acks, hanging on
-	 * a level-triggered line or producing storms on edge.
+	 * MASK_1: leave the firmware default in place. v1 used to write
+	 * 0xff here ("disable every source we don't consume") but the
+	 * legacy 2.6.35 webOS driver and the pre-rework upstream submission
+	 * both left MASK_1 untouched, and tap-to-share IRQ delivery depends
+	 * on at least one STATUS_1-bank source (likely COMM_RX_FULL) being
+	 * enabled so the chip's IRQ-output state machine actually drives
+	 * its GPIO when the A2A_CONNECT_CHANGE / FLAGS_CHANGE bits latch
+	 * in STATUS_3. Writing 0xff to MASK_1 silently regressed every
+	 * tap-IRQ on the TouchPad. The optional /dev/a6_N aux interface
+	 * does its own STATUS_1 polling and doesn't need the bottom half
+	 * to ack STATUS_1 bits.
 	 */
-	val = 0xff;
-	ret = a6_i2c_write_reg(client, mask1_id, 1, &val);
-	if (ret < 0)
-		goto out_release_wakeup;
 
 	/*
 	 * Clear stale interrupt status latched while the controller was
