@@ -238,21 +238,18 @@ void a6_irq_work_handler(struct work_struct *work)
 	}
 
 	/*
-	 * Assert wakeup_gpio around the status-register I2C transactions.
-	 * The A6 firmware can NAK accesses while in low-power mode; the
-	 * legacy driver always holds wake high before touching registers.
-	 * Settle delay so the MSP430 exits LPM3/4 before the I2C address
-	 * phase reaches it.
+	 * No per-cycle wakeup_gpio toggle: a6_init_state() holds wake HIGH
+	 * for the device lifetime once it succeeds (see the comment block
+	 * around its out_release_wakeup label). The legacy 2.6.35 webOS
+	 * driver did the same — its bottom-half handler never asserted
+	 * sbw_wkup_gpio because it was already high.
 	 */
-	gpiod_set_value_cansleep(state->wakeup_gpio, 1);
-	usleep_range(1000, 2000);
-
 	ret = a6_i2c_read_reg(client, status3_id, 1, &status3);
 	if (ret < 0)
-		goto out_release_wakeup;
+		goto out;
 	ret = a6_i2c_read_reg(client, status2_id, 1, &status2);
 	if (ret < 0)
-		goto out_release_wakeup;
+		goto out;
 
 	/* Ack: write-1-to-clear releases the IRQ assertion */
 	if (status3)
@@ -321,8 +318,6 @@ void a6_irq_work_handler(struct work_struct *work)
 	if (state->battery && (status3 || status2))
 		power_supply_changed(state->battery);
 
-out_release_wakeup:
-	gpiod_set_value_cansleep(state->wakeup_gpio, 0);
 out:
 	mutex_unlock(&state->dev_mutex);
 }
