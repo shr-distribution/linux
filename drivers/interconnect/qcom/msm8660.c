@@ -55,21 +55,6 @@
 	container_of(_provider, struct msm8660_icc_provider, provider)
 
 /*
- * Minimum fabric clock rate to prevent bus starvation.
- *
- * When no consumers request bandwidth, the rate calculation yields 0,
- * causing fabric clocks to drop to minimum. This creates bimodal
- * performance: fast when other subsystems (like display) happen to
- * request bandwidth, slow otherwise.
- *
- * 384 MHz keeps fabric fast during concurrent MDP display scanout
- * and USB gadget traffic. legacy vendor kernel docs: "AXI bus frequency needs to be
- * kept at maximum value while USB data transfers are happening."
- * 266 MHz was insufficient - USB crashed during display activity.
- */
-#define MSM8660_FABRIC_MIN_RATE		384000000UL	/* 384 MHz */
-
-/*
  * Maximum RPM ARB buffer size across all fabrics.
  * MM fabric is largest at 23 u32 words.
  */
@@ -168,10 +153,6 @@ struct msm8660_icc_desc {
  * @arb: pre-allocated arbitration array (nmasters * ntieredslaves u16 entries)
  * @bwsum: pre-allocated bandwidth sum array (nslaves u16 entries)
  * @rpm_buf: pre-allocated RPM write buffer (rpm_buf_size u32 entries)
- * @rate: last clock rate voted to RPM for this fabric, used as the single
- *        source of truth for whether the rate actually needs to be
- *        re-sent (per-node caching would desync when different masters
- *        update at different times)
  * @commit_lock: serialises msm8660_rpm_commit(). The ICC core can dispatch
  *        provider->set concurrently from different CPUs; without this lock
  *        the shared @arb / @bwsum / @rpm_buf scratch buffers would race
@@ -186,7 +167,6 @@ struct msm8660_icc_provider {
 	u16 *arb;
 	u16 *bwsum;
 	u32 *rpm_buf;
-	u32 rate;
 	struct mutex commit_lock;
 };
 
@@ -1328,83 +1308,36 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 {
 	struct msm8660_icc_provider *qp;
 	struct icc_provider *provider;
-	struct icc_node *n;
-	u64 rate = 0;
-	int ret;
 
 	provider = src->provider;
 	qp = to_msm8660_icc_provider(provider);
 
 	/*
-	 * Per icc-rpm.c convention (qcom_icc_bus_aggregate): take the max
-	 * per-node rate across the provider; do not sum, because the framework
-	 * writes each path's bw to every node it traverses, so summing all
-	 * provider nodes overcounts shared-node bandwidth. Taking the max
-	 * gives the hottest single node, which is the correct fabric
-	 * throughput requirement.
+	 * No dynamic fabric bus-clock scaling at runtime.
+	 *
+	 * The non-SMD `qcom_rpm` IPC used by the MSM8x60 family acks a
+	 * resource write as soon as the request is queued, not when the
+	 * RPM firmware has actually applied the new clock rate to the
+	 * physical fabric.  Consumer drivers that vote bandwidth and
+	 * then immediately issue a DMA (mmci-pl18x via the ADM, in
+	 * particular) can race the rate ramp: ACK -> consumer submits DMA
+	 * -> ADM "CMD_PTR_RDY not set at submit" before the fabric has
+	 * caught up.  v4 happened to mask this through clk-rpm's per-clk
+	 * iteration providing ~2x more IPC round-trips of implicit
+	 * settling time per icc_set, but v5's direct RPM voting is too
+	 * fast.
+	 *
+	 * Until a `qcom_rpm_write_sync` (status-register polling) helper
+	 * exists in drivers/mfd/qcom_rpm.c, the only safe pattern on this
+	 * RPM family is the one APQ8064's SCM driver already uses on the
+	 * Daytona fabric clock: pin it at INT_MAX at probe and leave it
+	 * there for the lifetime of the system -- see qcom_scm_probe()
+	 * in drivers/firmware/qcom/qcom_scm.c, "vote for max clk rate for
+	 * highest performance".  The kickstart writes the fabric, EBI and
+	 * SMI clocks to INT_MAX at probe; this function only updates the
+	 * RPM ARB (per-master / per-tiered-slave bandwidth tier) buffer,
+	 * which is what real consumers actually depend on at runtime.
 	 */
-	list_for_each_entry(n, &provider->nodes, node_list) {
-		struct msm8660_icc_node *qn = n->data;
-		u32 buswidth;
-		u64 node_bw, node_rate;
-
-		/*
-		 * Use the per-node bus width rather than the fabric-global
-		 * qp->desc->bus_width: narrow links (e.g. sfab_to_system_fpb
-		 * @ 4 bytes) would otherwise have their requested clock rate
-		 * halved -- the framework writes path bw to every traversed
-		 * node, so a 4-byte node carrying X bytes/s needs a clk rate
-		 * of X/4, not X/8, to actually push X bytes/s. Fall back to
-		 * the fabric width if data is somehow NULL (defensive only;
-		 * probe always sets node->data).
-		 */
-		buswidth = qn ? qn->buswidth : qp->desc->bus_width;
-		node_bw = max(icc_units_to_bps(n->avg_bw),
-			      icc_units_to_bps(n->peak_bw));
-		node_rate = div_u64(node_bw, buswidth);
-
-		rate = max(rate, node_rate);
-	}
-
-	/* Apply minimum floor to prevent bus starvation */
-	rate = max_t(u64, rate, MSM8660_FABRIC_MIN_RATE);
-	/*
-	 * Cap at INT_MAX in u64 space; min_t(u32, ...) would cast the u64
-	 * down to u32 BEFORE comparing, so a request above 4 GiB/s could
-	 * wrap to a near-zero value below INT_MAX and pass through, then
-	 * be programmed as a near-zero clock rate that effectively halts
-	 * the interconnect fabric.
-	 */
-	rate = min_t(u64, rate, INT_MAX);
-
-	if (qp->rate != rate) {
-		ret = msm8660_rpm_set_bus_rate(qp->rpm, qp->desc->bus_clk_id,
-					       rate);
-		if (ret) {
-			dev_err(provider->dev,
-				"RPM bus clk %u vote (%llu Hz) failed: %d\n",
-				qp->desc->bus_clk_id, rate, ret);
-			/*
-			 * Bail without updating qp->rate so the next icc_set
-			 * call retries the rate change rather than treating it
-			 * as cached-applied.
-			 */
-			return ret;
-		}
-		if (qp->desc->extra_clk_id) {
-			ret = msm8660_rpm_set_bus_rate(qp->rpm,
-						       qp->desc->extra_clk_id,
-						       rate);
-			if (ret) {
-				dev_err(provider->dev,
-					"RPM bus clk %u vote (%llu Hz) failed: %d\n",
-					qp->desc->extra_clk_id, rate, ret);
-				return ret;
-			}
-		}
-		qp->rate = rate;
-	}
-
 	if (qp->desc->arb_resource >= 0) {
 		guard(mutex)(&qp->commit_lock);
 		msm8660_rpm_commit(qp);
@@ -1482,33 +1415,34 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 				     "parent RPM device has no drvdata\n");
 
 	/*
-	 * Kickstart the fabric bus clocks at INT_MAX before any consumer
-	 * can call provider->set().  Match what rpmcc's clk_rpm_handoff()
-	 * used to do for these resources: write INT_MAX (kHz) to RPM
-	 * ACTIVE_STATE so the fabric runs at its hardware-max rate until
-	 * an icc consumer actively requests something lower.  The legacy
-	 * clk-rpm path is what kept eMMC + ADM healthy from boot through
-	 * the first icc_set, and our v5 architecture has to replicate the
-	 * same effective state.
+	 * Pin the fabric / EBI / SMI bus clocks at INT_MAX for the life
+	 * of the system.  See the comment block in msm8660_icc_set() for
+	 * why dynamic rate scaling cannot be done safely on the non-SMD
+	 * `qcom_rpm` IPC family until a status-polling helper exists in
+	 * drivers/mfd/qcom_rpm.c.  Pinning at INT_MAX matches the pattern
+	 * already used by drivers/firmware/qcom/qcom_scm.c for APQ8064's
+	 * Daytona fabric clock ("vote for max clk rate for highest
+	 * performance"), and keeps the four fabric paths healthy through
+	 * cluster idle transitions.
 	 *
-	 * Mirrors the kickstart pattern Konrad documented for smd-rpm in
-	 * commit d6edc31f3a68 ("clk: qcom: smd-rpm: Separate out
-	 * interconnect bus clocks").
+	 * msm8660_rpm_set_bus_rate() writes both ACTIVE_STATE and
+	 * SLEEP_STATE so the rate also applies during cluster-sleep
+	 * windows; otherwise an in-flight DMA can race a transient
+	 * micro-sleep to a SLEEP_STATE = 0 fabric and starve.
 	 */
 	ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->bus_clk_id, INT_MAX);
 	if (ret)
 		return dev_err_probe(dev, ret,
-				     "RPM bus clk %u kickstart vote failed\n",
+				     "RPM bus clk %u pin vote failed\n",
 				     desc->bus_clk_id);
 	if (desc->extra_clk_id) {
 		ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->extra_clk_id,
 					       INT_MAX);
 		if (ret)
 			return dev_err_probe(dev, ret,
-					     "RPM bus clk %u kickstart vote failed\n",
+					     "RPM bus clk %u pin vote failed\n",
 					     desc->extra_clk_id);
 	}
-	qp->rate = INT_MAX;
 
 	if (desc->arb_resource >= 0) {
 		int arb_size = desc->nmasters * desc->ntieredslaves;
