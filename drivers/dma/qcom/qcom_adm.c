@@ -927,6 +927,58 @@ static int adm_terminate_all(struct dma_chan *chan)
 	return 0;
 }
 
+/*
+ * qcom_adm_program_crci_ee0 - one-shot CRCI_CTL write to EE=0 window.
+ *
+ * On APQ8060/MSM8660 (Tenderloin) CRCI_CTL writes to EE=1 are silently
+ * dropped; the live register lives at EE=0. The bootloader pre-programs
+ * EE=0 for peripherals it enables (eMMC CRCI=1, SDC, NAND). Peripherals
+ * the bootloader never touched — QCE crypto CRCI=4 (CE_IN), 5 (CE_OUT)
+ * and the CE_HASH CRCI — read as zero at both EE windows after boot.
+ * Without a valid EE=0 entry the CRCI handshake never fires: ADM pushes
+ * the first burst into the QCE FIFO and then stalls indefinitely waiting
+ * for a flow-control assertion that never comes.
+ *
+ * @chan:     any ADM DMA channel on the target controller — only used to
+ *            resolve the adm_device pointer; the CRCI to program does NOT
+ *            need to be (and typically isn't) this channel's own CRCI.
+ *            QCE uses two channels (rx/tx) but needs three CRCIs programmed
+ *            (CE_IN, CE_OUT, CE_HASH); pass any one channel for all three
+ *            calls.
+ * @crci:     CRCI number to program (1..15; CRCI 0 is "no CRCI").
+ * @crci_val: value to write — typically (mux_sel | blk_size).
+ *
+ * Also seeds the per-CRCI write-cache so the per-transfer adm_start_dma
+ * path does not overwrite this value on the next submission.
+ *
+ * Call once at probe while the channel is idle. Writing mid-transfer
+ * corrupts the in-flight burst.
+ */
+int qcom_adm_program_crci_ee0(struct dma_chan *chan, u32 crci, u32 crci_val)
+{
+	struct adm_chan *achan;
+	struct adm_device *adev;
+
+	if (!chan || !chan->device)
+		return -EINVAL;
+
+	achan = to_adm_chan(chan);
+	adev  = achan->adev;
+
+	if (!crci || crci >= ARRAY_SIZE(adev->crci_ctl_cache))
+		return -EINVAL;
+
+	writel(crci_val, adev->regs + ADM_CRCI_CTL(crci, 0));
+	adev->crci_ctl_cache[crci] = crci_val;
+	adev->crci_ctl_cache_valid |= BIT(crci);
+
+	dev_dbg(adev->dev,
+		"ADM program_crci_ee0: chan=%d crci=%u val=0x%x\n",
+		achan->id, crci, crci_val);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_adm_program_crci_ee0);
+
 static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 {
 	struct adm_chan *achan = to_adm_chan(chan);
