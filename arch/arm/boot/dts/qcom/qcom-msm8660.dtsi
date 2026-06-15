@@ -1371,49 +1371,36 @@
 			rpm_sleep_set: rpm-sleep-set {
 				compatible = "qcom,msm8660-rpm-sleep-set";
 			};
-		};
 
-		apps_fabric: interconnect@0 {
-			ranges;
-			compatible = "qcom,msm8660-apps-fabric";
-			#interconnect-cells = <1>;
-			qcom,rpm = <&rpm>;
-			clocks = <&rpmcc RPM_APPS_FABRIC_CLK>,
-				 <&rpmcc RPM_APPS_FABRIC_A_CLK>,
-				 <&rpmcc RPM_EBI1_CLK>,
-				 <&rpmcc RPM_EBI1_A_CLK>;
-			clock-names = "bus", "bus_a", "ebi1", "ebi1_a";
-		};
+			/*
+			 * NoC fabrics live under qcom,rpm so the
+			 * interconnect provider inherits the RPM IPC
+			 * channel through its parent's drvdata and
+			 * doesn't need a phandle of its own.  Fabric /
+			 * EBI / SMI bus-clock votes go through the same
+			 * RPM resources -- they are no longer exposed
+			 * via rpmcc, so the clocks/clock-names
+			 * properties are also gone.
+			 */
+			apps_fabric: interconnect-afab {
+				compatible = "qcom,msm8660-apps-fabric";
+				#interconnect-cells = <1>;
+			};
 
-		system_fabric: interconnect@1 {
-			ranges;
-			compatible = "qcom,msm8660-system-fabric";
-			#interconnect-cells = <1>;
-			qcom,rpm = <&rpm>;
-			clocks = <&rpmcc RPM_SYS_FABRIC_CLK>,
-				 <&rpmcc RPM_SYS_FABRIC_A_CLK>;
-			clock-names = "bus", "bus_a";
-		};
+			system_fabric: interconnect-sfab {
+				compatible = "qcom,msm8660-system-fabric";
+				#interconnect-cells = <1>;
+			};
 
-		mmss_fabric: interconnect@2 {
-			ranges;
-			compatible = "qcom,msm8660-mmss-fabric";
-			#interconnect-cells = <1>;
-			qcom,rpm = <&rpm>;
-			clocks = <&rpmcc RPM_MM_FABRIC_CLK>,
-				 <&rpmcc RPM_MM_FABRIC_A_CLK>,
-				 <&rpmcc RPM_SMI_CLK>,
-				 <&rpmcc RPM_SMI_A_CLK>;
-			clock-names = "bus", "bus_a", "smi", "smi_a";
-		};
+			mmss_fabric: interconnect-mmfab {
+				compatible = "qcom,msm8660-mmss-fabric";
+				#interconnect-cells = <1>;
+			};
 
-		daytona_fabric: interconnect@3 {
-			ranges;
-			compatible = "qcom,msm8660-daytona-fabric";
-			#interconnect-cells = <1>;
-			clocks = <&rpmcc RPM_DAYTONA_FABRIC_CLK>,
-				 <&rpmcc RPM_DAYTONA_FABRIC_A_CLK>;
-			clock-names = "bus", "bus_a";
+			daytona_fabric: interconnect-dfab {
+				compatible = "qcom,msm8660-daytona-fabric";
+				#interconnect-cells = <1>;
+			};
 		};
 
 		amba-bus {
