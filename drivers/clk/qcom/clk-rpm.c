@@ -402,7 +402,6 @@ DEFINE_CLK_RPM(daytona, QCOM_RPM_DAYTONA_FABRIC_CLK);
 DEFINE_CLK_RPM(sfpb, QCOM_RPM_SFPB_CLK);
 DEFINE_CLK_RPM(cfpb, QCOM_RPM_CFPB_CLK);
 DEFINE_CLK_RPM(mmfpb, QCOM_RPM_MMFPB_CLK);
-DEFINE_CLK_RPM(smi, QCOM_RPM_SMI_CLK);
 DEFINE_CLK_RPM(ebi1, QCOM_RPM_EBI1_CLK);
 
 DEFINE_CLK_RPM(qdss, QCOM_RPM_QDSS_CLK);
@@ -417,25 +416,21 @@ DEFINE_CLK_RPM_XO_BUFFER(xo_a0, 16);
 DEFINE_CLK_RPM_XO_BUFFER(xo_a1, 24);
 DEFINE_CLK_RPM_XO_BUFFER(xo_a2, 28);
 
+/*
+ * The fabric / EBI / SMI bus-clock RPM resources are owned by the
+ * MSM8x60 NoC interconnect driver, which votes for them directly via
+ * qcom_rpm_write(): exposing them here too would let two providers
+ * race to write the same RPM resource.  The remaining FPB clocks
+ * and PLL4 still belong to rpmcc since no consumer expresses them
+ * via the interconnect framework.
+ */
 static struct clk_rpm *msm8660_clks[] = {
-	[RPM_APPS_FABRIC_CLK] = &clk_rpm_afab_clk,
-	[RPM_APPS_FABRIC_A_CLK] = &clk_rpm_afab_a_clk,
-	[RPM_SYS_FABRIC_CLK] = &clk_rpm_sfab_clk,
-	[RPM_SYS_FABRIC_A_CLK] = &clk_rpm_sfab_a_clk,
-	[RPM_MM_FABRIC_CLK] = &clk_rpm_mmfab_clk,
-	[RPM_MM_FABRIC_A_CLK] = &clk_rpm_mmfab_a_clk,
-	[RPM_DAYTONA_FABRIC_CLK] = &clk_rpm_daytona_clk,
-	[RPM_DAYTONA_FABRIC_A_CLK] = &clk_rpm_daytona_a_clk,
 	[RPM_SFPB_CLK] = &clk_rpm_sfpb_clk,
 	[RPM_SFPB_A_CLK] = &clk_rpm_sfpb_a_clk,
 	[RPM_CFPB_CLK] = &clk_rpm_cfpb_clk,
 	[RPM_CFPB_A_CLK] = &clk_rpm_cfpb_a_clk,
 	[RPM_MMFPB_CLK] = &clk_rpm_mmfpb_clk,
 	[RPM_MMFPB_A_CLK] = &clk_rpm_mmfpb_a_clk,
-	[RPM_SMI_CLK] = &clk_rpm_smi_clk,
-	[RPM_SMI_A_CLK] = &clk_rpm_smi_a_clk,
-	[RPM_EBI1_CLK] = &clk_rpm_ebi1_clk,
-	[RPM_EBI1_A_CLK] = &clk_rpm_ebi1_a_clk,
 	[RPM_PLL4_CLK] = &clk_rpm_pll4_clk,
 };
 
