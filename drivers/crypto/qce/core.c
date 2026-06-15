@@ -386,16 +386,43 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		return ret;
 
 	/*
-	 * NOTE: On CE2 (MSM8x60) the per-channel CRCI burst size needs to
-	 * be programmed at EE=0 before the first transfer (CRCI 4 = CE_IN,
-	 * CRCI 5 = CE_OUT, burst = 32 bytes / 2).  Mainline qcom-adm.c has
-	 * no public helper for this; the proper home for it is the ADM
-	 * driver's own probe (likely via a per-channel DT property the ADM
-	 * driver applies before exposing the channel).  Left as a TODO for
-	 * the qce CE2 follow-up series; the existing driver behaves
-	 * correctly when the previous boot stage has left CRCI burst at
-	 * its default.
+	 * On CE2 (MSM8x60) the per-channel CRCI burst size must be programmed
+	 * at EE=0 before the first transfer. CE2 uses three ADM CRCIs — CE_IN
+	 * (input data), CE_OUT (cipher output) and CE_HASH (hash result
+	 * readback) — and the bootloader leaves all three unprogrammed at the
+	 * live EE=0 aperture (qce was not enabled at bootstrap). Without a
+	 * valid EE=0 entry the ADM<->CE2 CRCI handshake never fires: the
+	 * controller pushes the first burst into the QCE FIFO and stalls
+	 * indefinitely, surfacing as a DMA timeout with engine STATUS frozen
+	 * at the post-reset value.
+	 *
+	 * The cipher / hash data paths in common.c reprogram each channel's
+	 * CRCI per operation, but the EE=0 CRCI_CTL entry is keyed on the
+	 * CRCI number, not the channel — so program all three CRCIs once
+	 * here from probe (helper takes the CRCI as an explicit argument,
+	 * independently of the channel's current CRCI binding). The value
+	 * 0x1 encodes the 32-byte burst size CE2 expects
+	 * (CE2_ADM_BURST_SIZE / 2).
+	 *
+	 * v5 (BAM-based) silicon uses its own peripheral handshake instead
+	 * of ADM CRCI, so qce->adm_crci_* stays 0 and this block is skipped.
 	 */
+	if (qce->version == QCE_VERSION_CE2) {
+		const u32 ce2_crci_val = 0x1;
+
+		ret = qcom_adm_program_crci_ee0(qce->dma.rxchan,
+						qce->adm_crci_in, ce2_crci_val);
+		if (ret)
+			return ret;
+		ret = qcom_adm_program_crci_ee0(qce->dma.rxchan,
+						qce->adm_crci_out, ce2_crci_val);
+		if (ret)
+			return ret;
+		ret = qcom_adm_program_crci_ee0(qce->dma.rxchan,
+						qce->adm_crci_hash, ce2_crci_val);
+		if (ret)
+			return ret;
+	}
 
 	ret = qce_check_version(qce);
 	if (ret)
