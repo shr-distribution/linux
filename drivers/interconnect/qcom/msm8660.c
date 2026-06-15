@@ -954,7 +954,7 @@ static const struct msm8660_icc_desc msm8660_mmfab = {
  *
  * No RPM ARB for DFAB - it's a simple peripheral bus with clock-only control.
  *
- * USB HS is included as a DFAB voter for compatibility with the legacy
+ * USB HS is included as a DFAB voter for compatibility with the
  * legacy vendor kernel clock voting mechanism.
  */
 static struct msm8660_icc_node dfab_mas_sdc1 = {
@@ -1601,6 +1601,7 @@ static struct platform_driver msm8660_noc_driver = {
 		.suppress_bind_attrs = true,
 	},
 };
+
 /*
  * Register the NOC provider at core_initcall, matching the mainline pattern
  * used by newer Qualcomm SoCs (sm8450, glymur, qdu1000, sc8280xp, sm8750).
