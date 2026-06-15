@@ -519,6 +519,35 @@ static int a6_probe(struct i2c_client *client)
 		return ret;
 
 	/*
+	 * Claim the IRQ GPIO as an input descriptor BEFORE requesting the
+	 * IRQ. The modern pinctrl-msm/TLMM driver only arms its edge-detect
+	 * circuit on a pin once the corresponding gpiod is held as INPUT;
+	 * pinctrl alone configures the pad (function=gpio, pull-up) but
+	 * doesn't enable edge sensing. Without this claim the IRQ
+	 * controller silently misses every falling edge the MSP430 drives
+	 * on tap / charger-change events -- on legacy 2.6.35 webOS the
+	 * gpiomux framework took care of this implicitly.
+	 *
+	 * DT exposes the same GPIO via both `interrupts = <N ...>` (used
+	 * by client->irq below) and `interrupt-gpios = <&tlmm N ...>`
+	 * (claimed here). devm_gpiod_get_optional returns NULL on DTs that
+	 * pre-date the interrupt-gpios property -- silently falling back
+	 * to the broken behaviour. dev_warn so a future debugger spots it.
+	 */
+	{
+		struct gpio_desc *irq_gpio;
+
+		irq_gpio = devm_gpiod_get_optional(&client->dev, "interrupt",
+						   GPIOD_IN);
+		if (IS_ERR(irq_gpio))
+			return dev_err_probe(&client->dev, PTR_ERR(irq_gpio),
+					     "failed to claim interrupt GPIO\n");
+		if (!irq_gpio)
+			dev_warn(&client->dev,
+				 "no interrupt-gpios in DT; TLMM edge-detect may not arm\n");
+	}
+
+	/*
 	 * Request the IRQ BEFORE a6_init_state(). The MSP430's IRQ-output
 	 * state machine asserts the line when a still-latched STATUS_x bit
 	 * is unmasked by the MASK_x writes in init_state. The legacy 2.6.35

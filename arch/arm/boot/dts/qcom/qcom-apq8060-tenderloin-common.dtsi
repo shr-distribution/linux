@@ -4264,9 +4264,18 @@
 		tdio-gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
 		wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>;
 
-		/* Interrupt GPIO - DVT/PVT uses GPIO 37 (pre-DVT: 156) */
+		/* Interrupt GPIO - DVT/PVT uses GPIO 37 (pre-DVT: 156)
+		 *
+		 * `interrupt-gpios` mirrors `interrupts` so the driver can claim
+		 * the GPIO descriptor via devm_gpiod_get("interrupt", GPIOD_IN).
+		 * Modern pinctrl-msm needs the descriptor claimed as INPUT to
+		 * arm the TLMM edge-detect circuit; without it pinctrl alone
+		 * configures the pad but the IRQ controller never sees edges.
+		 * (Legacy 2.6.35 set this up implicitly via gpiomux.)
+		 */
 		interrupt-parent = <&tlmm>;
 		interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
 
 		/*
 		 * Marks the A6 IRQ as a system wakeup source. Inert until the
@@ -4291,9 +4300,12 @@
 		tdio-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;
 		wakeup-gpios = <&tlmm 141 GPIO_ACTIVE_HIGH>;
 
-		/* Interrupt GPIO - DVT/PVT uses GPIO 94 (pre-DVT: 132) */
+		/* Interrupt GPIO - DVT/PVT uses GPIO 94 (pre-DVT: 132). See a6_0
+		 * above for why we also expose this as interrupt-gpios.
+		 */
 		interrupt-parent = <&tlmm>;
 		interrupts = <94 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
 
 		/* See a6_0 above */
 		wakeup-source;
