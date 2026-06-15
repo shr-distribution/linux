@@ -260,8 +260,18 @@ static ssize_t a6_combo_show(struct device *dev,
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * Format: "0x%02x " per byte. Userspace tap2shared parses this
+	 * via uint64_from_bytestream() mode 4 (ASCII hex with optional
+	 * "0x" prefix). v1 originally emitted "%d " (signed decimal),
+	 * which the mode-4 parser silently misinterprets as hex (e.g.
+	 * "18" -> 0x18 = 24, not 18), corrupting every TLV burst and
+	 * surfacing as "bad phase 1 data" aborts in tap_connected.
+	 * The legacy 2.6.35 webOS driver emitted the hex form; restore
+	 * compatibility.
+	 */
 	for (i = 0; i < A6_ACC_DATA_COUNT; i++)
-		len += sysfs_emit_at(buf, len, "%d ", (int)(s8)vals[i]);
+		len += sysfs_emit_at(buf, len, "0x%02x ", vals[i]);
 	len += sysfs_emit_at(buf, len, "\n");
 	return len;
 }
