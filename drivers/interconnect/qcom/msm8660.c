@@ -1378,10 +1378,6 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 	rate = min_t(u64, rate, INT_MAX);
 
 	if (qp->rate != rate) {
-		dev_info(provider->dev,
-			 "icc_set: %u Hz -> %llu Hz (bus_clk=%u extra=%u)\n",
-			 qp->rate, rate, qp->desc->bus_clk_id,
-			 qp->desc->extra_clk_id);
 		ret = msm8660_rpm_set_bus_rate(qp->rpm, qp->desc->bus_clk_id,
 					       rate);
 		if (ret) {
@@ -1504,8 +1500,6 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret,
 				     "RPM bus clk %u kickstart vote failed\n",
 				     desc->bus_clk_id);
-	dev_info(dev, "RPM bus clk %u kickstart at INT_MAX kHz\n",
-		 desc->bus_clk_id);
 	if (desc->extra_clk_id) {
 		ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->extra_clk_id,
 					       INT_MAX);
@@ -1513,8 +1507,6 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 			return dev_err_probe(dev, ret,
 					     "RPM bus clk %u kickstart vote failed\n",
 					     desc->extra_clk_id);
-		dev_info(dev, "RPM extra clk %u kickstart at INT_MAX kHz\n",
-			 desc->extra_clk_id);
 	}
 	qp->rate = INT_MAX;
 
