@@ -181,9 +181,36 @@ struct hif_scatter_req {
 
 	bool virt_scat;
 
+	/*
+	 * Caller-set hint for ath6kl_hif_submit_scat_req(): when true and
+	 * the submit direction is read, the SDIO backend uses
+	 * HIF_RD_ASYNC_BLOCK_FIX instead of HIF_RD_SYNC_BLOCK_FIX.  The
+	 * caller MUST install a `complete` callback (the SDIO async
+	 * scatter dispatcher already invokes it from
+	 * ath6kl_sdio_scat_rw() when HIF_ASYNCHRONOUS is set).
+	 *
+	 * Used by the async-RX refactor (Phase 2 of
+	 * project_wifi_async_rx_refactor memory note) to make bundle
+	 * receive dispatch asynchronous; Phase 2 still waits on a
+	 * completion synchronously to validate the wiring without changing
+	 * throughput.  Phase 3 defers netif_rx to a worker for the actual
+	 * pipelining gain.
+	 *
+	 * Default false preserves the historical sync-RX behaviour.
+	 */
+	bool read_async;
+
 	void (*complete) (struct htc_target *, struct hif_scatter_req *);
 	int status;
 	int scat_entries;
+
+	/*
+	 * Free-form pointer used by the caller in conjunction with
+	 * ->complete.  Phase 2 stuffs a `struct completion *` here so
+	 * the wait_for_completion() side can be signalled from the
+	 * SDIO worker thread.
+	 */
+	void *context;
 
 	struct bus_request *busrequest;
 	struct scatterlist *sgentries;

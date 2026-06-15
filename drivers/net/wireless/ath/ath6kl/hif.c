@@ -255,7 +255,18 @@ int ath6kl_hif_submit_scat_req(struct ath6kl_device *dev,
 	int status = 0;
 
 	if (read) {
-		scat_req->req = HIF_RD_SYNC_BLOCK_FIX;
+		/*
+		 * scat_req->read_async (default false) is the caller's
+		 * opt-in to async RX dispatch.  Without it we keep the
+		 * historical sync behaviour.  See struct hif_scatter_req
+		 * for the contract: caller must install ->complete and a
+		 * way to be woken from there (Phase 2 uses a struct
+		 * completion stored in ->context).
+		 */
+		if (scat_req->read_async)
+			scat_req->req = HIF_RD_ASYNC_BLOCK_FIX;
+		else
+			scat_req->req = HIF_RD_SYNC_BLOCK_FIX;
 		scat_req->addr = dev->ar->mbox_info.htc_addr;
 	} else {
 		scat_req->req = HIF_WR_ASYNC_BLOCK_INC;
@@ -269,7 +280,8 @@ int ath6kl_hif_submit_scat_req(struct ath6kl_device *dev,
 	ath6kl_dbg(ATH6KL_DBG_HIF,
 		   "hif submit scatter request entries %d len %d mbox 0x%x %s %s\n",
 		   scat_req->scat_entries, scat_req->len,
-		   scat_req->addr, !read ? "async" : "sync",
+		   scat_req->addr,
+		   (scat_req->req & HIF_ASYNCHRONOUS) ? "async" : "sync",
 		   (read) ? "rd" : "wr");
 
 	if (!read && scat_req->virt_scat) {

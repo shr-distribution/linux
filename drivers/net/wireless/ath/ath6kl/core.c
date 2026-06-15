@@ -32,6 +32,7 @@ unsigned int debug_mask;
 unsigned int ath6kl_prefer_rec_power;
 unsigned int ath6kl_rec_power_pspoll = 2;
 int ath6kl_bg_scan_period_override = -1;
+unsigned int ath6kl_rx_async;
 static unsigned int suspend_mode;
 static unsigned int wow_mode;
 static unsigned int uart_debug;
@@ -53,6 +54,7 @@ module_param(heart_beat_poll, uint, 0644);
 module_param(ath6kl_prefer_rec_power, uint, 0644);
 module_param(ath6kl_rec_power_pspoll, uint, 0644);
 module_param(ath6kl_bg_scan_period_override, int, 0644);
+module_param(ath6kl_rx_async, uint, 0644);
 MODULE_PARM_DESC(recovery_enable, "Enable recovery from firmware error");
 MODULE_PARM_DESC(heart_beat_poll,
 		 "Enable fw error detection periodic polling in msecs - Also set recovery_enable for this to be effective");
@@ -62,6 +64,8 @@ MODULE_PARM_DESC(ath6kl_rec_power_pspoll,
 		 "pspoll_number value sent in WMI_SET_PMPARAMS alongside REC_POWER.  Mirrors legacy PmWiFiService mode selection: 1 = aggressive PS (legacy mode 3), 2 = normal PS (legacy mode 2, iwconfig 'PM: on').  Higher values give more wake windows before sleep but worse battery; default 2.");
 MODULE_PARM_DESC(ath6kl_bg_scan_period_override,
 		 "Override the per-connect bg_scan_period sent to the chip.  Mainline default is 60 s, but legacy webOS PmWiFiService::LoadDefaultConfigs sends 0 (background scan DISABLED) -- decoded from PmWiFiService disassembly.  Every 60 s background scan steals air-time from the data path and degrades sustained DL throughput.  Default -1 = preserve mainline behaviour (use the sme value, typically 60); set to 0 to disable BG scan (matches legacy webOS).");
+MODULE_PARM_DESC(ath6kl_rx_async,
+		 "Phase 2 of the async-RX refactor: when set to 1, bundle RX dispatch uses HIF_RD_ASYNC_BLOCK_FIX with a synchronous wait_for_completion on the caller side.  Validates the async wiring without changing throughput; Phase 3 (deferred netif_rx) is where the actual gain comes from.  Default 0 (sync RX, mainline behaviour).  See project_wifi_async_rx_refactor memory note.");
 
 
 void ath6kl_core_tx_complete(struct ath6kl *ar, struct sk_buff *skb)

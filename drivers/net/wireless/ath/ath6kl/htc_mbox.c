@@ -21,6 +21,7 @@
 #include "hif-ops.h"
 #include "trace.h"
 
+#include <linux/completion.h>
 #include <linux/unaligned.h>
 
 #define CALC_TXRX_PADDED_LEN(dev, len)  (__ALIGN_MASK((len), (dev)->block_mask))
@@ -1914,6 +1915,27 @@ static void ath6kl_htc_rx_complete(struct htc_endpoint *endpoint,
 		endpoint->ep_cb.rx(endpoint->target, packet);
 }
 
+/*
+ * Phase 2 scatter-RX completion callback.  The SDIO async dispatcher
+ * (ath6kl_sdio_scat_rw) invokes this once the underlying mmc_wait_for_req
+ * returns.  Phase 2 simply signals the on-stack completion the caller
+ * (ath6kl_htc_rx_bundle) is sleeping on; Phase 3 will replace this with
+ * a worker-thread handoff that lets the IRQ-handler return without
+ * blocking.
+ */
+static void htc_rx_scat_async_wait_complete(struct htc_target *target,
+					    struct hif_scatter_req *scat_req)
+{
+	struct completion *done = scat_req->context;
+
+	ath6kl_dbg(ATH6KL_DBG_HTC,
+		   "htc rx async-scat complete len %d status %d\n",
+		   scat_req->len, scat_req->status);
+
+	if (done)
+		complete(done);
+}
+
 static int ath6kl_htc_rx_bundle(struct htc_target *target,
 				struct list_head *rxq,
 				struct list_head *sync_compq,
@@ -1994,7 +2016,63 @@ static int ath6kl_htc_rx_bundle(struct htc_target *target,
 	scat_req->len = len;
 	scat_req->scat_entries = i;
 
-	status = ath6kl_hif_submit_scat_req(target->dev, scat_req, true);
+	/*
+	 * Phase 2 of the async-RX refactor (project_wifi_async_rx_refactor):
+	 * when the module param ath6kl_rx_async is set, dispatch the bundle
+	 * RX asynchronously and wait for the completion callback on the
+	 * caller side.  No throughput change vs the historical sync path --
+	 * the win is in Phase 3 where the completion handler runs on a
+	 * worker thread and lets the IRQ handler immediately submit the
+	 * next bundle.
+	 *
+	 * The completion lives on this function's stack (DECLARE_COMPLETION
+	 * _ONSTACK).  scat_req->complete will be invoked by
+	 * ath6kl_sdio_scat_rw() from the SDIO async workqueue context when
+	 * the underlying mmc_wait_for_req returns; htc_rx_scat_async_wait_
+	 * complete() then signals the completion and unblocks us.
+	 */
+	if (READ_ONCE(ath6kl_rx_async)) {
+		DECLARE_COMPLETION_ONSTACK(rx_done);
+
+		scat_req->read_async = true;
+		scat_req->complete = htc_rx_scat_async_wait_complete;
+		scat_req->context = &rx_done;
+
+		status = ath6kl_hif_submit_scat_req(target->dev, scat_req,
+						    true);
+
+		/*
+		 * submit_scat_req returns 0 immediately when the request
+		 * was queued onto the SDIO async workqueue.  Wait here for
+		 * the completion (10 s is well past any plausible SDIO
+		 * timeout; if we hit it the chip is wedged anyway).  After
+		 * wait_for_completion_timeout returns the data is in our
+		 * buffers and we can hand it off via the same comp_pktq
+		 * path the sync flow uses.
+		 */
+		if (!status) {
+			unsigned long left;
+
+			left = wait_for_completion_timeout(&rx_done,
+							   msecs_to_jiffies(10000));
+			if (!left) {
+				ath6kl_err("rx-async bundle wait timed out\n");
+				status = -ETIMEDOUT;
+			} else {
+				status = scat_req->status;
+			}
+		}
+
+		/* Clear the async-leaning fields before returning the req
+		 * to the pool so the next caller starts from a clean slate.
+		 */
+		scat_req->read_async = false;
+		scat_req->complete = NULL;
+		scat_req->context = NULL;
+	} else {
+		status = ath6kl_hif_submit_scat_req(target->dev, scat_req,
+						    true);
+	}
 
 	if (!status)
 		*n_pkt_fetched = i;
