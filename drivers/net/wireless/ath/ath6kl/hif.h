@@ -231,6 +231,21 @@ struct ath6kl_hif_ops {
 	int (*write_async)(struct ath6kl *ar, u32 address, u8 *buffer,
 			   u32 length, u32 request, struct htc_packet *packet);
 
+	/*
+	 * Async read counterpart to write_async.  Same semantics: queue
+	 * the SDIO transfer, return immediately, invoke packet->completion
+	 * via ath6kl_hif_rw_comp_handler() when the underlying transfer
+	 * finishes.  Used by the async-RX path (see project_wifi_async_rx_
+	 * refactor memory note) to overlap netif_rx() of bundle N with the
+	 * SDIO submit of bundle N+1.  Legacy webOS ar6000 driver issued
+	 * mailbox reads with HIF_RD_ASYNC_* + completion callbacks; mainline
+	 * historically only had this for the TX path.
+	 *
+	 * NULL is permitted: callers must check and fall back to sync.
+	 */
+	int (*read_async)(struct ath6kl *ar, u32 address, u8 *buffer,
+			  u32 length, u32 request, struct htc_packet *packet);
+
 	void (*irq_enable)(struct ath6kl *ar);
 	void (*irq_disable)(struct ath6kl *ar);
 

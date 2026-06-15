@@ -43,6 +43,30 @@ static inline int hif_write_async(struct ath6kl *ar, u32 address, u8 *buffer,
 	return ar->hif_ops->write_async(ar, address, buffer, length,
 					request, packet);
 }
+
+/*
+ * Async read.  Returns -EOPNOTSUPP if the backend has no read_async op
+ * (HIF backends other than SDIO).  The SDIO backend implements it as a
+ * mirror of write_async: bus_req queued on the shared async dispatcher
+ * workqueue, completion routed via packet->completion.  Phase 1 of the
+ * async-RX refactor lands the op but no callers; see
+ * project_wifi_async_rx_refactor memory note for the staged plan.
+ */
+static inline int hif_read_async(struct ath6kl *ar, u32 address, u8 *buffer,
+				 u32 length, u32 request,
+				 struct htc_packet *packet)
+{
+	ath6kl_dbg(ATH6KL_DBG_HIF,
+		   "hif read async addr 0x%x buf 0x%p len %d request 0x%x\n",
+		   address, buffer, length, request);
+
+	if (!ar->hif_ops->read_async)
+		return -EOPNOTSUPP;
+
+	return ar->hif_ops->read_async(ar, address, buffer, length,
+				       request, packet);
+}
+
 static inline void ath6kl_hif_irq_enable(struct ath6kl *ar)
 {
 	ath6kl_dbg(ATH6KL_DBG_HIF, "hif irq enable\n");

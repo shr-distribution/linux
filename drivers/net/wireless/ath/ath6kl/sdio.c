@@ -681,6 +681,43 @@ static int ath6kl_sdio_write_async(struct ath6kl *ar, u32 address, u8 *buffer,
 	return 0;
 }
 
+/*
+ * Async read.  Mirrors write_async exactly -- the underlying worker
+ * (__ath6kl_sdio_write_async) dispatches reads and writes based on the
+ * HIF_RD/HIF_WR flag bits in req->request, so we share the same queue
+ * and workqueue.  Naming the field 'wr_asyncq' is a historical artefact
+ * from when this path was TX-only; today it carries both directions and
+ * is the single async dispatcher backing both hif_write_async and
+ * hif_read_async.  Phase 1 of the async-RX refactor (see
+ * project_wifi_async_rx_refactor memory note) just exposes this; no
+ * caller invokes it yet.
+ */
+static int ath6kl_sdio_read_async(struct ath6kl *ar, u32 address, u8 *buffer,
+				  u32 length, u32 request,
+				  struct htc_packet *packet)
+{
+	struct ath6kl_sdio *ar_sdio = ath6kl_sdio_priv(ar);
+	struct bus_request *bus_req;
+
+	bus_req = ath6kl_sdio_alloc_busreq(ar_sdio);
+
+	if (WARN_ON_ONCE(!bus_req))
+		return -ENOMEM;
+
+	bus_req->address = address;
+	bus_req->buffer = buffer;
+	bus_req->length = length;
+	bus_req->request = request;
+	bus_req->packet = packet;
+
+	spin_lock_bh(&ar_sdio->wr_async_lock);
+	list_add_tail(&bus_req->list, &ar_sdio->wr_asyncq);
+	spin_unlock_bh(&ar_sdio->wr_async_lock);
+	queue_work(ar->ath6kl_wq, &ar_sdio->wr_async_work);
+
+	return 0;
+}
+
 static void ath6kl_sdio_irq_enable(struct ath6kl *ar)
 {
 	struct ath6kl_sdio *ar_sdio = ath6kl_sdio_priv(ar);
@@ -1348,6 +1385,7 @@ static void ath6kl_sdio_stop(struct ath6kl *ar)
 static const struct ath6kl_hif_ops ath6kl_sdio_ops = {
 	.read_write_sync = ath6kl_sdio_read_write_sync,
 	.write_async = ath6kl_sdio_write_async,
+	.read_async = ath6kl_sdio_read_async,
 	.irq_enable = ath6kl_sdio_irq_enable,
 	.irq_disable = ath6kl_sdio_irq_disable,
 	.scatter_req_get = ath6kl_sdio_scatter_req_get,
