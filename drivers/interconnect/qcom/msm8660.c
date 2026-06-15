@@ -1477,6 +1477,43 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, -ENODEV,
 				     "parent RPM device has no drvdata\n");
 
+	/*
+	 * Kickstart the fabric bus clocks at MSM8660_FABRIC_MIN_RATE
+	 * before any consumer can call provider->set().
+	 *
+	 * The legacy clk-rpm path used to write QCOM_RPM_ACTIVE_STATE +
+	 * QCOM_RPM_SLEEP_STATE for the fabric/EBI/SMI clocks at handoff
+	 * (INT_MAX), so the fabrics were always alive even before any
+	 * icc consumer voted.  Now that those resources are no longer
+	 * exposed through rpmcc, the icc driver has to seed them itself
+	 * or RPM may leave the fabric clock at whatever the bootloader
+	 * left it -- which on tenderloin is low enough to RXOVERRUN the
+	 * SDC1/ADM drain during eMMC traffic before the first consumer
+	 * vote ever arrives.  Same pattern Konrad documented for the
+	 * smd-rpm interconnect drivers in commit d6edc31f3a68
+	 * ("clk: qcom: smd-rpm: Separate out interconnect bus clocks").
+	 *
+	 * Both ACTIVE and SLEEP states are written via
+	 * msm8660_rpm_set_bus_rate().  qp->rate is seeded so
+	 * msm8660_icc_set() skips a redundant re-vote on the very first
+	 * call.
+	 */
+	ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->bus_clk_id,
+				       MSM8660_FABRIC_MIN_RATE);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "RPM bus clk %u kickstart vote failed\n",
+				     desc->bus_clk_id);
+	if (desc->extra_clk_id) {
+		ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->extra_clk_id,
+					       MSM8660_FABRIC_MIN_RATE);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "RPM bus clk %u kickstart vote failed\n",
+					     desc->extra_clk_id);
+	}
+	qp->rate = MSM8660_FABRIC_MIN_RATE;
+
 	if (desc->arb_resource >= 0) {
 		int arb_size = desc->nmasters * desc->ntieredslaves;
 
