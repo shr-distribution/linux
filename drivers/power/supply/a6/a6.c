@@ -519,56 +519,61 @@ static int a6_probe(struct i2c_client *client)
 		return ret;
 
 	/*
-	 * Claim the IRQ GPIO as an input descriptor BEFORE requesting the
-	 * IRQ. The modern pinctrl-msm/TLMM driver only arms its edge-detect
-	 * circuit on a pin once the corresponding gpiod is held as INPUT;
-	 * pinctrl alone configures the pad (function=gpio, pull-up) but
-	 * doesn't enable edge sensing. Without this claim the IRQ
-	 * controller silently misses every falling edge the MSP430 drives
-	 * on tap / charger-change events -- on legacy 2.6.35 webOS the
-	 * gpiomux framework took care of this implicitly.
+	 * Resolve the IRQ via gpiod_to_irq() on a claimed input descriptor
+	 * rather than via client->irq (which i2c-core parsed from the
+	 * `interrupts = <>` DT property). On modern pinctrl-msm the
+	 * client->irq irqdomain mapping path leaves the TLMM pad's
+	 * per-pin INTR_RAW_STATUS_EN bit unset, so the SoC never sees the
+	 * falling edges the MSP430 drives. Sister driver MAX8903_CHARGER
+	 * on the same SoC uses gpiod_to_irq(gpiod_get(..., GPIOD_IN)) and
+	 * fires IRQs normally; the only structural difference between the
+	 * two driver paths is the IRQ-resolution route. Adopt the same
+	 * pattern.
 	 *
-	 * DT exposes the same GPIO via both `interrupts = <N ...>` (used
-	 * by client->irq below) and `interrupt-gpios = <&tlmm N ...>`
-	 * (claimed here). devm_gpiod_get_optional returns NULL on DTs that
-	 * pre-date the interrupt-gpios property -- silently falling back
-	 * to the broken behaviour. dev_warn so a future debugger spots it.
+	 * Falls back to client->irq when DT doesn't yet have
+	 * `interrupt-gpios` (older devicetrees) so the driver still
+	 * probes, but warns -- the IRQ won't actually fire in that case.
+	 *
+	 * Request the IRQ BEFORE a6_init_state(). The MSP430's IRQ-output
+	 * state machine asserts the line when a still-latched STATUS_x bit
+	 * is unmasked by the MASK_x writes in init_state. The legacy 2.6.35
+	 * webOS driver and the pre-rework upstream submission both requested
+	 * the IRQ before init for this reason.
 	 */
 	{
 		struct gpio_desc *irq_gpio;
+		int irq;
 
 		irq_gpio = devm_gpiod_get_optional(&client->dev, "interrupt",
 						   GPIOD_IN);
 		if (IS_ERR(irq_gpio))
 			return dev_err_probe(&client->dev, PTR_ERR(irq_gpio),
 					     "failed to claim interrupt GPIO\n");
-		if (!irq_gpio)
+
+		if (irq_gpio) {
+			irq = gpiod_to_irq(irq_gpio);
+			if (irq < 0)
+				return dev_err_probe(&client->dev, irq,
+						     "gpiod_to_irq failed\n");
+		} else {
 			dev_warn(&client->dev,
-				 "no interrupt-gpios in DT; TLMM edge-detect may not arm\n");
-	}
+				 "no interrupt-gpios in DT; IRQ won't fire (using client->irq fallback)\n");
+			irq = client->irq;
+		}
 
-	/*
-	 * Request the IRQ BEFORE a6_init_state(). The MSP430's IRQ-output
-	 * state machine asserts the line when a still-latched STATUS_x bit
-	 * is unmasked by the MASK_x writes in init_state. The legacy 2.6.35
-	 * webOS driver and the pre-rework upstream submission both requested
-	 * the IRQ before init for this reason. v1 moved init_state earlier
-	 * and silently lost that first assert: with no handler installed
-	 * the falling edge falls on the floor, the bottom half never acks
-	 * via status3 W1C, and subsequent A2A_CONNECT_CHANGE events never
-	 * fire IRQ because the chip's IRQ output stays latched-but-ignored.
-	 */
-	if (client->irq > 0) {
-		ret = devm_request_threaded_irq(&client->dev, client->irq, NULL,
-						a6_irq,
-						IRQF_TRIGGER_FALLING |
-						IRQF_ONESHOT,
-						dev_name(&client->dev), state);
-		if (ret)
-			return dev_err_probe(&client->dev, ret,
-					     "failed to request IRQ\n");
+		if (irq > 0) {
+			ret = devm_request_threaded_irq(&client->dev, irq, NULL,
+							a6_irq,
+							IRQF_TRIGGER_FALLING |
+							IRQF_ONESHOT,
+							dev_name(&client->dev),
+							state);
+			if (ret)
+				return dev_err_probe(&client->dev, ret,
+						     "failed to request IRQ\n");
 
-		device_init_wakeup(&client->dev, true);
+			device_init_wakeup(&client->dev, true);
+		}
 	}
 
 	/*
