@@ -32,6 +32,7 @@ allOf:
 
         reset-names:
           const: por
+
     else:
       properties:
         resets:
@@ -45,6 +46,16 @@ allOf:
       required:
         - resets
         - reset-names
+
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              const: qcom,usb-hs-phy-msm8660
+    then:
+      properties:
+        qcom,hs-drv-slope: false
 
 properties:
   compatible:
@@ -95,19 +106,18 @@ properties:
             the address is offset from the ULPI_EXT_VENDOR_SPECIFIC address
         - description: value
 
-  qcom,vendor-init-seq:
-    $ref: /schemas/types.yaml#/definitions/uint8-array
+  qcom,hs-drv-slope:
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: >
-      Flat sequence of raw ULPI address/value byte pairs written after
-      the PHY reset. Each pair is two consecutive bytes:
-      [addr0, val0, addr1, val1, ...]. Total length must be even and
-      no more than 64 bytes (32 pairs). Unlike qcom,init-seq the
-      address field is not offset by ULPI_EXT_VENDOR_SPECIFIC, so this
-      property can reach the standard ULPI vendor range (0x30-0x3f) —
-      used on MSM8x60-class hardware to program pre-emphasis, HS
-      driver slope and CDR auto-reset bits the legacy msm_otg driver
-      used to set via platform data.
-    maxItems: 64
+      High-speed driver slope, programmed into bits [3:0] of ULPI vendor
+      register 0x32 (CONFIG_REG3).  The remaining vendor-register
+      initialisation (pre-emphasis level, CDR auto-reset and SE1 gating)
+      is fixed in the driver because every MSM8x60-class reference
+      board uses identical values; only this 4-bit slope varies between
+      boards and is left at the silicon default if the property is
+      absent.  Only valid for the qcom,usb-hs-phy-msm8660 variant.
+    minimum: 0
+    maximum: 15
 
 required:
   - clocks
@@ -133,6 +143,23 @@ examples:
           v1p8-supply = <&pm8941_l6>;
           extcon = <&smbb>;
           qcom,init-seq = /bits/ 8 <0x1 0x63>;
+        };
+      };
+    };
+
+  - |
+    usb-controller {
+      #reset-cells = <1>;
+
+      ulpi {
+        phy {
+          compatible = "qcom,usb-hs-phy-msm8660", "qcom,usb-hs-phy";
+          #phy-cells = <0>;
+          clocks = <&clk 0>, <&clk 1>;
+          clock-names = "ref", "sleep";
+          resets = <&otg 0>;
+          reset-names = "por";
+          qcom,hs-drv-slope = <5>;
         };
       };
     };
