@@ -1215,7 +1215,7 @@ static void adm_start_dma(struct adm_chan *achan)
 		async_desc->length);
 
 	/*
-	 * Check CMD_PTR_RDY before writing CMD_PTR (legacy webOS parity).
+	 * Wait for CMD_PTR_RDY before writing CMD_PTR (legacy webOS parity).
 	 *
 	 * Legacy webOS arch/arm/mach-msm/dma.c msm_dmov_enqueue_cmd_ext()
 	 * and start_ready_cmds() always read DMOV_STATUS(ch) and gate the
@@ -1223,32 +1223,40 @@ static void adm_start_dma(struct adm_chan *achan)
 	 * ready, the command goes onto a ready_commands list and the next
 	 * RSLT_VALID IRQ drains it.
 	 *
-	 * Mainline qcom_adm.c writes CMD_PTR unconditionally.  Under heavy
-	 * concurrent multi-channel traffic on ADM1 the IRQ handler may
-	 * call adm_start_dma after RSLT_VALID is set but before CMD_PTR_RDY
-	 * actually transitions to 1 (the channel pipeline state machine
-	 * has not fully cleared).  Writing CMD_PTR in that window leaves
-	 * the channel with two partial chains and FLUSH fires with
-	 * STATE5 = 0x00000003 ("drain stage 3").  That is exactly the
-	 * SDCC drain stall we captured in
-	 * project_adm_flush_state_decode_2026_06_14: eMMC ch2 vs WiFi ch5
-	 * (resolved by 105ed93a7cd3 enabling list-mode CMD_PTR -> cleaner
-	 * descriptor chain look-ahead) and eMMC ch2 vs BT-RX ch7 (still
-	 * reproducible after that fix, with the same STATE5 = 3 wedge).
+	 * Earlier upstream qcom_adm.c iterations replaced that deferred
+	 * pattern with a read + dev_warn_once "tripwire" only -- on the
+	 * empirical observation that under typical workloads
+	 * CMD_PTR_RDY was set every time the IRQ handler reached this
+	 * point.  But high-throughput pinned-rate workloads (the MSM8x60
+	 * NoC interconnect series pins fabric clocks at INT_MAX) shrink
+	 * the wall-clock window between RSLT_VALID asserting and the
+	 * channel pipeline state machine clearing CMD_PTR_RDY, and the
+	 * tripwire starts firing -- writing CMD_PTR with CMD_PTR_RDY = 0
+	 * leaves the channel with two partial chains and FLUSH fires with
+	 * STATE5 = 0x00000003 ("drain stage 3"), the exact SDCC drain
+	 * stall captured in project_adm_flush_state_decode_2026_06_14.
 	 *
-	 * Diagnostic only -- no busy-wait.  The empirical evidence is that
-	 * CMD_PTR_RDY is set every time we get here under our reproducer:
-	 * the original 20 us udelay(1) loop never fired in any captured
-	 * stall.  Keep the read + one-shot warn so we have a tripwire if a
-	 * future workload exposes the race that legacy webOS guarded
-	 * against, without incurring up-to-20 us of IRQ-off latency on a
-	 * hot path that is also invoked from the hardirq completion
-	 * chain.  See feedback_no_devwarn_in_adm_irq for the broader
-	 * "no unbounded dev_warns inside ADM hardirq" rule.
+	 * Restore a bounded busy-wait: poll CMD_PTR_RDY for up to 100 us
+	 * before giving up.  In hardirq context this is short enough not
+	 * to disturb other IRQs (well under the standard 250 us IRQ-off
+	 * budget for ARM platforms), and the one-shot dev_warn that
+	 * follows lets us see if any consumer's workload still needs the
+	 * deferred-list pattern.  See feedback_no_devwarn_in_adm_irq for
+	 * the broader "no unbounded dev_warns inside ADM hardirq" rule;
+	 * the bounded udelay loop here is the kind of wait that rule
+	 * always permitted.
 	 */
 	{
-		u32 status = readl_relaxed(adev->regs +
-				ADM_CH_STATUS_SD(achan->id, adev->ee));
+		u32 status;
+		int us;
+
+		for (us = 0; us < 100; us++) {
+			status = readl_relaxed(adev->regs +
+					ADM_CH_STATUS_SD(achan->id, adev->ee));
+			if (status & ADM_CH_STATUS_CMD_PTR_RDY)
+				break;
+			udelay(1);
+		}
 
 		if (!(status & ADM_CH_STATUS_CMD_PTR_RDY)) {
 			achan->cmd_ptr_not_rdy_count++;
@@ -1256,8 +1264,8 @@ static void adm_start_dma(struct adm_chan *achan)
 			if (!achan->cmd_ptr_not_rdy_logged) {
 				achan->cmd_ptr_not_rdy_logged = 1;
 				dev_warn(adev->dev,
-					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set at submit (one-shot diagnostic)\n",
-					achan->id, status);
+					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set after %d us busy-wait\n",
+					achan->id, status, us);
 			}
 		}
 	}
