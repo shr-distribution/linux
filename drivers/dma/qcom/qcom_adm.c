@@ -49,6 +49,7 @@
 						ADM_EE_OFFS(ee))
 
 /* channel status */
+#define ADM_CH_STATUS_CMD_PTR_RDY	BIT(0)
 #define ADM_CH_STATUS_VALID		BIT(1)
 
 /* channel result */
@@ -515,6 +516,7 @@ static void adm_start_dma(struct adm_chan *achan)
 	struct virt_dma_desc *vd = vchan_next_desc(&achan->vc);
 	struct adm_device *adev = achan->adev;
 	struct adm_async_desc *async_desc;
+	int i;
 
 	lockdep_assert_held(&achan->vc.lock);
 
@@ -552,6 +554,34 @@ static void adm_start_dma(struct adm_chan *achan)
 
 	/* make sure IRQ enable doesn't get reordered */
 	wmb();
+
+	/*
+	 * Wait for CMD_PTR_RDY before writing CMD_PTR.
+	 *
+	 * adm_start_dma() can be invoked from the hardirq path (the
+	 * RSLT_VALID handler in adm_dma_irq() kicks off the next queued
+	 * transaction immediately after completing the previous one).
+	 * The channel pipeline state machine clears CMD_PTR_RDY in
+	 * STATUS_SD before the RSLT_VALID IRQ asserts and only re-sets
+	 * it once the previous descriptor chain has fully drained.
+	 * Writing CMD_PTR while CMD_PTR_RDY is still 0 can leave the
+	 * channel with two partial chains and the next FLUSH fires with
+	 * STATE5 = 0x3 ("drain stage 3"), wedging the SDCC consumer on
+	 * MSM8x60 (apq8060 / tenderloin) where the underlying fabric
+	 * clocks are pinned at hardware-max by the qcom-msm8660 NoC
+	 * interconnect driver.  Without that pinning the window between
+	 * RSLT_VALID and CMD_PTR_RDY = 1 is wide enough that this poll
+	 * never fires; with it, every transition needs a few us of
+	 * settling.  Poll up to 100 us before falling through; this is
+	 * well below the conventional 250 us ARM hardirq budget.
+	 */
+	for (i = 0; i < 100; i++) {
+		if (readl_relaxed(adev->regs +
+				  ADM_CH_STATUS_SD(achan->id, adev->ee)) &
+		    ADM_CH_STATUS_CMD_PTR_RDY)
+			break;
+		udelay(1);
+	}
 
 	/* write next command list out to the CMD FIFO */
 	writel(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3,
