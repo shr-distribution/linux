@@ -4264,17 +4264,19 @@
 		tdio-gpios = <&tlmm 158 GPIO_ACTIVE_HIGH>;
 		wakeup-gpios = <&tlmm 155 GPIO_ACTIVE_HIGH>;
 
-		/* Interrupt GPIO - DVT/PVT uses GPIO 37 (pre-DVT: 156)
+		/*
+		 * Interrupt GPIO - DVT/PVT uses GPIO 37 (pre-DVT: 156).
 		 *
-		 * `interrupt-gpios` mirrors `interrupts` so the driver can claim
-		 * the GPIO descriptor via devm_gpiod_get("interrupt", GPIOD_IN).
-		 * Modern pinctrl-msm needs the descriptor claimed as INPUT to
-		 * arm the TLMM edge-detect circuit; without it pinctrl alone
-		 * configures the pad but the IRQ controller never sees edges.
-		 * (Legacy 2.6.35 set this up implicitly via gpiomux.)
+		 * Expose via interrupt-gpios ONLY, not via `interrupts = <>` +
+		 * `interrupt-parent`. The driver uses
+		 * gpiod_to_irq(devm_gpiod_get("interrupt", GPIOD_IN)) to resolve
+		 * the IRQ; only that path runs pinctrl-msm's gpio_to_irq hook
+		 * that arms the TLMM pad's per-pin edge-detect circuit. The
+		 * i2c-core `interrupts = <>` path silently pre-registers a
+		 * generic irqdomain mapping that wins on conflict and leaves
+		 * edge-detect disabled, so we omit it entirely. Sister driver
+		 * max8903_charger does the same on this SoC and its IRQ fires.
 		 */
-		interrupt-parent = <&tlmm>;
-		interrupts = <37 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
 
 		/*
@@ -4301,10 +4303,8 @@
 		wakeup-gpios = <&tlmm 141 GPIO_ACTIVE_HIGH>;
 
 		/* Interrupt GPIO - DVT/PVT uses GPIO 94 (pre-DVT: 132). See a6_0
-		 * above for why we also expose this as interrupt-gpios.
+		 * above for why we omit interrupts/interrupt-parent.
 		 */
-		interrupt-parent = <&tlmm>;
-		interrupts = <94 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
 
 		/* See a6_0 above */
