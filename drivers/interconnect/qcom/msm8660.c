@@ -39,16 +39,15 @@
 #include <dt-bindings/interconnect/qcom,msm8660.h>
 #include <dt-bindings/mfd/qcom-rpm.h>
 
+#include <linux/bitfield.h>
+#include <linux/bits.h>
 #include <linux/cleanup.h>
-#include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/interconnect-provider.h>
-#include <linux/io.h>
 #include <linux/mfd/qcom_rpm.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -87,34 +86,10 @@
  * bwsum[slave_port] = total bandwidth to that slave
  * arb[(tier-1)*nmasters + master_port] = per-master arbitration entry
  */
-#define ARB_BWMASK		0x7FFF
-#define ARB_TIERMASK		0x8000
+#define ARB_BWMASK		GENMASK(14, 0)
+#define ARB_TIERMASK		BIT(15)
 #define ARB_TIER1		1
 #define ARB_TIER2		2
-
-static const struct clk_bulk_data msm8660_afab_clocks[] = {
-	{ .id = "bus" },
-	{ .id = "bus_a" },
-	{ .id = "ebi1" },
-	{ .id = "ebi1_a" },
-};
-
-static const struct clk_bulk_data msm8660_sfab_clocks[] = {
-	{ .id = "bus" },
-	{ .id = "bus_a" },
-};
-
-static const struct clk_bulk_data msm8660_mmfab_clocks[] = {
-	{ .id = "bus" },
-	{ .id = "bus_a" },
-	{ .id = "smi" },
-	{ .id = "smi_a" },
-};
-
-static const struct clk_bulk_data msm8660_dfab_clocks[] = {
-	{ .id = "bus" },
-	{ .id = "bus_a" },
-};
 
 /**
  * struct msm8660_icc_node - MSM8660 specific interconnect nodes
@@ -156,9 +131,11 @@ struct msm8660_icc_node {
  * struct msm8660_icc_desc - Fabric descriptor
  * @nodes: array of node pointers
  * @num_nodes: number of nodes
- * @bus_clks: clock definitions
- * @num_clks: number of clocks
- * @rpm_resource: QCOM_RPM_*_FABRIC_ARB constant, or -1 for no ARB
+ * @arb_resource: QCOM_RPM_*_FABRIC_ARB constant, or -1 for no ARB
+ * @bus_clk_id: QCOM_RPM_*_FABRIC_CLK constant for this fabric's bus rate vote
+ * @extra_clk_id: secondary RPM clock resource voted in lockstep with the
+ *                fabric clock (QCOM_RPM_EBI1_CLK on AFAB, QCOM_RPM_SMI_CLK
+ *                on MMFAB), or 0 if the fabric only has one bus clock
  * @nmasters: number of master ports in this fabric (for ARB array sizing)
  * @nslaves: number of slave ports in this fabric (for bwsum array sizing)
  * @ntieredslaves: number of tiered slaves (ARB rows)
@@ -171,9 +148,9 @@ struct msm8660_icc_node {
 struct msm8660_icc_desc {
 	struct msm8660_icc_node * const *nodes;
 	size_t num_nodes;
-	const struct clk_bulk_data *bus_clks;
-	size_t num_clks;
-	int rpm_resource;
+	int arb_resource;
+	u32 bus_clk_id;
+	u32 extra_clk_id;
 	u8 nmasters;
 	u8 nslaves;
 	u8 ntieredslaves;
@@ -185,17 +162,16 @@ struct msm8660_icc_desc {
 /**
  * struct msm8660_icc_provider - MSM8660 specific interconnect provider
  * @provider: generic interconnect provider
- * @bus_clks: the clk_bulk_data table of bus clocks
- * @num_clks: the total number of clk_bulk_data entries
- * @rpm: RPM handle for fabric arbitration writes
+ * @rpm: RPM handle for fabric arbitration and bus-clock writes; inherited
+ *       from the parent qcom,rpm device's drvdata
  * @desc: fabric descriptor with RPM metadata
  * @arb: pre-allocated arbitration array (nmasters * ntieredslaves u16 entries)
  * @bwsum: pre-allocated bandwidth sum array (nslaves u16 entries)
  * @rpm_buf: pre-allocated RPM write buffer (rpm_buf_size u32 entries)
- * @rate: last clock rate applied to the fabric bus_clks, used as the
- *        single source of truth for whether the rate actually needs to
- *        be reprogrammed (per-node caching would desync when different
- *        masters update at different times)
+ * @rate: last clock rate voted to RPM for this fabric, used as the single
+ *        source of truth for whether the rate actually needs to be
+ *        re-sent (per-node caching would desync when different masters
+ *        update at different times)
  * @commit_lock: serialises msm8660_rpm_commit(). The ICC core can dispatch
  *        provider->set concurrently from different CPUs; without this lock
  *        the shared @arb / @bwsum / @rpm_buf scratch buffers would race
@@ -205,8 +181,6 @@ struct msm8660_icc_desc {
  */
 struct msm8660_icc_provider {
 	struct icc_provider provider;
-	struct clk_bulk_data *bus_clks;
-	int num_clks;
 	struct qcom_rpm *rpm;
 	const struct msm8660_icc_desc *desc;
 	u16 *arb;
@@ -297,14 +271,12 @@ static struct msm8660_icc_node dfab_mas_usb_hs;
 static struct msm8660_icc_node dfab_mas_dsps;
 
 /*
- * =========================================================================
  * APPSS Fabric nodes
  *
  * 4 masters, 4 slaves, 2 tiered slaves
  * Master ports: SMPSS_M0=0, SMPSS_M1=1, FAB_MMSS=2, FAB_SYSTEM=3
  * Slave ports:  EBI_CH0=0, SMPSS_L2=1, MMSS_FAB=2, SYSTEM_FAB=3
  * Default target: tiered slave 1 (EBI_CH0)
- * =========================================================================
  */
 static struct msm8660_icc_node mas_ampss_m0 = {
 	.name = "mas_ampss_m0",
@@ -448,9 +420,9 @@ static struct msm8660_icc_node * const msm8660_afab_nodes[] = {
 static const struct msm8660_icc_desc msm8660_afab = {
 	.nodes = msm8660_afab_nodes,
 	.num_nodes = ARRAY_SIZE(msm8660_afab_nodes),
-	.bus_clks = msm8660_afab_clocks,
-	.num_clks = ARRAY_SIZE(msm8660_afab_clocks),
-	.rpm_resource = QCOM_RPM_APPS_FABRIC_ARB,
+	.arb_resource = QCOM_RPM_APPS_FABRIC_ARB,
+	.bus_clk_id = QCOM_RPM_APPS_FABRIC_CLK,
+	.extra_clk_id = QCOM_RPM_EBI1_CLK,
 	.nmasters = 4,
 	.nslaves = 4,
 	.ntieredslaves = 2,
@@ -460,7 +432,6 @@ static const struct msm8660_icc_desc msm8660_afab = {
 };
 
 /*
- * =========================================================================
  * System Fabric nodes
  *
  * 17 masters, 9 slaves, 2 tiered slaves
@@ -468,7 +439,6 @@ static const struct msm8660_icc_desc msm8660_afab = {
  * Slave ports:  APPSS_FAB=0, SPS=1, SYSTEM_IMEM=2, SMPSS=3, MSS=4,
  *               LPASS=5, CPSS_FPB=6, SYSTEM_FPB=7, MMSS_FPB=8
  * Default target: tiered slave 1 (APPSS gateway)
- * =========================================================================
  */
 static struct msm8660_icc_node sfab_mas_appss = {
 	.name = "sfab_mas_appss",
@@ -756,9 +726,8 @@ static struct msm8660_icc_node * const msm8660_sfab_nodes[] = {
 static const struct msm8660_icc_desc msm8660_sfab = {
 	.nodes = msm8660_sfab_nodes,
 	.num_nodes = ARRAY_SIZE(msm8660_sfab_nodes),
-	.bus_clks = msm8660_sfab_clocks,
-	.num_clks = ARRAY_SIZE(msm8660_sfab_clocks),
-	.rpm_resource = QCOM_RPM_SYS_FABRIC_ARB,
+	.arb_resource = QCOM_RPM_SYS_FABRIC_ARB,
+	.bus_clk_id = QCOM_RPM_SYS_FABRIC_CLK,
 	.nmasters = 17,
 	.nslaves = 9,
 	.ntieredslaves = 2,
@@ -768,7 +737,6 @@ static const struct msm8660_icc_desc msm8660_sfab = {
 };
 
 /*
- * =========================================================================
  * MMSS Fabric nodes - Multimedia subsystem (MDP, camera, video, GPU)
  *
  * 14 masters, 4 slaves, 3 tiered slaves
@@ -781,7 +749,6 @@ static const struct msm8660_icc_desc msm8660_sfab = {
  *
  * MDP ports get TIER1 (high priority) for guaranteed display refresh.
  * All other masters get TIER2 (default priority).
- * =========================================================================
  */
 static struct msm8660_icc_node mmfab_mas_mdp_port0 = {
 	.name = "mmfab_mas_mdp_port0",
@@ -988,9 +955,9 @@ static struct msm8660_icc_node * const msm8660_mmfab_nodes[] = {
 static const struct msm8660_icc_desc msm8660_mmfab = {
 	.nodes = msm8660_mmfab_nodes,
 	.num_nodes = ARRAY_SIZE(msm8660_mmfab_nodes),
-	.bus_clks = msm8660_mmfab_clocks,
-	.num_clks = ARRAY_SIZE(msm8660_mmfab_clocks),
-	.rpm_resource = QCOM_RPM_MM_FABRIC_ARB,
+	.arb_resource = QCOM_RPM_MM_FABRIC_ARB,
+	.bus_clk_id = QCOM_RPM_MM_FABRIC_CLK,
+	.extra_clk_id = QCOM_RPM_SMI_CLK,
 	.nmasters = 14,
 	.nslaves = 4,
 	.ntieredslaves = 3,
@@ -1000,7 +967,6 @@ static const struct msm8660_icc_desc msm8660_mmfab = {
 };
 
 /*
- * =========================================================================
  * Daytona Fabric (DFAB) nodes - peripheral bus for SDCC and ADM DMA
  *
  * DFAB connects slower peripherals to SFAB via the DFAB_TO_SFAB gateway.
@@ -1010,7 +976,6 @@ static const struct msm8660_icc_desc msm8660_mmfab = {
  *
  * USB HS is included as a DFAB voter for compatibility with the legacy
  * legacy vendor kernel clock voting mechanism.
- * =========================================================================
  */
 static struct msm8660_icc_node dfab_mas_sdc1 = {
 	.name = "dfab_mas_sdc1",
@@ -1180,9 +1145,8 @@ static struct msm8660_icc_node * const msm8660_dfab_nodes[] = {
 static const struct msm8660_icc_desc msm8660_dfab = {
 	.nodes = msm8660_dfab_nodes,
 	.num_nodes = ARRAY_SIZE(msm8660_dfab_nodes),
-	.bus_clks = msm8660_dfab_clocks,
-	.num_clks = ARRAY_SIZE(msm8660_dfab_clocks),
-	.rpm_resource = -1,		/* No RPM ARB for DFAB */
+	.arb_resource = -1,		/* No RPM ARB for DFAB */
+	.bus_clk_id = QCOM_RPM_DAYTONA_FABRIC_CLK,
 	.bus_width = 8,			/* 64-bit Daytona fabric datapath */
 };
 
@@ -1194,6 +1158,9 @@ static const struct msm8660_icc_desc msm8660_dfab = {
  *
  * This matches the legacy vendor kernel msm_bus_fabric_rpm_commit() packing algorithm.
  */
+#define RPM_PAIR_LO	GENMASK(15, 0)
+#define RPM_PAIR_HI	GENMASK(31, 16)
+
 static void msm8660_pack_rpm_data(const u16 *bwsum, int nslaves,
 				  const u16 *arb, int arb_size,
 				  u32 *buf)
@@ -1202,7 +1169,8 @@ static void msm8660_pack_rpm_data(const u16 *bwsum, int nslaves,
 
 	/* Pack bwsum pairs */
 	for (i = 0; i + 1 < nslaves; i += 2) {
-		buf[index] = ((u32)bwsum[i + 1] << 16) | bwsum[i];
+		buf[index] = FIELD_PREP(RPM_PAIR_HI, bwsum[i + 1]) |
+			     FIELD_PREP(RPM_PAIR_LO, bwsum[i]);
 		index++;
 	}
 
@@ -1212,12 +1180,13 @@ static void msm8660_pack_rpm_data(const u16 *bwsum, int nslaves,
 	 * read out of bounds; pad the lone bwsum into the low half of the
 	 * word instead.
 	 */
-	if (nslaves & 1) {
+	if (nslaves & BIT(0)) {
 		if (arb_size > 0) {
-			buf[index] = ((u32)arb[0] << 16) | bwsum[i];
+			buf[index] = FIELD_PREP(RPM_PAIR_HI, arb[0]) |
+				     FIELD_PREP(RPM_PAIR_LO, bwsum[i]);
 			i = 1;
 		} else {
-			buf[index] = bwsum[i];
+			buf[index] = FIELD_PREP(RPM_PAIR_LO, bwsum[i]);
 			i = 0;
 		}
 		index++;
@@ -1227,13 +1196,14 @@ static void msm8660_pack_rpm_data(const u16 *bwsum, int nslaves,
 
 	/* Pack arb pairs */
 	for (; i + 1 < arb_size; i += 2) {
-		buf[index] = ((u32)arb[i + 1] << 16) | arb[i];
+		buf[index] = FIELD_PREP(RPM_PAIR_HI, arb[i + 1]) |
+			     FIELD_PREP(RPM_PAIR_LO, arb[i]);
 		index++;
 	}
 
 	/* Handle odd arb entry at end */
 	if (i < arb_size) {
-		buf[index] = arb[i];
+		buf[index] = FIELD_PREP(RPM_PAIR_LO, arb[i]);
 		index++;
 	}
 }
@@ -1303,11 +1273,33 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 	msm8660_pack_rpm_data(qp->bwsum, ns, qp->arb, arb_size, qp->rpm_buf);
 
 	ret = qcom_rpm_write(qp->rpm, QCOM_RPM_ACTIVE_STATE,
-			     desc->rpm_resource, qp->rpm_buf,
+			     desc->arb_resource, qp->rpm_buf,
 			     desc->rpm_buf_size);
 	if (ret)
 		dev_err_ratelimited(provider->dev,
 				    "RPM fabric ARB write failed: %d\n", ret);
+}
+
+/*
+ * Vote one fabric/EBI/SMI bus-clock rate to RPM.
+ *
+ * The clock framework's rpmcc node used to own these resources for
+ * MSM8x60, but exposing them in both rpmcc and the interconnect
+ * provider lets two writers race the same RPM resource.  This driver
+ * is now the single source of truth: each fabric writes its bus rate
+ * to the RPM ACTIVE_STATE / SLEEP_STATE entries directly, matching the
+ * units (kHz) that the legacy clk-rpm path already used.
+ */
+static int msm8660_rpm_set_bus_rate(struct qcom_rpm *rpm, u32 resource,
+				    u64 rate)
+{
+	u32 khz = DIV_ROUND_UP_ULL(rate, 1000);
+	int ret;
+
+	ret = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE, resource, &khz, 1);
+	if (ret)
+		return ret;
+	return qcom_rpm_write(rpm, QCOM_RPM_SLEEP_STATE, resource, &khz, 1);
 }
 
 /*
@@ -1334,7 +1326,7 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 	struct icc_provider *provider;
 	struct icc_node *n;
 	u64 rate = 0;
-	int ret, i;
+	int ret;
 
 	provider = src->provider;
 	qp = to_msm8660_icc_provider(provider);
@@ -1382,122 +1374,39 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 	rate = min_t(u64, rate, INT_MAX);
 
 	if (qp->rate != rate) {
-		for (i = 0; i < qp->num_clks; i++) {
-			ret = clk_set_rate(qp->bus_clks[i].clk, rate);
+		ret = msm8660_rpm_set_bus_rate(qp->rpm, qp->desc->bus_clk_id,
+					       rate);
+		if (ret) {
+			dev_err(provider->dev,
+				"RPM bus clk %u vote (%llu Hz) failed: %d\n",
+				qp->desc->bus_clk_id, rate, ret);
+			/*
+			 * Bail without updating qp->rate so the next icc_set
+			 * call retries the rate change rather than treating it
+			 * as cached-applied.
+			 */
+			return ret;
+		}
+		if (qp->desc->extra_clk_id) {
+			ret = msm8660_rpm_set_bus_rate(qp->rpm,
+						       qp->desc->extra_clk_id,
+						       rate);
 			if (ret) {
 				dev_err(provider->dev,
-					"%s clk_set_rate(%llu) error: %d\n",
-					qp->bus_clks[i].id, rate, ret);
-				/*
-				 * Bail without updating qp->rate so the next
-				 * icc_set call will retry the rate change
-				 * rather than treating it as cached-applied.
-				 */
+					"RPM bus clk %u vote (%llu Hz) failed: %d\n",
+					qp->desc->extra_clk_id, rate, ret);
 				return ret;
 			}
 		}
 		qp->rate = rate;
 	}
 
-	/* Send RPM fabric arbitration if available */
-	if (qp->rpm && qp->desc->rpm_resource >= 0) {
+	if (qp->desc->arb_resource >= 0) {
 		guard(mutex)(&qp->commit_lock);
 		msm8660_rpm_commit(qp);
 	}
 
 	return 0;
-}
-
-static int msm8660_get_bw(struct icc_node *node, u32 *avg, u32 *peak)
-{
-	*avg = 0;
-	*peak = 0;
-	return 0;
-}
-
-/*
- * devm cleanup paired with clk_bulk_prepare_enable() in probe. Registered
- * via devm_add_action_or_reset() so any subsequent probe error path
- * (including -EPROBE_DEFER from msm8660_get_rpm()) reliably releases the
- * prepare/enable reference rather than leaking it across the retry.
- */
-static void msm8660_icc_clk_release(void *data)
-{
-	struct msm8660_icc_provider *qp = data;
-
-	clk_bulk_disable_unprepare(qp->num_clks, qp->bus_clks);
-}
-
-/*
- * Look up the RPM that owns fabric arbitration writes.
- *
- * Returns NULL if the DT does not have a "qcom,rpm" phandle (in which
- * case the caller silently drops RPM ARB and runs the fabric purely
- * via clk_set_rate).
- *
- * Returns ERR_PTR(-EPROBE_DEFER) if the RPM device exists in DT but
- * its driver has not finished probing yet, or if device_link_add()
- * fails. The caller is expected to propagate this so the interconnect
- * driver gets retried once the RPM is ready.
- *
- * On success returns the qcom_rpm handle and pins the RPM device
- * lifetime to ours via a consumer-supplier device link, so the
- * devres-allocated qcom_rpm cannot be freed while we still hold a
- * pointer to it.
- */
-static struct qcom_rpm *msm8660_get_rpm(struct device *dev)
-{
-	struct device_node *rpm_np;
-	struct platform_device *rpm_pdev;
-	struct device_link *link;
-	struct qcom_rpm *rpm;
-
-	rpm_np = of_parse_phandle(dev->of_node, "qcom,rpm", 0);
-	if (!rpm_np) {
-		dev_dbg(dev, "no qcom,rpm phandle, RPM ARB disabled\n");
-		return NULL;
-	}
-
-	rpm_pdev = of_find_device_by_node(rpm_np);
-	of_node_put(rpm_np);
-	if (!rpm_pdev)
-		return dev_err_ptr_probe(dev, -EPROBE_DEFER,
-					 "RPM device not found yet\n");
-
-	/*
-	 * Pin the supplier BEFORE reading its drvdata. The device link
-	 * (MANAGED, the default state) prevents the RPM driver from being
-	 * unbound while we hold the link, which closes the window where a
-	 * concurrent unbind+rebind could free the qcom_rpm pointer between
-	 * dev_get_drvdata() and the link being established. If the link
-	 * cannot be added (e.g. supplier is in the process of being
-	 * removed) we defer and retry.
-	 */
-	link = device_link_add(dev, &rpm_pdev->dev,
-			       DL_FLAG_AUTOREMOVE_CONSUMER);
-	put_device(&rpm_pdev->dev);
-	if (!link)
-		return dev_err_ptr_probe(dev, -EPROBE_DEFER,
-					 "failed to add device link to RPM\n");
-
-	/*
-	 * Safe to read drvdata now: the device link pins the supplier so
-	 * it cannot be unbound until our consumer (this interconnect
-	 * provider) is unbound first.
-	 *
-	 * On the deferred-probe path below we don't (and must not) call
-	 * device_link_remove(): the link is MANAGED with
-	 * DL_FLAG_AUTOREMOVE_CONSUMER, so the driver core releases its
-	 * reference automatically when our probe returns the error and the
-	 * consumer device is unbound. A manual remove would drop an extra
-	 * kref on the link kobject and risk a use-after-free.
-	 */
-	rpm = dev_get_drvdata(&rpm_pdev->dev);
-	if (!rpm)
-		return dev_err_ptr_probe(dev, -EPROBE_DEFER,
-					 "RPM not ready\n");
-
-	return rpm;
 }
 
 /*
@@ -1554,95 +1463,49 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	data->num_nodes = num_nodes;
 
-	qp->bus_clks = devm_kmemdup(dev, desc->bus_clks,
-				    desc->num_clks * sizeof(*desc->bus_clks),
-				    GFP_KERNEL);
-	if (!qp->bus_clks)
-		return -ENOMEM;
-
-	qp->num_clks = desc->num_clks;
+	qp->desc = desc;
 
 	/*
-	 * Per-clock -ENOENT is silently masked to a NULL handle by
-	 * clk_bulk_get_optional(); clk_*() then no-op on those entries.
-	 * The aggregate return is therefore only non-zero on real errors
-	 * (most commonly -EPROBE_DEFER while the mmcc-msm8660 clock
-	 * controller is still binding); propagate them.
+	 * The interconnect provider is a child of the qcom,rpm DT node,
+	 * so the RPM driver always probes first and stores its struct
+	 * qcom_rpm in the parent's drvdata.  The driver core wires the
+	 * parent/child relationship and tracks the supplier link for us,
+	 * so we just consume the handle here.
 	 */
-	ret = devm_clk_bulk_get_optional(dev, qp->num_clks, qp->bus_clks);
-	if (ret)
-		return ret;
+	qp->rpm = dev_get_drvdata(dev->parent);
+	if (!qp->rpm)
+		return dev_err_probe(dev, -ENODEV,
+				     "parent RPM device has no drvdata\n");
 
-	if (qp->num_clks) {
-		ret = clk_bulk_prepare_enable(qp->num_clks, qp->bus_clks);
-		if (ret) {
-			dev_warn(dev, "Failed to enable bus clocks: %d\n", ret);
-			qp->num_clks = 0;
-		} else {
-			/*
-			 * Register the cleanup right after a successful
-			 * prepare_enable so any later -EPROBE_DEFER or other
-			 * probe error path (e.g. msm8660_get_rpm failing
-			 * with -EPROBE_DEFER below) does not leak a clock
-			 * prepare/enable reference across the retry.
-			 */
-			ret = devm_add_action_or_reset(dev,
-				msm8660_icc_clk_release, qp);
-			if (ret)
-				return ret;
-		}
-	}
+	if (desc->arb_resource >= 0) {
+		int arb_size = desc->nmasters * desc->ntieredslaves;
 
-	/* Set up RPM fabric arbitration */
-	qp->desc = desc;
-	if (desc->rpm_resource >= 0) {
-		qp->rpm = msm8660_get_rpm(dev);
-		if (IS_ERR(qp->rpm))
-			return PTR_ERR(qp->rpm);
-		if (qp->rpm) {
-			int arb_size = desc->nmasters * desc->ntieredslaves;
+		qp->bwsum = devm_kcalloc(dev, desc->nslaves,
+					 sizeof(u16), GFP_KERNEL);
+		qp->arb = devm_kcalloc(dev, arb_size,
+				       sizeof(u16), GFP_KERNEL);
+		qp->rpm_buf = devm_kcalloc(dev, desc->rpm_buf_size,
+					   sizeof(u32), GFP_KERNEL);
+		if (!qp->bwsum || !qp->arb || !qp->rpm_buf)
+			return -ENOMEM;
 
-			qp->bwsum = devm_kcalloc(dev, desc->nslaves,
-						 sizeof(u16), GFP_KERNEL);
-			qp->arb = devm_kcalloc(dev, arb_size,
-					       sizeof(u16), GFP_KERNEL);
-			qp->rpm_buf = devm_kcalloc(dev, desc->rpm_buf_size,
-						   sizeof(u32), GFP_KERNEL);
-			if (!qp->bwsum || !qp->arb || !qp->rpm_buf) {
-				dev_warn(dev, "RPM buffer alloc failed, ARB disabled\n");
-				qp->rpm = NULL;
-			} else {
-				int rc;
-
-				dev_info(dev, "RPM fabric ARB enabled (%d masters, %d slaves, %d tiered)\n",
-					 desc->nmasters, desc->nslaves,
-					 desc->ntieredslaves);
-
-				/*
-				 * One-shot sleep-context vote of zero bandwidth.
-				 * Without an explicit SLEEP_STATE write, RPM has no
-				 * fabric bandwidth target for deep-sleep and may
-				 * keep the active vote applied indefinitely,
-				 * preventing DDR from dropping its rate when CPUs
-				 * power-collapse. The buffer is devm_kcalloc'd so
-				 * it is all-zero at this point — written before
-				 * any consumer can drive an active vote that would
-				 * dirty it.
-				 *
-				 * msm8660_rpm_commit() writes ACTIVE_STATE only;
-				 * SLEEP_STATE remains zero for the provider's
-				 * lifetime, so this vote does not need refreshing.
-				 */
-				rc = qcom_rpm_write(qp->rpm,
-						    QCOM_RPM_SLEEP_STATE,
-						    desc->rpm_resource,
-						    qp->rpm_buf,
-						    desc->rpm_buf_size);
-				if (rc)
-					dev_warn(dev, "RPM fabric sleep vote failed: %d\n",
-						 rc);
-			}
-		}
+		/*
+		 * One-shot sleep-context vote of zero bandwidth.  Without
+		 * an explicit SLEEP_STATE write, RPM has no fabric
+		 * bandwidth target for deep-sleep and may keep the active
+		 * vote applied indefinitely, preventing DDR from dropping
+		 * its rate when CPUs power-collapse.  The buffer is
+		 * devm_kcalloc'd so it is all-zero at this point -- written
+		 * before any consumer can drive an active vote that would
+		 * dirty it.  msm8660_rpm_commit() writes ACTIVE_STATE only;
+		 * SLEEP_STATE remains zero for the provider's lifetime, so
+		 * this vote does not need refreshing.
+		 */
+		ret = qcom_rpm_write(qp->rpm, QCOM_RPM_SLEEP_STATE,
+				     desc->arb_resource, qp->rpm_buf,
+				     desc->rpm_buf_size);
+		if (ret)
+			dev_warn(dev, "RPM fabric sleep vote failed: %d\n", ret);
 	}
 
 	provider = &qp->provider;
@@ -1651,7 +1514,6 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	provider->aggregate = msm8660_icc_aggregate;
 	provider->xlate = of_icc_xlate_onecell;
 	provider->data = data;
-	provider->get_bw = msm8660_get_bw;
 
 	icc_provider_init(provider);
 
@@ -1728,13 +1590,6 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 err_remove_nodes:
 	icc_nodes_remove(provider);
 	msm8660_clear_node_cache(qnodes, num_nodes);
-	/*
-	 * Do NOT call clk_bulk_disable_unprepare() here: the devm cleanup
-	 * action registered after clk_bulk_prepare_enable() will run
-	 * automatically when probe returns an error and devres unwinds.
-	 * Calling it manually would double-unprepare and corrupt the
-	 * clock-framework refcount.
-	 */
 	return ret;
 }
 
@@ -1814,4 +1669,4 @@ core_initcall(msm8660_noc_driver_init);
  */
 
 MODULE_DESCRIPTION("Qualcomm MSM8x60 interconnect driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
