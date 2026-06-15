@@ -88,6 +88,11 @@ patternProperties:
     additionalProperties: true
     description: RPM sleep-set regulator configuration (MSM8x60).
 
+  "^interconnect-(afab|sfab|mmfab|dfab)$":
+    type: object
+    $ref: /schemas/interconnect/qcom,msm8660.yaml#
+    unevaluatedProperties: false
+
 required:
   - compatible
   - reg
