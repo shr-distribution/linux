@@ -22,6 +22,8 @@
 #include "trace.h"
 
 #include <linux/completion.h>
+#include <linux/kthread.h>
+#include <linux/sched.h>
 #include <linux/unaligned.h>
 
 #define CALC_TXRX_PADDED_LEN(dev, len)  (__ALIGN_MASK((len), (dev)->block_mask))
@@ -1905,14 +1907,184 @@ fail_rx:
 	return status;
 }
 
+/*
+ * Phase 3 helper -- worker-thread bound on the rx_worker_pktq.
+ *
+ * The worker walks the FIFO under the spinlock, snapshots a small batch
+ * of packets, releases the lock, and runs endpoint->ep_cb.rx on each.
+ * Doing the dequeue in batches limits lock churn on heavy RX while
+ * keeping per-packet ordering intact (single drain thread, FIFO list).
+ *
+ * The aggregation reorder buffer + netif_rx are reached transitively
+ * through the ep_cb.rx hook (ath6kl_rx in txrx.c), so behaviourally
+ * this is identical to inline delivery -- only the calling context
+ * changes.
+ */
+#define ATH6KL_RX_WORKER_BATCH 16
+
+static int ath6kl_rx_worker_fn(void *arg)
+{
+	struct htc_target *target = arg;
+	struct htc_packet *batch[ATH6KL_RX_WORKER_BATCH];
+	struct htc_packet *packet;
+	int i, n;
+
+	while (!kthread_should_stop()) {
+		wait_event_interruptible(target->rx_worker_waitq,
+					 !list_empty(&target->rx_worker_pktq) ||
+					 kthread_should_stop());
+
+		for (;;) {
+			spin_lock_bh(&target->rx_worker_lock);
+			n = 0;
+			while (n < ATH6KL_RX_WORKER_BATCH &&
+			       !list_empty(&target->rx_worker_pktq)) {
+				packet = list_first_entry(&target->rx_worker_pktq,
+							  struct htc_packet,
+							  list);
+				list_del(&packet->list);
+				target->rx_worker_qlen--;
+				batch[n++] = packet;
+			}
+			spin_unlock_bh(&target->rx_worker_lock);
+
+			if (!n)
+				break;
+
+			for (i = 0; i < n; i++) {
+				struct htc_endpoint *ep;
+
+				packet = batch[i];
+				ep = &target->endpoint[packet->endpoint];
+
+				ath6kl_dbg(ATH6KL_DBG_HTC,
+					   "htc rx worker ep %d packet 0x%p\n",
+					   ep->eid, packet);
+
+				ep->ep_cb.rx(target, packet);
+			}
+		}
+	}
+
+	/*
+	 * Drain any stragglers under the lock and run their callbacks.
+	 * kthread_stop guarantees no new enqueuers can race here because
+	 * ath6kl_htc_mbox_cleanup orders rx_worker_stopping=true before
+	 * the kthread_stop call.
+	 */
+	spin_lock_bh(&target->rx_worker_lock);
+	while (!list_empty(&target->rx_worker_pktq)) {
+		struct htc_endpoint *ep;
+
+		packet = list_first_entry(&target->rx_worker_pktq,
+					  struct htc_packet, list);
+		list_del(&packet->list);
+		target->rx_worker_qlen--;
+		spin_unlock_bh(&target->rx_worker_lock);
+
+		ep = &target->endpoint[packet->endpoint];
+		ep->ep_cb.rx(target, packet);
+
+		spin_lock_bh(&target->rx_worker_lock);
+	}
+	spin_unlock_bh(&target->rx_worker_lock);
+
+	return 0;
+}
+
+static int ath6kl_rx_worker_start(struct htc_target *target)
+{
+	if (!ath6kl_rx_worker)
+		return 0;
+
+	INIT_LIST_HEAD(&target->rx_worker_pktq);
+	spin_lock_init(&target->rx_worker_lock);
+	init_waitqueue_head(&target->rx_worker_waitq);
+	target->rx_worker_qlen = 0;
+	target->rx_worker_qlen_max = 64;
+	target->rx_worker_stopping = false;
+
+	target->rx_worker_thread = kthread_run(ath6kl_rx_worker_fn, target,
+					       "ath6kl_rx");
+	if (IS_ERR(target->rx_worker_thread)) {
+		ath6kl_err("failed to spawn rx worker: %ld\n",
+			   PTR_ERR(target->rx_worker_thread));
+		target->rx_worker_thread = NULL;
+		target->rx_worker_enabled = false;
+		return -ENOMEM;
+	}
+
+	target->rx_worker_enabled = true;
+	ath6kl_info("rx worker thread spawned, qlen_max=%u\n",
+		    target->rx_worker_qlen_max);
+	return 0;
+}
+
+static void ath6kl_rx_worker_stop(struct htc_target *target)
+{
+	if (!target->rx_worker_thread)
+		return;
+
+	/*
+	 * Block any further enqueues from ath6kl_htc_rx_complete.  The flag
+	 * is read under rx_worker_lock so callers see a consistent view --
+	 * once stopping is set, enqueuers fall back to inline delivery and
+	 * the queue cannot grow.
+	 */
+	spin_lock_bh(&target->rx_worker_lock);
+	target->rx_worker_stopping = true;
+	target->rx_worker_enabled = false;
+	spin_unlock_bh(&target->rx_worker_lock);
+
+	kthread_stop(target->rx_worker_thread);
+	target->rx_worker_thread = NULL;
+}
+
 static void ath6kl_htc_rx_complete(struct htc_endpoint *endpoint,
 				   struct htc_packet *packet)
 {
-		ath6kl_dbg(ATH6KL_DBG_HTC,
-			   "htc rx complete ep %d packet 0x%p\n",
-			   endpoint->eid, packet);
+	struct htc_target *target = endpoint->target;
 
-		endpoint->ep_cb.rx(endpoint->target, packet);
+	ath6kl_dbg(ATH6KL_DBG_HTC,
+		   "htc rx complete ep %d packet 0x%p\n",
+		   endpoint->eid, packet);
+
+	/*
+	 * Phase 3 deferred delivery: enqueue to the worker thread when
+	 * the knob is on AND the queue has headroom AND the worker is not
+	 * tearing down.  On any of those failing, fall through to the
+	 * historical inline path -- callers (htc_proc_rx_packets, the
+	 * recv loop) are already on a kernel context that can safely run
+	 * netif_rx, so inline is always legal.
+	 */
+	if (target->rx_worker_enabled) {
+		bool deferred = false;
+
+		spin_lock_bh(&target->rx_worker_lock);
+		if (!target->rx_worker_stopping &&
+		    target->rx_worker_qlen < target->rx_worker_qlen_max) {
+			list_add_tail(&packet->list, &target->rx_worker_pktq);
+			target->rx_worker_qlen++;
+			deferred = true;
+		}
+		spin_unlock_bh(&target->rx_worker_lock);
+
+		if (deferred) {
+			wake_up(&target->rx_worker_waitq);
+			return;
+		}
+
+		/*
+		 * Over the cap -- treat as transient back-pressure and
+		 * deliver inline.  The worker will catch up on its own
+		 * once the IRQ thread idles.
+		 */
+		ath6kl_dbg(ATH6KL_DBG_HTC,
+			   "htc rx worker queue full, inline ep %d\n",
+			   endpoint->eid);
+	}
+
+	endpoint->ep_cb.rx(target, packet);
 }
 
 /*
@@ -2964,6 +3136,13 @@ static void *ath6kl_htc_mbox_create(struct ath6kl *ar)
 	if (status)
 		goto err_htc_cleanup;
 
+	/*
+	 * Phase 3: spawn the deferred-RX worker thread.  Failure here is
+	 * not fatal -- the cleanup path tolerates rx_worker_thread = NULL
+	 * and the rx path checks rx_worker_enabled before enqueueing.
+	 */
+	ath6kl_rx_worker_start(target);
+
 	return target;
 
 err_htc_cleanup:
@@ -2976,6 +3155,13 @@ err_htc_cleanup:
 static void ath6kl_htc_mbox_cleanup(struct htc_target *target)
 {
 	struct htc_packet *packet, *tmp_packet;
+
+	/*
+	 * Phase 3: stop the worker BEFORE tearing down endpoint state
+	 * because the drain path on the worker invokes ep_cb.rx, which
+	 * touches the same endpoint structures.
+	 */
+	ath6kl_rx_worker_stop(target);
 
 	ath6kl_hif_cleanup_scatter(target->dev->ar);
 

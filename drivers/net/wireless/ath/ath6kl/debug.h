@@ -54,6 +54,7 @@ extern unsigned int ath6kl_prefer_rec_power;
 extern unsigned int ath6kl_rec_power_pspoll;
 extern int ath6kl_bg_scan_period_override;
 extern unsigned int ath6kl_rx_async;
+extern unsigned int ath6kl_rx_worker;
 __printf(2, 3) void ath6kl_printk(const char *level, const char *fmt, ...);
 __printf(1, 2) void ath6kl_info(const char *fmt, ...);
 __printf(1, 2) void ath6kl_err(const char *fmt, ...);

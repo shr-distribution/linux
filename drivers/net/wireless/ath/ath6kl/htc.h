@@ -634,6 +634,34 @@ struct htc_target {
 		bool ctrl_response_valid;
 		struct htc_pipe_txcredit_alloc txcredit_alloc[ENDPOINT_MAX];
 	} pipe;
+
+	/*
+	 * Phase 3 of the async-RX refactor: deferred per-packet RX delivery.
+	 *
+	 * When the module param ath6kl_rx_worker is set, ath6kl_htc_rx_complete
+	 * enqueues finished packets here instead of invoking endpoint->ep_cb.rx
+	 * inline.  The dedicated worker thread drains rx_worker_pktq and runs
+	 * the per-packet callback (which in turn invokes ath6kl_rx ->
+	 * aggregation reorder -> netif_rx).  This lets the IRQ-handler thread
+	 * (dev_async_wq) immediately submit the next scat_req while the prior
+	 * bundle is still being delivered up the net stack, overlapping the
+	 * SDIO bus with the network stack -- which is what legacy ar6000 does
+	 * via async-RX + completion callbacks.
+	 *
+	 * rx_worker_lock protects rx_worker_pktq AND rx_worker_qlen.  The
+	 * thread is created in ath6kl_htc_mbox_create and torn down in
+	 * ath6kl_htc_mbox_cleanup.  rx_worker_enabled is captured at startup
+	 * from the module param; flipping the param at runtime takes effect
+	 * on the next module reload (kept simple to avoid mid-stream tearing).
+	 */
+	struct task_struct *rx_worker_thread;
+	struct list_head rx_worker_pktq;
+	spinlock_t rx_worker_lock;
+	wait_queue_head_t rx_worker_waitq;
+	unsigned int rx_worker_qlen;
+	unsigned int rx_worker_qlen_max;
+	bool rx_worker_enabled;
+	bool rx_worker_stopping;
 };
 
 int ath6kl_htc_rxmsg_pending_handler(struct htc_target *target,
