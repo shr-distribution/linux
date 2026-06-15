@@ -219,20 +219,13 @@ static int a6_battery_get_property(struct power_supply *psy,
 	guard(mutex)(&state->dev_mutex);
 
 	/*
-	 * Assert wakeup_gpio around the I2C transactions. The A6 firmware
-	 * can NAK accesses while in low-power mode, matching the same
-	 * hardware contract a6_init_state() / a6_irq_work_handler() honor.
-	 *
-	 * Give the MSP430 a chance to exit LPM3/4 before driving the bus:
-	 * the chip NAKs the address phase if the I2C transfer fires within
-	 * microseconds of the wake edge. ~1 ms is enough in practice (the
-	 * secondary A6 on multi-cell TouchPads sleeps deepest and was the
-	 * one observed NAKing without this settle).
+	 * No per-cycle wakeup_gpio toggle: a6_init_state() holds wake HIGH
+	 * for the device lifetime once it succeeds. The MSP430 is always
+	 * awake while the driver owns it, so the assert/settle/release
+	 * dance we used to do here would (a) be pointless and (b) drop the
+	 * chip back to sleep, silencing the IRQ output for the next event.
 	 */
-	gpiod_set_value_cansleep(state->wakeup_gpio, 1);
-	usleep_range(1000, 2000);
 	ret = a6_battery_get_property_locked(state, psp, val);
-	gpiod_set_value_cansleep(state->wakeup_gpio, 0);
 	return ret;
 }
 
