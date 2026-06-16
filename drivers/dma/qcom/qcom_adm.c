@@ -1456,49 +1456,65 @@ static void adm_start_dma(struct adm_chan *achan)
 			 * per-channel ready_commands[] list and lets the next
 			 * RSLT_VALID IRQ drain it -- it never writes CMD_PTR
 			 * into a channel that has not signalled readiness.
-			 * The mainline shortcut produces the canonical
-			 * SDCC drain-stall signature
+			 * The mainline shortcut produces the canonical SDCC
+			 * drain-stall signature
 			 *   FLUSH STATE0=0x8000c003 STATE5=0x00000003
 			 * (project_adm_flush_state_decode_2026_06_14):
 			 * a CMD_PTR write into a not-ready channel leaves
 			 * two partial chains in the pipeline and the next
 			 * FLUSH IRQ comes back with STATE5 = drain-stage-3.
 			 *
-			 * Mirror legacy semantics by failing fast instead.
-			 * Mark the channel error so adm_tx_status() reports
-			 * DMA_ERROR, complete the descriptor (mmci-pl18x's
-			 * data IRQ path will see -EIO and the MMC block
-			 * layer will retry the request), clear curr_txd,
-			 * and never touch CMD_PTR on this not-ready channel.
-			 * The watchdog only arms after a successful CMD_PTR
-			 * write, so there is nothing to disarm here.
+			 * Mirror legacy semantics by NOT writing CMD_PTR --
+			 * just bail out of the start path quietly.  We
+			 * cannot call vchan_cookie_complete() here: by this
+			 * point exec_func() has already programmed SDCC's
+			 * DATACTRL / DATATIMER / CMD registers (line ~1381),
+			 * so SDCC is now actively waiting for ADM to drive
+			 * the data path.  Completing the cookie immediately
+			 * would tell mmci-pl18x "DMA done" while no bytes
+			 * have actually moved, and mmci_qcom_dma_complete
+			 * would read a clean MMCISTATUS, treat the transfer
+			 * as success, and hand zero/short data up to the MMC
+			 * block layer (and ultimately to LVM / ext4 /
+			 * userspace).
 			 *
-			 * The retry from the upper layer will re-enter
-			 * adm_start_dma; whether the channel has recovered
-			 * by then is up to the hardware.  On a transient
-			 * arbitration glitch (the most common cause of this
-			 * branch) the channel becomes ready within tens of
-			 * microseconds and the retry succeeds; on a genuine
-			 * hardware wedge the retries keep firing until the
-			 * MMC layer gives up, which is still strictly better
-			 * than writing CMD_PTR and converting a transient
-			 * problem into a permanent channel wedge.
+			 * Letting SDCC's internal data-timer expire instead
+			 * produces the natural DATATIMEOUT data-IRQ on
+			 * mmci-pl18x: that path calls mmci_dma_error() ->
+			 * mmci_dmae_error() -> dmaengine_terminate_all() ->
+			 * adm_terminate_all(), which writes the graceful
+			 * FLUSH that the ADM channel pipeline understands as
+			 * a clean teardown.  The FLUSH RSLT IRQ then fires
+			 * adm_dma_irq()'s normal completion path with the
+			 * curr_txd still set, the consumer callback runs
+			 * with status_err latched, mmci marks data->error,
+			 * the MSM8660-variant reset_control assert/deassert
+			 * fires inside mmci_data_irq, and the MMC block
+			 * layer retries.  This is the same recovery path
+			 * legacy webOS got for free because legacy
+			 * msm_sdcc.c's reset_and_restore() ran on every
+			 * DMOV_RSLT_FLUSH.
+			 *
+			 * Leave curr_txd / submit_lock state alone so the
+			 * eventual terminate_all path sees the descriptor it
+			 * has to flush.  The watchdog deliberately is NOT
+			 * armed in this branch -- arming it would race the
+			 * mmci-side DATATIMEOUT and produce a double-
+			 * completion attempt on the same descriptor.  mmci's
+			 * own DATATIMEOUT timer is the only thing that needs
+			 * to fire to recover.
 			 */
 			achan->cmd_ptr_not_rdy_count++;
 			if (!achan->cmd_ptr_not_rdy_logged) {
 				achan->cmd_ptr_not_rdy_logged = 1;
 				dev_warn(adev->dev,
-					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set after %d us busy-wait -- failing fast (no CMD_PTR write)\n",
+					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set after %d us busy-wait -- not writing CMD_PTR, mmci DATATIMEOUT will recover\n",
 					achan->id, status, us);
 			}
 
 			if (need_submit_lock)
 				spin_unlock_irqrestore(&adev->submit_lock[lock_idx],
 						       submit_flags);
-
-			achan->error = 1;
-			achan->curr_txd = NULL;
-			vchan_cookie_complete(&async_desc->vd);
 			return;
 		}
 	}
