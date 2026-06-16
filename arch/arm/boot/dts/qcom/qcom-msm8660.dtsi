@@ -725,8 +725,20 @@
 			#reset-cells = <1>;
 			#power-domain-cells = <1>;
 			reg = <0x04000000 0x1000>;
-			clocks = <&pxo_board>, <&gcc PLL8_VOTE>, <&rpmcc RPM_MM_FABRIC_CLK>;
-			clock-names = "pxo", "pll8_vote", "mmfab";
+			/*
+			 * mmcc-msm8660 only consumes "pxo" and "pll8_vote"
+			 * in driver code (see parent_data tables in
+			 * drivers/clk/qcom/mmcc-msm8660.c).  Earlier DT
+			 * carried a stale third "mmfab" entry pointing at
+			 * <&rpmcc RPM_MM_FABRIC_CLK>; that resource id has
+			 * been removed from the rpmcc table (v5 hand-off
+			 * to the interconnect driver, which owns the MM
+			 * fabric clock vote directly) so the reference no
+			 * longer resolves and the entry was unused even
+			 * when it did.  Drop both the phandle and the name.
+			 */
+			clocks = <&pxo_board>, <&gcc PLL8_VOTE>;
+			clock-names = "pxo", "pll8_vote";
 		};
 
 		/*
