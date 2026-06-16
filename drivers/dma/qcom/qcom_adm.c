@@ -1472,67 +1472,65 @@ static void adm_start_dma(struct adm_chan *achan)
 
 		if (!(status & ADM_CH_STATUS_CMD_PTR_RDY)) {
 			/*
-			 * The earlier code path here fell through and wrote
-			 * CMD_PTR anyway.  Legacy webOS arch/arm/mach-msm/
-			 * dma.c msm_dmov_enqueue_cmd_ext() never does that:
-			 * if CMD_PTR_RDY is clear it puts the request onto a
-			 * per-channel ready_commands[] list and lets the next
-			 * RSLT_VALID IRQ drain it -- it never writes CMD_PTR
+			 * Writing CMD_PTR into a not-ready channel leaves
+			 * the pipeline with two partial chains and the next
+			 * FLUSH IRQ returns the canonical SDCC drain-stall
+			 * signature FLUSH STATE0=0x8000c003 STATE5=0x00000003
+			 * (project_adm_flush_state_decode_2026_06_14).
+			 * Mirror legacy webOS arch/arm/mach-msm/dma.c
+			 * msm_dmov_enqueue_cmd_ext() and NOT write CMD_PTR
 			 * into a channel that has not signalled readiness.
-			 * The mainline shortcut produces the canonical SDCC
-			 * drain-stall signature
-			 *   FLUSH STATE0=0x8000c003 STATE5=0x00000003
-			 * (project_adm_flush_state_decode_2026_06_14):
-			 * a CMD_PTR write into a not-ready channel leaves
-			 * two partial chains in the pipeline and the next
-			 * FLUSH IRQ comes back with STATE5 = drain-stage-3.
 			 *
-			 * Mirror legacy semantics by NOT writing CMD_PTR --
-			 * just bail out of the start path quietly.  We
-			 * cannot call vchan_cookie_complete() here: by this
-			 * point exec_func() has already programmed SDCC's
-			 * DATACTRL / DATATIMER / CMD registers (line ~1381),
-			 * so SDCC is now actively waiting for ADM to drive
-			 * the data path.  Completing the cookie immediately
-			 * would tell mmci-pl18x "DMA done" while no bytes
-			 * have actually moved, and mmci_qcom_dma_complete
-			 * would read a clean MMCISTATUS, treat the transfer
-			 * as success, and hand zero/short data up to the MMC
-			 * block layer (and ultimately to LVM / ext4 /
-			 * userspace).
+			 * Two sub-cases on the bail-out:
 			 *
-			 * Letting SDCC's internal data-timer expire instead
-			 * produces the natural DATATIMEOUT data-IRQ on
-			 * mmci-pl18x: that path calls mmci_dma_error() ->
-			 * mmci_dmae_error() -> dmaengine_terminate_all() ->
-			 * adm_terminate_all(), which writes the graceful
-			 * FLUSH that the ADM channel pipeline understands as
-			 * a clean teardown.  The FLUSH RSLT IRQ then fires
-			 * adm_dma_irq()'s normal completion path with the
-			 * curr_txd still set, the consumer callback runs
-			 * with status_err latched, mmci marks data->error,
-			 * the MSM8660-variant reset_control assert/deassert
-			 * fires inside mmci_data_irq, and the MMC block
-			 * layer retries.  This is the same recovery path
-			 * legacy webOS got for free because legacy
-			 * msm_sdcc.c's reset_and_restore() ran on every
-			 * DMOV_RSLT_FLUSH.
+			 *  - achan->error_cookie set -- channel is in known-
+			 *    dead state (the err-result IRQ stashed a prior
+			 *    cookie and the channel cannot accept commands,
+			 *    per legacy arch/arm/mach-msm/dma.c:645).  Don't
+			 *    strand the descriptor: stash this cookie too,
+			 *    clear curr_txd, complete via vchan_cookie_complete
+			 *    so the consumer's callback fires from the vchan
+			 *    tasklet (softirq) and reads DMA_ERROR via
+			 *    adm_tx_status().  mmci_qcom_dma_complete()'s
+			 *    DMA_ERROR path sets data->error = -EIO, runs
+			 *    mmci_stop_data() (DATACTRL = 0, unpriming the
+			 *    SDCC half-armed by exec_func()) and ends the
+			 *    request.  The block layer's retry counter
+			 *    exhausts and -EIO surfaces to userspace cleanly.
 			 *
-			 * Leave curr_txd / submit_lock state alone so the
-			 * eventual terminate_all path sees the descriptor it
-			 * has to flush.  The watchdog deliberately is NOT
-			 * armed in this branch -- arming it would race the
-			 * mmci-side DATATIMEOUT and produce a double-
-			 * completion attempt on the same descriptor.  mmci's
-			 * own DATATIMEOUT timer is the only thing that needs
-			 * to fire to recover.
+			 *  - achan->error_cookie clear -- channel is healthy
+			 *    but transiently busy (RSLT_VALID race window).
+			 *    Leave curr_txd set and rely on the existing
+			 *    consumer-side DATATIMEOUT recovery -- mmci's
+			 *    own data timer will fire DATATIMEOUT, drive
+			 *    mmci_dma_error() -> dmaengine_terminate_all()
+			 *    -> graceful FLUSH, and the FLUSH RSLT IRQ runs
+			 *    adm_dma_irq()'s normal completion path.
+			 *    Watchdog stays disarmed in this branch to avoid
+			 *    racing the mmci-side recovery.
 			 */
 			achan->cmd_ptr_not_rdy_count++;
 			if (!achan->cmd_ptr_not_rdy_logged) {
 				achan->cmd_ptr_not_rdy_logged = 1;
 				dev_warn(adev->dev,
-					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set after %d us busy-wait -- not writing CMD_PTR, mmci DATATIMEOUT will recover\n",
+					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set after %d us busy-wait\n",
 					achan->id, status, us);
+			}
+
+			if (achan->error_cookie) {
+				/*
+				 * Dead-channel fast-path: complete the
+				 * descriptor with error.  vc.lock is held
+				 * by the caller (lockdep-asserted at the
+				 * top of adm_start_dma) so vchan_cookie_
+				 * complete()'s lockdep assertion is
+				 * satisfied.  curr_txd cleared first so
+				 * adm_issue_pending()'s !curr_txd test
+				 * lets the next submission through.
+				 */
+				achan->error_cookie = async_desc->vd.tx.cookie;
+				achan->curr_txd = NULL;
+				vchan_cookie_complete(&async_desc->vd);
 			}
 
 			if (need_submit_lock)
