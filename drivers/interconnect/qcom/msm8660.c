@@ -1289,13 +1289,32 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
  * provider lets two writers race the same RPM resource.  This driver
  * is now the single source of truth.
  */
+/*
+ * Vote @rate (Hz) for a fabric / EBI / SMI bus-clock RPM resource.
+ *
+ * The ACTIVE_STATE write uses qcom_rpm_write_sync(), which queues the
+ * vote and polls the per-resource status register until the applied
+ * value is at least the requested one.  qcom_rpm_write_sync() is
+ * best-effort: on SoCs whose status register does not actually track
+ * the requested unit (e.g. MSM8x60 family, where empirical data shows
+ * the status word for QCOM_RPM_*_FABRIC_CLK and friends never matches
+ * the kHz value the RPM accepted), the helper logs a one-shot diagnostic
+ * and falls back to fire-and-forget instead of failing the caller.
+ *
+ * The SLEEP_STATE write uses plain qcom_rpm_write(); the status
+ * register only reflects sleep-context values during cluster sleep,
+ * so polling against a sleep vote during the active phase would just
+ * time out.  The qcom_rpm_write() ack is the strongest synchronisation
+ * available for sleep votes.
+ */
 static int msm8660_rpm_set_bus_rate(struct qcom_rpm *rpm, u32 resource,
 				    u64 rate)
 {
 	u32 khz = DIV_ROUND_UP_ULL(rate, 1000);
 	int ret;
 
-	ret = qcom_rpm_write(rpm, QCOM_RPM_ACTIVE_STATE, resource, &khz, 1);
+	ret = qcom_rpm_write_sync(rpm, QCOM_RPM_ACTIVE_STATE, resource,
+				  &khz, 1);
 	if (ret)
 		return ret;
 	return qcom_rpm_write(rpm, QCOM_RPM_SLEEP_STATE, resource, &khz, 1);

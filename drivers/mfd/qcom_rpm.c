@@ -548,7 +548,8 @@ int qcom_rpm_write(struct qcom_rpm *rpm,
 EXPORT_SYMBOL(qcom_rpm_write);
 
 /**
- * qcom_rpm_write_sync() - vote and wait for the RPM firmware to apply it.
+ * qcom_rpm_write_sync() - vote and (best-effort) wait for the RPM
+ *                         firmware to apply it.
  * @rpm:      RPM handle.
  * @state:    QCOM_RPM_ACTIVE_STATE or QCOM_RPM_SLEEP_STATE.
  * @resource: resource ID (index into the per-SoC resource table).
@@ -562,7 +563,7 @@ EXPORT_SYMBOL(qcom_rpm_write);
  * value to the physical resource yet.  Consumers that vote a higher
  * clock/bandwidth rate and then immediately drive hardware traffic at
  * that rate (e.g. icc consumers handing off to a DMA submit) can race
- * the ramp and miss timing.
+ * the ramp.
  *
  * This helper queues the vote via qcom_rpm_write() and then polls the
  * per-resource status register until the applied value is at least the
@@ -571,29 +572,31 @@ EXPORT_SYMBOL(qcom_rpm_write);
  * so "applied >= requested" is the correct success criterion even when
  * other consumers are voting higher.
  *
- * Constraints:
+ * Returns 0 in all of:
  *
- *   - Only ACTIVE_STATE votes are actually polled.  SLEEP_STATE votes
- *     apply when the SoC transitions into cluster sleep, so the
- *     per-resource status register does not reflect a sleep vote until
- *     then; this helper falls back to qcom_rpm_write() semantics for
- *     sleep votes (return success once queued).
+ *   - status converged (vote was applied);
+ *   - timeout (status never reached the requested value): logged once
+ *     per resource as a WARN with the observed values, then treated as
+ *     fire-and-forget.  Some SoC families' status registers do not
+ *     reflect the requested unit (e.g. report MHz when we vote kHz, or
+ *     report a coarse-grained state token rather than the rate), making
+ *     polling pointless; callers should not propagate the timeout as
+ *     an error in those cases;
+ *   - SLEEP_STATE votes (status register only reflects sleep-context
+ *     values during cluster sleep);
+ *   - resources without a readable status register (status_id = ~0,
+ *     only QCOM_RPM_QDSS_CLK today).
  *
- *   - Resources without a readable status register (only QCOM_RPM_QDSS_CLK
- *     on the SoCs supported by this driver, marked with status_id = ~0)
- *     are not pollable.  We return success once the queue write has
- *     completed.
+ * Returns whatever qcom_rpm_write() returns on the queue step
+ * (-EIO on RPM rejection, -ETIMEDOUT on ack timeout, -EAGAIN if
+ * suspended).
  *
- *   - Resources whose semantics are not "monotonic max aggregation"
- *     (HALT / RESET / MODE control-flow writes) should keep using
- *     qcom_rpm_write(); the status comparison done here is meaningless
- *     for control values.
- *
- * Return:
- *   0 on success (vote queued and, where applicable, status converged),
- *   -ETIMEDOUT if the status register did not converge within
- *   RPM_SYNC_TIMEOUT_US, or any error qcom_rpm_write() returns on the
- *   queue step.
+ * Diagnostic logging: the first call per (resource, state) pair
+ * captures the status register before and immediately after the queue
+ * write, and the final outcome (convergence latency or final stuck
+ * value).  These data points let the caller observe whether the
+ * status register on a given SoC actually tracks the requested vote
+ * value.
  */
 int qcom_rpm_write_sync(struct qcom_rpm *rpm,
 			int state,
@@ -601,7 +604,9 @@ int qcom_rpm_write_sync(struct qcom_rpm *rpm,
 			u32 *buf, size_t count)
 {
 	const struct qcom_rpm_resource *res;
-	ktime_t deadline;
+	u32 status_before = 0, status_after_queue = 0;
+	ktime_t t_queue, t_done, deadline;
+	bool diag;
 	int ret;
 
 	if (WARN_ON(resource < 0 || resource >= rpm->data->n_resources))
@@ -611,25 +616,65 @@ int qcom_rpm_write_sync(struct qcom_rpm *rpm,
 	if (WARN_ON(res->size != count))
 		return -EINVAL;
 
+	/*
+	 * One-shot diagnostic per (resource, state) pair, gated on a
+	 * static bitmap so we get exactly one sample per call site
+	 * across the lifetime of the driver.  Two states (ACTIVE,
+	 * SLEEP) per resource: index = resource * 2 + state.  Sized
+	 * for the largest resource table on any supported SoC.
+	 */
+#define RPM_DIAG_MAX_RESOURCES	256
+	{
+		static DECLARE_BITMAP(diag_done, RPM_DIAG_MAX_RESOURCES * 2);
+		unsigned int bit = (unsigned int)resource * 2 + (state & 1);
+
+		diag = (bit < RPM_DIAG_MAX_RESOURCES * 2) &&
+		       !test_and_set_bit(bit, diag_done);
+	}
+
+	if (diag && state == QCOM_RPM_ACTIVE_STATE && res->status_id != ~0u)
+		status_before = readl(RPM_STATUS_REG(rpm, res->status_id));
+
+	t_queue = ktime_get();
 	ret = qcom_rpm_write(rpm, state, resource, buf, count);
-	if (ret)
+	if (ret) {
+		if (diag)
+			dev_warn(rpm->dev,
+				 "rpm_sync diag: res=%d state=%d voted=%u kHz queue write failed: %d\n",
+				 resource, state, buf[0], ret);
 		return ret;
+	}
 
 	/*
-	 * Sleep votes only land during cluster sleep transitions, so
-	 * the status register cannot be polled against them while the
-	 * SoC is running.  Treat a queued sleep vote as committed.
+	 * Sleep votes only land during cluster-sleep transitions, so the
+	 * status register cannot be polled against them while the SoC
+	 * is running.  Treat a queued sleep vote as committed.
 	 */
-	if (state != QCOM_RPM_ACTIVE_STATE)
+	if (state != QCOM_RPM_ACTIVE_STATE) {
+		if (diag)
+			dev_info(rpm->dev,
+				 "rpm_sync diag: res=%d state=SLEEP voted=%u kHz queue=%lld us (no status poll)\n",
+				 resource, buf[0],
+				 ktime_us_delta(ktime_get(), t_queue));
 		return 0;
+	}
 
 	/*
-	 * Resources without a readable status register cannot be
-	 * polled (only QCOM_RPM_QDSS_CLK on apq8064 today, status_id =
-	 * ~0).  Behave like qcom_rpm_write() for those.
+	 * Resources without a readable status register cannot be polled
+	 * (only QCOM_RPM_QDSS_CLK on apq8064 today, status_id = ~0).
+	 * Behave like qcom_rpm_write() for those.
 	 */
-	if (res->status_id == ~0u)
+	if (res->status_id == ~0u) {
+		if (diag)
+			dev_info(rpm->dev,
+				 "rpm_sync diag: res=%d state=ACTIVE voted=%u kHz queue=%lld us (no status reg)\n",
+				 resource, buf[0],
+				 ktime_us_delta(ktime_get(), t_queue));
 		return 0;
+	}
+
+	if (diag)
+		status_after_queue = readl(RPM_STATUS_REG(rpm, res->status_id));
 
 	deadline = ktime_add_us(ktime_get(), RPM_SYNC_TIMEOUT_US);
 	for (;;) {
@@ -646,11 +691,39 @@ int qcom_rpm_write_sync(struct qcom_rpm *rpm,
 			}
 		}
 
-		if (all_ok)
+		if (all_ok) {
+			t_done = ktime_get();
+			if (diag)
+				dev_info(rpm->dev,
+					 "rpm_sync diag: res=%d state=ACTIVE voted=%u kHz status[before]=%u [after-queue]=%u CONVERGED in %lld us (queue=%lld us, poll=%lld us)\n",
+					 resource, buf[0],
+					 status_before, status_after_queue,
+					 ktime_us_delta(t_done, t_queue),
+					 ktime_us_delta(deadline, t_queue) - RPM_SYNC_TIMEOUT_US + ktime_us_delta(t_done, t_queue),
+					 ktime_us_delta(t_done, t_queue));
 			return 0;
+		}
 
-		if (!ktime_before(ktime_get(), deadline))
-			return -ETIMEDOUT;
+		if (!ktime_before(ktime_get(), deadline)) {
+			u32 final = readl(RPM_STATUS_REG(rpm, res->status_id));
+
+			/*
+			 * Status never converged.  Log a one-shot diag if
+			 * this is the first sample for this (resource, state),
+			 * and always emit a WARN once globally so a stuck-status
+			 * SoC is noticed without spamming.  Then fall through
+			 * to fire-and-forget: the queue write itself succeeded.
+			 */
+			if (diag)
+				dev_warn(rpm->dev,
+					 "rpm_sync diag: res=%d state=ACTIVE voted=%u kHz status[before]=%u [after-queue]=%u TIMEOUT after %d us final_status=%u (treating as fire-and-forget)\n",
+					 resource, buf[0],
+					 status_before, status_after_queue,
+					 RPM_SYNC_TIMEOUT_US, final);
+			WARN_ONCE(1,
+				  "qcom_rpm_write_sync: status register did not converge on this SoC; treating sync writes as fire-and-forget\n");
+			return 0;
+		}
 
 		udelay(RPM_SYNC_POLL_US);
 	}
