@@ -440,24 +440,20 @@ static int a6_a2a_open(struct inode *inode, struct file *file)
 	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
 
 	/*
-	 * Allow only one opener at a time. The legacy driver tracked
-	 * READ_ACTIVE/WRITE_ACTIVE flags per-call; serialising at the
-	 * file-descriptor layer is both simpler and matches how
-	 * tap2shared actually uses /dev/a6_N (single dedicated worker
-	 * thread per device).
+	 * tap2shared opens /dev/a6_N concurrently from two worker threads:
+	 * receive_TLV_worker_thread (O_RDONLY) and send_TLV_worker_thread
+	 * (O_WRONLY) run side-by-side on every tap. The original single-open
+	 * guard returned EBUSY for the second opener and broke phase-2 of
+	 * tap-to-share end-to-end. Chip-level I/O is already serialised by
+	 * the base driver's dev_mutex through a6_a2a_read/write, so the
+	 * file-descriptor-layer lock isn't load-bearing -- drop it.
 	 */
-	if (atomic_xchg(&priv->opened, 1))
-		return -EBUSY;
-
 	file->private_data = priv;
 	return 0;
 }
 
 static int a6_a2a_release(struct inode *inode, struct file *file)
 {
-	struct a6_a2a *priv = file->private_data;
-
-	atomic_set(&priv->opened, 0);
 	return 0;
 }
 
