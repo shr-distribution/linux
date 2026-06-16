@@ -125,9 +125,41 @@
 #define ADM_MAX_ROWS			(SZ_64K - 1)
 #define ADM_MAX_CHANNELS		16
 
-/* Descriptor pool configuration for reduced allocation overhead */
-#define ADM_MAX_SG_PER_DESC		64	/* Max SG entries per pooled desc */
-#define ADM_CPL_BUF_SIZE		2048	/* CPL buffer size (64 box descs) */
+/*
+ * Descriptor pool configuration.
+ *
+ * The pool exists so adm_prep_slave_sg() never has to call
+ * dma_alloc_coherent(GFP_NOWAIT) on the hot submit path; the fallback
+ * allocation path is fragile under coherent-pool fragmentation
+ * (observed during initramfs LVM activation: large dm-linear reads
+ * that exceeded the per-descriptor CPL buffer were forced through
+ * the fallback, and a stale fragmented coherent pool returned NULL,
+ * surfacing as "unable to allocate descriptor" floods that wedged
+ * vgchange).
+ *
+ * Sizing trades memory against fallback dependence:
+ *
+ *  - ADM_CPL_BUF_SIZE = 8 KiB holds ~340 BOX descriptors per pooled
+ *    descriptor (struct adm_desc_hw_box = 24 bytes).  mmci-pl18x
+ *    caps requests at max_segs = 128 SG entries, so a single mmci
+ *    transfer needs at most 128 * 24 = 3 KiB of CPL space, well
+ *    inside one pool entry.  Device-mapper stacked reads from
+ *    LVM/dm-crypt also fit because dm respects the underlying
+ *    queue's max_segs limit.  The previous 2 KiB sizing held only
+ *    ~83 BOX descs and forced anything above 64 SG to the fallback.
+ *
+ *  - ADM_DESC_POOL_SIZE = 8 per channel * ADM_MAX_CHANNELS = 16 gives
+ *    128 pooled descriptors per controller -- well above the actual
+ *    in-flight ceiling (~5-6 concurrent transfers across all
+ *    consumers: 2 SDCC + 2 UART RX + QCE).  Legacy webOS msm_sdcc
+ *    pre-allocated dmov_box cmd[NR_SG=32] per controller once and
+ *    never allocated at request time; this is the same model.
+ *
+ *  Memory cost: 128 * 8 KiB = 1 MiB DMA-coherent per ADM controller,
+ *  2 MiB total across both ADMs on apq8060.  One-time, paid at probe.
+ */
+#define ADM_MAX_SG_PER_DESC		64	/* Max SG entries per pooled desc (BOX rows) */
+#define ADM_CPL_BUF_SIZE		8192	/* CPL buffer size (340 box descs) */
 #define ADM_DESC_POOL_SIZE		8	/* Descriptors per channel */
 #define ADM_TOTAL_DESC_POOL		(ADM_MAX_CHANNELS * ADM_DESC_POOL_SIZE)
 
