@@ -1299,34 +1299,45 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 /*
  * Vote @rate (Hz) for a fabric / EBI / SMI bus-clock RPM resource.
  *
- * The ACTIVE_STATE write goes through qcom_rpm_write_sync(), which is
- * a no-polling wrapper around qcom_rpm_write() that captures a
- * one-shot diagnostic of the firmware-applied value (per
- * (resource, state) pair) and otherwise has the same semantics as
- * qcom_rpm_write().  Empirically the MSM8x60 RPM firmware applies a
- * vote to the per-resource status register before the qcom_rpm_write
- * ack IRQ returns, so there is no queue-vs-realisation race on this
- * RPM family -- the ack IS the synchronisation the consumer wants.
- * The sync wrapper makes the "wait for apply" intent visible at call
- * sites and gives us the diagnostic data needed when porting to
- * other qcom-rpm SoCs whose firmware may behave differently.
+ * Writes ACTIVE_STATE only; SLEEP_STATE is intentionally never IPC'd
+ * from this code path.
  *
- * The SLEEP_STATE write uses plain qcom_rpm_write(); the per-resource
- * status register only reflects sleep-context values during cluster
- * sleep, so calling sync for SLEEP would just be the same fire-and-
- * forget behaviour without any extra signal.
+ * This matches what the legacy webOS RPM stack does on this SoC.
+ * The legacy `msm_rpmrs_set_common()` for ctx==MSM_RPM_CTX_SET_SLEEP
+ * (drivers/.../arch/arm/mach-msm/rpm_resources.c) buffers the request
+ * in a software shadow (msm_rpmrs_buffered) and only flushes that
+ * shadow to RPM during cluster power-collapse entry, via
+ * msm_rpmrs_flush_buffer() -> msm_rpm_set_noirq(SLEEP).  This was
+ * verified empirically on a PVT Topaz Wifi (HP TouchPad / APQ8060)
+ * running an instrumented webOS 2.6.35-palm kernel: over a full
+ * boot plus active workload, 2334 RPM IPCs were captured, every
+ * single one with ctx_mask=0x1 (ACTIVE).  Zero SLEEP IPCs even with
+ * the screen off, because the device stays in WFI rather than the
+ * cluster-PC state that triggers msm_rpmrs_flush_buffer().
+ *
+ * Mainline qcom_rpm has no equivalent SW-shadow / cluster-PC flush
+ * machinery, and the apq8060-family icc consumers don't ever induce
+ * a state where flushing would help anyway.  Doing per-vote
+ * SLEEP IPCs on this RPM family also empirically destabilised the
+ * applied ACTIVE rate (the firmware would sometimes apply 125 MHz
+ * for the same 384 MHz vote that other boots applied as 314.5 MHz)
+ * -- consistent with the firmware being thrown by IPC traffic it
+ * never sees from a legacy-faithful client.
+ *
+ * The ACTIVE_STATE write goes through qcom_rpm_write_sync(), a
+ * no-polling wrapper around qcom_rpm_write() that adds one-shot
+ * post-ack status-register readback diagnostics per (resource,
+ * state) pair -- the MSM8x60 RPM firmware applies the vote to the
+ * status register before the ack IRQ returns, so the ack is the
+ * synchronisation the caller wants.
  */
 static int msm8660_rpm_set_bus_rate(struct qcom_rpm *rpm, u32 resource,
 				    u64 rate)
 {
 	u32 khz = DIV_ROUND_UP_ULL(rate, 1000);
-	int ret;
 
-	ret = qcom_rpm_write_sync(rpm, QCOM_RPM_ACTIVE_STATE, resource,
-				  &khz, 1);
-	if (ret)
-		return ret;
-	return qcom_rpm_write(rpm, QCOM_RPM_SLEEP_STATE, resource, &khz, 1);
+	return qcom_rpm_write_sync(rpm, QCOM_RPM_ACTIVE_STATE, resource,
+				   &khz, 1);
 }
 
 /*
