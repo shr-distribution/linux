@@ -1076,9 +1076,9 @@ int qcom_adm_program_crci_ee0(struct dma_chan *chan, u32 crci, u32 crci_val)
 	adev->crci_ctl_cache[crci] = crci_val;
 	adev->crci_ctl_cache_valid |= BIT(crci);
 
-	dev_dbg(adev->dev,
-		"ADM program_crci_ee0: chan=%d crci=%u val=0x%x\n",
-		achan->id, crci, crci_val);
+	dev_info(adev->dev,
+		 "ADM program_crci_ee0: chan=%d crci=%u val=0x%x (cache seeded)\n",
+		 achan->id, crci, crci_val);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(qcom_adm_program_crci_ee0);
@@ -1287,12 +1287,29 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * value being written would be identical to whatever a racing
 		 * mmci start writes (same CRCI = same blk_size+mux constants).
 		 */
-		if (!(adev->crci_ctl_cache_valid & BIT(async_desc->crci)) ||
-		    adev->crci_ctl_cache[async_desc->crci] != crci_val) {
-			writel(crci_val,
-			       adev->regs + ADM_CRCI_CTL(async_desc->crci, 0));
-			adev->crci_ctl_cache[async_desc->crci] = crci_val;
-			adev->crci_ctl_cache_valid |= BIT(async_desc->crci);
+		{
+			bool need_write = !(adev->crci_ctl_cache_valid &
+					    BIT(async_desc->crci)) ||
+					  adev->crci_ctl_cache[async_desc->crci] != crci_val;
+			u32 cached = adev->crci_ctl_cache[async_desc->crci];
+
+			if (need_write) {
+				writel(crci_val,
+				       adev->regs + ADM_CRCI_CTL(async_desc->crci, 0));
+				adev->crci_ctl_cache[async_desc->crci] = crci_val;
+				adev->crci_ctl_cache_valid |= BIT(async_desc->crci);
+			}
+
+			/*
+			 * DEBUG: log only for QCE CRCIs (CE_IN=4, CE_OUT=5,
+			 * CE_HASH=15) — skip SDCC/BT to avoid log spam.
+			 */
+			if (async_desc->crci == 4 || async_desc->crci == 5 ||
+			    async_desc->crci == 15)
+				dev_info(adev->dev,
+					 "ADM start_dma QCE crci=%u burst-based crci_val=0x%x cached=0x%x %s\n",
+					 async_desc->crci, crci_val, cached,
+					 need_write ? "WROTE" : "skipped");
 		}
 	}
 

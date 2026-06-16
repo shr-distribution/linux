@@ -1359,20 +1359,26 @@ static void qce_ce2_skc_dma_done(void *param)
  */
 static void qce_ce2_skc_fire_goproc(struct qce_device *qce, void *arg)
 {
-	u32 status;
+	u32 status_before, status_after;
 	int timeout;
 
+	status_before = readl_relaxed(qce->base + CE2_REG_STATUS);
 	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
 
 	/* Engine leaves IDLE within microseconds; ADM issue_pending
 	 * fires immediately after.
 	 */
 	for (timeout = 1000; timeout > 0; timeout--) {
-		status = readl_relaxed(qce->base + CE2_REG_STATUS);
-		if (status & CE2_CRYPTO_STATE_MASK)
+		status_after = readl_relaxed(qce->base + CE2_REG_STATUS);
+		if (status_after & CE2_CRYPTO_STATE_MASK)
 			break;
 		udelay(10);
 	}
+
+	dev_info(qce->dev,
+		 "CE2 GOPROC: STATUS pre=0x%08x post=0x%08x iter_remaining=%d (%s)\n",
+		 status_before, status_after, timeout,
+		 timeout > 0 ? "left IDLE" : "STUCK IN IDLE after 10ms");
 }
 
 /*
@@ -1511,6 +1517,10 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	if (!padded || padded > b->size)
 		return -EINVAL;
 
+	dev_info(qce->dev,
+		 "CE2 dma_inout entry: nbytes=%u burst_dwords=%u padded=%u in_dma=%pad out_dma=%pad\n",
+		 nbytes, block_dwords, padded, &in_dma, &out_dma);
+
 	memset(src_copy, 0, padded);
 	memset(dst_copy, 0, padded);
 	sg_pcopy_to_buffer(src, sg_nents(src), src_copy, nbytes, sg_offset);
@@ -1569,6 +1579,10 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		ret = -EIO;
 		goto out_terminate;
 	}
+	dev_info(qce->dev,
+		 "CE2 dma_inout: rx+tx submitted (in_cookie=%d out_cookie=%d), STATUS=0x%08x — calling pre_issue (GOPROC)\n",
+		 in_cookie, out_cookie,
+		 readl_relaxed(qce->base + CE2_REG_STATUS));
 
 	/* GOPROC fires here, AFTER all the CPU work (memcpy, byte-swap,
 	 * prep, submit) is complete but BEFORE the ADM channels are
@@ -1583,8 +1597,17 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	if (pre_issue)
 		pre_issue(qce, pre_issue_arg);
 
+	dev_info(qce->dev,
+		 "CE2 dma_inout: GOPROC fired, STATUS=0x%08x — issuing ADM rx then tx\n",
+		 readl_relaxed(qce->base + CE2_REG_STATUS));
 	dma_async_issue_pending(rx);
+	dev_info(qce->dev,
+		 "CE2 dma_inout: rx issued, STATUS=0x%08x\n",
+		 readl_relaxed(qce->base + CE2_REG_STATUS));
 	dma_async_issue_pending(tx);
+	dev_info(qce->dev,
+		 "CE2 dma_inout: tx issued, STATUS=0x%08x — waiting for completion (1s timeout)\n",
+		 readl_relaxed(qce->base + CE2_REG_STATUS));
 
 	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(1000))) {
 		dev_err(qce->dev, "CE2 cipher: DMA timeout (%u bytes)\n",
@@ -1625,6 +1648,35 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	ret = 0;
 
 out_terminate:
+	/*
+	 * DEBUG (throwaway): dump the wedge state BEFORE the engine reset
+	 * below clobbers it back to post-reset (0x10200004 + friends). This
+	 * is the only place we can observe the real stuck state of the
+	 * engine + ADM channels at timeout.
+	 */
+	{
+		u32 status, seg_cfg, encr_seg_cfg, seg_size, config;
+		unsigned int avail;
+
+		status = readl_relaxed(qce->base + CE2_REG_STATUS);
+		seg_cfg = readl_relaxed(qce->base + CE2_REG_SEG_CFG);
+		encr_seg_cfg = readl_relaxed(qce->base + CE2_REG_ENCR_SEG_CFG);
+		seg_size = readl_relaxed(qce->base + CE2_REG_SEG_SIZE);
+		config = readl_relaxed(qce->base + CE2_REG_CONFIG);
+		avail = (status & CE2_DOUT_SIZE_AVAIL_MASK) >>
+			CE2_DOUT_SIZE_AVAIL_SHIFT;
+
+		dev_info(qce->dev,
+			 "CE2 PRE-RESET WEDGE DUMP (ret=%d nbytes=%u padded=%u):\n"
+			 "  STATUS       = 0x%08x  (DOUT_AVAIL=%u)\n"
+			 "  CONFIG       = 0x%08x\n"
+			 "  SEG_CFG      = 0x%08x\n"
+			 "  ENCR_SEG_CFG = 0x%08x\n"
+			 "  SEG_SIZE     = 0x%08x\n",
+			 ret, nbytes, padded,
+			 status, avail, config, seg_cfg, encr_seg_cfg, seg_size);
+	}
+
 	/*
 	 * Hard-reset the engine BEFORE terminating the ADM channels.
 	 *
@@ -1798,6 +1850,10 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 
 	if (rctx->cryptlen == 0)
 		return 0;
+
+	dev_info(qce->dev,
+		 "CE2 skc op entry: flags=0x%lx keylen=%u cryptlen=%u ivsize=%u\n",
+		 flags, keylen, rctx->cryptlen, rctx->ivsize);
 
 	/*
 	 * The engine is reset ONCE at probe (qce_check_version() in core.c
@@ -2114,14 +2170,36 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		writel(seg_cfg, qce->base + CE2_REG_SEG_CFG);
 		writel(eng_total, qce->base + CE2_REG_SEG_SIZE);
 
-		dev_dbg(qce->dev, "CE2 skc op len=%u eng=%u\n", total, eng_total);
-		QCE_DBG(qce,
-			"pre-GOPROC: SEG_CFG=0x%08x ENCR_SEG_CFG=0x%08x SEG_SIZE=0x%08x CONFIG=0x%08x STATUS=0x%08x\n",
+		dev_info(qce->dev, "CE2 skc op len=%u eng=%u burst=%u seg_cfg_wrote=0x%08x encr_cfg=0x%08x\n",
+			 total, eng_total, burst, seg_cfg, encr_cfg);
+		dev_info(qce->dev,
+			"CE2 pre-GOPROC readback: SEG_CFG=0x%08x ENCR_SEG_CFG=0x%08x SEG_SIZE=0x%08x CONFIG=0x%08x STATUS=0x%08x\n",
 			readl(qce->base + CE2_REG_SEG_CFG),
 			readl(qce->base + CE2_REG_ENCR_SEG_CFG),
 			readl(qce->base + CE2_REG_SEG_SIZE),
 			readl(qce->base + CE2_REG_CONFIG),
 			readl(qce->base + CE2_REG_STATUS));
+		{
+			u32 rb[4];
+			int kk;
+
+			for (kk = 0; kk < 4; kk++)
+				rb[kk] = readl_relaxed(qce->base +
+						       CE2_REG_AES_RNDKEY0 + kk * 4);
+			dev_info(qce->dev,
+				 "CE2 key readback RNDKEY0..3: 0x%08x 0x%08x 0x%08x 0x%08x\n",
+				 rb[0], rb[1], rb[2], rb[3]);
+			if (!IS_ECB(flags) && enciv_words) {
+				for (kk = 0; kk < (int)enciv_words; kk++)
+					rb[kk] = readl_relaxed(qce->base +
+							       CE2_REG_CNTR0_IV0 + kk * 4);
+				dev_info(qce->dev,
+					 "CE2 IV readback CNTR0..N (%u words): 0x%08x 0x%08x 0x%08x 0x%08x\n",
+					 enciv_words, rb[0], rb[1],
+					 enciv_words > 2 ? rb[2] : 0,
+					 enciv_words > 3 ? rb[3] : 0);
+			}
+		}
 
 		/*
 		 * GOPROC fires inside qce_ce2_dma_inout_cipher via the
