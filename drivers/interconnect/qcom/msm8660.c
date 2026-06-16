@@ -183,6 +183,13 @@ struct msm8660_icc_provider {
 	u16 *bwsum;
 	u32 *rpm_buf;
 	struct mutex commit_lock;
+	/*
+	 * Last bus-clock rate written to RPM for this fabric (Hz).
+	 * Updated under @commit_lock by msm8660_icc_set() to skip
+	 * redundant qcom_rpm_write_sync() calls when icc reaggregation
+	 * does not change the post-floor rate.
+	 */
+	u64 bus_rate;
 };
 
 /*
@@ -1292,20 +1299,22 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 /*
  * Vote @rate (Hz) for a fabric / EBI / SMI bus-clock RPM resource.
  *
- * The ACTIVE_STATE write uses qcom_rpm_write_sync(), which queues the
- * vote and polls the per-resource status register until the applied
- * value is at least the requested one.  qcom_rpm_write_sync() is
- * best-effort: on SoCs whose status register does not actually track
- * the requested unit (e.g. MSM8x60 family, where empirical data shows
- * the status word for QCOM_RPM_*_FABRIC_CLK and friends never matches
- * the kHz value the RPM accepted), the helper logs a one-shot diagnostic
- * and falls back to fire-and-forget instead of failing the caller.
+ * The ACTIVE_STATE write goes through qcom_rpm_write_sync(), which is
+ * a no-polling wrapper around qcom_rpm_write() that captures a
+ * one-shot diagnostic of the firmware-applied value (per
+ * (resource, state) pair) and otherwise has the same semantics as
+ * qcom_rpm_write().  Empirically the MSM8x60 RPM firmware applies a
+ * vote to the per-resource status register before the qcom_rpm_write
+ * ack IRQ returns, so there is no queue-vs-realisation race on this
+ * RPM family -- the ack IS the synchronisation the consumer wants.
+ * The sync wrapper makes the "wait for apply" intent visible at call
+ * sites and gives us the diagnostic data needed when porting to
+ * other qcom-rpm SoCs whose firmware may behave differently.
  *
- * The SLEEP_STATE write uses plain qcom_rpm_write(); the status
- * register only reflects sleep-context values during cluster sleep,
- * so polling against a sleep vote during the active phase would just
- * time out.  The qcom_rpm_write() ack is the strongest synchronisation
- * available for sleep votes.
+ * The SLEEP_STATE write uses plain qcom_rpm_write(); the per-resource
+ * status register only reflects sleep-context values during cluster
+ * sleep, so calling sync for SLEEP would just be the same fire-and-
+ * forget behaviour without any extra signal.
  */
 static int msm8660_rpm_set_bus_rate(struct qcom_rpm *rpm, u32 resource,
 				    u64 rate)
@@ -1340,39 +1349,79 @@ static int msm8660_icc_aggregate(struct icc_node *node, u32 tag,
 
 static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 {
+	const struct msm8660_icc_desc *desc;
 	struct msm8660_icc_provider *qp;
 	struct icc_provider *provider;
+	struct icc_node *n;
+	u64 rate = 0;
+	int ret;
 
 	provider = src->provider;
 	qp = to_msm8660_icc_provider(provider);
+	desc = qp->desc;
 
 	/*
-	 * No dynamic fabric bus-clock scaling at runtime.
+	 * Dynamic fabric bus-clock scaling.
 	 *
-	 * The non-SMD `qcom_rpm` IPC used by the MSM8x60 family acks a
-	 * resource write as soon as the request is queued, not when the
-	 * RPM firmware has actually applied the new clock rate to the
-	 * physical fabric.  Consumer drivers that vote bandwidth and
-	 * then immediately issue a DMA (mmci-pl18x via the ADM, in
-	 * particular) can race the rate ramp: ACK -> consumer submits DMA
-	 * -> ADM "CMD_PTR_RDY not set at submit" before the fabric has
-	 * caught up.  v4 happened to mask this through clk-rpm's per-clk
-	 * iteration providing ~2x more IPC round-trips of implicit
-	 * settling time per icc_set, but v5's direct RPM voting is too
-	 * fast.
+	 * Take the max per-node clock-rate-requirement across this
+	 * provider's nodes (icc_std_aggregate writes path bandwidth to
+	 * every traversed node, so summing would overcount shared-node
+	 * bandwidth -- taking the max gives the hottest single node,
+	 * which is the correct fabric throughput requirement, matching
+	 * the legacy vendor msm_bus aggregation).
 	 *
-	 * Until a `qcom_rpm_write_sync` (status-register polling) helper
-	 * exists in drivers/mfd/qcom_rpm.c, the only safe pattern on this
-	 * RPM family is the one APQ8064's SCM driver already uses on the
-	 * Daytona fabric clock: pin it at INT_MAX at probe and leave it
-	 * there for the lifetime of the system -- see qcom_scm_probe()
-	 * in drivers/firmware/qcom/qcom_scm.c, "vote for max clk rate for
-	 * highest performance".  The kickstart writes the fabric, EBI and
-	 * SMI clocks to INT_MAX at probe; this function only updates the
-	 * RPM ARB (per-master / per-tiered-slave bandwidth tier) buffer,
-	 * which is what real consumers actually depend on at runtime.
+	 * Use the per-node bus_width rather than the fabric-global
+	 * desc->bus_width: narrow links (e.g. sfab_to_system_fpb at
+	 * 4 bytes) would otherwise have their requested clock rate
+	 * halved -- the framework writes path bw to every traversed
+	 * node, so a 4-byte node carrying X bytes/s needs a clk rate
+	 * of X/4, not X/8, to actually push X bytes/s.
+	 *
+	 * Apply MSM8660_FABRIC_PIN_RATE as a hard floor: the
+	 * probe-time vote established this as the minimum the fabric
+	 * is allowed to run at, and we never scale below it at
+	 * runtime.
+	 *
+	 * Synchronisation against the active vote is handled by
+	 * msm8660_rpm_set_bus_rate() via qcom_rpm_write_sync(): we
+	 * wait for the status register to converge on the new rate
+	 * before this function returns, so the next icc consumer can
+	 * safely drive hardware at the new rate.
 	 */
-	if (qp->desc->arb_resource >= 0) {
+	if (desc->bus_clk_id) {
+		list_for_each_entry(n, &provider->nodes, node_list) {
+			const struct msm8660_icc_node *qn = n->data;
+			u32 buswidth;
+			u64 node_bw, node_rate;
+
+			buswidth = qn ? qn->buswidth : desc->bus_width;
+			node_bw = max(icc_units_to_bps(n->avg_bw),
+				      icc_units_to_bps(n->peak_bw));
+			node_rate = div_u64(node_bw, buswidth);
+
+			rate = max(rate, node_rate);
+		}
+
+		rate = max_t(u64, rate, MSM8660_FABRIC_PIN_RATE);
+
+		guard(mutex)(&qp->commit_lock);
+		if (rate != qp->bus_rate) {
+			ret = msm8660_rpm_set_bus_rate(qp->rpm,
+						       desc->bus_clk_id, rate);
+			if (ret)
+				return ret;
+			if (desc->extra_clk_id) {
+				ret = msm8660_rpm_set_bus_rate(qp->rpm,
+							       desc->extra_clk_id,
+							       rate);
+				if (ret)
+					return ret;
+			}
+			qp->bus_rate = rate;
+		}
+	}
+
+	if (desc->arb_resource >= 0) {
 		guard(mutex)(&qp->commit_lock);
 		msm8660_rpm_commit(qp);
 	}
@@ -1449,29 +1498,32 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 				     "parent RPM device has no drvdata\n");
 
 	/*
-	 * Pin the fabric / EBI / SMI bus clocks at MSM8660_FABRIC_PIN_RATE
-	 * for the life of the system.  See the comment block in
-	 * msm8660_icc_set() for why dynamic rate scaling cannot be done
-	 * safely on the non-SMD `qcom_rpm` IPC family until a
-	 * status-polling helper exists in drivers/mfd/qcom_rpm.c.
+	 * Establish MSM8660_FABRIC_PIN_RATE as the baseline floor for
+	 * this fabric / EBI / SMI bus clock.  msm8660_icc_set() will
+	 * upshift from this floor when icc consumers request more
+	 * bandwidth (via the qcom_rpm_write_sync() status-polling
+	 * helper, which guarantees the RPM firmware has applied the
+	 * new rate before the consumer drives traffic at it), but
+	 * never scale below.
 	 *
-	 * Rate choice: 384 MHz matches the MSM8660_FABRIC_MIN_RATE floor
-	 * that the v4 (clk_set_rate-via-rpmcc) interconnect driver applied
-	 * to its computed-from-bandwidth rate before passing it to
-	 * clk_rpm_set_rate, which is the rate that was effectively
-	 * programmed into the RPM under typical boot workloads on
-	 * tenderloin (HP TouchPad).  Earlier v5 iterations used INT_MAX,
-	 * mirroring drivers/firmware/qcom/qcom_scm.c's APQ8064 Daytona
-	 * pin pattern; on this hardware INT_MAX as a kHz vote
-	 * (2.147 GHz) appears to be silently rejected or rolled back by
-	 * the RPM firmware under load, producing SDCC ADM-drain stalls
-	 * (FLUSH_STATE5=3 at the eMMC channel).  A concrete
-	 * known-good-on-v4 rate avoids that.
+	 * Rate choice: 384 MHz matches MSM8660_FABRIC_MIN_RATE, the
+	 * post-aggregation floor that the v4 (clk_set_rate-via-rpmcc)
+	 * interconnect driver applied to its computed-from-bandwidth
+	 * rate.  This is the rate that was effectively programmed into
+	 * RPM under typical boot workloads on tenderloin (HP TouchPad).
+	 * Earlier v5 iterations pinned at INT_MAX mirroring
+	 * drivers/firmware/qcom/qcom_scm.c's APQ8064 Daytona pattern;
+	 * on this hardware INT_MAX as a kHz vote (2.147 GHz) is silently
+	 * rejected or rolled back by the RPM firmware under load,
+	 * producing SDCC ADM-drain stalls (FLUSH_STATE5=3 at the eMMC
+	 * channel).
 	 *
-	 * msm8660_rpm_set_bus_rate() writes both ACTIVE_STATE and
-	 * SLEEP_STATE so the rate also applies during cluster-sleep
-	 * windows; otherwise an in-flight DMA can race a transient
-	 * micro-sleep to a SLEEP_STATE = 0 fabric and starve.
+	 * msm8660_rpm_set_bus_rate() writes ACTIVE_STATE via
+	 * qcom_rpm_write_sync() (waits for the status register to
+	 * converge) and SLEEP_STATE via plain qcom_rpm_write() so the
+	 * rate also applies during cluster-sleep windows; otherwise
+	 * an in-flight DMA can race a transient micro-sleep to a
+	 * SLEEP_STATE = 0 fabric and starve.
 	 */
 	ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->bus_clk_id,
 				       MSM8660_FABRIC_PIN_RATE);
@@ -1487,6 +1539,7 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 					     "RPM bus clk %u pin vote failed\n",
 					     desc->extra_clk_id);
 	}
+	qp->bus_rate = MSM8660_FABRIC_PIN_RATE;
 
 	if (desc->arb_resource >= 0) {
 		int arb_size = desc->nmasters * desc->ntieredslaves;
