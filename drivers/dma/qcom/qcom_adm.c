@@ -23,7 +23,6 @@
 #include <linux/reset.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
-#include <linux/timer.h>
 
 #include "../dmaengine.h"
 #include "../virt-dma.h"
@@ -207,20 +206,6 @@ struct adm_async_desc {
 	int pool_index;		/* -1 = dynamic alloc, >=0 = pooled */
 };
 
-/*
- * A wedged ADM channel produces no FLUSH IRQ and never re-asserts
- * RSLT_VALID, so the dmaengine layer has no completion signal to act
- * on.  The per-channel watchdog gives us a deterministic upper bound
- * on how long a single submission can hold a channel before we
- * recover by completing the queued descriptor with an error and
- * starting the next one.  500 ms matches the watchdog interval used
- * by drivers/dma/imx-dma.c for the same class of "no-IRQ" failure
- * mode -- long enough to avoid false positives on slow SDCC PIO
- * fallbacks, short enough that systemd's mount / udev retries
- * proceed before they declare the device dead.
- */
-#define ADM_WATCHDOG_TIMEOUT_MS	500
-
 struct adm_chan {
 	struct virt_dma_chan vc;
 	struct adm_device *adev;
@@ -249,7 +234,6 @@ struct adm_chan {
 	void *exec_user;
 
 	struct list_head node;
-	struct timer_list watchdog;
 
 	int error;
 	int initialized;
@@ -369,98 +353,10 @@ struct adm_device {
  *
  * Free all allocated descriptors associated with this channel
  */
-static void adm_start_dma(struct adm_chan *achan);
-
 static void adm_free_chan(struct dma_chan *chan)
 {
-	struct adm_chan *achan = to_adm_chan(chan);
-
 	/* free all queued descriptors */
-	timer_delete_sync(&achan->watchdog);
 	vchan_free_chan_resources(to_virt_chan(chan));
-}
-
-/*
- * adm_watchdog_timeout - per-channel watchdog handler
- *
- * Fires ADM_WATCHDOG_TIMEOUT_MS after adm_start_dma() writes CMD_PTR
- * if the channel has not produced a RSLT_VALID IRQ to acknowledge the
- * transfer.  On apq8060 / HP TouchPad this can happen when the
- * channel pipeline state machine wedges (CMD_PTR_RDY stays at 0
- * indefinitely or a FLUSH never posts a result), holding curr_txd
- * busy and blocking every subsequent submission on the same channel.
- *
- * Recovery flow follows drivers/dma/imx-dma.c:imxdma_watchdog():
- *
- *   1. Take the vchan lock so the IRQ handler can't race us.
- *   2. If a curr_txd is still set, mark the channel error,
- *      complete the descriptor via vchan_cookie_complete() so the
- *      consumer's submit_error/callback path runs, and clear
- *      curr_txd.  The dmaengine layer will report DMA_ERROR to the
- *      MMC / UART / NAND / crypto consumer and they will recover
- *      via their normal retry/timeout machinery.
- *   3. Issue an abrupt FLUSH (bit 31 cleared) to the channel so any
- *      stuck in-flight DMA pipeline is discarded.  We deliberately
- *      do not use ADM_CH_FLUSH_GRACEFUL here -- the channel is by
- *      definition unresponsive at this point and a graceful flush
- *      would just wait again for a response that never comes.
- *
- * Intentionally do NOT auto-restart the next queued descriptor.
- * If the channel is still wedged at the hardware level, calling
- * adm_start_dma() here would re-arm the watchdog 500 ms later
- * for the next descriptor while a higher-level consumer keeps
- * refilling the queue with retries, producing a non-terminating
- * recovery loop.  Letting the consumer observe DMA_ERROR via
- * adm_tx_status() and drive the next dma_async_issue_pending()
- * itself converges naturally: a transient wedge recovers on
- * the consumer's retry; a persistent one stops getting fresh
- * work and the channel goes idle.
- *
- * Doing the recovery in soft-irq (timer) context is safe because
- * the IRQ handler also takes achan->vc.lock; spin_lock_irqsave()
- * here serialises against it.
- */
-static void adm_watchdog_timeout(struct timer_list *t)
-{
-	struct adm_chan *achan = timer_container_of(achan, t, watchdog);
-	struct adm_device *adev = achan->adev;
-	struct adm_async_desc *async_desc;
-	unsigned long flags;
-
-	spin_lock_irqsave(&achan->vc.lock, flags);
-
-	async_desc = achan->curr_txd;
-	if (!async_desc) {
-		/* Raced with the RSLT_VALID IRQ handler; nothing to do. */
-		spin_unlock_irqrestore(&achan->vc.lock, flags);
-		return;
-	}
-
-	achan->error = 1;
-	achan->curr_txd = NULL;
-
-	dev_warn_ratelimited(adev->dev,
-			     "ADM ch%u watchdog: no RSLT_VALID within %u ms, recovering channel\n",
-			     achan->id, ADM_WATCHDOG_TIMEOUT_MS);
-
-	/* Abrupt flush -- graceful would wait for a response we won't get. */
-	writel_relaxed(0, adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
-
-	vchan_cookie_complete(&async_desc->vd);
-
-	/*
-	 * Intentionally do NOT auto-start the next queued descriptor.
-	 * If the channel is still wedged at the hardware level, calling
-	 * adm_start_dma() here would re-arm the watchdog 500 ms later
-	 * for the next descriptor, creating a non-terminating recovery
-	 * loop while a higher-level consumer keeps refilling the queue
-	 * with retries.  Let the consumer's callback path observe
-	 * DMA_ERROR via adm_tx_status() and drive the next
-	 * dma_async_issue_pending() itself -- this converges naturally
-	 * whether the wedge is transient or persistent.
-	 */
-
-	spin_unlock_irqrestore(&achan->vc.lock, flags);
 }
 
 /**
@@ -1504,32 +1400,6 @@ static void adm_start_dma(struct adm_chan *achan)
 	if (need_submit_lock)
 		spin_unlock_irqrestore(&adev->submit_lock[lock_idx], submit_flags);
 	}
-
-	/*
-	 * Arm the per-channel watchdog so a wedged channel is recovered
-	 * even when neither RSLT_VALID nor FLUSH ever fires.  Disarmed by
-	 * the IRQ handler in the normal-completion path; fires
-	 * adm_watchdog_timeout() otherwise (see that function for the
-	 * recovery sequence).
-	 *
-	 * Only memory-paced submissions get a watchdog.  Peripheral-paced
-	 * RX channels (e.g. UART RX on msm_serial, BT-UART RX) legitimately
-	 * wait indefinitely until the remote peer transmits, with no
-	 * meaningful upper bound on completion time -- a fixed timeout
-	 * just produces false-positive recoveries that the consumer
-	 * resubmits, looping at the watchdog rate and starving the CPU
-	 * (observed live: ch7 HSUART1_RX + ch8 BT-UART_RX both retrying
-	 * every 510 ms before any peer was transmitting, driving CPU0
-	 * into soft-lockup during initramfs).  Use exec_func presence as
-	 * the discriminator: the consumers that benefit from wedge
-	 * recovery (mmci eMMC / WiFi) all set exec_func to perform atomic
-	 * peripheral-MMIO setup at submit time; UART RX, BT-UART RX,
-	 * qpic NAND, qce crypto, and similar peripheral-paced or
-	 * external-data-paced consumers do not.
-	 */
-	if (async_desc->exec_func)
-		mod_timer(&achan->watchdog,
-			  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
 }
 
 /**
@@ -1663,16 +1533,6 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		 * wasted work here.
 		 */
 		spin_lock(&achan->vc.lock);
-
-		/*
-		 * Disarm the watchdog now that the channel has reported.
-		 * Holding vc.lock serialises us against a concurrent
-		 * adm_watchdog_timeout(): if it already cleared curr_txd
-		 * the timer_delete is a no-op and the !async_desc branch
-		 * below skips the duplicate completion.
-		 */
-		timer_delete(&achan->watchdog);
-
 		async_desc = achan->curr_txd;
 
 		achan->curr_txd = NULL;
@@ -1854,7 +1714,6 @@ static void adm_channel_init(struct adm_device *adev, struct adm_chan *achan,
 
 	vchan_init(&achan->vc, &adev->common);
 	achan->vc.desc_free = adm_dma_free_desc;
-	timer_setup(&achan->watchdog, adm_watchdog_timeout, 0);
 }
 
 /**
