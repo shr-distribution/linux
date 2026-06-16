@@ -61,6 +61,21 @@
 #define MSM8660_MAX_RPM_BUF		23
 
 /*
+ * Static pin rate for the fabric / EBI / SMI bus clocks (in Hz).
+ *
+ * 384 MHz is the rate the v4 (clk_set_rate-via-rpmcc) interconnect
+ * driver effectively programmed under typical boot workloads on
+ * MSM8x60 family (MSM8260/MSM8660/APQ8060): MSM8660_FABRIC_MIN_RATE
+ * was the post-aggregation floor and the icc bandwidth aggregation
+ * sat at that floor when no consumer voted a higher value.  Picking
+ * the same rate here keeps RPM in a regime it is empirically known
+ * to honour, and avoids the SDCC ADM-drain stalls (FLUSH_STATE5=3
+ * at the eMMC channel) that an INT_MAX kHz vote (2.147 GHz) appears
+ * to provoke on tenderloin under boot-time load.
+ */
+#define MSM8660_FABRIC_PIN_RATE		384000000UL	/* 384 MHz */
+
+/*
  * RPM fabric arbitration data format (from legacy vendor kernel msm_bus_fabric.c):
  *
  * Each u16 arb entry: bit 15 = tier (1=TIER1 high priority), bits 14-0 = BW
@@ -1415,29 +1430,39 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 				     "parent RPM device has no drvdata\n");
 
 	/*
-	 * Pin the fabric / EBI / SMI bus clocks at INT_MAX for the life
-	 * of the system.  See the comment block in msm8660_icc_set() for
-	 * why dynamic rate scaling cannot be done safely on the non-SMD
-	 * `qcom_rpm` IPC family until a status-polling helper exists in
-	 * drivers/mfd/qcom_rpm.c.  Pinning at INT_MAX matches the pattern
-	 * already used by drivers/firmware/qcom/qcom_scm.c for APQ8064's
-	 * Daytona fabric clock ("vote for max clk rate for highest
-	 * performance"), and keeps the four fabric paths healthy through
-	 * cluster idle transitions.
+	 * Pin the fabric / EBI / SMI bus clocks at MSM8660_FABRIC_PIN_RATE
+	 * for the life of the system.  See the comment block in
+	 * msm8660_icc_set() for why dynamic rate scaling cannot be done
+	 * safely on the non-SMD `qcom_rpm` IPC family until a
+	 * status-polling helper exists in drivers/mfd/qcom_rpm.c.
+	 *
+	 * Rate choice: 384 MHz matches the MSM8660_FABRIC_MIN_RATE floor
+	 * that the v4 (clk_set_rate-via-rpmcc) interconnect driver applied
+	 * to its computed-from-bandwidth rate before passing it to
+	 * clk_rpm_set_rate, which is the rate that was effectively
+	 * programmed into the RPM under typical boot workloads on
+	 * tenderloin (HP TouchPad).  Earlier v5 iterations used INT_MAX,
+	 * mirroring drivers/firmware/qcom/qcom_scm.c's APQ8064 Daytona
+	 * pin pattern; on this hardware INT_MAX as a kHz vote
+	 * (2.147 GHz) appears to be silently rejected or rolled back by
+	 * the RPM firmware under load, producing SDCC ADM-drain stalls
+	 * (FLUSH_STATE5=3 at the eMMC channel).  A concrete
+	 * known-good-on-v4 rate avoids that.
 	 *
 	 * msm8660_rpm_set_bus_rate() writes both ACTIVE_STATE and
 	 * SLEEP_STATE so the rate also applies during cluster-sleep
 	 * windows; otherwise an in-flight DMA can race a transient
 	 * micro-sleep to a SLEEP_STATE = 0 fabric and starve.
 	 */
-	ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->bus_clk_id, INT_MAX);
+	ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->bus_clk_id,
+				       MSM8660_FABRIC_PIN_RATE);
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "RPM bus clk %u pin vote failed\n",
 				     desc->bus_clk_id);
 	if (desc->extra_clk_id) {
 		ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->extra_clk_id,
-					       INT_MAX);
+					       MSM8660_FABRIC_PIN_RATE);
 		if (ret)
 			return dev_err_probe(dev, ret,
 					     "RPM bus clk %u pin vote failed\n",
