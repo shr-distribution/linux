@@ -233,7 +233,7 @@ void qce_cpu_to_be32p_array(__be32 *dst, const u8 *src, unsigned int len)
 	}
 }
 
-static void qce_setup_config(struct qce_device *qce)
+void qce_setup_config(struct qce_device *qce)
 {
 	u32 config;
 
@@ -1708,6 +1708,15 @@ out_terminate:
 		udelay(10);
 		reset_control_deassert(qce->reset);
 		udelay(10);
+		/*
+		 * The hard reset clobbers CE2 CONFIG back to 0 (post-power-on
+		 * state). Re-arm the interrupt-mask bits so the next cipher op
+		 * runs against a properly configured engine — without this,
+		 * AES_RNDKEY writes silently fail to latch and every op after
+		 * a wedge keeps timing out (we never re-enter the working
+		 * configured state).
+		 */
+		qce_setup_config(qce);
 	}
 	dmaengine_terminate_sync(tx);
 out_terminate_rx:

@@ -343,6 +343,22 @@ static int qce_crypto_probe(struct platform_device *pdev)
 		writel_relaxed(0, qce->base + CE2_REG_CONFIG);
 		usleep_range(10, 20);
 
+		/*
+		 * Initialise CE2 CONFIG with the interrupt-mask bits set
+		 * (MASK_DOUT_INTR | MASK_DIN_INTR | MASK_AUTH_DONE_INTR |
+		 * MASK_ERR_INTR = 0x78) — matches the legacy MSM8660
+		 * vendor driver's _init_ce_engine() sequence. Without this,
+		 * CONFIG stays at 0 (raw post-SW_RST), the engine's internal
+		 * state machine doesn't fully initialise, AES_RNDKEY writes
+		 * silently fail to latch (readback = 0), and the first
+		 * cipher op stalls in PROCESSING with no output produced
+		 * (DMA timeout). The CE2 cipher path doesn't call
+		 * qce_setup_regs_skcipher() — which is the v5 path's
+		 * implicit CONFIG-write site — so this one-shot probe-time
+		 * init is the only place CONFIG ever gets the mask bits set.
+		 */
+		qce_setup_config(qce);
+
 		status = readl_relaxed(qce->base + CE2_REG_STATUS);
 		dev_dbg(dev, "CE2: STATUS after SW_RST: 0x%08x (SW_ERR=%d)\n",
 			status, !!(status & BIT(CE2_SW_ERR_SHIFT)));
