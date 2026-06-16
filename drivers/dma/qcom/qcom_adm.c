@@ -163,6 +163,29 @@ struct adm_chan {
 	struct timer_list watchdog;
 
 	int error;
+	/*
+	 * Cookie of the most recent descriptor that completed with
+	 * RSLT_ERR / RSLT_FLUSH.  adm_tx_status() consults this to
+	 * surface DMA_ERROR to consumer queries: the dmaengine cookie
+	 * state alone cannot -- dma_cookie_status() returns DMA_COMPLETE
+	 * for any cookie advanced past chan->completed_cookie regardless
+	 * of how it was completed, including via the error path.
+	 *
+	 * Set in the err-result handler and on every CMD_PTR_RDY bail-out
+	 * once the channel is in error state (a dead channel cannot be
+	 * resurrected -- legacy webOS arch/arm/mach-msm/dma.c:645 says
+	 * "the datamover will no longer accept commands" after RSLT_ERR
+	 * and provides no recovery beyond an abrupt FLUSH write).  Each
+	 * subsequent submission gets its cookie stashed too, so the
+	 * consumer's per-cookie tx_status query reliably reports
+	 * DMA_ERROR and the block layer retries terminate naturally
+	 * instead of stranding the descriptor.
+	 *
+	 * Cookies are monotonic per channel and never reach 0 (dmaengine
+	 * cycles DMA_MIN_COOKIE..INT_MAX), so 0 is a safe "no error
+	 * recorded" sentinel.
+	 */
+	dma_cookie_t error_cookie;
 	int initialized;
 };
 
@@ -750,10 +773,64 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			achan->curr_txd = NULL;
 
 			if (async_desc) {
+				bool err = result & ADM_CH_RSLT_ERR;
+
+				if (err) {
+					/*
+					 * Stash the errored cookie BEFORE
+					 * vchan_cookie_complete() advances
+					 * chan->completed_cookie -- consumers
+					 * querying via adm_tx_status() see
+					 * DMA_ERROR for this cookie regardless
+					 * of dma_cookie_status()'s normal
+					 * DMA_COMPLETE return for any cookie
+					 * advanced past completed.  Without
+					 * this stash a consumer that reads
+					 * MMCISTATUS from its DMA-callback
+					 * (mmci_qcom_dma_complete) finds a
+					 * clean status -- the failure is
+					 * upstream of the SDCC data path --
+					 * and charges blksz * blocks of
+					 * unread bytes to userspace.
+					 *
+					 * Legacy parity: arch/arm/mach-msm/
+					 * dma.c:645-647 writes FLUSH0 = 0
+					 * (abrupt halt) on RSLT_ERROR but
+					 * comments candidly that "this does
+					 * not seem to work, once we get an
+					 * error -- the datamover will no
+					 * longer accept commands".  Mirror
+					 * that best-effort write so the
+					 * channel is in a documented state,
+					 * but treat the channel as
+					 * permanently dead from here.
+					 */
+					achan->error_cookie =
+						async_desc->vd.tx.cookie;
+					writel_relaxed(0, adev->regs +
+						       ADM_CH_FLUSH_STATE0(i,
+								adev->ee));
+				}
+
 				vchan_cookie_complete(&async_desc->vd);
 
-				/* kick off next DMA */
-				adm_start_dma(achan);
+				/*
+				 * Only kick the next DMA when this channel
+				 * is still healthy.  On RSLT_ERR the channel
+				 * cannot accept commands (see legacy comment
+				 * above); kicking adm_start_dma() here would
+				 * either silently drop the next CMD_PTR
+				 * write or leave the channel pipeline with
+				 * two partial chains (the canonical SDCC
+				 * drain-stall signature
+				 * FLUSH STATE0=0x8000c003 STATE5=0x00000003).
+				 * Let the consumer drive the next submission
+				 * itself; the per-cookie error_cookie path
+				 * above makes the failure visible without
+				 * stranding the descriptor.
+				 */
+				if (!err)
+					adm_start_dma(achan);
 			}
 
 			spin_unlock_irqrestore(&achan->vc.lock, flags);
@@ -779,6 +856,21 @@ static enum dma_status adm_tx_status(struct dma_chan *chan, dma_cookie_t cookie,
 	enum dma_status ret;
 	unsigned long flags;
 	size_t residue = 0;
+
+	/*
+	 * Surface a recorded RSLT_ERR BEFORE consulting cookie state.
+	 * dma_cookie_status() returns DMA_COMPLETE for any cookie
+	 * advanced past chan->completed_cookie regardless of how the
+	 * descriptor completed, including via the error path --
+	 * without this early check a consumer querying from its
+	 * completion callback (e.g. mmci_qcom_dma_complete()) cannot
+	 * tell ADM-internal errors from clean completions.  cookies
+	 * are monotonic per channel so the equality test is
+	 * unambiguous; 0 is a safe "no error recorded" sentinel
+	 * (dmaengine cookies cycle DMA_MIN_COOKIE..INT_MAX, never 0).
+	 */
+	if (achan->error_cookie && achan->error_cookie == cookie)
+		return DMA_ERROR;
 
 	ret = dma_cookie_status(chan, cookie, txstate);
 	if (ret == DMA_COMPLETE || !txstate)
