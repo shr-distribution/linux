@@ -252,6 +252,18 @@ struct adm_chan {
 	struct timer_list watchdog;
 
 	int error;
+	/*
+	 * Cookie of the most recent descriptor completed with RSLT_ERR or
+	 * RSLT_FLUSH.  Consulted by adm_tx_status() to surface DMA_ERROR
+	 * to the consumer's completion callback: dma_cookie_status()
+	 * returns DMA_COMPLETE for any cookie advanced past, regardless
+	 * of how it completed, so the per-channel error_cookie is the
+	 * only state that lets a consumer tell ADM-internal errors apart
+	 * from clean completions when its callback fires.  Cookies are
+	 * monotonic per channel, so the equality test in adm_tx_status()
+	 * is unambiguous.
+	 */
+	dma_cookie_t error_cookie;
 	int initialized;
 
 	/*
@@ -1740,6 +1752,7 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		if (async_desc) {
 			dma_async_tx_callback callback = NULL;
 			void *callback_param = NULL;
+			bool err = result & ADM_CH_RSLT_ERR;
 
 			/*
 			 * Replicate webOS msm_dmov synchronous completion pattern:
@@ -1765,6 +1778,26 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			 * stays scoped to the fixes that don't require auditing
 			 * every existing consumer's lock-class assumptions.
 			 */
+
+			/*
+			 * Stash the errored cookie BEFORE dma_cookie_complete()
+			 * advances chan->completed_cookie -- adm_tx_status()
+			 * consults error_cookie to surface DMA_ERROR to the
+			 * consumer's callback below.  Without this stash, the
+			 * dma_cookie_status() short-circuit returns DMA_COMPLETE
+			 * for any cookie past completed (including errored ones)
+			 * and the consumer (mmci_qcom_dma_complete) would charge
+			 * blksz * blocks of unread bytes to userspace -- silent
+			 * LVM / ext4 corruption on the eMMC path.
+			 *
+			 * Only ADM_CH_RSLT_ERR triggers this; RSLT_FLUSH alone
+			 * is expected behaviour (UART RX uses terminate_all()
+			 * to recover partial data, and the result already
+			 * carries the byte count).
+			 */
+			if (err)
+				achan->error_cookie = async_desc->vd.tx.cookie;
+
 			dma_cookie_complete(&async_desc->vd.tx);
 
 			if (async_desc->vd.tx.callback) {
@@ -1806,8 +1839,26 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 				tasklet_schedule(&achan->vc.task);
 			}
 
-			/* kick off next DMA */
-			adm_start_dma(achan);
+			/*
+			 * kick off next DMA -- but NOT on RSLT_ERR.
+			 *
+			 * The channel pipeline state machine needs the
+			 * consumer's recovery path (mmci_dma_error ->
+			 * dmaengine_terminate_all -> graceful FLUSH) to fire
+			 * before fresh CMD_PTR writes will be accepted.
+			 * Submitting here would find CMD_PTR_RDY clear (886c75
+			 * "wait for CMD_PTR_RDY") and bail with the descriptor
+			 * stranded -- the SDCC side waits for an ADM that
+			 * never comes, the box parks in cpuidle and the soft
+			 * lockup detector trips at 26 s.
+			 *
+			 * Let the consumer observe DMA_ERROR via
+			 * adm_tx_status() and drive the next
+			 * dma_async_issue_pending() itself once it has reset
+			 * its side of the data path.
+			 */
+			if (!err)
+				adm_start_dma(achan);
 
 			/* Invoke callback after starting next DMA */
 			if (callback) {
@@ -1839,6 +1890,21 @@ static enum dma_status adm_tx_status(struct dma_chan *chan, dma_cookie_t cookie,
 	enum dma_status ret;
 	unsigned long flags;
 	size_t residue = 0;
+
+	/*
+	 * Surface a recorded RSLT_ERR/RSLT_FLUSH BEFORE consulting cookie
+	 * state.  dma_cookie_status() returns DMA_COMPLETE for any cookie
+	 * advanced past chan->completed_cookie, including one completed via
+	 * the error path -- without this early check a consumer that queries
+	 * from its completion callback (e.g. mmci_qcom_dma_complete()) cannot
+	 * tell ADM-internal errors from clean completions and would charge
+	 * blksz * blocks of unread bytes to userspace.  error_cookie is
+	 * monotonic per channel so the equality test is unambiguous; cookies
+	 * never reach 0 (dmaengine wraps DMA_MIN_COOKIE..INT_MAX), so 0 is a
+	 * safe "no error recorded" sentinel.
+	 */
+	if (achan->error_cookie && achan->error_cookie == cookie)
+		return DMA_ERROR;
 
 	ret = dma_cookie_status(chan, cookie, txstate);
 	if (ret == DMA_COMPLETE || !txstate)
