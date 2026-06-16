@@ -1320,14 +1320,24 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * mmci start writes (same CRCI = same blk_size+mux constants).
 		 */
 		{
-			bool need_write = !(adev->crci_ctl_cache_valid &
-					    BIT(async_desc->crci)) ||
-					  adev->crci_ctl_cache[async_desc->crci] != crci_val;
 			u32 cached = adev->crci_ctl_cache[async_desc->crci];
 			u32 reg_pre = 0;
 			bool is_qce = (async_desc->crci == 4 ||
 				       async_desc->crci == 5 ||
 				       async_desc->crci == 15);
+			/*
+			 * EXPERIMENT: force-write CRCI_CTL for QCE CRCIs
+			 * regardless of cache match. Hypothesis: the cache-skip
+			 * optimization (commit 02090386de45) drops a
+			 * load-bearing side effect of the MMIO write that the
+			 * CE2 engine relies on for per-op pacing. SDCC / BT /
+			 * NAND keep the cache-skip; only QCE (CRCI 4 / 5 / 15)
+			 * forces the write.
+			 */
+			bool need_write = is_qce ||
+					  !(adev->crci_ctl_cache_valid &
+					    BIT(async_desc->crci)) ||
+					  adev->crci_ctl_cache[async_desc->crci] != crci_val;
 
 			/* DEBUG: live CRCI_CTL register readback for QCE CRCIs */
 			if (is_qce)
