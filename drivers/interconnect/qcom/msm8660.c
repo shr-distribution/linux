@@ -1192,19 +1192,9 @@ static void msm8660_pack_rpm_data(const u16 *bwsum, int nslaves,
  * Send fabric arbitration data to RPM.
  *
  * Iterates over all ICC nodes in the provider, builds bwsum/arb arrays
- * from their aggregated bandwidth, packs them into qp->rpm_buf and
- * writes the resulting word stream to both QCOM_RPM_ACTIVE_STATE and
- * QCOM_RPM_SLEEP_STATE.
- *
- * Both contexts are written because MMSS / SFAB masters (MDP scanout,
- * VFE, codecs) keep pulling traffic across cluster power-collapse
- * windows.  Leaving SLEEP_STATE at the probe-time all-zero buffer
- * would let RPM apply zero-BW arbitration during those windows and
- * demote the TIER1 priority the ACTIVE_STATE buffer carefully
- * programs.  Match the symmetric treatment msm8660_rpm_set_bus_rate()
- * gives the bus-clock votes.
+ * from their aggregated bandwidth, and sends the packed data to RPM.
  */
-static int msm8660_rpm_commit(struct msm8660_icc_provider *qp)
+static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 {
 	const struct msm8660_icc_desc *desc = qp->desc;
 	struct icc_provider *provider = &qp->provider;
@@ -1265,21 +1255,9 @@ static int msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 	ret = qcom_rpm_write(qp->rpm, QCOM_RPM_ACTIVE_STATE,
 			     desc->arb_resource, qp->rpm_buf,
 			     desc->rpm_buf_size);
-	if (ret) {
-		dev_err_ratelimited(provider->dev,
-				    "RPM fabric ARB ACTIVE write failed: %d\n",
-				    ret);
-		return ret;
-	}
-
-	ret = qcom_rpm_write(qp->rpm, QCOM_RPM_SLEEP_STATE,
-			     desc->arb_resource, qp->rpm_buf,
-			     desc->rpm_buf_size);
 	if (ret)
 		dev_err_ratelimited(provider->dev,
-				    "RPM fabric ARB SLEEP write failed: %d\n",
-				    ret);
-	return ret;
+				    "RPM fabric ARB write failed: %d\n", ret);
 }
 
 /*
@@ -1306,27 +1284,6 @@ static int msm8660_rpm_set_bus_rate(struct qcom_rpm *rpm, u32 resource,
 	if (ret)
 		return ret;
 	return qcom_rpm_write(rpm, QCOM_RPM_SLEEP_STATE, resource, &khz, 1);
-}
-
-/*
- * Drop the pin vote on driver removal / probe failure.
- *
- * Registered via devm_add_action_or_reset() once the bus-clock pin
- * votes have been written; devres unwinds it on probe failure (after
- * the failing devm_kcalloc / icc_provider_register / link-pass error
- * returns) and on platform_driver_unregister().  Writing 0 hands the
- * fabric / EBI / SMI clocks back to whatever other consumers vote --
- * if no other voter remains, RPM gates them, which is the correct
- * end state for an unbound icc provider.
- */
-static void msm8660_icc_pin_release(void *data)
-{
-	struct msm8660_icc_provider *qp = data;
-
-	(void)msm8660_rpm_set_bus_rate(qp->rpm, qp->desc->bus_clk_id, 0);
-	if (qp->desc->extra_clk_id)
-		(void)msm8660_rpm_set_bus_rate(qp->rpm,
-					       qp->desc->extra_clk_id, 0);
 }
 
 /*
@@ -1383,7 +1340,7 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 	 */
 	if (qp->desc->arb_resource >= 0) {
 		guard(mutex)(&qp->commit_lock);
-		return msm8660_rpm_commit(qp);
+		msm8660_rpm_commit(qp);
 	}
 
 	return 0;
@@ -1454,8 +1411,8 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	 */
 	qp->rpm = dev_get_drvdata(dev->parent);
 	if (!qp->rpm)
-		return dev_err_probe(dev, -EPROBE_DEFER,
-				     "parent RPM device has no drvdata yet\n");
+		return dev_err_probe(dev, -ENODEV,
+				     "parent RPM device has no drvdata\n");
 
 	/*
 	 * Pin the fabric / EBI / SMI bus clocks at INT_MAX for the life
@@ -1478,9 +1435,6 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret,
 				     "RPM bus clk %u pin vote failed\n",
 				     desc->bus_clk_id);
-	ret = devm_add_action_or_reset(dev, msm8660_icc_pin_release, qp);
-	if (ret)
-		return ret;
 	if (desc->extra_clk_id) {
 		ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->extra_clk_id,
 					       INT_MAX);
@@ -1568,25 +1522,11 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * Pass 2 links the nodes.  Every target node within this fabric
-	 * already exists in provider->nodes from Pass 1, so icc_link_nodes()
-	 * only ever extends the source's links[] array and never allocates;
+	 * Pass 2 links the nodes. Every target node already exists in
+	 * provider->nodes from Pass 1, so icc_link_nodes() only ever
+	 * extends the source's links[] array and never allocates a node;
 	 * any failure here is cleanly caught by err_remove_nodes ->
 	 * icc_nodes_remove which iterates provider->nodes.
-	 *
-	 * Cross-fabric link targets (afab_to_mmss, sfab_to_appss, ...)
-	 * live in a sibling-fabric's static qnodes[] table.  Their
-	 * qnode->node pointer is only non-NULL after the sibling fabric
-	 * has run its own Pass 1.  If we hand a NULL target ->node to
-	 * icc_link_nodes() the ICC core will forward-allocate a placeholder
-	 * and stuff it into the sibling qnode -- which, if that sibling
-	 * later fails its own probe, gets freed by the sibling's
-	 * icc_nodes_remove() while we still hold a raw pointer in our
-	 * src_node->links[].  Avoid that race by deferring our probe when
-	 * a cross-fabric target hasn't been registered yet; the four
-	 * fabric platform devices share the same qnoc-msm8660 driver and
-	 * will retry, eventually converging on an order where every link
-	 * target exists at link time.
 	 */
 	for (i = 0; i < num_nodes; i++) {
 		size_t j;
@@ -1597,14 +1537,8 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 		node = qnodes[i]->node;
 
 		for (j = 0; j < qnodes[i]->num_links; j++) {
-			struct msm8660_icc_node *tgt = qnodes[i]->link_nodes[j];
-
-			if (!tgt->node) {
-				ret = -EPROBE_DEFER;
-				goto err_remove_nodes;
-			}
-
-			ret = icc_link_nodes(node, &tgt->node);
+			ret = icc_link_nodes(node,
+					     &qnodes[i]->link_nodes[j]->node);
 			if (ret)
 				goto err_remove_nodes;
 		}
@@ -1635,7 +1569,7 @@ static void msm8660_icc_remove(struct platform_device *pdev)
 	icc_nodes_remove(&qp->provider);
 	if (desc)
 		msm8660_clear_node_cache(desc->nodes, desc->num_nodes);
-	/* The RPM pin vote is released by devm via msm8660_icc_pin_release(). */
+	/* clk cleanup happens via devm_add_action_or_reset on remove. */
 }
 
 static const struct of_device_id msm8660_noc_of_match[] = {
@@ -1686,7 +1620,7 @@ static struct platform_driver msm8660_noc_driver = {
  *
  * icc_provider_register does not require icc_init to have run first --
  * the framework's locks are statically DEFINE_MUTEX'd -- so registering
- * the provider at core_initcall (before icc_init at device_initcall) is
+ * the provider at core_initcall (before icc_init at subsys_initcall) is
  * safe, same as mainline sm8450 etc.
  */
 static int __init msm8660_noc_driver_init(void)
