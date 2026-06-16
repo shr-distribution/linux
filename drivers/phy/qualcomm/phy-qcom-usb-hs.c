@@ -20,14 +20,6 @@
 # define ULPI_MISC_A_VBUSVLDEXTSEL	BIT(1)
 # define ULPI_MISC_A_VBUSVLDEXT		BIT(0)
 
-/* MSM8x60 vendor ULPI registers (raw addresses, not ULPI_EXT_VENDOR_SPECIFIC). */
-#define ULPI_MSM_CONFIG_REG3		0x32
-# define ULPI_MSM_HSDRVSLOPE_MASK	GENMASK(3, 0)
-# define ULPI_MSM_PRE_EMPHASIS_MASK	GENMASK(5, 4)
-# define ULPI_MSM_PRE_EMPHASIS_20PCT	(3 << 4)
-#define ULPI_MSM_DIGOUT_CTRL		0x36
-# define ULPI_MSM_CDR_AUTORESET		BIT(1)
-# define ULPI_MSM_SE1_GATE		BIT(2)
 
 struct ulpi_seq {
 	u8 addr;
@@ -43,11 +35,15 @@ struct qcom_usb_hs_phy {
 	struct regulator *v3p3;
 	struct reset_control *reset;
 	struct ulpi_seq *init_seq;
+	/*
+	 * Optional sequence of writes targeting raw ULPI addresses (no
+	 * ULPI_EXT_VENDOR_SPECIFIC base added). Populated from the
+	 * "qcom,vendor-init-seq" DT property. Applied after PHY reset
+	 * so the values survive the reset that follows init_seq writes.
+	 */
+	struct ulpi_seq *vendor_init_seq;
 	struct extcon_dev *vbus_edev;
 	struct notifier_block vbus_notify;
-	bool msm8x60_init;
-	bool hs_drv_slope_present;
-	u8 hs_drv_slope;
 };
 
 static int qcom_usb_hs_phy_set_mode(struct phy *phy,
@@ -116,41 +112,6 @@ qcom_usb_hs_phy_vbus_notifier(struct notifier_block *nb, unsigned long event,
 	return ulpi_write(uphy->ulpi, addr, ULPI_MISC_A_VBUSVLDEXT);
 }
 
-/*
- * RMW the vendor registers to preserve silicon reserved bits.
- * In reg 0x36 the legacy semantics are inverted: setting
- * CDR_AUTORESET / SE1_GATE *disables* those functions.
- */
-static int qcom_usb_hs_phy_msm8x60_init(struct qcom_usb_hs_phy *uphy)
-{
-	struct ulpi *ulpi = uphy->ulpi;
-	int reg32, reg36, ret;
-
-	reg32 = ulpi_read(ulpi, ULPI_MSM_CONFIG_REG3);
-	if (reg32 < 0)
-		return reg32;
-
-	reg32 &= ~ULPI_MSM_PRE_EMPHASIS_MASK;
-	reg32 |= ULPI_MSM_PRE_EMPHASIS_20PCT;
-
-	if (uphy->hs_drv_slope_present) {
-		reg32 &= ~ULPI_MSM_HSDRVSLOPE_MASK;
-		reg32 |= uphy->hs_drv_slope & ULPI_MSM_HSDRVSLOPE_MASK;
-	}
-
-	ret = ulpi_write(ulpi, ULPI_MSM_CONFIG_REG3, reg32);
-	if (ret)
-		return ret;
-
-	reg36 = ulpi_read(ulpi, ULPI_MSM_DIGOUT_CTRL);
-	if (reg36 < 0)
-		return reg36;
-
-	reg36 |= ULPI_MSM_CDR_AUTORESET | ULPI_MSM_SE1_GATE;
-
-	return ulpi_write(ulpi, ULPI_MSM_DIGOUT_CTRL, reg36);
-}
-
 static int qcom_usb_hs_phy_power_on(struct phy *phy)
 {
 	struct qcom_usb_hs_phy *uphy = phy_get_drvdata(phy);
@@ -200,8 +161,15 @@ static int qcom_usb_hs_phy_power_on(struct phy *phy)
 			goto err_ulpi;
 	}
 
-	if (uphy->msm8x60_init) {
-		ret = qcom_usb_hs_phy_msm8x60_init(uphy);
+	/*
+	 * Apply board-specific raw-address ULPI writes after the PHY reset
+	 * so they survive register restore. Used to reach the standard
+	 * vendor range 0x30-0x3F which qcom,init-seq (above) cannot —
+	 * pre-emphasis level / HS driver slope / CDR auto-reset etc. live
+	 * there on MSM8660-class hardware.
+	 */
+	for (seq = uphy->vendor_init_seq; seq->addr; seq++) {
+		ret = ulpi_write(ulpi, seq->addr, seq->val);
 		if (ret)
 			goto err_ulpi;
 	}
@@ -252,9 +220,11 @@ static const struct phy_ops qcom_usb_hs_phy_ops = {
 };
 
 /*
- * The binding caps qcom,init-seq at maxItems: 32 (addr, val) pairs,
- * i.e. 64 bytes total. Enforce here so a malformed DT cannot drive an
- * unbounded devm_kmalloc_array() and so it fails visibly at probe.
+ * The binding caps both qcom,init-seq and qcom,vendor-init-seq at
+ * maxItems: 32 (addr, val) pairs, i.e. 64 bytes total. Enforce that
+ * limit here so a malformed DT cannot drive an unbounded
+ * devm_kmalloc_array() and so the misconfiguration is visible at
+ * probe time instead of silently truncated.
  */
 #define QCOM_USB_HS_PHY_INIT_SEQ_MAX_PAIRS	32
 #define QCOM_USB_HS_PHY_INIT_SEQ_MAX_BYTES	\
@@ -316,25 +286,19 @@ static int qcom_usb_hs_phy_probe(struct ulpi *ulpi)
 		return -ENOMEM;
 	ulpi_set_drvdata(ulpi, uphy);
 	uphy->ulpi = ulpi;
-	uphy->msm8x60_init = of_device_is_compatible(ulpi->dev.of_node,
-						     "qcom,usb-hs-phy-msm8660");
-
-	if (uphy->msm8x60_init) {
-		u32 slope;
-
-		if (!of_property_read_u32(ulpi->dev.of_node,
-					  "qcom,hs-drv-slope", &slope)) {
-			if (slope > ULPI_MSM_HSDRVSLOPE_MASK)
-				return dev_err_probe(&ulpi->dev, -EINVAL,
-						     "qcom,hs-drv-slope out of range (max %lu)\n",
-						     ULPI_MSM_HSDRVSLOPE_MASK);
-			uphy->hs_drv_slope = slope;
-			uphy->hs_drv_slope_present = true;
-		}
-	}
 
 	ret = qcom_usb_hs_phy_parse_init_seq(ulpi, "qcom,init-seq",
 					     &uphy->init_seq);
+	if (ret)
+		return ret;
+	/*
+	 * Optional raw-address vendor init sequence — same encoding as
+	 * qcom,init-seq (u8 addr/val pairs) but each pair is written to
+	 * the raw ULPI address rather than to ULPI_EXT_VENDOR_SPECIFIC +
+	 * addr. Lets boards reach the standard vendor range 0x30-0x3F.
+	 */
+	ret = qcom_usb_hs_phy_parse_init_seq(ulpi, "qcom,vendor-init-seq",
+					     &uphy->vendor_init_seq);
 	if (ret)
 		return ret;
 
