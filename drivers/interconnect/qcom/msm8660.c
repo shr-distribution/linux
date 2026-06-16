@@ -728,7 +728,37 @@ static struct msm8660_icc_node * const msm8660_sfab_nodes[] = {
 static const struct msm8660_icc_desc msm8660_sfab = {
 	.nodes = msm8660_sfab_nodes,
 	.num_nodes = ARRAY_SIZE(msm8660_sfab_nodes),
-	.arb_resource = QCOM_RPM_SYS_FABRIC_ARB,
+	/*
+	 * No RPM ARB for SFAB.  Verified empirically against legacy
+	 * webOS on a PVT Topaz Wifi (HP TouchPad / APQ8060) running an
+	 * instrumented webOS 2.6.35-palm kernel with rpm_trace logging:
+	 * across a full boot plus active workload (~6400 trace lines,
+	 * 2334 RPM IPC writes captured), legacy webOS performs ZERO
+	 * writes to MSM_RPM_ID_SYSTEM_FABRIC_ARB_0..21 (resource IDs
+	 * 69-90).  It does write MSM_RPM_ID_APPS_FABRIC_ARB_0..5 and
+	 * MSM_RPM_ID_MM_FABRIC_ARB_0..22 regularly, so this is a
+	 * deliberate per-fabric choice in the legacy stack, not a
+	 * generic "no ARB" pattern.
+	 *
+	 * The reason matters here: ADM0 and ADM1 master ports both
+	 * live on SFAB (17 SFAB masters total, including 3 ADM masters
+	 * sfab_mas_adm0_port0 / adm1_port0 / adm1_port1).  The
+	 * bootloader programs SYS_FABRIC_ARB with the right per-master
+	 * tier assignments to give ADM masters TIER1 priority so DMA
+	 * traffic from mmci-pl18x (eMMC / WiFi) and qce (crypto) can
+	 * keep their SDCC / engine FIFOs drained.  Our v5 driver was
+	 * overwriting that pre-programmed table on every icc consumer
+	 * vote with values derived from icc_set_bw bandwidth -- which
+	 * silently demoted the ADM masters and produced SDCC ADM-drain
+	 * stalls (FLUSH_STATE0=0x8000c003, STATE5=3) on the very first
+	 * mmci DMA after eMMC enumeration, in turn wedging initramfs
+	 * LVM activation.
+	 *
+	 * Match legacy: leave SYS_FABRIC_ARB to the bootloader.
+	 * APPS_FABRIC_ARB (afab) and MM_FABRIC_ARB (mmfab) keep their
+	 * arb_resource set because legacy webOS writes those.
+	 */
+	.arb_resource = -1,
 	.bus_clk_id = QCOM_RPM_SYS_FABRIC_CLK,
 	.nmasters = 17,
 	.nslaves = 9,
