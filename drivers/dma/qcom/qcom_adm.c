@@ -1448,14 +1448,58 @@ static void adm_start_dma(struct adm_chan *achan)
 		}
 
 		if (!(status & ADM_CH_STATUS_CMD_PTR_RDY)) {
+			/*
+			 * The earlier code path here fell through and wrote
+			 * CMD_PTR anyway.  Legacy webOS arch/arm/mach-msm/
+			 * dma.c msm_dmov_enqueue_cmd_ext() never does that:
+			 * if CMD_PTR_RDY is clear it puts the request onto a
+			 * per-channel ready_commands[] list and lets the next
+			 * RSLT_VALID IRQ drain it -- it never writes CMD_PTR
+			 * into a channel that has not signalled readiness.
+			 * The mainline shortcut produces the canonical
+			 * SDCC drain-stall signature
+			 *   FLUSH STATE0=0x8000c003 STATE5=0x00000003
+			 * (project_adm_flush_state_decode_2026_06_14):
+			 * a CMD_PTR write into a not-ready channel leaves
+			 * two partial chains in the pipeline and the next
+			 * FLUSH IRQ comes back with STATE5 = drain-stage-3.
+			 *
+			 * Mirror legacy semantics by failing fast instead.
+			 * Mark the channel error so adm_tx_status() reports
+			 * DMA_ERROR, complete the descriptor (mmci-pl18x's
+			 * data IRQ path will see -EIO and the MMC block
+			 * layer will retry the request), clear curr_txd,
+			 * and never touch CMD_PTR on this not-ready channel.
+			 * The watchdog only arms after a successful CMD_PTR
+			 * write, so there is nothing to disarm here.
+			 *
+			 * The retry from the upper layer will re-enter
+			 * adm_start_dma; whether the channel has recovered
+			 * by then is up to the hardware.  On a transient
+			 * arbitration glitch (the most common cause of this
+			 * branch) the channel becomes ready within tens of
+			 * microseconds and the retry succeeds; on a genuine
+			 * hardware wedge the retries keep firing until the
+			 * MMC layer gives up, which is still strictly better
+			 * than writing CMD_PTR and converting a transient
+			 * problem into a permanent channel wedge.
+			 */
 			achan->cmd_ptr_not_rdy_count++;
-
 			if (!achan->cmd_ptr_not_rdy_logged) {
 				achan->cmd_ptr_not_rdy_logged = 1;
 				dev_warn(adev->dev,
-					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set after %d us busy-wait\n",
+					"ADM ch%d STATUS_SD=0x%08x: CMD_PTR_RDY not set after %d us busy-wait -- failing fast (no CMD_PTR write)\n",
 					achan->id, status, us);
 			}
+
+			if (need_submit_lock)
+				spin_unlock_irqrestore(&adev->submit_lock[lock_idx],
+						       submit_flags);
+
+			achan->error = 1;
+			achan->curr_txd = NULL;
+			vchan_cookie_complete(&async_desc->vd);
+			return;
 		}
 	}
 
