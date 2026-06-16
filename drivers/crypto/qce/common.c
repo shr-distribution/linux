@@ -1942,16 +1942,40 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 		 flags, keylen, rctx->cryptlen, rctx->ivsize);
 
 	/*
-	 * The engine is reset ONCE at probe (qce_check_version() in core.c
-	 * issues SW_RST + deassert). With the CRCI-5 blk_size bug fixed,
-	 * engine state no longer drifts between ops, so the per-op SW_RST
-	 * + MASK_INTR restore that used to live here is unnecessary
-	 * overhead (~50 µs/op + IDLE poll). Match Samsung's vendor
-	 * _ce_setup pattern: configure-once at init, per-op only writes
-	 * SEG_CFG / ENCR_SEG_CFG / SEG_SIZE / keys / IV / GOPROC. The
-	 * IDLE poll still runs below in case a previous op's STATUS hasn't
-	 * settled — cheap (one or two register reads) and a useful gate.
+	 * Per-op SW_RST + CONFIG re-init.
+	 *
+	 * The CE2 engine state machine wedges mid-op under sustained AF_ALG
+	 * load: engine accepts data via the CE_IN CRCI but fails to assert
+	 * the CE_OUT CRCI, leaving ADM tx waiting forever for a handshake
+	 * that never comes.  Symptom is probabilistic — sometimes 2-3 ops
+	 * succeed before one wedges, sometimes the very first op wedges —
+	 * and no software-side signal reports the failure (rx/tx callbacks
+	 * never fire because ADM has no error to report, it is faithfully
+	 * waiting on the engine's CRCI).  Six experiments (CONFIG init,
+	 * rx-callback, CRCI cache disable, descriptor introspection,
+	 * legacy-vs-mainline comparison, per-chunk-size sweep) ruled out
+	 * every ADM-side cause; the wedge is engine-internal.
+	 *
+	 * Restore the per-op SW_RST + interrupt-mask restore that lived in
+	 * this function pre-commit 0a6d4a7738c2.  That commit dropped it
+	 * citing "engine state no longer drifts between ops" based on
+	 * 4-block testing — under 32 KB-class ops the engine in fact does
+	 * drift, accumulating just enough internal state across submissions
+	 * that the next op's CE_OUT FSM glitches.  Resetting fresh per op
+	 * avoids accumulating that state.
+	 *
+	 * Cost: 2 × writel + 2 × usleep_range(10, 20) ≈ 30 µs per op.  On
+	 * the current cipher path's ~30 ms cost per 32 KB op (bounce-buffer
+	 * + ADM setup + engine throughput) this is ~0.1% overhead, not the
+	 * 20× regression initially feared.  Use qce_setup_config() for the
+	 * post-SW_RST CONFIG write so the mask bits, high-speed-enable
+	 * bits, and CLK_EN_N/SW_RST clear are all consistent with what
+	 * probe-time init does.
 	 */
+	writel_relaxed(BIT(CE2_SW_RST_SHIFT), qce->base + CE2_REG_CONFIG);
+	usleep_range(10, 20);
+	qce_setup_config(qce);
+	usleep_range(10, 20);
 
 	/* Wait for IDLE before configuring */
 	/*
