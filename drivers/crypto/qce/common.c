@@ -1343,9 +1343,57 @@ out:
 #endif
 
 #ifdef CONFIG_CRYPTO_DEV_QCE_SKCIPHER
+/*
+ * Dual-channel completion sync for CE2 cipher path. Mirrors the v5/BAM
+ * qce_dma_data pattern (drivers/crypto/qce/dma.c): an atomic_t ensures
+ * exactly one of rx or tx fires the user-visible completion, and the
+ * rxchan / rx_cookie pair lets the rx callback inspect its own status
+ * to decide whether to claim completion (rx error) or yield to tx
+ * (success — engine still producing output).
+ */
+struct qce_ce2_skc_sync {
+	struct completion	done;
+	atomic_t		completion_done;
+	struct dma_chan		*rxchan;
+	dma_cookie_t		rx_cookie;
+};
+
+/*
+ * rx-side callback (mirrors v5 qce_dma_rx_callback in dma.c).
+ *
+ * On a healthy CE2 cipher op the engine waits to produce output until
+ * rx has finished pushing input — rx therefore fires BEFORE tx in the
+ * success case. Returning early here without claiming the completion
+ * lets tx (which is the actual end-of-op signal) fire complete().
+ *
+ * On rx DMA_ERROR (the ADM controller rejected the rxchan submission
+ * with err=1, or the channel watchdog cancelled it) tx will never fire
+ * because the engine never receives input — without an rx callback we
+ * just sit on wait_for_completion_timeout for the full 1 s. Steal the
+ * completion here so the op fails fast and the caller's error path
+ * runs immediately with a precise "rx error" diagnostic.
+ */
+static void qce_ce2_skc_rx_check(void *param)
+{
+	struct qce_ce2_skc_sync *s = param;
+	enum dma_status status;
+
+	status = dma_async_is_tx_complete(s->rxchan, s->rx_cookie, NULL, NULL);
+	if (status != DMA_ERROR)
+		return;
+
+	if (atomic_xchg(&s->completion_done, 1) != 0)
+		return;
+	complete(&s->done);
+}
+
 static void qce_ce2_skc_dma_done(void *param)
 {
-	complete(param);
+	struct qce_ce2_skc_sync *s = param;
+
+	if (atomic_xchg(&s->completion_done, 1) != 0)
+		return;
+	complete(&s->done);
 }
 
 /* GOPROC fire callback invoked inside qce_ce2_dma_inout_cipher() AFTER
@@ -1504,7 +1552,7 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	struct dma_chan *rx = qce->dma.rxchan;
 	struct dma_chan *tx = qce->dma.txchan;
 	struct dma_async_tx_descriptor *in_desc, *out_desc;
-	struct completion done;
+	struct qce_ce2_skc_sync sync;
 	dma_cookie_t in_cookie, out_cookie;
 	dma_addr_t in_dma = b->in_dma, out_dma = b->out_dma;
 	__le32 *in_buf = b->in_buf, *out_buf = b->out_buf;
@@ -1545,8 +1593,17 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 	 * qce_ce2_dma_setup_cipher_chans() before the chunk loop -- no
 	 * per-chunk reconfig here.
 	 */
+	/*
+	 * DMA_PREP_INTERRUPT on rx too — required so the rx callback can
+	 * fire and detect rx-side ADM errors (e.g. err=1 from the
+	 * controller, or watchdog-cancelled descriptor) instead of just
+	 * timing out on the tx wait below.  Mirrors v5/BAM
+	 * qce_dma_prep_sgs which sets DMA_PREP_INTERRUPT on both.
+	 */
 	in_desc = dmaengine_prep_slave_single(rx, in_dma, padded,
-					      DMA_MEM_TO_DEV, DMA_CTRL_ACK);
+					      DMA_MEM_TO_DEV,
+					      DMA_PREP_INTERRUPT |
+					      DMA_CTRL_ACK);
 	if (!in_desc) {
 		dev_err(qce->dev, "CE2 cipher: in prep failed\n");
 		ret = -ENOMEM;
@@ -1563,9 +1620,14 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		goto out_terminate_rx;
 	}
 
-	init_completion(&done);
+	init_completion(&sync.done);
+	atomic_set(&sync.completion_done, 0);
+	sync.rxchan = rx;
+
+	in_desc->callback = qce_ce2_skc_rx_check;
+	in_desc->callback_param = &sync;
 	out_desc->callback = qce_ce2_skc_dma_done;
-	out_desc->callback_param = &done;
+	out_desc->callback_param = &sync;
 
 	in_cookie = dmaengine_submit(in_desc);
 	if (dma_submit_error(in_cookie)) {
@@ -1573,6 +1635,7 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		ret = -EIO;
 		goto out_terminate;
 	}
+	sync.rx_cookie = in_cookie;
 	out_cookie = dmaengine_submit(out_desc);
 	if (dma_submit_error(out_cookie)) {
 		dev_err(qce->dev, "CE2 cipher: out submit failed\n");
@@ -1609,10 +1672,24 @@ static int qce_ce2_dma_inout_cipher(struct qce_device *qce,
 		 "CE2 dma_inout: tx issued, STATUS=0x%08x — waiting for completion (1s timeout)\n",
 		 readl_relaxed(qce->base + CE2_REG_STATUS));
 
-	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(1000))) {
+	if (!wait_for_completion_timeout(&sync.done, msecs_to_jiffies(1000))) {
 		dev_err(qce->dev, "CE2 cipher: DMA timeout (%u bytes)\n",
 			padded);
 		ret = -ETIMEDOUT;
+		goto out_terminate;
+	}
+
+	/*
+	 * Check rx status: the rx_check callback steals the completion
+	 * on DMA_ERROR — if that fired, fail the op with a precise
+	 * rx-side diagnostic instead of misreporting it as a tx-side
+	 * incomplete.
+	 */
+	status = dma_async_is_tx_complete(rx, in_cookie, NULL, NULL);
+	if (status == DMA_ERROR) {
+		dev_err(qce->dev, "CE2 cipher: rx DMA error (%u bytes)\n",
+			padded);
+		ret = -EIO;
 		goto out_terminate;
 	}
 
