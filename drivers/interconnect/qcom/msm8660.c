@@ -1304,6 +1304,29 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 
 	msm8660_pack_rpm_data(qp->bwsum, ns, qp->arb, arb_size, qp->rpm_buf);
 
+	/*
+	 * DEBUG (drain-stall race investigation): print the ARB array we are
+	 * about to write, throttled to once per second.  AFAB / MMFAB commits
+	 * triggered by an unrelated consumer (e.g. msm_serial OPP rate change
+	 * during BT BCSP probe) cascade into icc_set_bw which walks the path
+	 * and calls provider->set for every fabric on the path.  This memset+
+	 * rebuild blanks the ARB table; any master without a current
+	 * bandwidth vote ends up at tier-zero/bw-zero.  We are trying to see
+	 * which consumer voted what when the eMMC drain stall fires.
+	 */
+	{
+		int j;
+		char buf[160];
+		int p = 0;
+		for (j = 0; j < arb_size && p < (int)sizeof(buf) - 8; j++)
+			p += scnprintf(buf + p, sizeof(buf) - p, "%04x,",
+				       qp->arb[j]);
+		dev_info_ratelimited(provider->dev,
+			"RPM commit: res=%d arb=[%s] bwsum0=%u\n",
+			desc->arb_resource, buf,
+			ns > 0 ? qp->bwsum[0] : 0);
+	}
+
 	ret = qcom_rpm_write(qp->rpm, QCOM_RPM_ACTIVE_STATE,
 			     desc->arb_resource, qp->rpm_buf,
 			     desc->rpm_buf_size);
