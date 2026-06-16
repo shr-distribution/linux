@@ -1195,6 +1195,18 @@ struct mmci_dmae_priv {
 	struct dma_chan	*rx_channel;
 	struct dma_chan	*tx_channel;
 	struct dma_async_tx_descriptor	*desc_current;
+	/*
+	 * Cookie of the currently in-flight descriptor, stashed by
+	 * mmci_dmae_submit() because the descriptor pointer at
+	 * desc_current is not guaranteed to carry the original cookie
+	 * by the time the dmaengine callback fires -- the qcom_adm pool
+	 * path (adm_desc_get -> memset &desc->vd) recycles descriptor
+	 * structs across submissions and clears the cookie field.
+	 * Queried by mmci_qcom_dma_complete() via dmaengine_tx_status()
+	 * to detect ADM-internal RSLT_ERR that would otherwise leave
+	 * MMCISTATUS clean and look like a successful transfer.
+	 */
+	dma_cookie_t curr_cookie;
 	struct mmci_dmae_next next_data;
 	u32 crci;	/* CRCI value for QCOM ADM DMA */
 };
@@ -1461,6 +1473,7 @@ out:
 static void mmci_qcom_dma_complete(void *param)
 {
 	struct mmci_host *host = param;
+	struct mmci_dmae_priv *dmae = host->dma_priv;
 	unsigned long flags;
 	struct mmc_data *data;
 	u32 status, status_err;
@@ -1478,6 +1491,46 @@ static void mmci_qcom_dma_complete(void *param)
 	}
 
 	write = !(data->flags & MMC_DATA_READ);
+
+	/*
+	 * Consult the dmaengine BEFORE trusting MMCISTATUS.  An ADM-internal
+	 * RSLT_ERR (channel pipeline aborted, no bytes moved into memory)
+	 * does NOT raise an SDCC status_err -- the failure is upstream of
+	 * the SDCC data path.  MMCISTATUS reads clean and the success branch
+	 * below would charge blksz * blocks of unread memory to userspace
+	 * (silent LVM / ext4 corruption observed on apq8060 / HP TouchPad:
+	 * ADM ch2 result=0x80000008, MMCISTATUS=0x0, mmc block layer
+	 * accepting zeros as the rootfs).
+	 *
+	 * Mark data->error here and fall through -- the rest of the
+	 * function (status_err handling, mmc1 PROGDONE poll, bytes
+	 * accounting, mmci_dma_finalize) is gated on !data->error and
+	 * becomes a no-op.  Do NOT call mmci_dma_error() inline: it would
+	 * dmaengine_terminate_all() from this dmaengine callback context
+	 * (per qcom_adm.c hardirq comment), whose vc.desc_free path can
+	 * reach dma_free_coherent() for non-pool descriptors and trip
+	 * WARN_ON in kernel/dma/mapping.c.  The SDCC-side reset
+	 * (reset_control_assert/deassert at mmci_data_irq()) fires when
+	 * the SDCC raises its own data error -- which it does eventually
+	 * for a stalled transfer -- or, if SDCC stays clean (ADM-only
+	 * failure), the per-channel error_cookie path in qcom_adm.c
+	 * surfaces DMA_ERROR on every subsequent submission and the MMC
+	 * block layer's retry exhaustion terminates the request with
+	 * -EIO instead of stranding it.
+	 */
+	if (dmae->cur && dmae->curr_cookie) {
+		enum dma_status ds = dmaengine_tx_status(dmae->cur,
+							 dmae->curr_cookie,
+							 NULL);
+
+		if (ds == DMA_ERROR && !data->error) {
+			data->error = -EIO;
+			trace_printk("MMCI-DMA-CB: mmc%u DMA_ERROR -> -EIO, %s blksz=%u blocks=%u\n",
+				     host->mmc->index,
+				     write ? "WRITE" : "read",
+				     data->blksz, data->blocks);
+		}
+	}
 
 	/*
 	 * The ADM moving all bytes does NOT mean the SDCC considered the
@@ -1839,6 +1892,7 @@ int mmci_dmae_prep_data(struct mmci_host *host,
 int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
+	dma_cookie_t cookie;
 	int ret;
 
 	if (!dmae->desc_current || !dmae->cur) {
@@ -1848,11 +1902,20 @@ int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 	}
 
 	host->dma_in_progress = true;
-	ret = dma_submit_error(dmaengine_submit(dmae->desc_current));
+	cookie = dmaengine_submit(dmae->desc_current);
+	ret = dma_submit_error(cookie);
 	if (ret < 0) {
 		host->dma_in_progress = false;
 		return ret;
 	}
+	/*
+	 * Stash the cookie -- desc_current may be recycled by the qcom_adm
+	 * pool path before mmci_qcom_dma_complete() reads its cookie back.
+	 * Querying dmaengine_tx_status() via the stashed value is the
+	 * race-safe way to see DMA_ERROR (cookies are monotonic per
+	 * channel and unaffected by descriptor struct reuse).
+	 */
+	dmae->curr_cookie = cookie;
 
 	*datactrl |= MCI_DPSM_DMAENABLE;
 
