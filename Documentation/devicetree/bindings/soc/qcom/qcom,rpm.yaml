@@ -17,21 +17,12 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - enum:
-          - qcom,rpm-apq8064
-          - qcom,rpm-msm8660
-          - qcom,rpm-msm8960
-          - qcom,rpm-ipq8064
-          - qcom,rpm-mdm9615
-      - items:
-          - enum:
-              - qcom,rpm-apq8064
-              - qcom,rpm-msm8660
-              - qcom,rpm-msm8960
-              - qcom,rpm-ipq8064
-              - qcom,rpm-mdm9615
-          - const: syscon
+    enum:
+      - qcom,rpm-apq8064
+      - qcom,rpm-msm8660
+      - qcom,rpm-msm8960
+      - qcom,rpm-ipq8064
+      - qcom,rpm-mdm9615
 
   reg:
     maxItems: 1
@@ -74,23 +65,6 @@ patternProperties:
   "^regulators(-[01])?$":
     type: object
     $ref: /schemas/regulator/qcom,rpm-regulator.yaml#
-  "^pm8058-regulators$":
-    type: object
-    description: PM8058 regulators reachable through RPM (MSM8x60).
-
-  "^pm8901-regulators$":
-    type: object
-    additionalProperties: true
-    description: PM8901 regulators reachable through RPM (MSM8x60).
-
-  "^rpm-sleep-set$":
-    type: object
-    additionalProperties: true
-    description: RPM sleep-set regulator configuration (MSM8x60).
-
-  "^interconnect-(afab|sfab|mmfab|dfab)$":
-    type: object
-    $ref: /schemas/interconnect/qcom,msm8660.yaml#
     unevaluatedProperties: false
 
 required:
@@ -101,6 +75,18 @@ required:
   - qcom,ipc
 
 additionalProperties: false
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: qcom,rpm-msm8660
+    then:
+      patternProperties:
+        "^interconnect-(afab|sfab|mmfab|dfab)$":
+          type: object
+          $ref: /schemas/interconnect/qcom,msm8660.yaml#
+          unevaluatedProperties: false
 
 examples:
   - |
