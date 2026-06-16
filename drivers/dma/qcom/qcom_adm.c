@@ -1324,6 +1324,15 @@ static void adm_start_dma(struct adm_chan *achan)
 					    BIT(async_desc->crci)) ||
 					  adev->crci_ctl_cache[async_desc->crci] != crci_val;
 			u32 cached = adev->crci_ctl_cache[async_desc->crci];
+			u32 reg_pre = 0;
+			bool is_qce = (async_desc->crci == 4 ||
+				       async_desc->crci == 5 ||
+				       async_desc->crci == 15);
+
+			/* DEBUG: live CRCI_CTL register readback for QCE CRCIs */
+			if (is_qce)
+				reg_pre = readl_relaxed(adev->regs +
+							ADM_CRCI_CTL(async_desc->crci, 0));
 
 			if (need_write) {
 				writel(crci_val,
@@ -1332,16 +1341,16 @@ static void adm_start_dma(struct adm_chan *achan)
 				adev->crci_ctl_cache_valid |= BIT(async_desc->crci);
 			}
 
-			/*
-			 * DEBUG: log only for QCE CRCIs (CE_IN=4, CE_OUT=5,
-			 * CE_HASH=15) — skip SDCC/BT to avoid log spam.
-			 */
-			if (async_desc->crci == 4 || async_desc->crci == 5 ||
-			    async_desc->crci == 15)
+			if (is_qce) {
+				u32 reg_post = readl_relaxed(adev->regs +
+						ADM_CRCI_CTL(async_desc->crci, 0));
+
 				dev_info(adev->dev,
-					 "ADM start_dma QCE crci=%u burst-based crci_val=0x%x cached=0x%x %s\n",
+					 "ADM start_dma QCE crci=%u: crci_val=0x%x cached=0x%x reg_pre=0x%x reg_post=0x%x %s\n",
 					 async_desc->crci, crci_val, cached,
+					 reg_pre, reg_post,
 					 need_write ? "WROTE" : "skipped");
+			}
 		}
 	}
 
@@ -1366,6 +1375,23 @@ static void adm_start_dma(struct adm_chan *achan)
 		achan->id, async_desc->crci,
 		(u32)(ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
 		async_desc->length);
+
+	/* DEBUG: log descriptor + CPL details for QCE channels */
+	if (async_desc->crci == 4 || async_desc->crci == 5 ||
+	    async_desc->crci == 15) {
+		u32 *cple = (u32 *)async_desc->cpl;
+		struct adm_desc_hw_box *box =
+			(struct adm_desc_hw_box *)((u8 *)async_desc->cpl +
+						   ADM_DESC_ALIGN);
+
+		dev_info(adev->dev,
+			 "ADM QCE descriptor crci=%u pool_idx=%d dma_addr=0x%llx len=%zu cpl[0]=0x%08x cpl[1]=0x%08x box: cmd=0x%08x src=0x%08x dst=0x%08x row_len=0x%08x num_rows=0x%08x\n",
+			 async_desc->crci, async_desc->pool_index,
+			 (u64)async_desc->dma_addr, async_desc->length,
+			 cple[0], cple[1],
+			 box->cmd, box->src_addr, box->dst_addr,
+			 box->row_len, box->num_rows);
+	}
 
 	/*
 	 * Wait for CMD_PTR_RDY before writing CMD_PTR (legacy webOS parity).
