@@ -182,6 +182,19 @@ struct msm8660_icc_provider {
 	u16 *arb;
 	u16 *bwsum;
 	u32 *rpm_buf;
+	/*
+	 * Last-written copy of @rpm_buf, used by msm8660_rpm_commit() to
+	 * skip RPM IPCs when the packed bwsum+arb payload has not changed
+	 * since the previous commit.  Without this short-circuit, every
+	 * consumer's icc_set_bw() call triggers a full ARB IPC even when
+	 * nothing has materially changed, and the RPM round-trip
+	 * (~20 ms) racing an in-flight mmci-pl18x ADM transfer reliably
+	 * produces "ADM DMA error: chan=2 result=0x80000008 (err=1)" in
+	 * the canonical SDCC-drain-stall pattern.  Legacy webOS commits
+	 * its APPS_FAB_ARB only on actual tier/bw transitions for the
+	 * same reason.
+	 */
+	u32 *last_rpm_buf;
 	struct mutex commit_lock;
 	/*
 	 * Last bus-clock rate written to RPM for this fabric (Hz).
@@ -1305,34 +1318,43 @@ static void msm8660_rpm_commit(struct msm8660_icc_provider *qp)
 	msm8660_pack_rpm_data(qp->bwsum, ns, qp->arb, arb_size, qp->rpm_buf);
 
 	/*
-	 * DEBUG (drain-stall race investigation): print the ARB array we are
-	 * about to write, throttled to once per second.  AFAB / MMFAB commits
-	 * triggered by an unrelated consumer (e.g. msm_serial OPP rate change
-	 * during BT BCSP probe) cascade into icc_set_bw which walks the path
-	 * and calls provider->set for every fabric on the path.  This memset+
-	 * rebuild blanks the ARB table; any master without a current
-	 * bandwidth vote ends up at tier-zero/bw-zero.  We are trying to see
-	 * which consumer voted what when the eMMC drain stall fires.
+	 * Short-circuit if the packed payload is identical to the last
+	 * one we wrote.  Captured live on a PVT Topaz Wifi (HP TouchPad /
+	 * APQ8060): the AFAB ARB sat at the same values for 36 seconds
+	 * across ~30 commit calls -- every icc_set_bw from every consumer
+	 * (msm_serial OPP rate changes during BT probe, USB-HS, etc.)
+	 * fires an msm8660_icc_set() which fires an msm8660_rpm_commit()
+	 * here, but the bandwidth aggregation for AFAB hadn't moved since
+	 * USB-HS settled.  The resulting ~20 ms RPM round-trip raced an
+	 * in-flight mmci-pl18x DMA on ADM ch2 and produced
+	 *
+	 *   adm-dma-engine 18420000: ADM DMA error: chan=2
+	 *                            result=0x80000008 (err=1 flush=0 tpd=0)
+	 *   adm-dma-engine 18420000: ADM ch2 STATUS_SD=0x00000000:
+	 *                            CMD_PTR_RDY not set after 100 us busy-wait
+	 *
+	 * the canonical SDCC-drain-stall signature.  Legacy webOS's
+	 * msm_bus_fabric writes APPS_FAB_ARB only on real tier/bw
+	 * transitions for the same reason: keep the ARB IPC traffic to
+	 * the minimum the firmware actually needs.
 	 */
-	{
-		int j;
-		char buf[160];
-		int p = 0;
-		for (j = 0; j < arb_size && p < (int)sizeof(buf) - 8; j++)
-			p += scnprintf(buf + p, sizeof(buf) - p, "%04x,",
-				       qp->arb[j]);
-		dev_info_ratelimited(provider->dev,
-			"RPM commit: res=%d arb=[%s] bwsum0=%u\n",
-			desc->arb_resource, buf,
-			ns > 0 ? qp->bwsum[0] : 0);
-	}
+	if (qp->last_rpm_buf &&
+	    !memcmp(qp->last_rpm_buf, qp->rpm_buf,
+		    desc->rpm_buf_size * sizeof(u32)))
+		return;
 
 	ret = qcom_rpm_write(qp->rpm, QCOM_RPM_ACTIVE_STATE,
 			     desc->arb_resource, qp->rpm_buf,
 			     desc->rpm_buf_size);
-	if (ret)
+	if (ret) {
 		dev_err_ratelimited(provider->dev,
 				    "RPM fabric ARB write failed: %d\n", ret);
+		return;
+	}
+
+	if (qp->last_rpm_buf)
+		memcpy(qp->last_rpm_buf, qp->rpm_buf,
+		       desc->rpm_buf_size * sizeof(u32));
 }
 
 /*
@@ -1614,8 +1636,18 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 				       sizeof(u16), GFP_KERNEL);
 		qp->rpm_buf = devm_kcalloc(dev, desc->rpm_buf_size,
 					   sizeof(u32), GFP_KERNEL);
-		if (!qp->bwsum || !qp->arb || !qp->rpm_buf)
+		/*
+		 * last_rpm_buf is initialised to all-bits-one so the first
+		 * commit always reaches the qcom_rpm_write() path (the very
+		 * first all-zero packed buffer would otherwise match a
+		 * default-zeroed last_rpm_buf and never get sent).
+		 */
+		qp->last_rpm_buf = devm_kmalloc_array(dev, desc->rpm_buf_size,
+						      sizeof(u32), GFP_KERNEL);
+		if (!qp->bwsum || !qp->arb || !qp->rpm_buf || !qp->last_rpm_buf)
 			return -ENOMEM;
+		memset(qp->last_rpm_buf, 0xff,
+		       desc->rpm_buf_size * sizeof(u32));
 
 		/*
 		 * One-shot sleep-context vote of zero bandwidth.  Without
