@@ -13,6 +13,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/interrupt.h>
+#include <linux/sched/clock.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
@@ -2578,6 +2579,28 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 			dev_err(mmc_dev(host->mmc), "DATATIMEOUT: blksz=%d blocks=%d flags=0x%x\n",
 				data->blksz, data->blocks, data->flags);
 			mmci_diag_dump_state(host, "DATATIMEOUT");
+			/*
+			 * DEBUG (DO NOT MERGE): expose the wall-clock gap
+			 * between qcom_adm exec_func exit (last MMIO write of
+			 * the CMD register) and DATATIMEOUT IRQ.  If this is
+			 * close to the full DATATIMER window (~200 ms at 400 kHz
+			 * init clock, ~85 ms at 24 MHz), the card was silent
+			 * for the whole window -- the failure is card-side.
+			 * If much shorter, something tore down the data path
+			 * between CMD issue and timeout.  Reported in us.
+			 */
+			if (host->dbg_t_exec_end_ns) {
+				u64 elapsed = sched_clock() - host->dbg_t_exec_end_ns;
+
+				dev_err(mmc_dev(host->mmc),
+					"DBG-DATATIMEOUT: %llu us since exec_func exit (cclk=%u Hz)\n",
+					div_u64(elapsed, 1000), host->cclk);
+				host->dbg_t_exec_end_ns = 0;
+			} else {
+				dev_err(mmc_dev(host->mmc),
+					"DBG-DATATIMEOUT: no exec_func stamp (non-atomic-submit / PIO path) cclk=%u Hz\n",
+					host->cclk);
+			}
 			data->error = -ETIMEDOUT;
 		} else if (status_err & MCI_STARTBITERR) {
 			data->error = -ECOMM;

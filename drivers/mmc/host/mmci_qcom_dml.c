@@ -5,6 +5,7 @@
  */
 #include <linux/delay.h>
 #include <linux/of.h>
+#include <linux/sched/clock.h>
 #include <linux/of_dma.h>
 #include <linux/bitops.h>
 #include <linux/mmc/host.h>
@@ -139,6 +140,13 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 		udelay(delay_us);
 
 	writel(host->atomic_submit.cmd_reg, base + MMCICOMMAND);
+
+	/*
+	 * DEBUG (DO NOT MERGE): stamp the exec-func exit time so
+	 * mmci_data_irq()'s DATATIMEOUT diag can compute how long the
+	 * card was silent after CMD.  See mmci.h::dbg_t_exec_end_ns.
+	 */
+	host->dbg_t_exec_end_ns = sched_clock();
 }
 
 static int qcom_dma_start(struct mmci_host *host, unsigned int *datactrl)
