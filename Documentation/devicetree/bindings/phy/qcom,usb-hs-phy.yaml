@@ -95,6 +95,21 @@ properties:
             the address is offset from the ULPI_EXT_VENDOR_SPECIFIC address
         - description: value
 
+  qcom,vendor-init-seq:
+    $ref: /schemas/types.yaml#/definitions/uint8-matrix
+    description: >
+      Sequence of raw ULPI (address, value) byte pairs written after
+      PHY reset. Unlike qcom,init-seq the address is not offset by
+      ULPI_EXT_VENDOR_SPECIFIC, so this property can reach the standard
+      ULPI vendor range (0x30-0x3f) — used on MSM8x60-class hardware to
+      program pre-emphasis, HS driver slope and CDR auto-reset bits the
+      legacy msm_otg driver used to set via platform data.
+    maxItems: 32
+    items:
+      items:
+        - description: raw ULPI register address
+        - description: value
+
 required:
   - clocks
   - clock-names
