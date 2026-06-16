@@ -1195,6 +1195,17 @@ struct mmci_dmae_priv {
 	struct dma_chan	*rx_channel;
 	struct dma_chan	*tx_channel;
 	struct dma_async_tx_descriptor	*desc_current;
+	/*
+	 * Cookie of the currently in-flight descriptor, stashed by
+	 * mmci_dmae_submit() because the descriptor pointer at
+	 * desc_current is recycled by the qcom_adm pool path between
+	 * RSLT_VALID and the completion callback (adm_desc_get()
+	 * memsets vd, which clears desc->vd.tx.cookie).  Read by
+	 * mmci_qcom_dma_complete() via dmaengine_tx_status() to detect
+	 * ADM-internal RSLT_ERR/RSLT_FLUSH that would otherwise leave
+	 * MMCISTATUS clean and look like a successful transfer.
+	 */
+	dma_cookie_t curr_cookie;
 	struct mmci_dmae_next next_data;
 	u32 crci;	/* CRCI value for QCOM ADM DMA */
 };
@@ -1461,6 +1472,7 @@ out:
 static void mmci_qcom_dma_complete(void *param)
 {
 	struct mmci_host *host = param;
+	struct mmci_dmae_priv *dmae = host->dma_priv;
 	unsigned long flags;
 	struct mmc_data *data;
 	u32 status, status_err;
@@ -1478,6 +1490,36 @@ static void mmci_qcom_dma_complete(void *param)
 	}
 
 	write = !(data->flags & MMC_DATA_READ);
+
+	/*
+	 * Consult the dmaengine BEFORE trusting MMCISTATUS.  An ADM-internal
+	 * RSLT_ERR / RSLT_FLUSH (channel pipeline aborted, zero or partial
+	 * bytes actually moved into memory) does NOT raise an SDCC status_err
+	 * -- the failure is upstream of the SDCC data path.  MMCISTATUS reads
+	 * clean and the success branch below would charge blksz * blocks of
+	 * unread memory to userspace (silent LVM / ext4 corruption observed
+	 * empirically on early eMMC reads right after switch_root: ADM ch2
+	 * result=0x80000008, MMCISTATUS=0x0, mmc block layer accepting zeros
+	 * as the rootfs).  Treat DMA_ERROR as -EIO and tear the channel down
+	 * via mmci_dma_error() so the MMC block layer retries cleanly.  The
+	 * existing fall-through (status_err handling, PROGDONE poll, bytes
+	 * accounting) is gated on !data->error, so it becomes a no-op once
+	 * we set data->error here.
+	 */
+	if (dmae->cur && dmae->curr_cookie) {
+		enum dma_status ds = dmaengine_tx_status(dmae->cur,
+							 dmae->curr_cookie,
+							 NULL);
+
+		if (ds == DMA_ERROR && !data->error) {
+			data->error = -EIO;
+			mmci_dma_error(host);
+			trace_printk("MMCI-DMA-CB: mmc%u DMA_ERROR -> -EIO, %s blksz=%u blocks=%u\n",
+				     host->mmc->index,
+				     write ? "WRITE" : "read",
+				     data->blksz, data->blocks);
+		}
+	}
 
 	/*
 	 * The ADM moving all bytes does NOT mean the SDCC considered the
@@ -1839,6 +1881,7 @@ int mmci_dmae_prep_data(struct mmci_host *host,
 int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 {
 	struct mmci_dmae_priv *dmae = host->dma_priv;
+	dma_cookie_t cookie;
 	int ret;
 
 	if (!dmae->desc_current || !dmae->cur) {
@@ -1848,11 +1891,20 @@ int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 	}
 
 	host->dma_in_progress = true;
-	ret = dma_submit_error(dmaengine_submit(dmae->desc_current));
+	cookie = dmaengine_submit(dmae->desc_current);
+	ret = dma_submit_error(cookie);
 	if (ret < 0) {
 		host->dma_in_progress = false;
 		return ret;
 	}
+	/*
+	 * Stash the cookie -- desc_current may be recycled by the qcom_adm
+	 * pool path before mmci_qcom_dma_complete() reads back its cookie
+	 * field; querying dmaengine_tx_status() via the stashed value is the
+	 * race-safe way to see DMA_ERROR (cookies are unique per channel
+	 * and not affected by pool reuse of the descriptor struct).
+	 */
+	dmae->curr_cookie = cookie;
 
 	*datactrl |= MCI_DPSM_DMAENABLE;
 
