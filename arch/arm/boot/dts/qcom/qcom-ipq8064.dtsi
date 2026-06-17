@@ -941,10 +941,10 @@
 		};
 
 		adm_dma: dma-controller@18300000 {
-			compatible = "qcom,adm";
+			compatible = "qcom,adm-ipq8064";
 			reg = <0x18300000 0x100000>;
 			interrupts = <GIC_SPI 170 IRQ_TYPE_LEVEL_HIGH>;
-			#dma-cells = <1>;
+			#dma-cells = <3>;
 
 			clocks = <&gcc ADM0_CLK>, <&gcc ADM0_PBUS_CLK>;
 			clock-names = "core", "iface";
@@ -956,6 +956,7 @@
 				 <&gcc ADM0_C2_RESET>;
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			qcom,ee = <0>;
+			qcom,owns-master-sd;
 
 			status = "disabled";
 		};
@@ -1034,7 +1035,14 @@
 				 <&gcc EBI2_AON_CLK>;
 			clock-names = "core", "aon";
 
-			dmas = <&adm_dma 3>;
+			/*
+			 * NAND switches CRCI per submission (CMD vs DATA), so
+			 * the xlate CRCI cell is 0 ("set at runtime") and the
+			 * consumer driver picks the right one via
+			 * qcom_adm_peripheral_config based on qcom,cmd-crci /
+			 * qcom,data-crci below.
+			 */
+			dmas = <&adm_dma 3 0 0>;
 			dma-names = "rxtx";
 			qcom,cmd-crci = <15>;
 			qcom,data-crci = <3>;

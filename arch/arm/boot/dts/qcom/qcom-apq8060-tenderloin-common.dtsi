@@ -378,7 +378,7 @@
 		 * Base addresses: ADM0=0x18320000, ADM1=0x18420000
 		 */
 		adm_dma0: dma-controller@18320000 {
-			compatible = "qcom,adm";
+			compatible = "qcom,adm-apq8060";
 			/*
 			 * 0x80000 (512 KB) covers all ADM register accesses the
 			 * driver makes — max offset is ADM_CH_RSLT_CONF +
@@ -390,7 +390,7 @@
 			 */
 			reg = <0x18320000 0x80000>;
 			interrupts = <GIC_SPI 171 IRQ_TYPE_LEVEL_HIGH>;
-			#dma-cells = <1>;
+			#dma-cells = <3>;
 
 			clocks = <&gcc ADM0_CLK>, <&gcc ADM0_PBUS_CLK>;
 			clock-names = "core", "iface";
@@ -403,6 +403,14 @@
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
 			qcom,ee = <1>;
+			/*
+			 * Channel filter: only register the channels Linux uses
+			 * on this ADM. ADM0 channels 10-14 belong to the modem
+			 * subsystem on MSM8X60 — leaving them out keeps the
+			 * dmaengine layer from accidentally handing one to a
+			 * consumer that asks by mask.
+			 */
+			qcom,channels-aarm = <2 3 4 8 15>;
 
 			/*
 			 * EBI interconnect path for DMA memory access.
@@ -419,11 +427,11 @@
 		};
 
 		adm_dma1: dma-controller@18420000 {
-			compatible = "qcom,adm";
+			compatible = "qcom,adm-apq8060";
 			/* 0x80000 — fits below crypto@18500000 (was overlapping at 0x100000) */
 			reg = <0x18420000 0x80000>;
 			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
-			#dma-cells = <1>;
+			#dma-cells = <3>;
 
 			clocks = <&gcc ADM1_CLK>, <&gcc ADM1_PBUS_CLK>;
 			clock-names = "core", "iface";
@@ -436,6 +444,13 @@
 			reset-names = "clk", "pbus", "c0", "c1", "c2";
 			/* EE 1 = Security Domain 1 (AARM) for non-secure Linux */
 			qcom,ee = <1>;
+			/*
+			 * Channel filter: only the eMMC, BT-UART RX and WiFi
+			 * SDCC channels Linux actually uses. The rest of the
+			 * ADM1 channels are bootloader/modem-owned and Linux
+			 * does not touch them.
+			 */
+			qcom,channels-aarm = <2 5 7>;
 
 			/*
 			 * EBI interconnect path for DMA memory access.
@@ -514,7 +529,14 @@
 			clock-names = "core", "iface", "bus";
 			resets = <&gcc CE2_RESET>;
 			reset-names = "engine";
-			dmas = <&adm_dma0 2>, <&adm_dma0 3>;
+			/*
+			 * 3-cell dmas form: <controller channel crci mux>.
+			 * RX = ch2 CRCI 4 (CE_IN), TX = ch3 CRCI 5 (CE_OUT).
+			 * Hash uses CRCI 15 (CE_HASH); the qce driver overrides
+			 * the TX CRCI to 15 via qcom_adm_peripheral_config when
+			 * preparing hash descriptors.
+			 */
+			dmas = <&adm_dma0 2 4 0>, <&adm_dma0 3 5 0>;
 			dma-names = "rx", "tx";
 			status = "okay";
 		};
@@ -563,12 +585,20 @@
 				clocks = <&gcc GSBI10_UART_CLK>, <&gcc GSBI10_H_CLK>;
 				clock-names = "core", "iface";
 
-				dmas = <&adm_dma0 8>;
+				/*
+				 * 3-cell form: <ctrl ch crci mux>.
+				 * GSBI10 HSUART2 RX = ch8 CRCI 10 MUX=1
+				 * (legacy webOS DMOV_HSUART2_RX_CRCI = (1<<4)+10 = 26).
+				 */
+				dmas = <&adm_dma0 8 10 1>;
 				dma-names = "rx";
 				/*
-				 * GSBI10 DMA CRCI configuration from webOS kernel:
-				 * DMOV_HSUART2_TX_CRCI = (1 << 4) + 9 = 25
-				 * DMOV_HSUART2_RX_CRCI = (1 << 4) + 10 = 26
+				 * The msm_serial uartdm-v1.3 driver still reads
+				 * qcom,rx-crci to populate peripheral_config.crci;
+				 * keep it in legacy-encoded form (mux<<4 | crci)
+				 * for that consumer path. The xlate above is
+				 * authoritative; the consumer-driver value
+				 * overrides only if it differs.
 				 */
 				qcom,rx-crci = <26>;
 
@@ -2822,7 +2852,8 @@
 	 * concurrent eMMC + WiFi load because the eMMC's next-descriptor
 	 * start was deferred past the SDCC DPSM data window.
 	 */
-	dmas = <&adm_dma1 2>, <&adm_dma1 2>;
+	/* 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share). */
+	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
 	dma-names = "rx", "tx";
 	qcom,sdcc-crci = <1>;
 
@@ -3000,7 +3031,8 @@
 	 * Channel 21 = ADM1 channel 5 (ADM1 starts at global channel 16)
 	 * CRCI 5 provides flow control for SDC4 transfers
 	 */
-	dmas = <&adm_dma1 5>, <&adm_dma1 5>;
+	/* 3-cell: SDC4 WiFi = ADM1 ch5 CRCI 5 MUX 0 (RX and TX share). */
+	dmas = <&adm_dma1 5 5 0>, <&adm_dma1 5 5 0>;
 	dma-names = "rx", "tx";
 	qcom,sdcc-crci = <5>;
 
@@ -3494,7 +3526,8 @@
 	 *
 	 * RX = ADM1 local ch7, CRCI 9 (HSUART1_RX). No tx-crci: TX is PIO.
 	 */
-	dmas = <&adm_dma1 7>;
+	/* 3-cell: HSUART1 BT RX = ADM1 ch7 CRCI 9 MUX 0. */
+	dmas = <&adm_dma1 7 9 0>;
 	dma-names = "rx";
 	qcom,rx-crci = <9>;
 
