@@ -409,6 +409,15 @@ struct adm_chan {
 	u8 cmd_ptr_not_rdy_logged;
 
 	/*
+	 * One-shot diagnostic dump in adm_start_dma() so the first
+	 * submit on each channel logs the bracketing register state
+	 * (CRCI_CTL, CONF, STATUS_SD, RSLT_CONF, CMD_PTR being written,
+	 * CPL first word). Lets a boot-time wedge surface enough state
+	 * to diff against a known-good reference without re-running.
+	 */
+	u8 first_submit_logged;
+
+	/*
 	 * One-shot FLUSH-state full dump.  The ADM-DIAG SDCC-drain-stall path
 	 * reads all six FLUSH_STATE registers on the first FLUSH per channel
 	 * and emits them in a single dev_warn; subsequent FLUSHes on the same
@@ -1952,9 +1961,44 @@ static void adm_start_dma(struct adm_chan *achan)
 	 *
 	 * See project_adm_flush_state_decode_2026_06_14 memory.
 	 */
-	writel(ADM_CPLE_CMD_PTR_LIST |
-	       (ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
-	       adev->regs + ADM_CH_CMD_PTR(achan->id, adev->ee));
+	{
+		u32 cmd_ptr_val = ADM_CPLE_CMD_PTR_LIST |
+				  (ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3);
+
+		/*
+		 * One-shot per (channel,direction) diagnostic: dump the
+		 * channel state that bracket the CMD_PTR write so we can
+		 * compare against a known-good (webOS) reference when a
+		 * boot wedges on the first transfer. Disambiguates "channel
+		 * setup wrong" vs "channel started but never completed."
+		 */
+		if (!achan->first_submit_logged) {
+			u32 ctl_ee_dbg = (adev->soc_data &&
+					  adev->soc_data->crci_ctl_at_ee0)
+					 ? 0 : adev->ee;
+			u32 status_pre = readl_relaxed(adev->regs +
+				ADM_CH_STATUS_SD(achan->id, adev->ee));
+			u32 rslt_conf = readl_relaxed(adev->regs +
+				ADM_CH_RSLT_CONF(achan->id, adev->ee));
+			u32 crci_ctl = async_desc->crci ?
+				readl_relaxed(adev->regs +
+					ADM_CRCI_CTL(async_desc->crci, ctl_ee_dbg)) : 0;
+			u32 ch_conf_ee0 = readl_relaxed(adev->regs +
+				ADM_CH_CONF(achan->id, 0));
+			u32 first_word = *(u32 *)async_desc->cpl;
+
+			dev_info(adev->dev,
+				 "ADM first submit ch%u: crci=%u cmd_ptr=0x%08x cpl[0]=0x%08x status_sd=0x%x rslt_conf=0x%x crci_ctl[%u]@ee%u=0x%x conf@ee0=0x%x\n",
+				 achan->id, async_desc->crci, cmd_ptr_val,
+				 first_word, status_pre, rslt_conf,
+				 async_desc->crci, ctl_ee_dbg, crci_ctl,
+				 ch_conf_ee0);
+			achan->first_submit_logged = 1;
+		}
+
+		writel(cmd_ptr_val,
+		       adev->regs + ADM_CH_CMD_PTR(achan->id, adev->ee));
+	}
 
 	/*
 	 * EE=0 mirror write — only meaningful on SoCs whose CRCI_CTL is
@@ -2004,24 +2048,21 @@ static void adm_start_dma(struct adm_chan *achan)
 	 * adm_watchdog_timeout() otherwise (see that function for the
 	 * recovery sequence).
 	 *
-	 * Only memory-paced submissions get a watchdog.  Peripheral-paced
-	 * RX channels (e.g. UART RX on msm_serial, BT-UART RX) legitimately
-	 * wait indefinitely until the remote peer transmits, with no
-	 * meaningful upper bound on completion time -- a fixed timeout
-	 * just produces false-positive recoveries that the consumer
-	 * resubmits, looping at the watchdog rate and starving the CPU
-	 * (observed live: ch7 HSUART1_RX + ch8 BT-UART_RX both retrying
-	 * every 510 ms before any peer was transmitting, driving CPU0
-	 * into soft-lockup during initramfs).  Use exec_func presence as
-	 * the discriminator: the consumers that benefit from wedge
-	 * recovery (mmci eMMC / WiFi) all set exec_func to perform atomic
-	 * peripheral-MMIO setup at submit time; UART RX, BT-UART RX,
-	 * qpic NAND, qce crypto, and similar peripheral-paced or
-	 * external-data-paced consumers do not.
+	 * Originally gated on async_desc->exec_func presence so that
+	 * peripheral-paced RX consumers (UART RX, BT-UART RX) that
+	 * legitimately wait for an external sender wouldn't trigger
+	 * false-positive recoveries.  That gate also excludes mmci
+	 * READ transfers (mmci only sets exec_func for atomic-submit
+	 * writes), which masked the eMMC EXT_CSD wedge on Tenderloin
+	 * boot (no watchdog message, kernel just locks up in cpuidle
+	 * forever).  Arm unconditionally for now so a wedged transfer
+	 * surfaces as DMA_ERROR after 500 ms and the consumer can
+	 * recover or error-out cleanly.  TODO: re-gate once peripheral
+	 * RX consumers can opt out explicitly (e.g. via slave_config
+	 * peripheral_config) rather than via exec_func presence.
 	 */
-	if (async_desc->exec_func)
-		mod_timer(&achan->watchdog,
-			  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
+	mod_timer(&achan->watchdog,
+		  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
 }
 
 /**
