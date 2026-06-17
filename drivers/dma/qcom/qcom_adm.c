@@ -2352,8 +2352,19 @@ static struct dma_chan *adm_dma_xlate(struct of_phandle_args *dma_spec,
 		return NULL;
 	}
 
+	/*
+	 * Match the hardware channel index (achan->id) NOT chan->chan_id.
+	 *
+	 * dma_async_device_register() assigns chan_id sequentially based on
+	 * registration order, which equals the hardware index only when every
+	 * channel is registered. With qcom,channels-aarm filtering out modem /
+	 * unused channels the chan_ids compact (Tenderloin ADM1 with
+	 * qcom,channels-aarm = <2 5 7> ends up with chan_id 0, 1, 2 for
+	 * hardware channels 2, 5, 7). achan->id is stashed at
+	 * adm_channel_init() time and is always the hardware index.
+	 */
 	list_for_each_entry(chan, &dev->channels, device_node)
-		if (chan->chan_id == chan_idx) {
+		if (to_adm_chan(chan)->id == chan_idx) {
 			candidate = chan;
 			break;
 		}
