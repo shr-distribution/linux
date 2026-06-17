@@ -697,13 +697,21 @@ static void adm_recover_channel(struct adm_chan *achan, u32 crci_for_desc)
 
 	if (crci_for_desc) {
 		u32 c = crci_for_desc & 0xf;
+		/*
+		 * Match the EE-selection logic used in adm_start_dma: on
+		 * SoCs whose CRCI_CTL is live at EE=0 (Tenderloin/APQ8060)
+		 * the write MUST go to EE=0 regardless of which SD Linux
+		 * owns; writing to adev->ee (=1) silently drops the reset
+		 * and the FIFO state machine stays stuck. The previous
+		 * owns_master_sd gate was wrong: Tenderloin does not set
+		 * qcom,owns-master-sd, so the EE=0 fallback never ran and
+		 * R63 recovery never actually reached the hardware.
+		 */
+		u32 ctl_ee = (adev->soc_data && adev->soc_data->crci_ctl_at_ee0)
+			     ? 0 : adev->ee;
 
 		writel_relaxed(ADM_CRCI_CTL_RST,
-			       adev->regs + ADM_CRCI_CTL(c, adev->ee));
-		/* Master-SD-owning boards also reset at EE=0. */
-		if (adev->owns_master_sd && adev->ee != 0)
-			writel_relaxed(ADM_CRCI_CTL_RST,
-				       adev->regs + ADM_CRCI_CTL(c, 0));
+			       adev->regs + ADM_CRCI_CTL(c, ctl_ee));
 		adev->crci_ctl_cache_valid &= ~BIT(c);
 	}
 
@@ -1194,11 +1202,24 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 	void *desc;
 	u32 *cple;
 	int blk_size = 0;
+	/*
+	 * achan->crci is written under achan->vc.lock by adm_slave_config().
+	 * Snapshot the encoded value (mux<<4 | crci) here under the same lock
+	 * so a concurrent reconfig cannot race the descriptor-build path.
+	 * Reading the field multiple times unprotected would let a torn or
+	 * stale value reach the descriptor.
+	 */
+	u32 chan_crci_enc;
+	unsigned long lock_flags;
 
 	if (!is_slave_direction(direction)) {
 		dev_err(adev->dev, "invalid dma direction\n");
 		return NULL;
 	}
+
+	spin_lock_irqsave(&achan->vc.lock, lock_flags);
+	chan_crci_enc = achan->crci;
+	spin_unlock_irqrestore(&achan->vc.lock, lock_flags);
 
 	/*
 	 * Get burst value from slave configuration and convert to bytes.
@@ -1213,8 +1234,8 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 
 
 	dev_dbg(adev->dev,
-		"ADM prep_slave_sg: chan=%d device_fc=%d achan->crci=%d burst=%d dir=%d\n",
-		achan->id, achan->slave.device_fc, achan->crci, burst, direction);
+		"ADM prep_slave_sg: chan=%d device_fc=%d chan_crci=0x%x burst=%d dir=%d\n",
+		achan->id, achan->slave.device_fc, chan_crci_enc, burst, direction);
 
 	/* if using flow control, validate burst and crci values */
 	if (achan->slave.device_fc) {
@@ -1225,8 +1246,8 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 			return NULL;
 		}
 
-		crci = achan->crci & 0xf;
-		if (!crci || achan->crci > 0x1f) {
+		crci = chan_crci_enc & 0xf;
+		if (!crci || chan_crci_enc > 0x1f) {
 			dev_err(adev->dev, "invalid crci value\n");
 			return NULL;
 		}
@@ -1326,7 +1347,7 @@ static struct dma_async_tx_descriptor *adm_prep_slave_sg(struct dma_chan *chan,
 	 * hardware and kills the muxed CRCI handshake (touchscreen RX went
 	 * dead). On EE=1 the write was dropped, so this was previously latent.
 	 */
-	async_desc->mux = (achan->crci & ADM_CRCI_MUX_SEL) ? ADM_CRCI_CTL_MUX_SEL : 0;
+	async_desc->mux = (chan_crci_enc & ADM_CRCI_MUX_SEL) ? ADM_CRCI_CTL_MUX_SEL : 0;
 	async_desc->crci = crci;
 	async_desc->blk_size = blk_size;
 	/* Inherit exec_func from channel slave config */
@@ -2428,6 +2449,14 @@ adm_prep_dma_memcpy(struct dma_chan *chan, dma_addr_t dst, dma_addr_t src,
 		return NULL;
 	if (!IS_ALIGNED(src, ADM_DESC_ALIGN) || !IS_ALIGNED(dst, ADM_DESC_ALIGN))
 		return NULL;
+	/*
+	 * Refuse pathological lengths before they wrap DIV_ROUND_UP's
+	 * (len + ADM_MAX_XFER - 1) intermediate. SZ_1G is far above any
+	 * realistic memcpy on this hardware and well below the overflow
+	 * boundary on every supported arch.
+	 */
+	if (len > SZ_1G)
+		return NULL;
 
 	n_descs = DIV_ROUND_UP(len, ADM_MAX_XFER);
 	cpl_size = n_descs * sizeof(*single) + sizeof(*cple) + 2 * ADM_DESC_ALIGN;
@@ -2513,6 +2542,13 @@ adm_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t buf_addr, size_t buf_len,
 	unsigned int n_periods, i;
 	u32 crci_cmd;
 	dma_addr_t slave_addr;
+	/*
+	 * Snapshot of achan->crci taken under achan->vc.lock at entry to
+	 * close the adm_slave_config() race; see the same pattern in
+	 * adm_prep_slave_sg() for rationale. Encoded form (mux<<4 | crci).
+	 */
+	u32 chan_crci_enc;
+	unsigned long lock_flags;
 
 	if (!buf_len || !period_len || buf_len % period_len)
 		return NULL;
@@ -2521,6 +2557,13 @@ adm_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t buf_addr, size_t buf_len,
 	if (!IS_ALIGNED(buf_addr, ADM_DESC_ALIGN) ||
 	    !IS_ALIGNED(period_len, ADM_DESC_ALIGN))
 		return NULL;
+	/* Same sanity cap as adm_prep_dma_memcpy — see comment there. */
+	if (buf_len > SZ_1G)
+		return NULL;
+
+	spin_lock_irqsave(&achan->vc.lock, lock_flags);
+	chan_crci_enc = achan->crci;
+	spin_unlock_irqrestore(&achan->vc.lock, lock_flags);
 
 	n_periods = buf_len / period_len;
 	cpl_size = n_periods * sizeof(*single) + sizeof(*cple) + 2 * ADM_DESC_ALIGN;
@@ -2540,8 +2583,8 @@ adm_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t buf_addr, size_t buf_len,
 		}
 	}
 
-	async_desc->crci = achan->crci & 0xf;
-	async_desc->mux = (achan->crci & ADM_CRCI_MUX_SEL) ?
+	async_desc->crci = chan_crci_enc & 0xf;
+	async_desc->mux = (chan_crci_enc & ADM_CRCI_MUX_SEL) ?
 			  ADM_CRCI_CTL_MUX_SEL : 0;
 	async_desc->blk_size = 0;	/* per-CRCI default applies */
 	async_desc->length = buf_len;
