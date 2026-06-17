@@ -1412,6 +1412,22 @@ static void qce_ce2_skc_fire_goproc(struct qce_device *qce, void *arg)
 
 	status_before = readl_relaxed(qce->base + CE2_REG_STATUS);
 	writel(BIT(CE2_GO_SHIFT), qce->base + CE2_REG_GOPROC);
+	/*
+	 * Full memory barrier after GOPROC matches Samsung's _ce_setup
+	 * (refs/samsung-msm8660/drivers/crypto/msm/qce.c:898-902).  writel
+	 * on ARM only provides a pre-write dmb_st via __iowmb(); legacy
+	 * uses writel_relaxed + explicit mb() (dmb_sy = full barrier).
+	 * The difference matters because dma_async_issue_pending() runs
+	 * immediately after this and triggers ADM hardware to read the
+	 * descriptor and bounce buffer from DMA-coherent memory.  Without
+	 * the post-write barrier, the GOPROC write can sit in the ARM
+	 * write-posting window while the engine starts asserting CE_IN
+	 * CRCI based on its prior state, racing against the ADM rx kick.
+	 * This is one of the two verified register-write differences vs
+	 * legacy (the other being IV → CNTR_MASK → KEY order); aligning
+	 * with legacy closes both windows.
+	 */
+	mb();
 
 	/* Engine leaves IDLE within microseconds; ADM issue_pending
 	 * fires immediately after.
@@ -2081,50 +2097,25 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	QCE_DBG_BUF(qce, "enckey[] after qce_cpu_to_be32p_array",
 		    (u8 *)enckey, keylen);
 
-	if (IS_DES(flags) || IS_3DES(flags)) {
-		for (k = 0; k < enckey_words; k++)
-			writel((__force u32)enckey[k],
-			       qce->base + CE2_REG_DES_KEY0 + k * 4);
-	} else {	/* AES */
-		/*
-		 * AES_SEL_FAST path: ENGINES_AVAIL reports AES = FAST on
-		 * this silicon, and the prior comment block notes "an
-		 * earlier raw-key fast-path ... passed all NIST vectors
-		 * <= 32 B". The slow path (software-expanded 60-dword
-		 * round-key schedule) currently produces deterministic
-		 * non-NIST AES output for varied-byte keys — confirmed by
-		 * qce-nist with the NIST FIPS-197 vector
-		 *   K=2b7e..., PT=6bc1bee2... → expected 3ad77bb4...
-		 *   got ae5e647c... (off by full AES math).
-		 *
-		 * Switch to fast path: write ONLY the raw user key (4 dwords
-		 * for AES-128, 6 for AES-192, 8 for AES-256) and let the
-		 * engine expand internally. enckey[] is the user key already
-		 * BE-packed by qce_cpu_to_be32p_array() above; writel on LE
-		 * places bus bytes so the engine reads the user-key bytes
-		 * in original order at RNDKEY0..N.
-		 *
-		 * If this path also wedges past ~64 bytes (as the older
-		 * comment warned), we'll cap there and fix the slow-path
-		 * byte order separately.
-		 */
-		/*
-		 * Key write — NO byteswap. The engine reads RNDKEY0..N
-		 * as 32-bit integers matching the writel value: enckey[k]
-		 * is the user key as a BE-packed integer (via
-		 * qce_cpu_to_be32p_array), writel encodes that integer onto
-		 * the LE bus, engine reads back the same integer, and
-		 * interprets it as the FIPS-197 BE-packed K[0..3] word for
-		 * that round-0 column. Triangulation against software
-		 * AES (see commit message) showed engine_K = NIST_K under
-		 * this write pattern.
-		 */
-		for (k = 0; k < enckey_words; k++)
-			writel((__force u32)enckey[k],
-			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
-	}
+	/*
+	 * Register write order matches the Samsung MSM8660 vendor driver
+	 * _ce_setup() (refs/samsung-msm8660/drivers/crypto/msm/qce.c:798
+	 * onwards) verbatim: IV (CNTR0..3) → CNTR_MASK → KEY (AES RNDKEY
+	 * or DES KEY).  An earlier version of this function did KEY first,
+	 * then IV, then MASK — which is the order most v5/BAM register
+	 * setup functions use — but the legacy CE2 silicon appears to
+	 * sample its key state when CNTR_MASK is written (CNTR_MASK
+	 * configures the counter-mode bit-width, which affects the
+	 * round-key schedule expansion the engine performs internally
+	 * for FAST-AES).  Writing the KEY before CNTR_MASK leaves a
+	 * window where the engine's internal key schedule is built
+	 * against the wrong counter state, surfacing as a probabilistic
+	 * mid-op wedge (engine accepts GOPROC, accepts initial CE_IN
+	 * handshakes, then freezes mid-flight without asserting CE_OUT).
+	 * Matching legacy's IV → CNTR_MASK → KEY order closes the window.
+	 */
 
-	/* IV: CNTR0..3.  Skip for ECB (no IV) */
+	/* 1. IV: CNTR0..3.  Skip for ECB (no IV) */
 	if (!IS_ECB(flags) && rctx->iv && rctx->ivsize) {
 		QCE_DBG_BUF(qce, "raw user IV", rctx->iv, rctx->ivsize);
 		qce_cpu_to_be32p_array(enciv, rctx->iv, rctx->ivsize);
@@ -2146,15 +2137,49 @@ int qce_ce2_pio_run_skcipher(struct crypto_async_request *async_req)
 	}
 
 	/*
-	 * Write CNTR_MASK = 0xffff for ALL AES modes (matches Samsung's
-	 * _ce_setup, which writes it unconditionally in the AES branch
-	 * before any cfg/keys). Previous scratch-driver iteration only
-	 * wrote this for CTR; ECB/CBC may rely on CNTR_MASK initial state
-	 * even though they don't "use" the counter, and Samsung's
-	 * reference always writes it.
+	 * 2. CNTR_MASK = 0xffff for ALL AES modes.  Matches Samsung's
+	 * _ce_setup which writes it unconditionally in the AES branch
+	 * BEFORE the key (qce.c:810).  The earlier scratch-driver order
+	 * (this write AFTER the key) appears load-bearing for the FAST-AES
+	 * key-schedule expansion described in the IV→MASK→KEY rationale
+	 * block above.
 	 */
 	if (IS_AES(flags))
 		writel(0xffff, qce->base + CE2_REG_CNTR_MASK);
+
+	/*
+	 * 3. Key writes: DES_KEY0..5 for DES/3DES, AES_RNDKEY0..N for AES.
+	 *
+	 * Writing the key AFTER CNTR_MASK matches legacy and lets the
+	 * engine's internal key-schedule expander see the (now-stable)
+	 * counter-mode state when it processes the key bytes.
+	 *
+	 * Subtle seeding bug to avoid: aes_expandkey() reads input bytes
+	 * via get_unaligned_le32(), so bytes [b0,b1,b2,b3] become word
+	 * 0xb3b2b1b0.  Samsung (and webOS slow-path) seed from BE-packed
+	 * words: bytes [b0,b1,b2,b3] -> word 0xb0b1b2b3.  Different seed
+	 * -> different FIPS-197 expansion -> wrong schedule beyond word 0.
+	 * Workaround: BE-pack the user key into enckey first (already done
+	 * by qce_cpu_to_be32p_array above), then pass (u8 *)enckey to
+	 * aes_expandkey() if we ever switch back to slow path.
+	 *
+	 * Key write — NO byteswap.  The engine reads RNDKEY0..N as 32-bit
+	 * integers matching the writel value: enckey[k] is the user key
+	 * as a BE-packed integer; writel encodes that integer onto the LE
+	 * bus; engine reads back the same integer; engine interprets as
+	 * FIPS-197 BE-packed K[0..3] for that round-0 column.
+	 * Triangulation against software AES showed engine_K = NIST_K
+	 * under this write pattern.
+	 */
+	if (IS_DES(flags) || IS_3DES(flags)) {
+		for (k = 0; k < enckey_words; k++)
+			writel((__force u32)enckey[k],
+			       qce->base + CE2_REG_DES_KEY0 + k * 4);
+	} else {	/* AES */
+		for (k = 0; k < enckey_words; k++)
+			writel((__force u32)enckey[k],
+			       qce->base + CE2_REG_AES_RNDKEY0 + k * 4);
+	}
 
 	/*
 	 * HIGH_SPD_*_EN_N bits: 0 = high-speed enabled. The SW_RST pulse +
