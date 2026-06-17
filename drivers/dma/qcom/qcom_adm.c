@@ -846,6 +846,16 @@ static void adm_watchdog_timeout(struct timer_list *t)
 	/* Abrupt flush -- graceful would wait for a response we won't get. */
 	writel_relaxed(0, adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
 
+	/*
+	 * Stash the wedged cookie BEFORE vchan_cookie_complete so the
+	 * consumer's adm_tx_status() call (typically from its DMA
+	 * callback) reads DMA_ERROR. Without this the watchdog-rescued
+	 * cookie races to DMA_COMPLETE and the consumer thinks a 0-byte
+	 * transfer succeeded — silent data loss instead of a clean -EIO
+	 * up the stack.
+	 */
+	achan->error_cookie = async_desc->vd.tx.cookie;
+
 	vchan_cookie_complete(&async_desc->vd);
 
 	/*
@@ -969,6 +979,19 @@ static struct adm_async_desc *adm_desc_get(struct adm_device *adev)
 		desc->crci = 0;
 		desc->mux = 0;
 		desc->blk_size = 0;
+		/*
+		 * Reset cyclic flag. If a previous user of this pool slot
+		 * was a cyclic descriptor and this caller is preparing a
+		 * one-shot slave_sg/memcpy, leaving cyclic=true routes the
+		 * RSLT_VALID IRQ through vchan_cyclic_callback() — the
+		 * cookie never reaches DMA_COMPLETE and the consumer waits
+		 * forever. exec_func / exec_user have the same pool-reuse
+		 * trap: a stale exec_func from the previous owner will fire
+		 * under submit_lock on every subsequent submit on this slot.
+		 */
+		desc->cyclic = false;
+		desc->exec_func = NULL;
+		desc->exec_user = NULL;
 	}
 
 	return desc;
