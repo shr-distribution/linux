@@ -3305,6 +3305,16 @@
 		reg = <0x44>;
 		vcc-supply = <&pm8058_l15>;   // 2.85V
 		isil,cover-comp-gain = <100>;
+		/*
+		 * DEBUG: temporarily disabled. The i2c bus times out reading
+		 * register 1 (-110) and then the isl29018 driver's regmap_write
+		 * in isl29018_chip_init NULL-derefs inside regcache_rbtree_drop,
+		 * panicing the kernel before the boot can finish. That's a
+		 * generic regmap/isl29018 bug; bypass by disabling the sensor
+		 * so we can see the rest of the boot. Re-enable once the
+		 * isl29018 / regmap crash is properly investigated.
+		 */
+		status = "disabled";
 	};
 
 	/*
