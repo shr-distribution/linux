@@ -4046,7 +4046,17 @@
 };
 
 &gsbi12_serial {
-	status = "okay";
+	/*
+	 * DEBUG: temporarily disabled to isolate msm_serial probe wedge.
+	 * Boot wedges between dd's "matched" and "probing" log lines for
+	 * 19c40000.serial. Setting status="disabled" makes the kernel
+	 * skip msm_serial probe of this device so we can see what (if
+	 * anything) wedges next. earlycon still fires (it ioremaps the
+	 * address directly without consuming the DT node). Post-earlycon
+	 * console will be lost — capture via netconsole / USB gadget
+	 * ttyACM0 instead. Revert once the wedge is root-caused.
+	 */
+	status = "disabled";
 	pinctrl-names = "default";
 	pinctrl-0 = <&headphone_uart_pins>;
 };
