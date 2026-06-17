@@ -54,17 +54,52 @@
 #define TS2_I2C_INT_MASK_3		0x0003
 #define TS2_I2C_INT_STATUS_3		0x0007
 #define TS2_I2C_ID			0x0700
+#define TS2_I2C_FLAGS_0			0x0701
 #define TS2_I2C_FLAGS_2			0x0703
 #define TS2_I2C_COMM_STATUS		0x0200
 #define TS2_I2C_COMM_STATUS_RX_FULL	0x02
 #define TS2_I2C_COMM_STATUS_TX_EMPTY	0x01
 #define TS2_I2C_COMM_TXDATA_RXDATA	0x0203
 #define TS2_I2C_WAKEUP_PERIOD		0x07c1
+#define TS2_I2C_V_OFFSET		0x07c0
 #define TS2_I2C_COMMAND			0x1000
+
+/* battery diagnostic registers consumed by powerd (legacy sysfs ABI) */
+#define TS2_I2C_BAT_STATUS		0x0100
+#define TS2_I2C_BAT_COULOMB_MSB		0x010b
+#define TS2_I2C_BAT_COULOMB_LSB		0x010c
+#define TS2_I2C_BAT_AS			0x010d
+#define TS2_I2C_BAT_SACR_MSB		0x0115
+#define TS2_I2C_BAT_SACR_LSB		0x0116
+#define TS2_I2C_BAT_ASL			0x0117
+#define TS2_I2C_BAT_FAC_MSB		0x0118
+#define TS2_I2C_BAT_FAC_LSB		0x0119
+#define TS2_I2C_BAT_RSNSP		0x0112
+#define TS2_I2C_BAT_TEMP_LOW_MSB	0x0180
+#define TS2_I2C_BAT_TEMP_LOW_LSB	0x0181
+#define TS2_I2C_BAT_TEMP_HIGH_MSB	0x0182
+#define TS2_I2C_BAT_TEMP_HIGH_LSB	0x0183
+#define TS2_I2C_BAT_VOLT_LOW_MSB	0x0184
+#define TS2_I2C_BAT_VOLT_LOW_LSB	0x0185
+#define TS2_I2C_BAT_RARC_CRIT		0x0186
 
 /* page 0x04 - accessory data (local) */
 #define TS2_I2C_ENUM_ACCE_0		0x0428
-/* page 0x05 - accessory data (remote) */
+/* page 0x05 - accessory data (remote) + remote enumeration */
+#define TS2_I2C_ENUM_REMOTE_STRUCT_VER	0x0500
+#define TS2_I2C_ENUM_REMOTE_SERNO_7	0x0507
+#define TS2_I2C_ENUM_REMOTE_SERNO_6	0x0508
+#define TS2_I2C_ENUM_REMOTE_SERNO_5	0x0509
+#define TS2_I2C_ENUM_REMOTE_SERNO_4	0x050a
+#define TS2_I2C_ENUM_REMOTE_SERNO_3	0x050b
+#define TS2_I2C_ENUM_REMOTE_SERNO_2	0x050c
+#define TS2_I2C_ENUM_REMOTE_SERNO_1	0x050d
+#define TS2_I2C_ENUM_REMOTE_SERNO_0	0x050e
+#define TS2_I2C_ENUM_REMOTE_VNODE_MAX_HI 0x0515
+#define TS2_I2C_ENUM_REMOTE_VNODE_MAX_LO 0x0516
+#define TS2_I2C_ENUM_REMOTE_INODE_MAX_HI 0x0519
+#define TS2_I2C_ENUM_REMOTE_INODE_MAX_LO 0x051a
+#define TS2_I2C_ENUM_REMOTE_POWER_MAX	0x051d
 #define TS2_I2C_ENUM_REMOTE_ACCE_0	0x0528
 
 #define A6_ACC_DATA_COUNT		16
@@ -302,6 +337,295 @@ static ssize_t a6_combo_store(struct device *dev,
 	return count;
 }
 
+/* ---------- battery-diagnostic attributes consumed by powerd -------- */
+
+/*
+ * Mirror the legacy /sys/class/misc/a6_N/regs/<name> read/write format
+ * for the diagnostic registers powerd reads (battery health, factory
+ * data, charging thresholds). Each helper formats the chip output
+ * exactly the same way the legacy driver's per-attribute format_*()
+ * callbacks did, so the userspace parser in powerd Just Works.
+ *
+ * Two register-layout quirks come from the A6 firmware contract:
+ *
+ *   - 16-bit values live in MSB:LSB on the wire but the kernel
+ *     register-ID list is given as {LSB_addr, MSB_addr}; the base
+ *     driver swaps so the resulting byte buffer is {low, high}.
+ *
+ *   - Coulomb-style readings scale by 1/Rsense (mOhm). Rsense lives
+ *     in TS2_I2C_BAT_RSNSP and is read once at probe and cached in
+ *     priv->cached_rsense to avoid a chip transaction per show().
+ */
+
+static int a6_a2a_read_pair(struct a6_a2a *priv, u16 reg_lsb, u16 reg_msb,
+			    u8 out[2])
+{
+	u16 ids[2] = { reg_lsb, reg_msb };
+
+	return priv->aux->read_regs(priv->aux->client, ids, 2, out);
+}
+
+static int a6_a2a_write_pair(struct a6_a2a *priv, u16 reg_lsb, u16 reg_msb,
+			     const u8 in[2])
+{
+	u16 ids[2] = { reg_lsb, reg_msb };
+
+	return priv->aux->write_regs(priv->aux->client, ids, 2, in);
+}
+
+/* Read N specific (possibly non-contiguous) register IDs. */
+static int a6_a2a_read_ids(struct a6_a2a *priv, const u16 *ids, u32 num,
+			   u8 *out)
+{
+	return priv->aux->read_regs(priv->aux->client, (u16 *)ids, num, out);
+}
+
+/* A pair register pair (LSB, MSB) reads two consecutive entries of a
+ * dual-byte chip register. The .reg field of a6_pair_reg_attr holds
+ * the LSB address; the MSB is assumed at LSB - 1 (legacy MSB:LSB
+ * neighbour layout). */
+struct a6_pair_reg_attr {
+	struct device_attribute dattr;
+	u16 reg_lsb;
+	u16 reg_msb;
+};
+
+#define to_pair_reg_attr(_a)	container_of(_a, struct a6_pair_reg_attr, dattr)
+
+/* Multi-byte attribute (3+ regs). Stores up to 8 explicit register IDs. */
+struct a6_multi_reg_attr {
+	struct device_attribute dattr;
+	u16 ids[8];
+	u8 num_ids;
+};
+
+#define to_multi_reg_attr(_a)	container_of(_a, struct a6_multi_reg_attr, dattr)
+
+/* ----- status (TS2_I2C_BAT_STATUS, 1 byte, bit-decoded) ----- */
+
+static const char * const a6_bat_status_bits[8] = {
+	NULL,
+	"power-on-reset",
+	"undervoltage",
+	NULL,
+	"learn",
+	"standby-empty",
+	"active-empty",
+	"charge-termination",
+};
+
+static ssize_t a6_status_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_single_reg_attr *sattr = to_single_reg_attr(attr);
+	ssize_t len = 0;
+	u8 val = 0;
+	int ret, i;
+
+	ret = a6_a2a_read(priv, sattr->reg, &val);
+	if (ret < 0)
+		return ret;
+	for (i = 0; i < 8; i++) {
+		if ((val & BIT(i)) && a6_bat_status_bits[i])
+			len += sysfs_emit_at(buf, len, "%s\n",
+					     a6_bat_status_bits[i]);
+	}
+	return len;
+}
+
+/* ----- unsigned-byte show ("%u\n" — legacy format_raw_unsigned) ----- */
+
+static ssize_t a6_unsigned_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_single_reg_attr *sattr = to_single_reg_attr(attr);
+	u8 val = 0;
+	int ret;
+
+	ret = a6_a2a_read(priv, sattr->reg, &val);
+	if (ret < 0)
+		return ret;
+	return sysfs_emit(buf, "%u\n", (unsigned int)val);
+}
+
+static ssize_t a6_unsigned_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_single_reg_attr *sattr = to_single_reg_attr(attr);
+	u8 val;
+	int ret;
+
+	ret = kstrtou8(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	ret = a6_a2a_write(priv, sattr->reg, val);
+	if (ret < 0)
+		return ret;
+	return count;
+}
+
+/* ----- temperature pair (MSB-only signed degrees C) ----- */
+
+static ssize_t a6_temp_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_pair_reg_attr *pattr = to_pair_reg_attr(attr);
+	u8 raw[2];
+	int ret;
+
+	ret = a6_a2a_read_pair(priv, pattr->reg_lsb, pattr->reg_msb, raw);
+	if (ret < 0)
+		return ret;
+	/* raw[0] = LSB (fractional, ignored); raw[1] = MSB (signed deg C). */
+	return sysfs_emit(buf, "%d\n", (int)(s8)raw[1]);
+}
+
+static ssize_t a6_temp_store(struct device *dev,
+			     struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_pair_reg_attr *pattr = to_pair_reg_attr(attr);
+	long val;
+	u8 raw[2];
+	int ret;
+
+	ret = kstrtol(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	if (val < S8_MIN || val > S8_MAX)
+		return -ERANGE;
+	raw[0] = 0;			/* fractional zero */
+	raw[1] = (u8)(s8)val;		/* integer deg C */
+	ret = a6_a2a_write_pair(priv, pattr->reg_lsb, pattr->reg_msb, raw);
+	if (ret < 0)
+		return ret;
+	return count;
+}
+
+/* ----- voltage pair (11-bit signed, unit = 4880 uV) ----- */
+
+static ssize_t a6_voltage_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_pair_reg_attr *pattr = to_pair_reg_attr(attr);
+	u8 raw[2];
+	s16 v;
+	int ret;
+
+	ret = a6_a2a_read_pair(priv, pattr->reg_lsb, pattr->reg_msb, raw);
+	if (ret < 0)
+		return ret;
+	v = (s16)((raw[1] << 8) | raw[0]);
+	return sysfs_emit(buf, "%d\n", ((int)v >> 5) * 4880);
+}
+
+static ssize_t a6_voltage_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_pair_reg_attr *pattr = to_pair_reg_attr(attr);
+	long uv;
+	s16 v;
+	u8 raw[2];
+	int ret;
+
+	ret = kstrtol(buf, 0, &uv);
+	if (ret < 0)
+		return ret;
+	v = (s16)(uv / 4880) << 5;	/* inverse of show */
+	raw[0] = v & 0xff;
+	raw[1] = (v >> 8) & 0xff;
+	ret = a6_a2a_write_pair(priv, pattr->reg_lsb, pattr->reg_msb, raw);
+	if (ret < 0)
+		return ret;
+	return count;
+}
+
+/* ----- raw coulomb (16-bit signed * 6250 / Rsense, mOhm) ----- */
+
+static ssize_t a6_rawcoulomb_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_pair_reg_attr *pattr = to_pair_reg_attr(attr);
+	u8 raw[2], rsense = 0;
+	s16 v;
+	int ret, uah;
+
+	ret = a6_a2a_read_pair(priv, pattr->reg_lsb, pattr->reg_msb, raw);
+	if (ret < 0)
+		return ret;
+	ret = a6_a2a_read(priv, TS2_I2C_BAT_RSNSP, &rsense);
+	if (ret < 0 || rsense == 0)
+		return ret < 0 ? ret : -EIO;
+
+	v = (s16)((raw[1] << 8) | raw[0]);
+	uah = ((int)v * 6250) / rsense;
+	return sysfs_emit(buf, "%d.%03d\n",
+			  uah / 1000,
+			  (uah >= 0 ? uah : -uah) % 1000);
+}
+
+/* ----- multi-byte hex serial number (6 or 8 bytes) ----- */
+
+static ssize_t a6_serno_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_multi_reg_attr *mattr = to_multi_reg_attr(attr);
+	u8 raw[8];
+	ssize_t len = 0;
+	int ret, i;
+
+	ret = a6_a2a_read_ids(priv, mattr->ids, mattr->num_ids, raw);
+	if (ret < 0)
+		return ret;
+	for (i = 0; i < mattr->num_ids; i++)
+		len += sysfs_emit_at(buf, len, "%02x", raw[i]);
+	len += sysfs_emit_at(buf, len, "\n");
+	return len;
+}
+
+/* ----- max power available (vnode_max * inode_max * power / 2560) ----- */
+
+static ssize_t a6_maxpower_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct miscdevice *mdev = dev_get_drvdata(dev);
+	struct a6_a2a *priv = container_of(mdev, struct a6_a2a, mdev);
+	struct a6_multi_reg_attr *mattr = to_multi_reg_attr(attr);
+	u8 raw[5];
+	u32 vnode, inode, power;
+	int ret;
+
+	if (mattr->num_ids != 5)
+		return -EINVAL;
+	ret = a6_a2a_read_ids(priv, mattr->ids, mattr->num_ids, raw);
+	if (ret < 0)
+		return ret;
+	vnode = (raw[1] << 8) | raw[0];
+	inode = (raw[3] << 8) | raw[2];
+	power = raw[4];
+	return sysfs_emit(buf, "%u\n", (vnode * inode * power) / 2560);
+}
+
 /* ---------- attribute table ----------------------------------------- */
 
 /* single-byte read+write (mode 0640) */
@@ -326,6 +650,90 @@ A6_SINGLE_RO_ATTR(charger,		TS2_I2C_FLAGS_2);
 A6_SINGLE_RW_ATTR(comm_txdata_rx_data,	TS2_I2C_COMM_TXDATA_RXDATA);
 A6_SINGLE_RO_ATTR(get_comm_status,	TS2_I2C_COMM_STATUS);
 A6_SINGLE_RW_ATTR(periodic_wake_bit_params, TS2_I2C_WAKEUP_PERIOD);
+
+/* powerd diagnostic attrs -- mirror legacy /sys/class/misc/a6_N/regs/ ABI */
+
+/* status: bit-decoded battery status */
+static struct a6_single_reg_attr a6_attr_status = {
+	.dattr = __ATTR(status, 0440, a6_status_show, NULL),
+	.reg = TS2_I2C_BAT_STATUS,
+};
+
+/* single-byte unsigned ("%u\n") -- legacy format_raw_unsigned / format_v_offset */
+#define A6_UNSIGNED_RO(_name, _reg)					\
+static struct a6_single_reg_attr a6_attr_##_name = {			\
+	.dattr = __ATTR(_name, 0440, a6_unsigned_show, NULL),		\
+	.reg = (_reg),							\
+}
+
+#define A6_UNSIGNED_RW(_name, _reg)					\
+static struct a6_single_reg_attr a6_attr_##_name = {			\
+	.dattr = __ATTR(_name, 0640, a6_unsigned_show,			\
+			a6_unsigned_store),				\
+	.reg = (_reg),							\
+}
+
+A6_UNSIGNED_RO(getasl,			TS2_I2C_BAT_ASL);
+A6_UNSIGNED_RO(getrawas,		TS2_I2C_BAT_AS);
+A6_UNSIGNED_RO(remote_struct_ver,	TS2_I2C_ENUM_REMOTE_STRUCT_VER);
+A6_UNSIGNED_RW(puck_priority,		TS2_I2C_FLAGS_0);
+A6_UNSIGNED_RW(rarc_crit,		TS2_I2C_BAT_RARC_CRIT);
+A6_UNSIGNED_RW(v_offset,		TS2_I2C_V_OFFSET);
+
+/* paired 16-bit registers -- temperature, voltage thresholds, coulomb */
+#define A6_PAIR_ATTR(_name, _show, _store, _mode, _lsb, _msb)		\
+static struct a6_pair_reg_attr a6_attr_##_name = {			\
+	.dattr = __ATTR(_name, (_mode), (_show), (_store)),		\
+	.reg_lsb = (_lsb),						\
+	.reg_msb = (_msb),						\
+}
+
+A6_PAIR_ATTR(temp_high,	  a6_temp_show,	     a6_temp_store,    0640,
+	     TS2_I2C_BAT_TEMP_HIGH_LSB, TS2_I2C_BAT_TEMP_HIGH_MSB);
+A6_PAIR_ATTR(temp_low,	  a6_temp_show,	     a6_temp_store,    0640,
+	     TS2_I2C_BAT_TEMP_LOW_LSB,	TS2_I2C_BAT_TEMP_LOW_MSB);
+A6_PAIR_ATTR(volt_low,	  a6_voltage_show,   a6_voltage_store, 0640,
+	     TS2_I2C_BAT_VOLT_LOW_LSB,	TS2_I2C_BAT_VOLT_LOW_MSB);
+A6_PAIR_ATTR(getrawcoulomb, a6_rawcoulomb_show, NULL,	       0440,
+	     TS2_I2C_BAT_COULOMB_LSB,	TS2_I2C_BAT_COULOMB_MSB);
+A6_PAIR_ATTR(getsacr,	  a6_rawcoulomb_show, NULL,	       0440,
+	     TS2_I2C_BAT_SACR_LSB,	TS2_I2C_BAT_SACR_MSB);
+A6_PAIR_ATTR(getfac,	  a6_rawcoulomb_show, NULL,	       0440,
+	     TS2_I2C_BAT_FAC_LSB,	TS2_I2C_BAT_FAC_MSB);
+
+/* multi-register: remote serial-numbers and max-power-available */
+static struct a6_multi_reg_attr a6_attr_remote_serno_v1 = {
+	.dattr = __ATTR(remote_serno_v1, 0440, a6_serno_show, NULL),
+	.ids = {
+		TS2_I2C_ENUM_REMOTE_SERNO_0, TS2_I2C_ENUM_REMOTE_SERNO_1,
+		TS2_I2C_ENUM_REMOTE_SERNO_2, TS2_I2C_ENUM_REMOTE_SERNO_3,
+		TS2_I2C_ENUM_REMOTE_SERNO_4, TS2_I2C_ENUM_REMOTE_SERNO_5,
+	},
+	.num_ids = 6,
+};
+
+static struct a6_multi_reg_attr a6_attr_remote_serno_v2 = {
+	.dattr = __ATTR(remote_serno_v2, 0440, a6_serno_show, NULL),
+	.ids = {
+		TS2_I2C_ENUM_REMOTE_SERNO_0, TS2_I2C_ENUM_REMOTE_SERNO_1,
+		TS2_I2C_ENUM_REMOTE_SERNO_2, TS2_I2C_ENUM_REMOTE_SERNO_3,
+		TS2_I2C_ENUM_REMOTE_SERNO_4, TS2_I2C_ENUM_REMOTE_SERNO_5,
+		TS2_I2C_ENUM_REMOTE_SERNO_6, TS2_I2C_ENUM_REMOTE_SERNO_7,
+	},
+	.num_ids = 8,
+};
+
+static struct a6_multi_reg_attr a6_attr_getmaxpoweravail = {
+	.dattr = __ATTR(getmaxpoweravail, 0440, a6_maxpower_show, NULL),
+	.ids = {
+		TS2_I2C_ENUM_REMOTE_VNODE_MAX_LO,
+		TS2_I2C_ENUM_REMOTE_VNODE_MAX_HI,
+		TS2_I2C_ENUM_REMOTE_INODE_MAX_LO,
+		TS2_I2C_ENUM_REMOTE_INODE_MAX_HI,
+		TS2_I2C_ENUM_REMOTE_POWER_MAX,
+	},
+	.num_ids = 5,
+};
 
 /* write-only, CAP_SYS_ADMIN-gated command register */
 static struct a6_single_reg_attr a6_attr_command = {
@@ -399,10 +807,12 @@ static void a6_init_indexed_attrs(void)
 /*
  * Build the attribute group dynamically because struct attribute_group
  * needs an array of `struct attribute *` and we have a mix of single
- * and combo attrs plus 32 indexed slots. Total = 8 singles + 2 combos
- * + 16 acc + 16 remote_acc + NULL terminator = 43.
+ * and combo attrs plus 32 indexed slots. Total = 8 base singles +
+ * 2 combos + 16 powerd diagnostic attrs + 16 acc + 16 remote_acc
+ * + NULL terminator = 59.
  */
-#define A6_REGS_ATTR_COUNT	(8 + 2 + A6_ACC_DATA_COUNT * 2)
+#define A6_POWERD_ATTR_COUNT	16
+#define A6_REGS_ATTR_COUNT	(8 + 2 + A6_POWERD_ATTR_COUNT + A6_ACC_DATA_COUNT * 2)
 
 static struct attribute *a6_regs_attrs[A6_REGS_ATTR_COUNT + 1];
 
@@ -420,6 +830,29 @@ static void a6_build_regs_attrs(void)
 	a6_regs_attrs[n++] = &a6_attr_command.dattr.attr;
 	a6_regs_attrs[n++] = &a6_attr_acc_data_combo.dattr.attr;
 	a6_regs_attrs[n++] = &a6_attr_remote_acc_data_combo.dattr.attr;
+
+	/* powerd diagnostic surface (16 attrs) */
+	a6_regs_attrs[n++] = &a6_attr_status.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_getasl.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_getrawas.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_remote_struct_ver.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_puck_priority.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_rarc_crit.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_v_offset.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_temp_high.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_temp_low.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_volt_low.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_getrawcoulomb.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_getsacr.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_getfac.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_remote_serno_v1.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_remote_serno_v2.dattr.attr;
+	a6_regs_attrs[n++] = &a6_attr_getmaxpoweravail.dattr.attr;
+	/* (a6_diag and validate_cksum -- the remaining 2 of powerd's 19
+	 * reads -- need the SBW (Spy-Bi-Wire) JTAG driver to be ported
+	 * before we can implement them. Deferred.)
+	 */
+
 	for (i = 0; i < A6_ACC_DATA_COUNT; i++)
 		a6_regs_attrs[n++] = &a6_acc_data_attrs[i].dattr.attr;
 	for (i = 0; i < A6_ACC_DATA_COUNT; i++)
