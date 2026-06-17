@@ -598,14 +598,6 @@ struct mmci_host {
 	 * DATAEND path.  (Sashiko Medium #46.)
 	 */
 	struct delayed_work	qcom_dummy52_watchdog;
-	/*
-	 * DEBUG (DO NOT MERGE): sched_clock() timestamp at the end of
-	 * the qcom_adm exec_func.  mmci_data_irq() subtracts this on
-	 * DATATIMEOUT to expose "card was silent for the full window"
-	 * vs "something happened mid-flight then SDCC timed out".
-	 * 0 when exec_func has not run since last clear (e.g. PIO path).
-	 */
-	u64			dbg_t_exec_end_ns;
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)
