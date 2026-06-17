@@ -3,7 +3,9 @@
  * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/bitmap.h>
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dmaengine.h>
@@ -14,14 +16,17 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_dma.h>
+#include <linux/pm_runtime.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/scatterlist.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/timer.h>
 
@@ -126,6 +131,112 @@
 #define ADM_MAX_CHANNELS		16
 
 /*
+ * Per-SoC driver_data. Bound to each entry of adm_of_match[]. Lets
+ * the driver vary behaviour per compatible string instead of probing
+ * the board root compatible at runtime.
+ *
+ * .name                 - human-readable, for dev_info / debug.
+ * .needs_probe_reset    - assert the five reset_controls at probe.
+ *                         Required on IPQ806x; MUST NOT be done on
+ *                         MSM8660/APQ8060 because the bootloader has
+ *                         already programmed CRCI_CTL at EE=0 for the
+ *                         peripherals it enabled and a reset would
+ *                         wipe them, hanging the first transfer.
+ * .icc_bw_kbps_peak/avg - per-path interconnect bandwidth floor. 0 =
+ *                         do not vote.  MSM8660/APQ8060 vote 1 GB/s
+ *                         on both "memory" and "memory-p1" paths; the
+ *                         drain stalls go away.  IPQ8064 (single
+ *                         NAND consumer) leaves both at 0.
+ * .crci_defaults        - optional per-CRCI defaults applied at probe.
+ *                         Supersedes the burst==64 -> blk_size=1
+ *                         heuristic; per-SoC table is authoritative.
+ *                         Can be overridden per-submit via
+ *                         qcom_adm_peripheral_config.
+ * .nr_crci_defaults     - number of entries in the array above.
+ */
+struct adm_crci_default {
+	u8 crci;
+	u8 blk_size;
+	u8 mux;
+};
+
+struct adm_soc_data {
+	const char *name;
+	bool needs_probe_reset;
+	/*
+	 * On this SoC the live CRCI_CTL registers are mapped at EE=0
+	 * even when adev->ee != 0 (verified on APQ8060 Tenderloin via
+	 * /dev/mem dump of running webOS: CRCI_CTL writes at EE=1 are
+	 * silently dropped). When true the driver writes CRCI_CTL at
+	 * EE=0 in the submit path AND exports qcom_adm_program_crci_ee0
+	 * to consumers that need to seed CRCI_CTL for peripherals the
+	 * bootloader never touched. When false (most SoCs) CRCI_CTL is
+	 * written at adev->ee like every other per-channel register.
+	 */
+	bool crci_ctl_at_ee0;
+	u32 icc_bw_kbps_peak;
+	u32 icc_bw_kbps_avg;
+	const struct adm_crci_default *crci_defaults;
+	int nr_crci_defaults;
+};
+
+/*
+ * MSM8660 / APQ8060 — Tenderloin (HP TouchPad), Dragonboard.
+ *
+ * Two ADM instances (ADM0 + ADM1).  Bootloader programs CONF +
+ * CRCI_CTL at EE=0 for eMMC, NAND, SDC, WiFi; do NOT reset at probe.
+ * Vote 1 GB/s on both SFAB master ports — ADM1 PORT1 starves under
+ * concurrent eMMC + WiFi otherwise.
+ *
+ * CRCI defaults pulled from arch/arm/mach-msm/dma.c adm[01]_crci_conf[]
+ * in the webOS 2.6.35 kernel + verified against running /dev/mem:
+ *   CRCI 1  (eMMC sdcc1)       blk_size=1 (32 B half-FIFO), mux=0
+ *   CRCI 5  (WiFi sdcc4)       blk_size=1 (32 B half-FIFO), mux=0
+ *   CRCI 4  (CE2 cipher in)    blk_size=0 (16 B),           mux=0
+ *   CRCI 15 (CE2 hash out)     blk_size=0 (16 B),           mux=0
+ *   CRCI 9  (HSUART1 RX BT)    blk_size=0 (16 B),           mux=0
+ *   CRCI 10 (HSUART2 RX TS)    blk_size=0 (16 B),           mux=1
+ */
+static const struct adm_crci_default adm_msm8660_crcis[] = {
+	{ .crci = 1,  .blk_size = 1, .mux = 0 },
+	{ .crci = 4,  .blk_size = 0, .mux = 0 },
+	{ .crci = 5,  .blk_size = 1, .mux = 0 },
+	{ .crci = 9,  .blk_size = 0, .mux = 0 },
+	{ .crci = 10, .blk_size = 0, .mux = 1 },
+	{ .crci = 15, .blk_size = 0, .mux = 0 },
+};
+
+static const struct adm_soc_data adm_msm8660_data = {
+	.name = "MSM8660/APQ8060",
+	.needs_probe_reset = false,
+	.crci_ctl_at_ee0 = true,
+	.icc_bw_kbps_peak = 1024000,
+	.icc_bw_kbps_avg = 1024000,
+	.crci_defaults = adm_msm8660_crcis,
+	.nr_crci_defaults = ARRAY_SIZE(adm_msm8660_crcis),
+};
+
+/*
+ * IPQ8064 — router platform with a single ADM-driven consumer (NAND).
+ * Original upstream user of qcom_adm.c; needs probe-time reset to
+ * bring the controller into a known state. No sustained interconnect
+ * floor needed (NAND is low-bandwidth + bursty).
+ */
+static const struct adm_soc_data adm_ipq8064_data = {
+	.name = "IPQ8064",
+	.needs_probe_reset = true,
+};
+
+/*
+ * Stub for SoCs we haven't characterised yet; behaves like IPQ8064
+ * (probe-reset, no interconnect floor, no CRCI defaults).
+ */
+static const struct adm_soc_data adm_generic_data = {
+	.name = "generic",
+	.needs_probe_reset = true,
+};
+
+/*
  * Descriptor pool configuration.
  *
  * The pool exists so adm_prep_slave_sg() never has to call
@@ -205,6 +316,18 @@ struct adm_async_desc {
 	/* Pool management */
 	struct list_head pool_node;
 	int pool_index;		/* -1 = dynamic alloc, >=0 = pooled */
+
+	/*
+	 * Cyclic descriptor. The IRQ handler invokes vchan_cyclic_callback()
+	 * for each RSLT_VALID and does NOT remove the descriptor from
+	 * curr_txd until terminate_all is called. The ADM auto-walks the
+	 * CPL chain after each period completes (the last entry has
+	 * CMD_LC set but the CPL has CMD_PTR_LP so the controller loops).
+	 */
+	bool cyclic;
+
+	/* FLUSH-state snapshot captured by the IRQ handler on FLUSH/ERR. */
+	u32 errdata[6];
 };
 
 /*
@@ -253,26 +376,25 @@ struct adm_chan {
 
 	int error;
 	/*
-	 * Cookie of the most recent descriptor that completed with
-	 * RSLT_ERR / RSLT_FLUSH.  adm_tx_status() consults this to
-	 * surface DMA_ERROR to consumer queries: the dmaengine cookie
-	 * state alone cannot -- dma_cookie_status() returns DMA_COMPLETE
-	 * for any cookie advanced past chan->completed_cookie regardless
-	 * of how it was completed, including via the error path.
+	 * Cookie of the most recent descriptor that was completed via
+	 * the RSLT_ERR / RSLT_FLUSH path. adm_tx_status() consults this
+	 * to surface DMA_ERROR to consumer queries: dma_cookie_status()
+	 * returns DMA_COMPLETE for any cookie advanced past
+	 * chan->completed_cookie regardless of how it was completed.
 	 *
-	 * Set in the err-result handler and on every CMD_PTR_RDY bail-out
-	 * once the channel is in error state (a dead channel cannot be
-	 * resurrected -- legacy webOS arch/arm/mach-msm/dma.c:645 says
-	 * "the datamover will no longer accept commands" after RSLT_ERR
-	 * and provides no recovery beyond an abrupt FLUSH write).  Each
-	 * subsequent submission gets its cookie stashed too, so the
-	 * consumer's per-cookie tx_status query reliably reports
-	 * DMA_ERROR and the block layer retries terminate naturally
-	 * instead of stranding the descriptor.
+	 * Set in the err-result handler. Cleared when the channel is
+	 * reused (R63 recovery — see adm_recover_channel). Cookies are
+	 * monotonic per channel and never reach 0 (dmaengine cycles
+	 * DMA_MIN_COOKIE..INT_MAX), so 0 is a safe "no error recorded"
+	 * sentinel.
 	 *
-	 * Cookies are monotonic per channel and never reach 0 (dmaengine
-	 * cycles DMA_MIN_COOKIE..INT_MAX), so 0 is a safe "no error
-	 * recorded" sentinel.
+	 * Earlier revisions of this driver treated a channel as
+	 * permanently dead after RSLT_ERR (matching legacy
+	 * arch/arm/mach-msm/dma.c:645). That is incorrect: under the
+	 * R63 recovery sequence the channel IS reusable after a
+	 * documented sequence (FLUSH0=0, CRCI_CTL.RST per attached
+	 * CRCI, transition state -> IDLE). Consumers that retry pass
+	 * through the recovery path and the channel comes back.
 	 */
 	dma_cookie_t error_cookie;
 	int initialized;
@@ -311,7 +433,31 @@ struct adm_device {
 	struct device_dma_parameters dma_parms;
 	struct adm_chan *channels;
 
+	const struct adm_soc_data *soc_data;
+
 	u32 ee;
+
+	/*
+	 * Linux owns the MASTER SD when this is true and may write the
+	 * per-channel CONF + global CRCI_CONF0/1 + CI_CONF + DBG_ERR
+	 * registers. Driven by the qcom,owns-master-sd DT property.
+	 * IPQ8064 sets it (qcom,ee = <0>, owns master); MSM8660 leaves
+	 * it false (qcom,ee = <1>, bootloader / TZ owns master at EE=0).
+	 */
+	bool owns_master_sd;
+
+	/*
+	 * Bitmap of channels (0..ADM_MAX_CHANNELS-1) this AARM may use.
+	 * Bit set => channel is registered with the dmaengine layer and
+	 * touchable by IRQ/CMD_PTR paths. Bit clear => modem / TrustZone
+	 * / unused; the driver must not write per-channel registers for
+	 * that channel.
+	 *
+	 * Populated at probe from the qcom,channels-aarm DT property,
+	 * defaults to "all 16" if the property is absent (back-compat
+	 * for IPQ8064 boards predating the binding update).
+	 */
+	DECLARE_BITMAP(channels_aarm, ADM_MAX_CHANNELS);
 
 	struct clk *core_clk;
 	struct clk *iface_clk;
@@ -383,16 +529,222 @@ struct adm_device {
 	 */
 	u32 crci_ctl_cache[16];
 	u16 crci_ctl_cache_valid;	/* one bit per CRCI */
+
+	/*
+	 * Optional debugfs surface. Created at probe if CONFIG_DEBUG_FS
+	 * is set; removed at remove. The errors ring holds the last
+	 * ADM_ERR_LOG_DEPTH error events with timestamps, captured by
+	 * the IRQ handler's RSLT_ERR path.
+	 */
+#ifdef CONFIG_DEBUG_FS
+	struct dentry *dbg_dir;
+#endif
+	struct adm_err_log_entry {
+		u64 ktime_ns;
+		u8 channel;
+		u8 crci;
+		u32 result;
+		u32 flush[6];
+	} err_log[16];
+	u8 err_log_head;	/* next slot to write */
+	spinlock_t err_log_lock;
 };
 
-/**
- * adm_free_chan - Frees dma resources associated with the specific channel
- *
- * @chan: dma channel
- *
- * Free all allocated descriptors associated with this channel
+#define ADM_ERR_LOG_DEPTH ARRAY_SIZE(((struct adm_device *)0)->err_log)
+
+/*
+ * Forward declarations.
  */
 static void adm_start_dma(struct adm_chan *achan);
+
+/*
+ * MMIO write helpers with master-SD ownership guard.
+ *
+ * adm_write_aarm() — write to a per-channel register through the SD
+ *                    the driver owns (adev->ee). Always allowed.
+ * adm_write_master() — write to a master-SD-only register. WARN_ON
+ *                    and refuse if Linux does not own the master SD
+ *                    on this controller (qcom,owns-master-sd absent
+ *                    or false).
+ *
+ * The current driver consciously avoids writing CH_CONF / CRCI_CONF /
+ * CI_CONF / DBG_ERR (see adm_start_dma's CH_CONF skip comment for the
+ * rationale on Tenderloin). These helpers exist so any future master-
+ * SD write goes through one place; bare writel() calls into the master
+ * window are a foot-gun (Tenderloin destabilised on the SEC_DOMAIN
+ * RMW pattern that was harmless at EE=1 but destructive at EE=0).
+ */
+static inline void adm_write_aarm(struct adm_device *adev, u32 offset, u32 val)
+{
+	writel(val, adev->regs + offset);
+}
+
+static inline void adm_write_master(struct adm_device *adev, u32 offset, u32 val)
+{
+	if (WARN_ON_ONCE(!adev->owns_master_sd)) {
+		dev_err_ratelimited(adev->dev,
+			"refusing master-SD write at 0x%x: driver does not own master SD on this controller\n",
+			offset);
+		return;
+	}
+	writel(val, adev->regs + offset);
+}
+
+/*
+ * adm_log_error — capture a result/FLUSH snapshot into the per-controller
+ * debug ring. Called from the IRQ handler error path under the per-vchan
+ * lock; the ring has its own spinlock so the IRQ side is the only writer
+ * and the debugfs reader can iterate without racing.
+ */
+static void adm_log_error(struct adm_device *adev, u8 channel, u8 crci,
+			  u32 result, const u32 flush[6])
+{
+	struct adm_err_log_entry *e;
+	unsigned long flags;
+
+	spin_lock_irqsave(&adev->err_log_lock, flags);
+	e = &adev->err_log[adev->err_log_head];
+	e->ktime_ns = ktime_get_ns();
+	e->channel = channel;
+	e->crci = crci;
+	e->result = result;
+	memcpy(e->flush, flush, sizeof(e->flush));
+	adev->err_log_head = (adev->err_log_head + 1) % ADM_ERR_LOG_DEPTH;
+	spin_unlock_irqrestore(&adev->err_log_lock, flags);
+}
+
+#ifdef CONFIG_DEBUG_FS
+static int adm_dbg_errors_show(struct seq_file *s, void *unused)
+{
+	struct adm_device *adev = s->private;
+	unsigned long flags;
+	int i, slot;
+
+	seq_puts(s, "idx  ts_ns                ch crci result    flush0   flush1   flush2   flush3   flush4   flush5\n");
+	spin_lock_irqsave(&adev->err_log_lock, flags);
+	for (i = 0; i < ADM_ERR_LOG_DEPTH; i++) {
+		struct adm_err_log_entry *e;
+
+		slot = (adev->err_log_head + i) % ADM_ERR_LOG_DEPTH;
+		e = &adev->err_log[slot];
+		if (!e->ktime_ns)
+			continue;
+		seq_printf(s,
+			   "%2d  %20llu  %2u %4u 0x%08x 0x%06x 0x%06x 0x%06x 0x%06x 0x%06x 0x%06x\n",
+			   i, e->ktime_ns, e->channel, e->crci, e->result,
+			   e->flush[0], e->flush[1], e->flush[2],
+			   e->flush[3], e->flush[4], e->flush[5]);
+	}
+	spin_unlock_irqrestore(&adev->err_log_lock, flags);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(adm_dbg_errors);
+
+static void adm_debugfs_init(struct adm_device *adev)
+{
+	/*
+	 * dev_name(adev->dev) is unique per platform_device and survives
+	 * load/unload cleanly. Sits under /sys/kernel/debug/<name>/.
+	 */
+	adev->dbg_dir = debugfs_create_dir(dev_name(adev->dev), NULL);
+	debugfs_create_file("errors", 0400, adev->dbg_dir, adev,
+			    &adm_dbg_errors_fops);
+}
+
+static void adm_debugfs_remove(struct adm_device *adev)
+{
+	debugfs_remove_recursive(adev->dbg_dir);
+}
+#else
+static inline void adm_debugfs_init(struct adm_device *adev) { }
+static inline void adm_debugfs_remove(struct adm_device *adev) { }
+#endif
+
+/*
+ * adm_recover_channel — R63 post-error recovery sequence.
+ *
+ * Called from the IRQ handler RSLT_ERR path. Brings a channel that
+ * just reported a hardware error back to a usable state so the
+ * consumer's retry on the same channel succeeds.
+ *
+ * The legacy webOS comment "this does not seem to work, once we get
+ * an error the datamover will no longer accept commands" was based on
+ * the pre-recovery sequence (just writel(0, FLUSH0)). This adds:
+ *
+ *   1. FLUSH0 = 0     — clear the latched error state (legacy keeps).
+ *   2. CRCI_CTL.RST   — pulse the per-CRCI reset bit for every CRCI
+ *                       attached to the failed descriptor, so the
+ *                       slave-side FIFO state machine clears too.
+ *                       Without this the next handshake stalls.
+ *   3. RSLT_CONF rearm — re-write IRQ_EN + FLUSH_EN. RSLT_CONF can
+ *                       latch into a non-arm state after consecutive
+ *                       errors on some silicon revisions; the cost
+ *                       of always doing this is one MMIO write.
+ *   4. error_cookie cleared — channel is no longer treated as
+ *                       permanently dead by adm_tx_status() / the
+ *                       CMD_PTR_RDY bail-out path.
+ *
+ * Caller MUST hold achan->vc.lock.
+ */
+static void adm_recover_channel(struct adm_chan *achan, u32 crci_for_desc)
+{
+	struct adm_device *adev = achan->adev;
+
+	lockdep_assert_held(&achan->vc.lock);
+
+	writel_relaxed(0, adev->regs +
+		       ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
+
+	if (crci_for_desc) {
+		u32 c = crci_for_desc & 0xf;
+
+		writel_relaxed(ADM_CRCI_CTL_RST,
+			       adev->regs + ADM_CRCI_CTL(c, adev->ee));
+		/* Master-SD-owning boards also reset at EE=0. */
+		if (adev->owns_master_sd && adev->ee != 0)
+			writel_relaxed(ADM_CRCI_CTL_RST,
+				       adev->regs + ADM_CRCI_CTL(c, 0));
+		adev->crci_ctl_cache_valid &= ~BIT(c);
+	}
+
+	writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
+	       adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
+
+	achan->error = 0;
+	achan->cmd_ptr_not_rdy_logged = 0;
+	/*
+	 * Do NOT clear achan->error_cookie here. The IRQ handler set
+	 * it just before calling us so adm_tx_status() can surface
+	 * DMA_ERROR for the failed cookie. It is cleared on the next
+	 * successful completion (see vchan_cookie_complete path) or on
+	 * an explicit terminate_all + restart.
+	 */
+}
+
+/*
+ * adm_drain_rslt — at probe time, drain any residual RSLT_VALID entries
+ * left by the bootloader on each AARM-owned channel. Without this the
+ * first real submission on a "dirty" channel delivers a ghost
+ * completion before the consumer's descriptor has even fired.
+ *
+ * Bounded so a stuck VALID bit can't wedge probe.
+ */
+static void adm_drain_rslt(struct adm_device *adev)
+{
+	unsigned int ch, drain;
+
+	for_each_set_bit(ch, adev->channels_aarm, ADM_MAX_CHANNELS) {
+		for (drain = 0; drain < 8; drain++) {
+			u32 status = readl_relaxed(adev->regs +
+					ADM_CH_STATUS_SD(ch, adev->ee));
+
+			if (!(status & ADM_CH_STATUS_VALID))
+				break;
+			(void) readl_relaxed(adev->regs +
+					     ADM_CH_RSLT(ch, adev->ee));
+		}
+	}
+}
 
 static void adm_free_chan(struct dma_chan *chan)
 {
@@ -1127,6 +1479,18 @@ int qcom_adm_program_crci_ee0(struct dma_chan *chan, u32 crci, u32 crci_val)
 	if (!crci || crci >= ARRAY_SIZE(adev->crci_ctl_cache))
 		return -EINVAL;
 
+	/*
+	 * This helper exists for SoCs whose CRCI_CTL is mapped at EE=0
+	 * even when Linux owns a different SD (APQ8060 / MSM8660). On
+	 * any other SoC the EE=0 write would land in another SD's
+	 * window and corrupt unrelated state — refuse.
+	 */
+	if (!adev->soc_data || !adev->soc_data->crci_ctl_at_ee0) {
+		dev_err_ratelimited(adev->dev,
+			"qcom_adm_program_crci_ee0 refused: SoC does not expose CRCI_CTL at EE=0\n");
+		return -EPERM;
+	}
+
 	writel(crci_val, adev->regs + ADM_CRCI_CTL(crci, 0));
 	adev->crci_ctl_cache[crci] = crci_val;
 	adev->crci_ctl_cache_valid |= BIT(crci);
@@ -1147,7 +1511,20 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 	spin_lock_irqsave(&achan->vc.lock, flag);
 	memcpy(&achan->slave, cfg, sizeof(struct dma_slave_config));
 	if (cfg->peripheral_size == sizeof(*config)) {
-		achan->crci = config->crci;
+		/*
+		 * Accept the encoded form (legacy webOS macros stuff the
+		 * mux bit into the high nibble of crci, e.g.
+		 * DMOV_HSUART2_RX_CRCI = (1<<4)+10 = 26) AND the new
+		 * separate (crci, mux) form. If config->mux is set, fold
+		 * it; otherwise trust the legacy encoding embedded in
+		 * config->crci. Either way achan->crci ends up in the
+		 * single encoded form that the descriptor-build path
+		 * expects.
+		 */
+		if (config->mux)
+			achan->crci = ADM_CRCI_MUX_SEL | (config->crci & 0xf);
+		else
+			achan->crci = config->crci;
 		achan->exec_func = config->exec_func;
 		achan->exec_user = config->exec_user;
 		achan->swap_bytes = config->swap_bytes;
@@ -1343,17 +1720,27 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * mmci start writes (same CRCI = same blk_size+mux constants).
 		 */
 		{
-			bool is_qce = (async_desc->crci == 4 ||
+			/*
+			 * On SoCs with crci_ctl_at_ee0 (Tenderloin / APQ8060)
+			 * CRCI_CTL is live in the EE=0 window; the EE-aware
+			 * macro target is hardcoded to 0. On other SoCs
+			 * CRCI_CTL is in adev->ee like every other per-channel
+			 * register. Pick the right window once.
+			 */
+			u32 ctl_ee = (adev->soc_data && adev->soc_data->crci_ctl_at_ee0)
+				     ? 0 : adev->ee;
+			bool is_qce = adev->soc_data &&
+				      adev->soc_data->crci_ctl_at_ee0 &&
+				      (async_desc->crci == 4 ||
 				       async_desc->crci == 5 ||
 				       async_desc->crci == 15);
 			/*
-			 * EXPERIMENT: force-write CRCI_CTL for QCE CRCIs
-			 * regardless of cache match. Hypothesis: the cache-skip
-			 * optimization (commit 02090386de45) drops a
-			 * load-bearing side effect of the MMIO write that the
-			 * CE2 engine relies on for per-op pacing. SDCC / BT /
-			 * NAND keep the cache-skip; only QCE (CRCI 4 / 5 / 15)
-			 * forces the write.
+			 * Force-write CRCI_CTL for QCE CRCIs regardless of
+			 * cache match (commit 02090386de45 cache-skip drops a
+			 * load-bearing side effect the CE2 engine relies on
+			 * for per-op pacing on Tenderloin). SDCC / BT / NAND
+			 * keep the cache-skip. Gated on crci_ctl_at_ee0 so
+			 * non-Tenderloin SoCs don't pay the cost.
 			 */
 			bool need_write = is_qce ||
 					  !(adev->crci_ctl_cache_valid &
@@ -1362,7 +1749,7 @@ static void adm_start_dma(struct adm_chan *achan)
 
 			if (need_write) {
 				writel(crci_val,
-				       adev->regs + ADM_CRCI_CTL(async_desc->crci, 0));
+				       adev->regs + ADM_CRCI_CTL(async_desc->crci, ctl_ee));
 				adev->crci_ctl_cache[async_desc->crci] = crci_val;
 				adev->crci_ctl_cache_valid |= BIT(async_desc->crci);
 			}
@@ -1482,21 +1869,26 @@ static void adm_start_dma(struct adm_chan *achan)
 					achan->id, status, us);
 			}
 
-			if (achan->error_cookie) {
-				/*
-				 * Dead-channel fast-path: complete the
-				 * descriptor with error.  vc.lock is held
-				 * by the caller (lockdep-asserted at the
-				 * top of adm_start_dma) so vchan_cookie_
-				 * complete()'s lockdep assertion is
-				 * satisfied.  curr_txd cleared first so
-				 * adm_issue_pending()'s !curr_txd test
-				 * lets the next submission through.
-				 */
-				achan->error_cookie = async_desc->vd.tx.cookie;
-				achan->curr_txd = NULL;
-				vchan_cookie_complete(&async_desc->vd);
-			}
+			/*
+			 * R63 removed the "permanently dead channel" model:
+			 * if a previous RSLT_ERR ran the recovery sequence,
+			 * CMD_PTR_RDY should be set by the time we get here.
+			 * If it is not, either:
+			 *   - The recovery sequence is insufficient on this
+			 *     SoC (need to extend [[kit-interrupts-errors]]
+			 *     R63), OR
+			 *   - The channel is genuinely transiently busy.
+			 *
+			 * Leave curr_txd set and rely on the watchdog (for
+			 * atomic / memory-paced consumers) or the consumer
+			 * driver's own timeout (for peripheral-paced RX) to
+			 * resolve. Arm the watchdog here for atomic consumers
+			 * since we are bailing out before the normal
+			 * mod_timer call after the CMD_PTR write.
+			 */
+			if (async_desc->exec_func)
+				mod_timer(&achan->watchdog,
+					  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
 
 			if (need_submit_lock)
 				spin_unlock_irqrestore(&adev->submit_lock[lock_idx],
@@ -1536,12 +1928,16 @@ static void adm_start_dma(struct adm_chan *achan)
 	       adev->regs + ADM_CH_CMD_PTR(achan->id, adev->ee));
 
 	/*
-	 * EXPERIMENTAL: On MSM8660/APQ8060 (Tenderloin), also write CMD_PTR
-	 * to EE=0. Most peripherals work with EE=1-only writes, but QCE crypto
-	 * (channels 2-3 on ADM0) seems to require EE=0 writes as well.
-	 * This is a workaround pending proper root-cause analysis.
+	 * EE=0 mirror write — only meaningful on SoCs whose CRCI_CTL is
+	 * live at EE=0 (Tenderloin/APQ8060). On those boards QCE crypto
+	 * on channels 2-3 of ADM0 wants CMD_PTR at EE=0 as well. On
+	 * every other SoC this is a write into a foreign SD window and
+	 * would either be silently dropped or corrupt unrelated state,
+	 * so the dual write is gated on the soc_data flag rather than a
+	 * raw adev->ee comparison.
 	 */
-	if (adev->ee == 1) {
+	if (adev->soc_data && adev->soc_data->crci_ctl_at_ee0 &&
+	    adev->ee != 0) {
 		writel(ADM_CPLE_CMD_PTR_LIST |
 		       (ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
 		       adev->regs + ADM_CH_CMD_PTR(achan->id, 0));
@@ -1590,269 +1986,215 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 	struct adm_device *adev = data;
 	u32 srcs, i;
 	struct adm_async_desc *async_desc;
+	bool serviced = false;
 
 	srcs = readl_relaxed(adev->regs +
 			ADM_SEC_DOMAIN_IRQ_STATUS(adev->ee));
 
+	if (!srcs)
+		return IRQ_NONE;
+
 	dev_dbg(adev->dev, "ADM IRQ: srcs=0x%08x ee=%d\n", srcs, adev->ee);
 
-	/*
-	 * Iterate only the set channel bits in srcs.  Fixed 16-iteration
-	 * loop wasted ~14 branch checks per IRQ on tenderloin where only
-	 * 1-2 channels complete at a time.
-	 */
 	while (srcs) {
 		struct adm_chan *achan;
 		u32 status, result;
+		u32 flush_snap[6] = { 0 };
 
 		i = __ffs(srcs);
 		srcs &= ~BIT(i);
+
+		/*
+		 * Defensive: a channel not in qcom,channels-aarm should
+		 * never raise an interrupt at adev->ee, but if it does we
+		 * must not touch its registers — that SD belongs to the
+		 * modem.
+		 */
+		if (!test_bit(i, adev->channels_aarm))
+			continue;
+
 		achan = &adev->channels[i];
 
 		status = readl_relaxed(adev->regs +
 				       ADM_CH_STATUS_SD(i, adev->ee));
-
-		/* if no result present, skip */
 		if (!(status & ADM_CH_STATUS_VALID))
 			continue;
 
 		result = readl_relaxed(adev->regs +
-			ADM_CH_RSLT(i, adev->ee));
-
-		/* no valid results, skip */
+				       ADM_CH_RSLT(i, adev->ee));
 		if (!(result & ADM_CH_RSLT_VALID))
 			continue;
 
+		serviced = true;
+
 		/*
-		 * Fix #2 (lightweight): surface the FLUSH state for visibility.
-		 * Legacy msm_dmov read FLUSH0..5 (fill_errdata) and handed the
-		 * partial-transfer state to the client. Our consumers recover
-		 * their byte count from peripheral HW counters (UART
-		 * UARTDM_RX_TOTAL_SNAP, SDCC DATACNT), not the dmaengine residue,
-		 * so we don't compute a residue here — but log FLUSH_STATE0 (read
-		 * from the EE=1 command bank, where it is live on MSM8660) so a
-		 * partial/flushed transfer is observable rather than silently
-		 * reported as a clean DONE. Pairs with Fix #1's graceful flush.
+		 * Capture the full FLUSH snapshot on FLUSH or ERR. The
+		 * snapshot is attached to the descriptor's errdata[] so
+		 * consumer callbacks (dma_async_tx_callback_result) can
+		 * inspect partial-transfer state. SDCC channels (i==2,5)
+		 * also get a one-shot dev_warn for live triage; see
+		 * achan->flush_state_dumped for the rate-limit gate.
 		 */
-		if (result & ADM_CH_RSLT_FLUSH) {
-			u32 fstate = readl_relaxed(adev->regs +
-					ADM_CH_FLUSH_STATE0(i, adev->ee));
+		if (result & (ADM_CH_RSLT_FLUSH | ADM_CH_RSLT_ERR)) {
+			flush_snap[0] = readl_relaxed(adev->regs +
+				ADM_CH_FLUSH_STATE0(i, adev->ee));
+			flush_snap[1] = readl_relaxed(adev->regs +
+				ADM_CH_FLUSH_STATE1(i, adev->ee));
+			flush_snap[2] = readl_relaxed(adev->regs +
+				ADM_CH_FLUSH_STATE2(i, adev->ee));
+			flush_snap[3] = readl_relaxed(adev->regs +
+				ADM_CH_FLUSH_STATE3(i, adev->ee));
+			flush_snap[4] = readl_relaxed(adev->regs +
+				ADM_CH_FLUSH_STATE4(i, adev->ee));
+			flush_snap[5] = readl_relaxed(adev->regs +
+				ADM_CH_FLUSH_STATE5(i, adev->ee));
 
-			/*
-			 * For the SDCC channels (ADM1 ch2=eMMC/CRCI1,
-			 * ch5=WiFi/CRCI5) log FLUSH at warn level so it can be
-			 * correlated by timestamp with the mmci DIAG[DATACRCFAIL]
-			 * dump. A FLUSH on the SDCC channel coincident with an
-			 * SDCC RXOVERRUN means the ADM stopped draining the FIFO
-			 * (fabric/EBI drain starvation) rather than a card error.
-			 *
-			 * One-shot per channel: read all 6 FLUSH_STATE registers
-			 * (matching legacy webOS msm_dmov fill_errdata) and emit
-			 * in a SINGLE dev_warn so we don't burn IRQ latency with
-			 * multiple printks (see feedback_no_devwarn_in_adm_irq:
-			 * b97ca25f4615 emitted 2-3 dev_warns per stall, blocked
-			 * the ADM IRQ for 15-35 ms, made mmci miss its busy-poll
-			 * deadline -> eMMC wedge).  Two printks per first-time
-			 * stall is still much cheaper than the 3-line loop, and
-			 * the one-shot caps the cost on later stalls.
-			 */
-			if (i == 2 || i == 5) {
-				bool dump_full = !achan->flush_state_dumped;
-
-				if (dump_full) {
-					u32 fs1 = readl_relaxed(adev->regs +
-						ADM_CH_FLUSH_STATE1(i, adev->ee));
-					u32 fs2 = readl_relaxed(adev->regs +
-						ADM_CH_FLUSH_STATE2(i, adev->ee));
-					u32 fs3 = readl_relaxed(adev->regs +
-						ADM_CH_FLUSH_STATE3(i, adev->ee));
-					u32 fs4 = readl_relaxed(adev->regs +
-						ADM_CH_FLUSH_STATE4(i, adev->ee));
-					u32 fs5 = readl_relaxed(adev->regs +
-						ADM_CH_FLUSH_STATE5(i, adev->ee));
-
-					achan->flush_state_dumped = 1;
-					dev_warn(adev->dev,
-						"ADM-DIAG ch%d FLUSH result=0x%08x STATE 0..5: %08x %08x %08x %08x %08x %08x (one-shot)\n",
-						i, result,
-						fstate, fs1, fs2, fs3, fs4, fs5);
-				} else {
-					dev_warn(adev->dev,
-						"ADM-DIAG ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x (SDCC drain stalled)\n",
-						i, result, fstate);
-				}
-			} else {
-				dev_dbg(adev->dev,
-					"ADM ch%d FLUSH result=0x%08x FLUSH_STATE0=0x%08x\n",
-					i, result, fstate);
+			if ((result & ADM_CH_RSLT_FLUSH) && (i == 2 || i == 5) &&
+			    !achan->flush_state_dumped) {
+				achan->flush_state_dumped = 1;
+				dev_warn(adev->dev,
+					"ADM-DIAG ch%u FLUSH result=0x%08x STATE 0..5: %08x %08x %08x %08x %08x %08x (one-shot)\n",
+					i, result,
+					flush_snap[0], flush_snap[1],
+					flush_snap[2], flush_snap[3],
+					flush_snap[4], flush_snap[5]);
 			}
 		}
 
-		/*
-		 * Flag error only if ERR bit is set (real hardware error).
-		 * Flush-only results are expected behavior - UART drivers
-		 * use dmaengine_terminate_all() to retrieve partial RX data.
-		 */
 		if (result & ADM_CH_RSLT_ERR) {
 			achan->error = 1;
-			dev_err(adev->dev,
-				"ADM DMA error: chan=%d result=0x%08x (err=%d flush=%d tpd=%d)\n",
+			dev_err_ratelimited(adev->dev,
+				"ADM ch%u RSLT_ERR result=0x%08x flush=%08x %08x %08x %08x %08x %08x\n",
 				i, result,
-				!!(result & ADM_CH_RSLT_ERR),
-				!!(result & ADM_CH_RSLT_FLUSH),
-				!!(result & ADM_CH_RSLT_TPD));
+				flush_snap[0], flush_snap[1], flush_snap[2],
+				flush_snap[3], flush_snap[4], flush_snap[5]);
 		}
 
 		/*
-		 * Plain spin_lock — we are in hardirq, IRQs are already
-		 * disabled by the CPU; spin_lock_irqsave's save/restore is
-		 * wasted work here.
+		 * Hardirq context: IRQs already off. spin_lock_irqsave
+		 * would be wasted work.
 		 */
 		spin_lock(&achan->vc.lock);
 
-		/*
-		 * Disarm the watchdog now that the channel has reported.
-		 * Holding vc.lock serialises us against a concurrent
-		 * adm_watchdog_timeout(): if it already cleared curr_txd
-		 * the timer_delete is a no-op and the !async_desc branch
-		 * below skips the duplicate completion.
-		 */
 		timer_delete(&achan->watchdog);
 
 		async_desc = achan->curr_txd;
 
-		achan->curr_txd = NULL;
+		if (!async_desc) {
+			/* Raced with watchdog / terminate_all. Nothing to do. */
+			spin_unlock(&achan->vc.lock);
+			continue;
+		}
 
-		if (async_desc) {
-			dma_async_tx_callback callback = NULL;
-			void *callback_param = NULL;
+		/* Stamp errdata for consumer callback_result. */
+		memcpy(async_desc->errdata, flush_snap, sizeof(flush_snap));
+
+		/*
+		 * Cyclic period completion: keep the descriptor live and
+		 * fire the per-period callback. ADM auto-walks the CPL
+		 * chain so we do not re-issue. FLUSH or ERR on a cyclic
+		 * descriptor falls through to the normal termination path
+		 * below — this is the "stop streaming" event.
+		 */
+		if (async_desc->cyclic &&
+		    !(result & (ADM_CH_RSLT_FLUSH | ADM_CH_RSLT_ERR))) {
+			spin_unlock(&achan->vc.lock);
+			vchan_cyclic_callback(&async_desc->vd);
+			continue;
+		}
+
+		{
 			bool err = result & ADM_CH_RSLT_ERR;
-
 			/*
-			 * Replicate webOS msm_dmov synchronous completion pattern:
-			 * complete cookie, invoke callback, recycle descriptor, and
-			 * start next DMA - all in hardirq without vchan tasklet
-			 * deferral.  MMCI expects immediate notification and can't
-			 * tolerate vchan's deferred cleanup racing with next
-			 * transfer setup in adm_start_dma().
-			 *
-			 * KNOWN ABI NOTE (Sashiko High #1): mainline dmaengine
-			 * documents tx callbacks as running in softirq / tasklet
-			 * context.  Consumers other than mmci's atomic_submit
-			 * (msm_serial UART RX, qpic NAND, qce crypto) call back
-			 * via the standard dmaengine_desc_callback / vchan path
-			 * and may set up locking against soft-IRQ rather than
-			 * hard-IRQ.  We call the callback OUTSIDE the channel's
-			 * vc.lock to allow lock nesting, but the caller is still
-			 * in hardirq context.  Long-term the right split is to
-			 * gate the inline callback on a per-channel flag (e.g.
-			 * achan->atomic_completion = exec_func != NULL) and
-			 * defer through vchan_complete() for non-atomic-submit
-			 * consumers; tracked as a follow-up so this Sashiko-pass
-			 * stays scoped to the fixes that don't require auditing
-			 * every existing consumer's lock-class assumptions.
+			 * Consumers that set exec_func need synchronous
+			 * completion: mmci's next-request setup paths
+			 * cannot tolerate vchan tasklet deferral. Other
+			 * consumers (UART RX, NAND, crypto, dmatest) take
+			 * the standard tasklet path.
 			 */
+			bool atomic_consumer = async_desc->exec_func != NULL;
+
+			achan->curr_txd = NULL;
 
 			if (err) {
 				/*
-				 * Stash the errored cookie BEFORE
-				 * dma_cookie_complete() advances
-				 * chan->completed_cookie -- consumers
-				 * querying via adm_tx_status() see DMA_ERROR
-				 * for this cookie regardless of
-				 * dma_cookie_status()'s normal DMA_COMPLETE
-				 * return for any cookie advanced past
-				 * completed.  Without this stash a consumer
-				 * that reads MMCISTATUS from its DMA-callback
-				 * (mmci_qcom_dma_complete) finds a clean
-				 * status -- the failure is upstream of the
-				 * SDCC data path -- and charges blksz *
-				 * blocks of unread bytes to userspace.
-				 *
-				 * Legacy parity: arch/arm/mach-msm/dma.c:
-				 * 645-647 writes FLUSH0 = 0 (abrupt halt) on
-				 * RSLT_ERROR but comments candidly that
-				 * "this does not seem to work, once we get
-				 * an error -- the datamover will no longer
-				 * accept commands".  Mirror that best-effort
-				 * write so the channel is in a documented
-				 * state, but treat the channel as
-				 * permanently dead from here.
+				 * R63: stash the cookie for tx_status,
+				 * log the snapshot to the debug ring, and
+				 * run the recovery sequence so the channel
+				 * is usable by the consumer's next submit.
 				 */
 				achan->error_cookie = async_desc->vd.tx.cookie;
-				writel_relaxed(0, adev->regs +
-					       ADM_CH_FLUSH_STATE0(i,
-								adev->ee));
-			}
-
-			dma_cookie_complete(&async_desc->vd.tx);
-
-			if (async_desc->vd.tx.callback) {
-				callback = async_desc->vd.tx.callback;
-				callback_param = async_desc->vd.tx.callback_param;
-			}
-
-			/*
-			 * Pool descriptors are returned to the free list inline
-			 * (no allocator hop, no sleeping).  Dynamic descriptors
-			 * MUST be queued to the vchan tasklet because their
-			 * cleanup path (adm_dma_free_desc) calls
-			 * dma_free_coherent(), which warns when invoked from
-			 * hardirq context (kernel/dma/mapping.c:689 WARN_ON in
-			 * dma_free_attrs).
-			 *
-			 * We already inline-call the consumer's tx.callback
-			 * below; NULL out vd.tx.callback first so vchan_complete()
-			 * in the tasklet doesn't call it a SECOND time when it
-			 * processes desc_completed (Sashiko Critical #3 was the
-			 * double-completion -- 3272cece1bad fixed it by freeing
-			 * dynamic inline, but that introduced the
-			 * dma_free_coherent-in-hardirq WARN; the correct split
-			 * is: inline-call the callback, defer cleanup to the
-			 * tasklet, but don't let the tasklet re-fire the
-			 * callback).
-			 */
-			if (async_desc->pool_index >= 0) {
-				spin_lock(&adev->pool_lock);
-				list_add_tail(&async_desc->pool_node,
-					      &adev->desc_free_list);
-				spin_unlock(&adev->pool_lock);
+				adm_log_error(adev, i, async_desc->crci,
+					      result, flush_snap);
+				adm_recover_channel(achan, async_desc->crci);
 			} else {
-				/* Defer free to tasklet; suppress double callback. */
-				async_desc->vd.tx.callback = NULL;
-				async_desc->vd.tx.callback_param = NULL;
-				list_add_tail(&async_desc->vd.node,
-					      &achan->vc.desc_completed);
-				tasklet_schedule(&achan->vc.task);
+				/*
+				 * Clean completion — clear any stale error
+				 * cookie left from a previous-cycle error
+				 * so tx_status() stops returning DMA_ERROR
+				 * for cookies past the recovery boundary.
+				 */
+				achan->error_cookie = 0;
 			}
 
-			/*
-			 * kick off next DMA -- but NOT on RSLT_ERR.  The
-			 * channel cannot accept commands after an error
-			 * (legacy arch/arm/mach-msm/dma.c:645 comment);
-			 * writing CMD_PTR into a not-ready channel either
-			 * silently drops or leaves the pipeline with two
-			 * partial chains (FLUSH STATE0=0x8000c003
-			 * STATE5=0x00000003).  Let the consumer drive the
-			 * next dma_async_issue_pending() itself; the
-			 * per-cookie error_cookie path makes the failure
-			 * visible without stranding the descriptor.
-			 */
-			if (!err)
-				adm_start_dma(achan);
+			if (atomic_consumer) {
+				/*
+				 * Inline path (preserves mmci's
+				 * synchronous-completion contract).
+				 * Pool desc: return to free list inline.
+				 * Dynamic desc: defer to tasklet for
+				 * dma_free_coherent (cannot run in hardirq).
+				 */
+				dma_async_tx_callback cb = NULL;
+				void *cb_param = NULL;
 
-			/* Invoke callback after starting next DMA */
-			if (callback) {
-				spin_unlock(&achan->vc.lock);
-				callback(callback_param);
-				spin_lock(&achan->vc.lock);
+				dma_cookie_complete(&async_desc->vd.tx);
+
+				if (async_desc->vd.tx.callback) {
+					cb = async_desc->vd.tx.callback;
+					cb_param = async_desc->vd.tx.callback_param;
+				}
+
+				if (async_desc->pool_index >= 0) {
+					spin_lock(&adev->pool_lock);
+					list_add_tail(&async_desc->pool_node,
+						      &adev->desc_free_list);
+					spin_unlock(&adev->pool_lock);
+				} else {
+					async_desc->vd.tx.callback = NULL;
+					async_desc->vd.tx.callback_param = NULL;
+					list_add_tail(&async_desc->vd.node,
+						      &achan->vc.desc_completed);
+					tasklet_schedule(&achan->vc.task);
+				}
+
+				if (!err)
+					adm_start_dma(achan);
+
+				if (cb) {
+					spin_unlock(&achan->vc.lock);
+					cb(cb_param);
+					spin_lock(&achan->vc.lock);
+				}
+			} else {
+				/*
+				 * Standard tasklet path. vchan_cookie_complete
+				 * advances the cookie, queues the descriptor on
+				 * desc_completed and schedules the tasklet,
+				 * which fires callback / callback_result (with
+				 * errdata for ERR/FLUSH) and runs desc_free.
+				 */
+				vchan_cookie_complete(&async_desc->vd);
+
+				if (!err)
+					adm_start_dma(achan);
 			}
 		}
 
 		spin_unlock(&achan->vc.lock);
 	}
 
-	return IRQ_HANDLED;
+	return serviced ? IRQ_HANDLED : IRQ_NONE;
 }
 
 /**
@@ -1969,11 +2311,21 @@ static void adm_channel_init(struct adm_device *adev, struct adm_chan *achan,
  * @dma_spec:	pointer to DMA specifier as found in the device tree
  * @ofdma:	pointer to DMA controller data
  *
- * This can use either 1-cell or 2-cell formats, the first cell
- * identifies the slave device, while the optional second cell
- * contains the crci value.
+ * 3-cell DT binding:
+ *   cell 0: channel index (0..15)
+ *   cell 1: CRCI index (0..15). 0 = no static CRCI (memcpy-only
+ *           channels, or NAND / multi-CRCI consumers that override
+ *           per-submit via qcom_adm_peripheral_config).
+ *   cell 2: CRCI MUX bit (0 or 1). Only meaningful on ADM3 hardware
+ *           (MSM8X60); other SoCs ignore the value.
  *
- * Returns pointer to appropriate dma channel on success or NULL on error.
+ * The CRCI / MUX pair is folded into achan->crci as the legacy webOS
+ * encoded form (mux<<4 | crci) so the descriptor-build path
+ * (adm_prep_slave_sg) which already reads bits this way works
+ * unchanged.
+ *
+ * Returns the channel on success, NULL on bad args, or ERR_PTR on a
+ * filter mismatch (channel not declared in qcom,channels-aarm).
  */
 static struct dma_chan *adm_dma_xlate(struct of_phandle_args *dma_spec,
 			       struct of_dma *ofdma)
@@ -1981,12 +2333,27 @@ static struct dma_chan *adm_dma_xlate(struct of_phandle_args *dma_spec,
 	struct dma_device *dev = ofdma->of_dma_data;
 	struct dma_chan *chan, *candidate = NULL;
 	struct adm_chan *achan;
+	struct adm_device *adev;
+	u32 chan_idx, crci_idx, mux;
 
-	if (!dev || dma_spec->args_count > 2)
+	if (!dev || dma_spec->args_count != 3) {
+		pr_err("qcom_adm: dmas property must have 3 cells (channel crci mux), got %u\n",
+		       dma_spec ? dma_spec->args_count : 0);
 		return NULL;
+	}
+
+	chan_idx = dma_spec->args[0];
+	crci_idx = dma_spec->args[1];
+	mux      = dma_spec->args[2];
+
+	if (chan_idx >= ADM_MAX_CHANNELS || crci_idx > 15 || mux > 1) {
+		pr_err("qcom_adm: bad dmas cells (chan=%u crci=%u mux=%u)\n",
+		       chan_idx, crci_idx, mux);
+		return NULL;
+	}
 
 	list_for_each_entry(chan, &dev->channels, device_node)
-		if (chan->chan_id == dma_spec->args[0]) {
+		if (chan->chan_id == chan_idx) {
 			candidate = chan;
 			break;
 		}
@@ -1995,37 +2362,357 @@ static struct dma_chan *adm_dma_xlate(struct of_phandle_args *dma_spec,
 		return NULL;
 
 	achan = to_adm_chan(candidate);
-	if (dma_spec->args_count == 2)
-		achan->crci = dma_spec->args[1];
-	else
-		achan->crci = 0;
+	adev = achan->adev;
 
-	dev_dbg(dev->dev, "ADM xlate: chan=%d args_count=%d crci=%d\n",
-		dma_spec->args[0], dma_spec->args_count, achan->crci);
+	/* Channels not declared in qcom,channels-aarm are not Linux's. */
+	if (!test_bit(chan_idx, adev->channels_aarm)) {
+		dev_err(adev->dev,
+			"ADM xlate: channel %u not in qcom,channels-aarm\n",
+			chan_idx);
+		return NULL;
+	}
+
+	/*
+	 * Encode mux into the high nibble so the descriptor-build path
+	 * (which masks 0xf for the index and tests BIT(4) for the mux)
+	 * works unchanged. Consumer drivers calling dmaengine_slave_config
+	 * with qcom_adm_peripheral_config.mux set override this — see
+	 * adm_slave_config.
+	 */
+	achan->crci = (mux ? ADM_CRCI_MUX_SEL : 0) | (crci_idx & 0xf);
+
+	dev_dbg(dev->dev, "ADM xlate: chan=%u crci=%u mux=%u (encoded=0x%x)\n",
+		chan_idx, crci_idx, mux, achan->crci);
 
 	return dma_get_slave_channel(candidate);
 }
+
+/**
+ * adm_prep_dma_memcpy - prepare a TYPE_SINGLE memcpy chain
+ *
+ * Memcpy descriptors are simple TYPE_SINGLE entries with no CRCI and
+ * no flow control. The ADM moves bytes from src to dst at its own
+ * pace, decomposed into chunks of ADM_MAX_XFER if the request is
+ * longer. The last entry in the chain carries CMD_LC; the CPL list
+ * has CMD_PTR_LP on its single entry.
+ *
+ * Used by the in-tree dmatest selftest and by any consumer that
+ * wants a plain memory-to-memory engine.
+ */
+static struct dma_async_tx_descriptor *
+adm_prep_dma_memcpy(struct dma_chan *chan, dma_addr_t dst, dma_addr_t src,
+		    size_t len, unsigned long flags)
+{
+	struct adm_chan *achan = to_adm_chan(chan);
+	struct adm_device *adev = achan->adev;
+	struct adm_async_desc *async_desc;
+	struct adm_desc_hw_single *single;
+	void *desc;
+	u32 *cple;
+	size_t cpl_size, remaining;
+	dma_addr_t s = src, d = dst;
+	unsigned int n_descs;
+
+	if (!len)
+		return NULL;
+	if (!IS_ALIGNED(src, ADM_DESC_ALIGN) || !IS_ALIGNED(dst, ADM_DESC_ALIGN))
+		return NULL;
+
+	n_descs = DIV_ROUND_UP(len, ADM_MAX_XFER);
+	cpl_size = n_descs * sizeof(*single) + sizeof(*cple) + 2 * ADM_DESC_ALIGN;
+
+	if (cpl_size <= ADM_CPL_BUF_SIZE) {
+		async_desc = adm_desc_get(adev);
+		if (async_desc)
+			async_desc->dma_len = cpl_size;
+	} else {
+		async_desc = NULL;
+	}
+	if (!async_desc) {
+		async_desc = adm_desc_alloc_fallback(adev, cpl_size);
+		if (!async_desc) {
+			dev_err(adev->dev, "memcpy: unable to allocate descriptor\n");
+			return NULL;
+		}
+	}
+
+	async_desc->crci = 0;
+	async_desc->mux  = 0;
+	async_desc->blk_size = 0;
+	async_desc->length = len;
+	async_desc->dir = DMA_MEM_TO_MEM;
+	async_desc->exec_func = NULL;
+	async_desc->exec_user = NULL;
+
+	cple = PTR_ALIGN(async_desc->cpl, ADM_DESC_ALIGN);
+	desc = PTR_ALIGN(cple + 1, ADM_DESC_ALIGN);
+	remaining = len;
+
+	while (remaining) {
+		size_t chunk = min_t(size_t, remaining, ADM_MAX_XFER);
+
+		single = desc;
+		single->cmd = ADM_CMD_TYPE_SINGLE;
+		single->src_addr = s;
+		single->dst_addr = d;
+		single->len = chunk;
+
+		s += chunk;
+		d += chunk;
+		remaining -= chunk;
+		desc += sizeof(*single);
+
+		if (!remaining)
+			single->cmd |= ADM_CMD_LC;
+	}
+
+	*cple = ADM_CPLE_LP |
+		(((u32)(async_desc->dma_addr + ADM_DESC_ALIGN)) >> 3);
+
+	return vchan_tx_prep(&achan->vc, &async_desc->vd, flags);
+}
+
+/**
+ * adm_prep_dma_cyclic - prepare a cyclic (period-ring) chain
+ *
+ * Builds a chain of TYPE_SINGLE descriptors, one per period, each
+ * with the slave-side CRCI from the channel's slave_config. The
+ * descriptor list loops: the CPL has CMD_PTR_LP on its last entry
+ * but the last descriptor's cmd does NOT carry CMD_LC, so the ADM
+ * re-walks the CPL after the last period completes. Per-period
+ * notification is delivered via vchan_cyclic_callback() from the IRQ
+ * handler when RSLT_VALID fires partway through the chain (the ADM
+ * posts RSLT after each CMD_LC; for cyclic we set CMD_LC on every
+ * period descriptor so the driver gets one callback per period).
+ *
+ * Useful for streaming audio / TSIF consumers.
+ */
+static struct dma_async_tx_descriptor *
+adm_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t buf_addr, size_t buf_len,
+		    size_t period_len, enum dma_transfer_direction direction,
+		    unsigned long flags)
+{
+	struct adm_chan *achan = to_adm_chan(chan);
+	struct adm_device *adev = achan->adev;
+	struct adm_async_desc *async_desc;
+	struct adm_desc_hw_single *single;
+	void *desc;
+	u32 *cple;
+	size_t cpl_size;
+	unsigned int n_periods, i;
+	u32 crci_cmd;
+	dma_addr_t slave_addr;
+
+	if (!buf_len || !period_len || buf_len % period_len)
+		return NULL;
+	if (!is_slave_direction(direction))
+		return NULL;
+	if (!IS_ALIGNED(buf_addr, ADM_DESC_ALIGN) ||
+	    !IS_ALIGNED(period_len, ADM_DESC_ALIGN))
+		return NULL;
+
+	n_periods = buf_len / period_len;
+	cpl_size = n_periods * sizeof(*single) + sizeof(*cple) + 2 * ADM_DESC_ALIGN;
+
+	if (cpl_size <= ADM_CPL_BUF_SIZE) {
+		async_desc = adm_desc_get(adev);
+		if (async_desc)
+			async_desc->dma_len = cpl_size;
+	} else {
+		async_desc = NULL;
+	}
+	if (!async_desc) {
+		async_desc = adm_desc_alloc_fallback(adev, cpl_size);
+		if (!async_desc) {
+			dev_err(adev->dev, "cyclic: unable to allocate descriptor\n");
+			return NULL;
+		}
+	}
+
+	async_desc->crci = achan->crci & 0xf;
+	async_desc->mux = (achan->crci & ADM_CRCI_MUX_SEL) ?
+			  ADM_CRCI_CTL_MUX_SEL : 0;
+	async_desc->blk_size = 0;	/* per-CRCI default applies */
+	async_desc->length = buf_len;
+	async_desc->dir = direction;
+	async_desc->exec_func = NULL;
+	async_desc->exec_user = NULL;
+	async_desc->cyclic = true;
+
+	if (direction == DMA_DEV_TO_MEM) {
+		crci_cmd = ADM_CMD_SRC_CRCI(async_desc->crci);
+		slave_addr = achan->slave.src_addr;
+	} else {
+		crci_cmd = ADM_CMD_DST_CRCI(async_desc->crci);
+		slave_addr = achan->slave.dst_addr;
+	}
+
+	cple = PTR_ALIGN(async_desc->cpl, ADM_DESC_ALIGN);
+	desc = PTR_ALIGN(cple + 1, ADM_DESC_ALIGN);
+
+	for (i = 0; i < n_periods; i++) {
+		single = desc;
+		single->cmd = ADM_CMD_TYPE_SINGLE | crci_cmd | ADM_CMD_LC;
+		single->len = period_len;
+		if (direction == DMA_DEV_TO_MEM) {
+			single->src_addr = slave_addr;
+			single->dst_addr = buf_addr + i * period_len;
+		} else {
+			single->src_addr = buf_addr + i * period_len;
+			single->dst_addr = slave_addr;
+		}
+		desc += sizeof(*single);
+	}
+
+	/*
+	 * Single CPL entry pointing at the first descriptor. With
+	 * CMD_PTR_LP set the ADM does NOT auto-restart at the head; we
+	 * mark async_desc->dir to enable the cyclic callback path in
+	 * the IRQ handler, which re-issues the descriptor when the
+	 * final period in the buffer completes.
+	 */
+	*cple = ADM_CPLE_LP |
+		(((u32)(async_desc->dma_addr + ADM_DESC_ALIGN)) >> 3);
+
+	return vchan_tx_prep(&achan->vc, &async_desc->vd, flags);
+}
+
+/*
+ * device_pause: graceful flush, current burst completes. Channel
+ * stays in FLUSHING until the IRQ handler observes RSLT_FLUSH; at
+ * that point the consumer's callback gets a partial-transfer
+ * notification and the channel is back to IDLE.
+ */
+static int adm_device_pause(struct dma_chan *chan)
+{
+	struct adm_chan *achan = to_adm_chan(chan);
+	struct adm_device *adev = achan->adev;
+	unsigned long flags;
+
+	spin_lock_irqsave(&achan->vc.lock, flags);
+	if (achan->curr_txd) {
+		writel_relaxed(ADM_CH_FLUSH_GRACEFUL,
+			       adev->regs +
+			       ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
+	}
+	spin_unlock_irqrestore(&achan->vc.lock, flags);
+	return 0;
+}
+
+/*
+ * device_resume: re-issue any pending descriptor from the queue.
+ * The pause-state descriptor was completed via the FLUSH IRQ path
+ * with a partial-transfer record; consumers either treat it as done
+ * or queue a fresh descriptor for the rest of the work.
+ */
+static int adm_device_resume(struct dma_chan *chan)
+{
+	struct adm_chan *achan = to_adm_chan(chan);
+	unsigned long flags;
+
+	spin_lock_irqsave(&achan->vc.lock, flags);
+	if (vchan_issue_pending(&achan->vc) && !achan->curr_txd)
+		adm_start_dma(achan);
+	spin_unlock_irqrestore(&achan->vc.lock, flags);
+	return 0;
+}
+
+/*
+ * device_synchronize: wait (sleeping) for any in-flight FLUSH /
+ * callback to land. Pairs with terminate_async.
+ */
+static void adm_device_synchronize(struct dma_chan *chan)
+{
+	struct adm_chan *achan = to_adm_chan(chan);
+
+	vchan_synchronize(&achan->vc);
+	synchronize_irq(achan->adev->irq);
+}
+
+/*
+ * Runtime PM callbacks. Clocks are reference-counted by usage_count;
+ * the per-submit pm_runtime_resume_and_get() / per-completion
+ * pm_runtime_put_autosuspend() pair lets autosuspend drop clocks
+ * after ADM_RUNTIME_AUTOSUSPEND_MS of idle.
+ */
+#define ADM_RUNTIME_AUTOSUSPEND_MS 100
+
+static int __maybe_unused adm_runtime_suspend(struct device *dev)
+{
+	struct adm_device *adev = dev_get_drvdata(dev);
+
+	disable_irq(adev->irq);
+	if (adev->iface_clk)
+		clk_disable_unprepare(adev->iface_clk);
+	clk_disable_unprepare(adev->core_clk);
+	return 0;
+}
+
+static int __maybe_unused adm_runtime_resume(struct device *dev)
+{
+	struct adm_device *adev = dev_get_drvdata(dev);
+	int ret;
+	unsigned int ch;
+
+	ret = clk_prepare_enable(adev->core_clk);
+	if (ret) {
+		dev_err(dev, "runtime resume: core clock enable failed: %d\n", ret);
+		return ret;
+	}
+	if (adev->iface_clk) {
+		ret = clk_prepare_enable(adev->iface_clk);
+		if (ret) {
+			dev_err(dev, "runtime resume: iface clock enable failed: %d\n", ret);
+			clk_disable_unprepare(adev->core_clk);
+			return ret;
+		}
+	}
+
+	/* Re-arm IRQ_EN + FLUSH_EN per channel after power collapse. */
+	for_each_set_bit(ch, adev->channels_aarm, ADM_MAX_CHANNELS)
+		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
+		       adev->regs + ADM_CH_RSLT_CONF(ch, adev->ee));
+
+	enable_irq(adev->irq);
+	return 0;
+}
+
+static int __maybe_unused adm_runtime_idle(struct device *dev)
+{
+	/* Defer to autosuspend timer; idle just acks. */
+	return 0;
+}
+
+static const struct dev_pm_ops adm_pm_ops = {
+	SET_RUNTIME_PM_OPS(adm_runtime_suspend, adm_runtime_resume,
+			   adm_runtime_idle)
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				     pm_runtime_force_resume)
+};
 
 static int adm_dma_probe(struct platform_device *pdev)
 {
 	struct adm_device *adev;
 	int ret;
-	u32 i;
+	u32 i, nr_aarm;
+	u32 ch_list[ADM_MAX_CHANNELS];
 
 	adev = devm_kzalloc(&pdev->dev, sizeof(*adev), GFP_KERNEL);
 	if (!adev)
 		return -ENOMEM;
 
 	adev->dev = &pdev->dev;
+	adev->soc_data = of_device_get_match_data(&pdev->dev);
+	if (!adev->soc_data) {
+		dev_err(adev->dev, "no driver_data on of_device_id match\n");
+		return -EINVAL;
+	}
+	dev_info(adev->dev, "ADM %s\n", adev->soc_data->name);
 
-	/*
-	 * Per-CRCI submit serialization (was a single per-controller
-	 * lock; see the submit_lock[] declaration comment for why this
-	 * is split per-CRCI now).  Initialised early so adm_start_dma
-	 * can always take whichever CRCI's lock it needs.
-	 */
-	for (int i = 0; i < ARRAY_SIZE(adev->submit_lock); i++)
+	/* Per-CRCI submit locks. See submit_lock[] declaration comment. */
+	for (i = 0; i < ARRAY_SIZE(adev->submit_lock); i++)
 		spin_lock_init(&adev->submit_lock[i]);
+	spin_lock_init(&adev->err_log_lock);
 
 	adev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(adev->regs))
@@ -2041,36 +2728,79 @@ static int adm_dma_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	adev->owns_master_sd = of_property_read_bool(pdev->dev.of_node,
+						     "qcom,owns-master-sd");
+
+	/*
+	 * qcom,channels-aarm filter. Absent property = "all 16" for
+	 * back-compat with older DTSes that didn't declare the list.
+	 */
+	nr_aarm = of_property_count_u32_elems(pdev->dev.of_node,
+					      "qcom,channels-aarm");
+	if (nr_aarm > 0 && nr_aarm <= ADM_MAX_CHANNELS) {
+		ret = of_property_read_u32_array(pdev->dev.of_node,
+						 "qcom,channels-aarm",
+						 ch_list, nr_aarm);
+		if (ret) {
+			dev_err(adev->dev, "qcom,channels-aarm read failed: %d\n",
+				ret);
+			return ret;
+		}
+		for (i = 0; i < nr_aarm; i++) {
+			if (ch_list[i] >= ADM_MAX_CHANNELS) {
+				dev_err(adev->dev,
+					"qcom,channels-aarm entry %u out of range\n",
+					ch_list[i]);
+				return -EINVAL;
+			}
+			set_bit(ch_list[i], adev->channels_aarm);
+		}
+	} else {
+		bitmap_fill(adev->channels_aarm, ADM_MAX_CHANNELS);
+	}
+	dev_info(adev->dev, "AARM-owned channels mask = 0x%lx\n",
+		 *adev->channels_aarm);
+
 	adev->core_clk = devm_clk_get(adev->dev, "core");
 	if (IS_ERR(adev->core_clk))
 		return PTR_ERR(adev->core_clk);
 
-	adev->iface_clk = devm_clk_get(adev->dev, "iface");
+	/*
+	 * iface is optional — not every SoC has a separate AHB clock.
+	 * devm_clk_get_optional() returns NULL when absent.
+	 */
+	adev->iface_clk = devm_clk_get_optional(adev->dev, "iface");
 	if (IS_ERR(adev->iface_clk))
 		return PTR_ERR(adev->iface_clk);
 
 	adev->clk_reset = devm_reset_control_get_exclusive(&pdev->dev, "clk");
 	if (IS_ERR(adev->clk_reset)) {
-		dev_err(adev->dev, "failed to get ADM0 reset\n");
+		dev_err(adev->dev, "failed to get clk reset\n");
 		return PTR_ERR(adev->clk_reset);
 	}
 
 	adev->c0_reset = devm_reset_control_get_exclusive(&pdev->dev, "c0");
 	if (IS_ERR(adev->c0_reset)) {
-		dev_err(adev->dev, "failed to get ADM0 C0 reset\n");
+		dev_err(adev->dev, "failed to get C0 reset\n");
 		return PTR_ERR(adev->c0_reset);
 	}
 
 	adev->c1_reset = devm_reset_control_get_exclusive(&pdev->dev, "c1");
 	if (IS_ERR(adev->c1_reset)) {
-		dev_err(adev->dev, "failed to get ADM0 C1 reset\n");
+		dev_err(adev->dev, "failed to get C1 reset\n");
 		return PTR_ERR(adev->c1_reset);
 	}
 
 	adev->c2_reset = devm_reset_control_get_exclusive(&pdev->dev, "c2");
 	if (IS_ERR(adev->c2_reset)) {
-		dev_err(adev->dev, "failed to get ADM0 C2 reset\n");
+		dev_err(adev->dev, "failed to get C2 reset\n");
 		return PTR_ERR(adev->c2_reset);
+	}
+
+	ret = dma_set_mask_and_coherent(adev->dev, DMA_BIT_MASK(32));
+	if (ret) {
+		dev_err(adev->dev, "failed to set 32-bit DMA mask: %d\n", ret);
+		return ret;
 	}
 
 	ret = clk_prepare_enable(adev->core_clk);
@@ -2079,121 +2809,77 @@ static int adm_dma_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = clk_prepare_enable(adev->iface_clk);
-	if (ret) {
-		dev_err(adev->dev, "failed to prepare/enable iface clock\n");
-		goto err_disable_core_clk;
+	if (adev->iface_clk) {
+		ret = clk_prepare_enable(adev->iface_clk);
+		if (ret) {
+			dev_err(adev->dev,
+				"failed to prepare/enable iface clock\n");
+			goto err_disable_core_clk;
+		}
 	}
 
 	/*
-	 * EBI interconnect path for DMA memory access.
-	 *
-	 * The legacy webOS kernel used ebi1_adm_clk clock voter to ensure
-	 * minimum EBI bandwidth during DMA operations. The interconnect
-	 * framework provides equivalent functionality.
-	 *
-	 * Path: ADM -> SFAB -> AFAB -> EBI (system memory)
+	 * Interconnect: replaces the legacy ebi1_adm_clk voter. Vote at
+	 * the floor declared by the per-SoC driver_data; 0/0 = no vote.
+	 * Both "memory" and "memory-p1" are optional and absence is fine.
 	 */
 	adev->icc_path = devm_of_icc_get(adev->dev, "memory");
 	if (IS_ERR(adev->icc_path)) {
 		ret = PTR_ERR(adev->icc_path);
-		if (ret != -ENODATA) {
-			dev_err(adev->dev, "failed to get interconnect path: %d\n", ret);
+		if (ret != -ENODATA && ret != -ENOENT) {
+			dev_err(adev->dev,
+				"failed to get interconnect path: %d\n", ret);
 			goto err_disable_clks;
 		}
-		/* No interconnect defined in DT - optional for backwards compat */
 		adev->icc_path = NULL;
 	}
-
-	if (adev->icc_path) {
-		/*
-		 * Vote a SUSTAINED EBI floor to keep the ADM->SFAB->AFAB->EBI
-		 * path from collapsing while the ADM drains the SDCC FIFOs.
-		 * Legacy webOS used clk_set_rate(ebi1_adm_clk, 27) -- a minimal
-		 * EBI keep-alive (the heavy data-path vote was the per-SDCC
-		 * dfab=64MHz in msm_sdcc, not the ADM).  Vote it as avg_bw too
-		 * (not just peak) so the floor holds across RPM active/sleep
-		 * contexts during sustained concurrent eMMC + WiFi DMA; with
-		 * avg=0 the ADM's own EBI floor lapsed and the drain could
-		 * starve.  128 MB/s is comfortably above legacy's keep-alive.
-		 *
-		 * Gated on the board (root) compat string -- IPQ8064 NAND is
-		 * low-bandwidth (single ADM channel, infrequent large bursts)
-		 * and was working without any sustained vote in mainline before
-		 * this driver gained ICC paths; voting a 128 MB/s floor there
-		 * needlessly pins EBI bandwidth.  Long-term should move to
-		 * per-SoC OF match data with .data = { .icc_vote_mbps = 128 };
-		 * tracked alongside the other per-SoC quirk gates in task #31.
-		 */
-		if (of_machine_is_compatible("qcom,msm8660") ||
-		    of_machine_is_compatible("qcom,apq8060")) {
-			ret = icc_set_bw(adev->icc_path, 1024000, 1024000);
-			if (ret) {
-				dev_err(adev->dev, "failed to set interconnect bandwidth: %d\n", ret);
-				goto err_disable_clks;
-			}
+	if (adev->icc_path && adev->soc_data->icc_bw_kbps_peak) {
+		ret = icc_set_bw(adev->icc_path,
+				 adev->soc_data->icc_bw_kbps_avg,
+				 adev->soc_data->icc_bw_kbps_peak);
+		if (ret) {
+			dev_err(adev->dev,
+				"failed to set interconnect bw: %d\n", ret);
+			goto err_disable_clks;
 		}
 	}
 
-	/*
-	 * ADM1 has two SFAB master ports (PORT0 = mas_port 4, PORT1 = mas_port 5).
-	 * The hardware routes channel traffic across both based on its
-	 * internal channel -> port mapping.  Without an ICC vote on PORT1,
-	 * RPM ARB programs zero bandwidth on it -- which under sustained
-	 * concurrent eMMC + WiFi DMA starves whichever channel the HW
-	 * routed through PORT1.  Symptom: "ADM-DIAG chX FLUSH ...
-	 * (SDCC drain stalled)" + DATACRCFAIL on a 1 MB eMMC read mid-
-	 * transfer.  Match PORT1's vote to PORT0 so both ports stay alive.
-	 *
-	 * The DT exposes this second path via interconnect-names = "memory-p1";
-	 * it is optional for backwards compatibility (older DTs without the
-	 * second entry simply skip this vote, matching the previous behaviour).
-	 */
 	adev->icc_path_p1 = devm_of_icc_get(adev->dev, "memory-p1");
 	if (IS_ERR(adev->icc_path_p1)) {
 		ret = PTR_ERR(adev->icc_path_p1);
 		if (ret != -ENODATA && ret != -ENOENT) {
 			dev_err(adev->dev,
-				"failed to get PORT1 interconnect path: %d\n", ret);
+				"failed to get PORT1 interconnect path: %d\n",
+				ret);
 			goto err_disable_clks;
 		}
 		adev->icc_path_p1 = NULL;
 	}
-	if (adev->icc_path_p1 &&
-	    (of_machine_is_compatible("qcom,msm8660") ||
-	     of_machine_is_compatible("qcom,apq8060"))) {
-		ret = icc_set_bw(adev->icc_path_p1, 1024000, 1024000);
+	if (adev->icc_path_p1 && adev->soc_data->icc_bw_kbps_peak) {
+		ret = icc_set_bw(adev->icc_path_p1,
+				 adev->soc_data->icc_bw_kbps_avg,
+				 adev->soc_data->icc_bw_kbps_peak);
 		if (ret) {
 			dev_err(adev->dev,
-				"failed to set PORT1 interconnect bw: %d\n", ret);
+				"failed to set PORT1 interconnect bw: %d\n",
+				ret);
 			goto err_disable_clks;
 		}
 	}
 
 	/*
-	 * Probe-time reset: IPQ8064 (the original upstream user) needs this
-	 * to bring the ADM into a known state before any peripheral CRCI is
-	 * armed.  MSM8660 / APQ8060 must NOT reset here -- the bootloader
-	 * pre-programs CRCI_CTL at the EE=0 aperture for eMMC, NAND, SDC,
-	 * WiFi-SDIO, and the reset would wipe those entries; the consumer
-	 * peripherals do not currently know how to re-populate them, so the
-	 * first CRCI handshake would hang.
-	 *
-	 * Use the board (root) compat string rather than a new ADM compat
-	 * variant for now: the proper long-term fix is to add a per-SoC OF
-	 * match entry with .data = { .probe_reset = false } and key off
-	 * of_device_get_match_data(); tracked as a follow-up for the
-	 * msm8660-adm DT binding series.
+	 * Probe-time reset is per-SoC: needed on IPQ8064 to bring the
+	 * controller into a known state; forbidden on MSM8660/APQ8060
+	 * because the bootloader has already programmed CRCI_CTL at the
+	 * EE=0 aperture for the peripherals it enabled and a reset would
+	 * wipe those entries.
 	 */
-	if (!of_machine_is_compatible("qcom,msm8660") &&
-	    !of_machine_is_compatible("qcom,apq8060")) {
+	if (adev->soc_data->needs_probe_reset) {
 		reset_control_assert(adev->clk_reset);
 		reset_control_assert(adev->c0_reset);
 		reset_control_assert(adev->c1_reset);
 		reset_control_assert(adev->c2_reset);
-
 		udelay(2);
-
 		reset_control_deassert(adev->clk_reset);
 		reset_control_deassert(adev->c0_reset);
 		reset_control_deassert(adev->c1_reset);
@@ -2202,30 +2888,30 @@ static int adm_dma_probe(struct platform_device *pdev)
 
 	adev->channels = devm_kcalloc(adev->dev, ADM_MAX_CHANNELS,
 				      sizeof(*adev->channels), GFP_KERNEL);
-
 	if (!adev->channels) {
 		ret = -ENOMEM;
 		goto err_disable_clks;
 	}
 
-	/* allocate and initialize channels */
 	INIT_LIST_HEAD(&adev->common.channels);
 
-	for (i = 0; i < ADM_MAX_CHANNELS; i++)
-		adm_channel_init(adev, &adev->channels[i], i);
+	/*
+	 * Channel filter: only register channels declared in
+	 * qcom,channels-aarm. Channels owned by the modem (10-14 on
+	 * MSM8660 ADM0) or unused must not be exposed to dmaengine.
+	 */
+	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
+		if (test_bit(i, adev->channels_aarm))
+			adm_channel_init(adev, &adev->channels[i], i);
+		else
+			adev->channels[i].id = i;	/* parked, unused */
+	}
 
-	/* Initialize descriptor pool for reduced per-transfer overhead */
 	ret = adm_desc_pool_init(adev);
 	if (ret) {
 		dev_err(adev->dev, "failed to initialize descriptor pool\n");
 		goto err_disable_clks;
 	}
-
-	/* Wire pool cleanup into device-managed unwind so any subsequent
-	 * probe-error goto (err_disable_clks, etc.) automatically frees the
-	 * pool without an explicit adm_desc_pool_destroy() call on every
-	 * error label.
-	 */
 	ret = devm_add_action_or_reset(&pdev->dev,
 				       adm_desc_pool_destroy_action, adev);
 	if (ret) {
@@ -2235,56 +2921,51 @@ static int adm_dma_probe(struct platform_device *pdev)
 		goto err_disable_clks;
 	}
 
-	/* reset CRCIs */
+	/*
+	 * Reset all CRCIs once at probe so a previously-armed CRCI from
+	 * a kexec/warm boot doesn't deliver stale data on first submit.
+	 */
 	for (i = 0; i < 16; i++)
 		writel(ADM_CRCI_CTL_RST, adev->regs +
 			ADM_CRCI_CTL(i, adev->ee));
 
 	/*
-	 * Initialize per-channel state. RSLT_CONF gets the IRQ + FLUSH
-	 * enable; CH_CONF is deliberately NOT rewritten — see the long
-	 * comment in the channel-alloc path above for why. The
-	 * bootloader-programmed CH_CONF values (visible in the master
-	 * EE=0 view) carry the correct SD field for each channel and
-	 * must not be touched.
+	 * Per-SoC CRCI defaults. Seed CRCI_CTL with the documented value
+	 * so the cache-skip path in adm_start_dma doesn't pick up the
+	 * post-RST 0 as authoritative. Applied to the live EE aperture
+	 * (EE=0 on Tenderloin via crci_ctl_at_ee0, adev->ee elsewhere).
 	 */
-	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
+	if (adev->soc_data->crci_defaults) {
+		u32 ctl_ee = adev->soc_data->crci_ctl_at_ee0 ? 0 : adev->ee;
+		int j;
+
+		for (j = 0; j < adev->soc_data->nr_crci_defaults; j++) {
+			const struct adm_crci_default *def =
+				&adev->soc_data->crci_defaults[j];
+			u32 val = def->blk_size |
+				  (def->mux ? ADM_CRCI_CTL_MUX_SEL : 0);
+
+			writel(val,
+			       adev->regs + ADM_CRCI_CTL(def->crci, ctl_ee));
+			adev->crci_ctl_cache[def->crci] = val;
+			adev->crci_ctl_cache_valid |= BIT(def->crci);
+		}
+	}
+
+	/*
+	 * Per-channel state: RSLT_CONF gets IRQ + FLUSH enable. CH_CONF
+	 * is deliberately NOT rewritten — the bootloader-programmed
+	 * values carry SD + priority and Linux must not stomp them.
+	 * Only touch channels Linux owns.
+	 */
+	for_each_set_bit(i, adev->channels_aarm, ADM_MAX_CHANNELS) {
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(i, adev->ee));
 		adev->channels[i].initialized = 1;
 	}
 
-	/*
-	 * Diagnostic: read back CH_CONF and RSLT_CONF for all channels.
-	 *
-	 * On MSM8660/APQ8060 (Tenderloin) the live CH_CONF + RSLT_CONF
-	 * windows are at EE=0 (offset 0x240 / 0x300), not at adev->ee=1
-	 * where the kernel writes RSLT_CONF. Reading at adev->ee=1
-	 * returns all zeros and masks the actual bootloader-programmed
-	 * priorities. Verified by live /dev/mem dump of running webOS
-	 * 2.6.35-palm: EE=0 holds the truth, EE=1/2/3 read 0.
-	 *
-	 * Real values on Tenderloin ADM1 (sample, EE=0):
-	 *   ch2 (sdcc1 eMMC, CRCI 1) = 0x000008D5 (priority=5, SD=1)
-	 *   ch5 (sdcc4 WiFi, CRCI 5) = 0x000008D6 (priority=6, SD=1)
-	 *
-	 * So bootloader explicitly gives sdcc4 (WiFi) one priority level
-	 * higher than sdcc1 (eMMC) on the ADM channel arbiter. The driver
-	 * does not need to touch CH_CONF -- bootloader has it covered.
-	 *
-	 * Read at EE=0 here regardless of adev->ee, so the diagnostic is
-	 * actually useful on this SoC.
-	 */
-	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
-		u32 ch_conf, rslt_conf;
-
-		ch_conf = readl_relaxed(adev->regs + ADM_CH_CONF(i, 0));
-		rslt_conf = readl_relaxed(adev->regs +
-					  ADM_CH_RSLT_CONF(i, 0));
-		dev_dbg(adev->dev,
-			"ADM ch%d (EE=0 live): CH_CONF=0x%08x RSLT_CONF=0x%08x\n",
-			i, ch_conf, rslt_conf);
-	}
+	/* Drain any RSLT residue left by the bootloader / warm reset. */
+	adm_drain_rslt(adev);
 
 	ret = devm_request_irq(adev->dev, adev->irq, adm_dma_irq,
 			       IRQF_NOBALANCING, "adm_dma", adev);
@@ -2292,14 +2973,10 @@ static int adm_dma_probe(struct platform_device *pdev)
 		goto err_disable_clks;
 
 	/*
-	 * Pin the ADM completion IRQ to CPU1 when available.
-	 *
-	 * Tenderloin (APQ8060) shares adm_dma1 between sdcc1 (eMMC, DMA) and
-	 * sdcc4 (WiFi, PIO for BMI). When both IRQs land on CPU0, the ADM
-	 * hardirq + tasklet path delays the sdcc4 PIO TXFIFOHALFEMPTY refill
-	 * IRQ enough that DPSM underflows the 64-byte FIFO and the AR6003
-	 * BMI write times out. Moving the ADM IRQ to the second core lets the
-	 * two run in parallel.
+	 * Pin the ADM completion IRQ to CPU1 when available. Tenderloin
+	 * shares adm_dma1 between sdcc1 (eMMC DMA) and sdcc4 (WiFi PIO);
+	 * letting the ADM hardirq stay on CPU0 alongside sdcc4 caused
+	 * DPSM FIFO underflows. Cheap on other SoCs.
 	 */
 	if (num_online_cpus() > 1 && cpu_online(1)) {
 		int aff_ret = irq_set_affinity_and_hint(adev->irq,
@@ -2315,22 +2992,33 @@ static int adm_dma_probe(struct platform_device *pdev)
 	adev->common.dev = adev->dev;
 	adev->common.dev->dma_parms = &adev->dma_parms;
 
-	/* set capabilities */
+	/* Capabilities */
 	dma_cap_zero(adev->common.cap_mask);
-	dma_cap_set(DMA_SLAVE, adev->common.cap_mask);
+	dma_cap_set(DMA_SLAVE,   adev->common.cap_mask);
 	dma_cap_set(DMA_PRIVATE, adev->common.cap_mask);
+	dma_cap_set(DMA_MEMCPY,  adev->common.cap_mask);
+	dma_cap_set(DMA_CYCLIC,  adev->common.cap_mask);
 
-	/* initialize dmaengine apis */
-	adev->common.directions = BIT(DMA_DEV_TO_MEM | DMA_MEM_TO_DEV);
+	adev->common.directions = BIT(DMA_DEV_TO_MEM) | BIT(DMA_MEM_TO_DEV) |
+				  BIT(DMA_MEM_TO_MEM);
 	adev->common.residue_granularity = DMA_RESIDUE_GRANULARITY_DESCRIPTOR;
-	adev->common.src_addr_widths = DMA_SLAVE_BUSWIDTH_4_BYTES;
-	adev->common.dst_addr_widths = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	adev->common.src_addr_widths = BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) |
+				       BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) |
+				       BIT(DMA_SLAVE_BUSWIDTH_4_BYTES);
+	adev->common.dst_addr_widths = adev->common.src_addr_widths;
+	adev->common.copy_align = ADM_DESC_ALIGN;
+
 	adev->common.device_free_chan_resources = adm_free_chan;
-	adev->common.device_prep_slave_sg = adm_prep_slave_sg;
-	adev->common.device_issue_pending = adm_issue_pending;
-	adev->common.device_tx_status = adm_tx_status;
-	adev->common.device_terminate_all = adm_terminate_all;
-	adev->common.device_config = adm_slave_config;
+	adev->common.device_prep_slave_sg       = adm_prep_slave_sg;
+	adev->common.device_prep_dma_memcpy     = adm_prep_dma_memcpy;
+	adev->common.device_prep_dma_cyclic     = adm_prep_dma_cyclic;
+	adev->common.device_issue_pending       = adm_issue_pending;
+	adev->common.device_tx_status           = adm_tx_status;
+	adev->common.device_terminate_all       = adm_terminate_all;
+	adev->common.device_synchronize         = adm_device_synchronize;
+	adev->common.device_pause               = adm_device_pause;
+	adev->common.device_resume              = adm_device_resume;
+	adev->common.device_config              = adm_slave_config;
 
 	ret = dma_async_device_register(&adev->common);
 	if (ret) {
@@ -2343,16 +3031,22 @@ static int adm_dma_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unregister_dma;
 
+	/* Runtime PM. Bootloader left clocks on; start as 'active'. */
+	pm_runtime_set_autosuspend_delay(adev->dev,
+					 ADM_RUNTIME_AUTOSUSPEND_MS);
+	pm_runtime_use_autosuspend(adev->dev);
+	pm_runtime_set_active(adev->dev);
+	pm_runtime_enable(adev->dev);
+
+	adm_debugfs_init(adev);
+
 	return 0;
 
 err_unregister_dma:
 	dma_async_device_unregister(&adev->common);
-	/* Pool cleanup is now wired via devm_add_action_or_reset so it
-	 * runs automatically when devres unwinds.  No err_pool_destroy
-	 * label needed.
-	 */
 err_disable_clks:
-	clk_disable_unprepare(adev->iface_clk);
+	if (adev->iface_clk)
+		clk_disable_unprepare(adev->iface_clk);
 err_disable_core_clk:
 	clk_disable_unprepare(adev->core_clk);
 
@@ -2362,18 +3056,18 @@ err_disable_core_clk:
 static void adm_dma_remove(struct platform_device *pdev)
 {
 	struct adm_device *adev = platform_get_drvdata(pdev);
-	struct adm_chan *achan;
-	u32 i;
+	unsigned int i;
+
+	adm_debugfs_remove(adev);
+
+	pm_runtime_disable(adev->dev);
+	pm_runtime_dont_use_autosuspend(adev->dev);
 
 	of_dma_controller_free(pdev->dev.of_node);
 	dma_async_device_unregister(&adev->common);
 
-	for (i = 0; i < ADM_MAX_CHANNELS; i++) {
-		achan = &adev->channels[i];
-
-		/* mask IRQs for this channel/EE pair */
-		writel(0, adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
-
+	for_each_set_bit(i, adev->channels_aarm, ADM_MAX_CHANNELS) {
+		writel(0, adev->regs + ADM_CH_RSLT_CONF(i, adev->ee));
 		tasklet_kill(&adev->channels[i].vc.task);
 		adm_terminate_all(&adev->channels[i].vc.chan);
 	}
@@ -2382,12 +3076,25 @@ static void adm_dma_remove(struct platform_device *pdev)
 
 	/* Descriptor pool is freed via the devm action registered at probe. */
 
+	if (adev->iface_clk)
+		clk_disable_unprepare(adev->iface_clk);
 	clk_disable_unprepare(adev->core_clk);
-	clk_disable_unprepare(adev->iface_clk);
 }
 
 static const struct of_device_id adm_of_match[] = {
-	{ .compatible = "qcom,adm", },
+	{ .compatible = "qcom,adm",         .data = &adm_generic_data,   },
+	{ .compatible = "qcom,adm-apq8060", .data = &adm_msm8660_data,   },
+	{ .compatible = "qcom,adm-msm8660", .data = &adm_msm8660_data,   },
+	{ .compatible = "qcom,adm-ipq8064", .data = &adm_ipq8064_data,   },
+	/*
+	 * Stub entries for known SoCs that are not yet differentiated
+	 * from the generic profile. Adding a real adm_soc_data when a
+	 * board's quirks are characterised should be a same-file change.
+	 */
+	{ .compatible = "qcom,adm-mpq8064", .data = &adm_generic_data,   },
+	{ .compatible = "qcom,adm-msm7x30", .data = &adm_generic_data,   },
+	{ .compatible = "qcom,adm-msm8960", .data = &adm_generic_data,   },
+	{ .compatible = "qcom,adm-msm8974", .data = &adm_generic_data,   },
 	{}
 };
 MODULE_DEVICE_TABLE(of, adm_of_match);
@@ -2398,6 +3105,7 @@ static struct platform_driver adm_dma_driver = {
 	.driver = {
 		.name = "adm-dma-engine",
 		.of_match_table = adm_of_match,
+		.pm = &adm_pm_ops,
 	},
 };
 
