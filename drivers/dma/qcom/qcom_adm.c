@@ -3282,12 +3282,32 @@ static int adm_dma_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unregister_dma;
 
-	/* Runtime PM. Bootloader left clocks on; start as 'active'. */
-	pm_runtime_set_autosuspend_delay(adev->dev,
-					 ADM_RUNTIME_AUTOSUSPEND_MS);
-	pm_runtime_use_autosuspend(adev->dev);
-	pm_runtime_set_active(adev->dev);
-	pm_runtime_enable(adev->dev);
+	/*
+	 * Runtime PM intentionally NOT enabled here.
+	 *
+	 * The original autosuspend (100 ms) + adm_runtime_suspend
+	 * disable_irq() pair would race against any consumer that
+	 * does not call pm_runtime_get_sync() before submitting --
+	 * which, today, is every consumer (mmci-pl18x, ath6kl_sdio,
+	 * qcrypto, msm_serial BT). 100 ms after probe the autosuspend
+	 * timer would fire, masking the ADM GIC IRQ (GICD_ISENABLER6
+	 * bit 7 / 11 dropped to 0) AND gating the channel clocks. Any
+	 * later submit would queue the descriptor and wait forever for
+	 * an IRQ that is masked at the distributor and a channel clock
+	 * that is off. Confirmed live by reading /proc/interrupts
+	 * (count=0 on both adm_dma IRQs) + GICD_ISENABLER6 via devmem
+	 * on a wedged boot.
+	 *
+	 * Until all dmaengine consumers learn to pm_runtime_get_sync()
+	 * the channel before submit, keep the ADM controller always-
+	 * active: clocks stay on (bootloader left them on; the probe
+	 * clk_prepare_enable bumped the usage count to 1 and we never
+	 * drop it) and the GIC IRQ stays unmasked.
+	 *
+	 * TODO: re-introduce runtime PM once mmci's qcom variant grows
+	 * a per-submit pm_runtime_get_sync hook on the rx/tx ADM
+	 * channels; same for the other ADM consumers.
+	 */
 
 	adm_debugfs_init(adev);
 
