@@ -11,12 +11,29 @@ maintainers:
   - Bjorn Andersson <bjorn.andersson@linaro.org>
 
 description: |
-  QCOM ADM DMA controller provides DMA capabilities for
-  peripheral buses such as NAND and SPI.
+  Qualcomm Application Data Mover (ADM) DMA controller. The ADM is a
+  flow-controlled DMA engine used on pre-BAM Qualcomm SoCs (MSM7x30,
+  MSM8x60, MSM8960, MSM8974, IPQ806x) to move bytes between system
+  memory and on-chip peripherals (NAND, SDCC, HSUART, Crypto Engine,
+  TSIF). Slave-side flow control is provided by per-peripheral CRCI
+  (Client Rate Control Index) lines.
 
 properties:
   compatible:
-    const: qcom,adm
+    enum:
+      # Generic compatible. New device trees should use a SoC-specific
+      # compatible instead so the driver can pick the right per-SoC
+      # quirks (interconnect floor, master-SD ownership, probe-time
+      # reset policy). The generic form is preserved for backwards
+      # compatibility with existing IPQ806x deployments.
+      - qcom,adm
+      - qcom,adm-apq8060
+      - qcom,adm-ipq8064
+      - qcom,adm-mpq8064
+      - qcom,adm-msm7x30
+      - qcom,adm-msm8660
+      - qcom,adm-msm8960
+      - qcom,adm-msm8974
 
   reg:
     maxItems: 1
@@ -25,25 +42,34 @@ properties:
     maxItems: 1
 
   "#dma-cells":
-    const: 1
+    # Cell 0: channel index (0-15)
+    # Cell 1: CRCI index (0-15). 0 = no CRCI (memcpy-only) or
+    #         consumer driver supplies CRCI at runtime via
+    #         qcom_adm_peripheral_config (e.g. NAND, which switches
+    #         CMD CRCI and DATA CRCI per submission).
+    # Cell 2: CRCI MUX bit (0 or 1). Only meaningful on ADM3 hardware
+    #         (MSM8X60); other SoCs ignore the value.
+    const: 3
 
   clocks:
+    minItems: 1
     items:
-      - description: phandle to the core clock
-      - description: phandle to the iface clock
+      - description: ADM core clock (required)
+      - description: ADM iface (AHB) clock (optional)
 
   clock-names:
+    minItems: 1
     items:
       - const: core
       - const: iface
 
   resets:
     items:
-      - description: phandle to the clk reset
-      - description: phandle to the pbus reset
-      - description: phandle to the c0 reset
-      - description: phandle to the c1 reset
-      - description: phandle to the c2 reset
+      - description: ADM reset
+      - description: ADM PBUS reset
+      - description: ADM CI[0] reset
+      - description: ADM CI[1] reset
+      - description: ADM CI[2] reset
 
   reset-names:
     items:
@@ -55,20 +81,71 @@ properties:
 
   qcom,ee:
     $ref: /schemas/types.yaml#/definitions/uint32
-    description: indicates the security domain identifier used in the secure world.
+    description: |
+      Execution Environment (Security Domain) index that Linux owns.
+      Reads/writes to per-channel registers go through this SD's
+      register window.
     minimum: 0
-    maximum: 255
+    maximum: 7
+
+  qcom,owns-master-sd:
+    type: boolean
+    description: |
+      Indicates that Linux owns the master SD and is permitted to
+      write the per-channel CONF, CRCI_CONF0/1, CI_CONF, and DBG_ERR
+      registers. When absent, the driver trusts whatever the
+      bootloader / TrustZone programmed and will refuse master-SD
+      writes (WARN_ON_ONCE).
+
+  qcom,channels-aarm:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: |
+      List of channel indices that Linux may use (i.e. that this AARM
+      owns). Channels not listed are treated as owned by another
+      execution environment (modem, TrustZone) and are not registered
+      with the dmaengine framework or touched at probe. If absent,
+      the driver assumes all 16 channels are AARM-owned.
+    minItems: 1
+    maxItems: 16
+    items:
+      minimum: 0
+      maximum: 15
+
+  qcom,crci-defaults:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    description: |
+      Optional per-CRCI default values used when a slave-sg consumer
+      does not override blk_size/mux via qcom_adm_peripheral_config.
+      Each row: <crci blk_size mux>.
+        crci     - CRCI index (0-15)
+        blk_size - CRCI_CTL block-size code (0..5; 0 = 16 B, ..., 5 = 256 B)
+        mux      - CRCI_CTL MUX_SEL value (0 or 1)
+    items:
+      items:
+        - description: CRCI index
+          minimum: 0
+          maximum: 15
+        - description: blk_size code
+          minimum: 0
+          maximum: 5
+        - description: MUX_SEL
+          minimum: 0
+          maximum: 1
 
   interconnects:
-    maxItems: 1
-    description:
-      Interconnect path the ADM uses to reach DRAM. Used on MSM8x60-class
-      boards to keep the bus master vote alive while the ADM is active.
+    minItems: 1
+    maxItems: 2
+    description: |
+      Interconnect path(s) from this ADM controller to system memory
+      (EBI). Replaces the legacy ebi1_adm_clk voter. SoCs with two
+      SFAB master ports (MSM8x60 ADM1) MUST declare both paths or one
+      port will be RPM-ARB-starved under load.
 
   interconnect-names:
-    maxItems: 1
+    minItems: 1
     items:
       - enum: [memory, adm-mem]
+      - const: memory-p1
 
 required:
   - compatible
@@ -89,10 +166,10 @@ examples:
     #include <dt-bindings/reset/qcom,gcc-ipq806x.h>
 
     adm_dma: dma-controller@18300000 {
-        compatible = "qcom,adm";
+        compatible = "qcom,adm-ipq8064";
         reg = <0x18300000 0x100000>;
         interrupts = <0 170 0>;
-        #dma-cells = <1>;
+        #dma-cells = <3>;
 
         clocks = <&gcc ADM0_CLK>,
                   <&gcc ADM0_PBUS_CLK>;
@@ -105,6 +182,7 @@ examples:
                   <&gcc ADM0_C2_RESET>;
         reset-names = "clk", "pbus", "c0", "c1", "c2";
         qcom,ee = <0>;
+        qcom,owns-master-sd;
     };
 
 ...
