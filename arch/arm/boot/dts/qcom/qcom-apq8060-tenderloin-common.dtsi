@@ -2852,10 +2852,26 @@
 	 * concurrent eMMC + WiFi load because the eMMC's next-descriptor
 	 * start was deferred past the SDCC DPSM data window.
 	 */
-	/* 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share). */
-	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
-	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <1>;
+	/*
+	 * DEBUG: dmas/dma-names + qcom,sdcc-crci commented out so mmci falls
+	 * back to PIO for sdcc1 (eMMC). Phase A from the runbook: the boot
+	 * with sdcc1 DMA enabled wedged on the FIRST EXT_CSD read with a
+	 * FLUSH STATE0=0x0000c001 STATE5=0x00000003 SDCC drain-stall
+	 * signature — the ADM channel walked the descriptor and started
+	 * transferring (STATE3=0x00400040 64B row, STATE4=0x00080008 8 rows
+	 * = 512B EXT_CSD), then the SDCC half-FIFO CRCI handshake froze.
+	 * Channel setup matches webOS byte-for-byte (crci_ctl[1]@ee0=0x1,
+	 * conf@ee0=0x8d5), so the wedge is in the runtime SDCC↔ADM dance,
+	 * not in our register routing. Forcing PIO bisects whether eMMC
+	 * card identification + initramfs pivot can complete without the
+	 * DMA path — if yes, the bug is in the ADM-SDCC interaction; if
+	 * no, the eMMC issue is upstream of DMA entirely (clock, VMMC,
+	 * card-init).
+	 *
+	 * dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
+	 * dma-names = "rx", "tx";
+	 * qcom,sdcc-crci = <1>;
+	 */
 
 	/*
 	 * qcom,max-req-kb cap is intentionally NOT set here.
