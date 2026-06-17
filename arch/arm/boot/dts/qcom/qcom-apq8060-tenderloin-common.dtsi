@@ -2908,7 +2908,18 @@
  * OCR mask: MMC_VDD_27_28 | MMC_VDD_28_29 (2.7-3.0V range)
  */
 &sdcc4 {
-	status = "okay";
+	/*
+	 * DEBUG: temporarily disabled to bypass the ath6kl SDIO BMI
+	 * firmware-download hang that wedges CPU0 inside mmci_request
+	 * waiting for an ADM DMA completion that never fires. Without
+	 * SDC4 probing, mmc1 is never created, ath6kl_sdio_probe never
+	 * runs, and boot continues past the hang point so we can see
+	 * what (if anything) breaks downstream. The real fix is to
+	 * track down why ADM channel 5 / CRCI 5 hangs on Tenderloin
+	 * (likely the dual EE=1+EE=0 CMD_PTR write affecting non-QCE
+	 * channels). Revert once root-caused.
+	 */
+	status = "disabled";
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdcc4_pins>, <&wlan_gpios>, <&wlan_gpios_reset>;
 
