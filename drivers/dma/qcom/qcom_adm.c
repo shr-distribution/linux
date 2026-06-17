@@ -428,6 +428,14 @@ static inline struct adm_chan *to_adm_chan(struct dma_chan *common)
 
 struct adm_device {
 	void __iomem *regs;
+	/*
+	 * Physical base of the controller's reg block. Captured at probe
+	 * so the IRQ / submit hot paths can distinguish ADM0 (0x18320000)
+	 * from ADM1 (0x18420000) on MSM8X60-class SoCs without an extra
+	 * platform_get_resource() call. Used by the QCE-channel-specific
+	 * EE=0 mirror write in adm_start_dma().
+	 */
+	resource_size_t reg_phys;
 	struct device *dev;
 	struct dma_device common;
 	struct device_dma_parameters dma_parms;
@@ -1950,15 +1958,36 @@ static void adm_start_dma(struct adm_chan *achan)
 
 	/*
 	 * EE=0 mirror write — only meaningful on SoCs whose CRCI_CTL is
-	 * live at EE=0 (Tenderloin/APQ8060). On those boards QCE crypto
-	 * on channels 2-3 of ADM0 wants CMD_PTR at EE=0 as well. On
-	 * every other SoC this is a write into a foreign SD window and
-	 * would either be silently dropped or corrupt unrelated state,
-	 * so the dual write is gated on the soc_data flag rather than a
-	 * raw adev->ee comparison.
+	 * live at EE=0 (Tenderloin/APQ8060), AND only needed on the QCE
+	 * crypto channels 2-3 of ADM0 where the original investigation
+	 * found CMD_PTR at EE=1 alone wasn't sufficient. Running this
+	 * mirror write for *every* channel was too broad — on ADM1 the
+	 * SDCC channels (ch2=eMMC/CRCI1, ch5=WiFi/CRCI5) get a second
+	 * CMD_PTR pushed into a window owned by another security domain
+	 * which silently corrupts the channel state, leaving the
+	 * descriptor unwalked. Symptom: eMMC card identification never
+	 * completes (no mmcblk0, no mmcblk0p12, no touchpad-tokens
+	 * provider, all consumer MACs (BT/WiFi/USB) fall back to
+	 * random_ether_addr each boot, host-side networking breaks);
+	 * ath6kl SDIO BMI firmware download wedges in mmci_request.
+	 *
+	 * Restrict to ADM0 channels 2 and 3 (the actual QCE channels)
+	 * on Tenderloin. Other ADMs / channels keep the single EE=1
+	 * CMD_PTR write, matching what legacy webOS msm_dmov did.
 	 */
 	if (adev->soc_data && adev->soc_data->crci_ctl_at_ee0 &&
-	    adev->ee != 0) {
+	    adev->ee != 0 &&
+	    /*
+	     * QCE crypto lives on ADM0 channels 2 and 3 specifically.
+	     * ADM0's reg base is 0x18320000 on MSM8660/APQ8060; ADM1 at
+	     * 0x18420000 hosts SDCC1 eMMC (ch2/CRCI1) and SDCC4 WiFi
+	     * (ch5/CRCI5) and those channels MUST NOT see the EE=0
+	     * mirror write or their CMD_PTR ends up in another security
+	     * domain's window and the channel wedges (eMMC card
+	     * identification never completes; ath6kl BMI download hangs).
+	     */
+	    adev->reg_phys == 0x18320000 &&
+	    (achan->id == 2 || achan->id == 3)) {
 		writel(ADM_CPLE_CMD_PTR_LIST |
 		       (ALIGN(async_desc->dma_addr, ADM_DESC_ALIGN) >> 3),
 		       adev->regs + ADM_CH_CMD_PTR(achan->id, 0));
@@ -2767,6 +2796,15 @@ static int adm_dma_probe(struct platform_device *pdev)
 	for (i = 0; i < ARRAY_SIZE(adev->submit_lock); i++)
 		spin_lock_init(&adev->submit_lock[i]);
 	spin_lock_init(&adev->err_log_lock);
+
+	{
+		struct resource *res;
+
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		if (!res)
+			return -EINVAL;
+		adev->reg_phys = res->start;
+	}
 
 	adev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(adev->regs))
