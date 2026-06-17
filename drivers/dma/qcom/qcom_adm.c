@@ -418,6 +418,23 @@ struct adm_chan {
 	u8 first_submit_logged;
 
 	/*
+	 * One-shot diagnostic in adm_watchdog_timeout(): log once when
+	 * the watchdog fires after the IRQ already completed the cookie
+	 * (achan->curr_txd == NULL race). Without this, "no watchdog
+	 * message" is ambiguous between "watchdog never armed" and "IRQ
+	 * ran first" — both leave dmesg silent on the recovery path.
+	 */
+	u8 watchdog_raced_logged;
+
+	/*
+	 * One-shot diagnostic on the first RSLT_VALID IRQ per channel.
+	 * Confirms the ADM hardware actually walked the chain to
+	 * completion (result code, FLUSH state). Logging only the first
+	 * IRQ keeps the noise down on healthy long-running channels.
+	 */
+	u8 first_irq_logged;
+
+	/*
 	 * One-shot FLUSH-state full dump.  The ADM-DIAG SDCC-drain-stall path
 	 * reads all six FLUSH_STATE registers on the first FLUSH per channel
 	 * and emits them in a single dev_warn; subsequent FLUSHes on the same
@@ -831,7 +848,18 @@ static void adm_watchdog_timeout(struct timer_list *t)
 
 	async_desc = achan->curr_txd;
 	if (!async_desc) {
-		/* Raced with the RSLT_VALID IRQ handler; nothing to do. */
+		/*
+		 * Raced with the RSLT_VALID IRQ handler; nothing to do.
+		 * Log once per channel so we can distinguish "watchdog
+		 * never armed" from "IRQ ran first" when diagnosing why a
+		 * recovery dump is missing in the kernel log.
+		 */
+		if (!achan->watchdog_raced_logged) {
+			achan->watchdog_raced_logged = 1;
+			dev_info(adev->dev,
+				 "ADM ch%u watchdog: fired AFTER IRQ already completed cookie (race; channel healthy)\n",
+				 achan->id);
+		}
 		spin_unlock_irqrestore(&achan->vc.lock, flags);
 		return;
 	}
@@ -2243,6 +2271,23 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		timer_delete(&achan->watchdog);
 
 		async_desc = achan->curr_txd;
+
+		/*
+		 * One-shot per channel: log the first RSLT_VALID we see so a
+		 * boot-time wedge can be classified as "channel never
+		 * completed" vs "channel completed, consumer hung after". The
+		 * watchdog log + this irq log together bracket every
+		 * possible outcome of the first submit.
+		 */
+		if (!achan->first_irq_logged) {
+			achan->first_irq_logged = 1;
+			dev_info(adev->dev,
+				 "ADM first IRQ ch%u: result=0x%08x flush=%08x %08x %08x %08x %08x %08x async_desc=%s\n",
+				 i, result,
+				 flush_snap[0], flush_snap[1], flush_snap[2],
+				 flush_snap[3], flush_snap[4], flush_snap[5],
+				 async_desc ? "live" : "NULL (racer cleared)");
+		}
 
 		if (!async_desc) {
 			/* Raced with watchdog / terminate_all. Nothing to do. */
