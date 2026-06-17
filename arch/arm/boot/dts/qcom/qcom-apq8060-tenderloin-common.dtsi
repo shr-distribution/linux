@@ -3031,10 +3031,18 @@
 	 * Channel 21 = ADM1 channel 5 (ADM1 starts at global channel 16)
 	 * CRCI 5 provides flow control for SDC4 transfers
 	 */
-	/* 3-cell: SDC4 WiFi = ADM1 ch5 CRCI 5 MUX 0 (RX and TX share). */
-	dmas = <&adm_dma1 5 5 0>, <&adm_dma1 5 5 0>;
-	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <5>;
+	/*
+	 * DEBUG: dmas/dma-names + qcom,sdcc-crci commented out so mmci falls
+	 * back to PIO for sdcc4. Phase 1 bisect from the WiFi BMI-write hang
+	 * runbook: if BMI completes in PIO, the bug is in the ADM ch5/CRCI5
+	 * DMA-submit path; if it still hangs, the bug is upstream (clocks,
+	 * PWRSAVE, dummy52, atomic-submit). Revert after diagnosis.
+	 *
+	 * 3-cell: SDC4 WiFi = ADM1 ch5 CRCI 5 MUX 0 (RX and TX share).
+	 * dmas = <&adm_dma1 5 5 0>, <&adm_dma1 5 5 0>;
+	 * dma-names = "rx", "tx";
+	 * qcom,sdcc-crci = <5>;
+	 */
 
 	/*
 	 * DFAB interconnect path for WiFi SDIO.
