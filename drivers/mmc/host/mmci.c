@@ -1525,10 +1525,33 @@ static void mmci_qcom_dma_complete(void *param)
 
 		if (ds == DMA_ERROR && !data->error) {
 			data->error = -EIO;
-			trace_printk("MMCI-DMA-CB: mmc%u DMA_ERROR -> -EIO, %s blksz=%u blocks=%u\n",
-				     host->mmc->index,
-				     write ? "WRITE" : "read",
-				     data->blksz, data->blocks);
+			/*
+			 * Full SDCC snapshot at the moment dmaengine reports
+			 * DMA_ERROR for this cookie (typically the ADM
+			 * watchdog completed the wedged cookie with error).
+			 * Paired with the ADM-side dump in adm_watchdog_timeout
+			 * this gives us the canonical "who stopped first":
+			 *   - SDCC TXACTIVE/RXACTIVE + non-empty FIFO →
+			 *     SDCC was still pumping; ADM stopped getting CRCI.
+			 *   - SDCC FIFO empty + DATAEND pending →
+			 *     SDCC reached end-of-data; ADM didn't see RSLT.
+			 *   - SDCC DATACRCFAIL/DATATIMEOUT/STARTBITERR set →
+			 *     card side aborted the transfer.
+			 *   - DATACNT mid-range with no error bits →
+			 *     SDCC half-completed; data path stalled.
+			 */
+			dev_warn_ratelimited(mmc_dev(host->mmc),
+				"DMA_ERROR mmc%u %s blksz=%u blocks=%u: STATUS=0x%08x DATACTRL=0x%08x DATACNT=%u DATALEN=%u FIFOCNT=%u CLOCK=0x%08x MASK0=0x%08x\n",
+				host->mmc->index,
+				write ? "WRITE" : "read",
+				data->blksz, data->blocks,
+				readl(host->base + MMCISTATUS),
+				readl(host->base + MMCIDATACTRL),
+				readl(host->base + MMCIDATACNT),
+				readl(host->base + MMCIDATALENGTH),
+				readl(host->base + MMCIFIFOCNT),
+				readl(host->base + MMCICLOCK),
+				readl(host->base + MMCIMASK0));
 		}
 	}
 
