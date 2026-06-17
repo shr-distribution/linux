@@ -839,9 +839,52 @@ static void adm_watchdog_timeout(struct timer_list *t)
 	achan->error = 1;
 	achan->curr_txd = NULL;
 
-	dev_warn_ratelimited(adev->dev,
-			     "ADM ch%u watchdog: no RSLT_VALID within %u ms, recovering channel\n",
-			     achan->id, ADM_WATCHDOG_TIMEOUT_MS);
+	/*
+	 * Full channel snapshot before we tear down the wedged transfer.
+	 * Captures both the CONFIG bank (live at EE=0 on Tenderloin —
+	 * CRCI_CTL and CONF) and the per-channel command bank (live at
+	 * adev->ee — STATUS, CMD_PTR, RSLT, FLUSH_STATE0..5). Together
+	 * these answer "did the channel accept CMD_PTR, did it start
+	 * walking the chain, where did it stall, was the CRCI gate
+	 * armed correctly" without needing a second flash to add probes.
+	 */
+	{
+		u32 ctl_ee_dbg = (adev->soc_data &&
+				  adev->soc_data->crci_ctl_at_ee0)
+				 ? 0 : adev->ee;
+		u32 status_sd = readl_relaxed(adev->regs +
+			ADM_CH_STATUS_SD(achan->id, adev->ee));
+		u32 cmd_ptr   = readl_relaxed(adev->regs +
+			ADM_CH_CMD_PTR(achan->id, adev->ee));
+		u32 rslt      = readl_relaxed(adev->regs +
+			ADM_CH_RSLT(achan->id, adev->ee));
+		u32 rslt_conf = readl_relaxed(adev->regs +
+			ADM_CH_RSLT_CONF(achan->id, adev->ee));
+		u32 conf_ee0  = readl_relaxed(adev->regs +
+			ADM_CH_CONF(achan->id, 0));
+		u32 crci_ctl  = async_desc->crci ?
+			readl_relaxed(adev->regs +
+				ADM_CRCI_CTL(async_desc->crci, ctl_ee_dbg)) : 0;
+		u32 fs0 = readl_relaxed(adev->regs +
+			ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
+		u32 fs1 = readl_relaxed(adev->regs +
+			ADM_CH_FLUSH_STATE1(achan->id, adev->ee));
+		u32 fs2 = readl_relaxed(adev->regs +
+			ADM_CH_FLUSH_STATE2(achan->id, adev->ee));
+		u32 fs3 = readl_relaxed(adev->regs +
+			ADM_CH_FLUSH_STATE3(achan->id, adev->ee));
+		u32 fs4 = readl_relaxed(adev->regs +
+			ADM_CH_FLUSH_STATE4(achan->id, adev->ee));
+		u32 fs5 = readl_relaxed(adev->regs +
+			ADM_CH_FLUSH_STATE5(achan->id, adev->ee));
+
+		dev_warn_ratelimited(adev->dev,
+			"ADM ch%u watchdog: no RSLT_VALID within %u ms — status=0x%08x cmd_ptr=0x%08x rslt=0x%08x rslt_conf=0x%08x conf@ee0=0x%08x crci_ctl[%u]@ee%u=0x%08x flush=%08x %08x %08x %08x %08x %08x\n",
+			achan->id, ADM_WATCHDOG_TIMEOUT_MS,
+			status_sd, cmd_ptr, rslt, rslt_conf, conf_ee0,
+			async_desc->crci, ctl_ee_dbg, crci_ctl,
+			fs0, fs1, fs2, fs3, fs4, fs5);
+	}
 
 	/* Abrupt flush -- graceful would wait for a response we won't get. */
 	writel_relaxed(0, adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
@@ -2071,21 +2114,28 @@ static void adm_start_dma(struct adm_chan *achan)
 	 * adm_watchdog_timeout() otherwise (see that function for the
 	 * recovery sequence).
 	 *
-	 * Originally gated on async_desc->exec_func presence so that
-	 * peripheral-paced RX consumers (UART RX, BT-UART RX) that
-	 * legitimately wait for an external sender wouldn't trigger
-	 * false-positive recoveries.  That gate also excludes mmci
-	 * READ transfers (mmci only sets exec_func for atomic-submit
-	 * writes), which masked the eMMC EXT_CSD wedge on Tenderloin
-	 * boot (no watchdog message, kernel just locks up in cpuidle
-	 * forever).  Arm unconditionally for now so a wedged transfer
-	 * surfaces as DMA_ERROR after 500 ms and the consumer can
-	 * recover or error-out cleanly.  TODO: re-gate once peripheral
-	 * RX consumers can opt out explicitly (e.g. via slave_config
-	 * peripheral_config) rather than via exec_func presence.
+	 * Discriminator: arm only for transfers we know are bounded.
+	 *   - exec_func != NULL: mmci atomic-submit WRITEs (eMMC sdcc1
+	 *     writes, WiFi sdcc4 writes triggered by atomic-submit gate).
+	 *   - CRCI 1 or 5: mmci READs on Tenderloin — eMMC EXT_CSD reads
+	 *     and WiFi BMI/SDIO reads. mmci does not set exec_func for
+	 *     reads, but the transfers are still memory-paced and should
+	 *     finish quickly.
+	 * Peripheral-paced RX (UART RX = CRCI 9 BT, CRCI 10 HSUART2/TS,
+	 * QCE, NAND) legitimately waits for an external sender with no
+	 * meaningful upper bound — armed unconditionally those produce
+	 * 510-ms recovery loops that starve the CPU (observed live: ch8
+	 * watchdog fired 3x at boot before bailing out, masking what
+	 * actually happens on the SDCC channels).
+	 *
+	 * TODO: replace the hardcoded CRCI list with a per-channel
+	 * "watchdog_required" flag in qcom_adm_peripheral_config so
+	 * non-Tenderloin SoCs don't depend on this magic.
 	 */
-	mod_timer(&achan->watchdog,
-		  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
+	if (async_desc->exec_func ||
+	    async_desc->crci == 1 || async_desc->crci == 5)
+		mod_timer(&achan->watchdog,
+			  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
 }
 
 /**
