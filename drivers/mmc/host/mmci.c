@@ -4288,6 +4288,26 @@ static int mmci_probe(struct amba_device *dev,
 	mmc->caps |= MMC_CAP_CMD23;
 
 	/*
+	 * Qualcomm ADM atomic-submit DMA (qcom_dml_atomic_submit +
+	 * host->datactrl_first) requires the data command to be available at
+	 * DMA-submit time so mmci_qcom_atomic_exec_func can write
+	 * DATACTRL + ARG + CMD atomically with the ADM CMD_PTR (closing the
+	 * inline-path CRCI arming gap that wedges eMMC reads — see
+	 * adm-dma reports/emmc-dma-wedge-rootcause.md).
+	 *
+	 * CMD23 (SBC) breaks that: __mmci_start_request issues the SBC first
+	 * and the real data command (CMD18) only later, from the SBC's
+	 * CMDRESPEND IRQ — so the data command is NOT available when the DMA
+	 * is submitted, and the atomic stash captures CMD23 instead. Drop
+	 * CMD23 on these hosts so every read is single-command (CMD18 + CMD12
+	 * stop), matching legacy webOS msm_sdcc, and the atomic path works
+	 * uniformly. (CMD23 only applies to eMMC/SD memory cards, never the
+	 * SDIO WiFi host, so this is a no-op there.)
+	 */
+	if (host->variant->qcom_dml_atomic_submit && host->datactrl_first)
+		mmc->caps &= ~MMC_CAP_CMD23;
+
+	/*
 	 * Attempted MMC_CAP_BUS_WIDTH_TEST on qcom variants — backed out:
 	 * the Samsung SEM32G fitted to tenderloin doesn't respond to
 	 * CMD19 BUSTEST_R, so enabling the cap caused eMMC re-init to

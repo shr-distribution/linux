@@ -2853,30 +2853,40 @@
 	 * start was deferred past the SDCC DPSM data window.
 	 */
 	/*
-	 * DEBUG: sdcc1 DMA re-enabled to fire the one-shot SDCC FIFO poll
-	 * (mmci __mmci_start_request, mmc0 first DMA read) and capture
-	 * whether the card streams into the RX FIFO during the wedge —
-	 * the one measurement still missing. Park back on PIO afterwards
-	 * if the wedge persists.
+	 * eMMC ADM DMA, atomic-submit path (fix for the inline-DATACTRL
+	 * CRCI arming gap — see reports/emmc-dma-wedge-rootcause.md).
+	 *
+	 * qcom,datactrl-first routes eMMC reads through mmci's atomic
+	 * exec_func path so DATACTRL + ARG + CMD are written in a µs
+	 * IRQs-off window right before the ADM CMD_PTR — matching working
+	 * WiFi (ch5) and legacy msm_sdcc, closing the gap where the card
+	 * streamed and asserted CRCI before the ADM was armed (ADM1 ch2
+	 * parked at rslt=TPD until the 500ms watchdog). The matching
+	 * MMC_CAP_CMD23 clear in mmci_probe() keeps every read
+	 * single-command so the atomic stash is always populated.
+	 *
+	 * 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share).
 	 */
-	/* 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share). */
 	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
 	dma-names = "rx", "tx";
 	qcom,sdcc-crci = <1>;
+	qcom,datactrl-first;
 
 	/*
-	 * NOTE: do NOT add qcom,datactrl-first here. It was tried (commit
-	 * 34319a7a297d) and made eMMC WORSE: it routes the EXT_CSD READ
-	 * onto mmci's atomic-submit path, where mmci_qcom_atomic_exec_func
-	 * programs DATACTRL/ARG/CMD from host->atomic_submit.* — but that
-	 * stash is only populated for the WiFi SDIO CMD53 flow, NOT for the
-	 * eMMC command sequence. Live exec_func dump (82c2841e8323) caught:
+	 * History: qcom,datactrl-first was first tried at commit
+	 * 34319a7a297d and made eMMC WORSE — the live exec_func dump
+	 * (82c2841e8323) caught an empty atomic stash:
 	 *   atomic_exec mmc0: datactrl=0 cmd_reg=0 cmd_arg=0 datalen=0x200
-	 * i.e. exec_func wrote DATACTRL=0 + MMCICOMMAND=0, so the SDCC DPSM
-	 * was never armed, CMD8 was never sent, the card never streamed,
-	 * and the ADM waited forever for a CRCI. eMMC must use the standard
-	 * mainline qcom DMA path: inline DATACTRL in mmci_start_data +
-	 * deferred dma_issue_pending on the CMDRESPEND IRQ.
+	 * so exec_func wrote DATACTRL=0 + MMCICOMMAND=0 and the SDCC was
+	 * never armed. Root cause of THAT (re-analysed 2026-06-24): eMMC
+	 * issued CMD23(SBC)+CMD18, and __mmci_start_request sends the SBC
+	 * first with the data command (CMD18) only arriving from a later
+	 * IRQ — so the data command was not available at DMA-submit time and
+	 * the stash captured the SBC. The fix that makes datactrl-first
+	 * correct is the MMC_CAP_CMD23 clear in mmci_probe() (gated on
+	 * qcom_dml_atomic_submit + datactrl_first): every read becomes
+	 * single-command, the data command is present at submit time, and
+	 * the atomic stash is always populated.
 	 */
 	/*
 	 * qcom,max-req-kb cap is intentionally NOT set here.
