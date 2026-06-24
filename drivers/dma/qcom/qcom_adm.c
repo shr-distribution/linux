@@ -948,22 +948,20 @@ static void adm_watchdog_timeout(struct timer_list *t)
 	}
 
 	/*
-	 * Snapshot the peripheral's MMIO state too — typically SDCC
-	 * DATACTRL/MMCISTATUS for mmci-pl18x — at the same instant we
-	 * declared the ADM channel wedged. Schedule it as a workqueue
-	 * (not direct call) so the consumer can:
-	 *   - take its own locks
-	 *   - call pm_runtime_get_sync if needed
-	 *   - free to sleep / be preempted
-	 *   - block on completions
-	 * None of which are safe from this timer-softirq + vc.lock held
-	 * + IRQs-off context. The work fires immediately and the dump
-	 * lands a few milliseconds later, but that's still within the
-	 * same SDCC-side stall window since the consumer's controller
-	 * hasn't progressed past the wedged transfer.
+	 * Snapshot the peripheral's MMIO state SYNCHRONOUSLY here, BEFORE
+	 * the abrupt FLUSH below — typically SDCC DATACTRL/MMCISTATUS for
+	 * mmci-pl18x. This must be synchronous (not deferred to a
+	 * workqueue) to capture the genuine wedge state: for an eMMC read
+	 * the consuming thread is still blocked in mmc_wait_for_req at +500
+	 * ms (no DMA-done callback on mmc0), so the SDCC clock is on and its
+	 * registers are live RIGHT NOW. A deferred workqueue dump races
+	 * mmci's own data timeout teardown (which zeroes DATACTRL) and we'd
+	 * just see post-teardown DCTL=0. mmci_qcom_dump_state only does
+	 * readl + one printk — no locks, no sleep — so it is safe from this
+	 * timer-softirq + vc.lock-held context.
 	 */
 	if (achan->dump_state)
-		schedule_work(&achan->dump_state_work);
+		achan->dump_state(achan->dump_user);
 
 	/* Abrupt flush -- graceful would wait for a response we won't get. */
 	writel_relaxed(0, adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
