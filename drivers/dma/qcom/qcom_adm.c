@@ -374,12 +374,13 @@ struct adm_chan {
 	/*
 	 * Optional peripheral state-dump callback, populated from
 	 * qcom_adm_peripheral_config.dump_state at slave_config time.
-	 * Invoked by adm_watchdog_timeout so we get a snapshot of the
-	 * consumer's MMIO state (e.g. SDCC DATACTRL/MMCISTATUS) at the
-	 * same instant we capture ADM channel state.
+	 * Scheduled by adm_watchdog_timeout (via dump_state_work) so the
+	 * consumer can pm_runtime_get_sync, take its own locks, sleep,
+	 * etc. — none of which are safe from the watchdog softirq itself.
 	 */
 	void (*dump_state)(void *dump_user);
 	void *dump_user;
+	struct work_struct dump_state_work;
 
 	struct list_head node;
 	struct timer_list watchdog;
@@ -927,11 +928,20 @@ static void adm_watchdog_timeout(struct timer_list *t)
 	/*
 	 * Snapshot the peripheral's MMIO state too — typically SDCC
 	 * DATACTRL/MMCISTATUS for mmci-pl18x — at the same instant we
-	 * declared the ADM channel wedged. Lets us answer "who stopped
-	 * pumping first" from a single boot log line.
+	 * declared the ADM channel wedged. Schedule it as a workqueue
+	 * (not direct call) so the consumer can:
+	 *   - take its own locks
+	 *   - call pm_runtime_get_sync if needed
+	 *   - free to sleep / be preempted
+	 *   - block on completions
+	 * None of which are safe from this timer-softirq + vc.lock held
+	 * + IRQs-off context. The work fires immediately and the dump
+	 * lands a few milliseconds later, but that's still within the
+	 * same SDCC-side stall window since the consumer's controller
+	 * hasn't progressed past the wedged transfer.
 	 */
 	if (achan->dump_state)
-		achan->dump_state(achan->dump_user);
+		schedule_work(&achan->dump_state_work);
 
 	/* Abrupt flush -- graceful would wait for a response we won't get. */
 	writel_relaxed(0, adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
@@ -2553,6 +2563,20 @@ static void adm_dma_free_desc(struct virt_dma_desc *vd)
 	}
 }
 
+/*
+ * Worker for the watchdog dump_state callback. Runs in process context
+ * (workqueue), so the consumer is free to pm_runtime_get_sync, sleep,
+ * acquire its own locks — none of which the watchdog softirq can do.
+ */
+static void adm_dump_state_work_fn(struct work_struct *work)
+{
+	struct adm_chan *achan =
+		container_of(work, struct adm_chan, dump_state_work);
+
+	if (achan->dump_state)
+		achan->dump_state(achan->dump_user);
+}
+
 static void adm_channel_init(struct adm_device *adev, struct adm_chan *achan,
 			     u32 index)
 {
@@ -2562,6 +2586,7 @@ static void adm_channel_init(struct adm_device *adev, struct adm_chan *achan,
 	vchan_init(&achan->vc, &adev->common);
 	achan->vc.desc_free = adm_dma_free_desc;
 	timer_setup(&achan->watchdog, adm_watchdog_timeout, 0);
+	INIT_WORK(&achan->dump_state_work, adm_dump_state_work_fn);
 }
 
 /**
