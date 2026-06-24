@@ -159,6 +159,9 @@ struct adm_chan {
 	struct dma_slave_config slave;
 	u32 crci;
 	u32 mux;
+	/* optional consumer pre-submit hook, see qcom_adm_peripheral_config */
+	void (*exec_func)(void *exec_user);
+	void *exec_user;
 	struct list_head node;
 	struct timer_list watchdog;
 
@@ -661,8 +664,11 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 
 	spin_lock_irqsave(&achan->vc.lock, flag);
 	memcpy(&achan->slave, cfg, sizeof(struct dma_slave_config));
-	if (cfg->peripheral_size == sizeof(*config))
+	if (cfg->peripheral_size == sizeof(*config)) {
 		achan->crci = config->crci;
+		achan->exec_func = config->exec_func;
+		achan->exec_user = config->exec_user;
+	}
 	spin_unlock_irqrestore(&achan->vc.lock, flag);
 
 	return 0;
@@ -712,6 +718,16 @@ static void adm_start_dma(struct adm_chan *achan)
 
 		achan->initialized = 1;
 	}
+
+	/*
+	 * Peripheral pre-submit hook: let the consumer commit its own MMIO
+	 * (e.g. SDCC DATACTRL + data command) just before the channel is
+	 * armed, so a flow-controlled peripheral that latches CRCI state at
+	 * CMD_PTR time comes up in lock-step with the ADM start. Runs before
+	 * CRCI_CTL + CMD_PTR, matching the legacy msm_dmov exec_func order.
+	 */
+	if (achan->exec_func)
+		achan->exec_func(achan->exec_user);
 
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
