@@ -3290,10 +3290,33 @@ static irqreturn_t mmci_pio_irq(int irq, void *dev_id)
 	 * but read here without the lock; the qualifier prevents the
 	 * compiler from re-loading / tearing the access.
 	 */
-	if (READ_ONCE(host->dma_in_progress))
+	if (READ_ONCE(host->dma_in_progress)) {
+		/*
+		 * DEBUG one-shot per host: prove the dma_in_progress bail-out
+		 * isn't accidentally firing for an actual PIO host.
+		 */
+		if (!host->pio_dma_bailed_logged) {
+			host->pio_dma_bailed_logged = 1;
+			dev_warn(mmc_dev(host->mmc),
+				 "mmci_pio_irq: bailed out (dma_in_progress=1) — DEBUG marker\n");
+		}
 		return IRQ_HANDLED;
+	}
 
 	status = readl(base + MMCISTATUS);
+
+	/*
+	 * DEBUG one-shot per host: prove mmci_pio_irq is being entered at
+	 * all. If we never see this on a wedged boot, mmci_irq is not
+	 * dispatching to us - the FIFO IRQ isn't firing in MMCISTATUS or
+	 * the dispatch gate (status & mask1_reg) didn't match.
+	 */
+	if (!host->pio_entered_logged) {
+		host->pio_entered_logged = 1;
+		dev_info(mmc_dev(host->mmc),
+			 "mmci_pio_irq: ENTERED first time; status=0x%08x mask1=0x%08x\n",
+			 status, host->mask1_reg);
+	}
 
 	dev_dbg(mmc_dev(host->mmc), "irq1 (pio) %08x\n", status);
 

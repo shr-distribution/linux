@@ -517,6 +517,15 @@ struct mmci_host {
 	 * submit/mmci-qcom-tenderloin, 2026-06-14.)
 	 */
 	unsigned int		dma_in_progress;
+	/*
+	 * DEBUG one-shot markers for diagnosing the mmc0 PIO-no-drain
+	 * regression: log once per host when mmci_pio_irq is entered,
+	 * and separately when it bails out via the dma_in_progress
+	 * check. Together these tell us whether the PIO drain code
+	 * runs at all and whether the bail-out is wrongly firing.
+	 */
+	u8			pio_entered_logged:1;
+	u8			pio_dma_bailed_logged:1;
 	u8			datactrl_first:1;
 	u8			dma_issue_deferred:1;
 	u8			deferred_datactrl_pending:1;
