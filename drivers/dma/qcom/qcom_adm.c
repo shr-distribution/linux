@@ -2166,11 +2166,13 @@ static void adm_start_dma(struct adm_chan *achan)
 			u32 cmd_ptr_rb = readl_relaxed(adev->regs +
 				ADM_CH_CMD_PTR(achan->id, adev->ee));
 			dev_info(adev->dev,
-				 "ADM first submit ch%u POST CMD_PTR: status_sd=0x%08x cmd_ptr_rb=0x%08x (wrote 0x%08x; CMD_PTR_RDY %s)\n",
+				 "ADM first submit ch%u POST CMD_PTR: status_sd=0x%08x cmd_ptr_rb=0x%08x (wrote 0x%08x; CMD_PTR_RDY %s; exec_func=%s)\n",
 				 achan->id, status_post, cmd_ptr_rb, cmd_ptr_val,
 				 (status_post & ADM_CH_STATUS_CMD_PTR_RDY) ?
 				 "STILL SET (hardware ignored)" :
-				 "CLEARED (hardware accepted)");
+				 "CLEARED (hardware accepted)",
+				 async_desc->exec_func ? "SET (atomic-submit)" :
+				 "NULL (inline DATACTRL)");
 			achan->first_submit_logged = 1;
 		}
 	}
