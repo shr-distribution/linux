@@ -371,6 +371,16 @@ struct adm_chan {
 	void (*exec_func)(void *exec_user);
 	void *exec_user;
 
+	/*
+	 * Optional peripheral state-dump callback, populated from
+	 * qcom_adm_peripheral_config.dump_state at slave_config time.
+	 * Invoked by adm_watchdog_timeout so we get a snapshot of the
+	 * consumer's MMIO state (e.g. SDCC DATACTRL/MMCISTATUS) at the
+	 * same instant we capture ADM channel state.
+	 */
+	void (*dump_state)(void *dump_user);
+	void *dump_user;
+
 	struct list_head node;
 	struct timer_list watchdog;
 
@@ -913,6 +923,15 @@ static void adm_watchdog_timeout(struct timer_list *t)
 			async_desc->crci, ctl_ee_dbg, crci_ctl,
 			fs0, fs1, fs2, fs3, fs4, fs5);
 	}
+
+	/*
+	 * Snapshot the peripheral's MMIO state too — typically SDCC
+	 * DATACTRL/MMCISTATUS for mmci-pl18x — at the same instant we
+	 * declared the ADM channel wedged. Lets us answer "who stopped
+	 * pumping first" from a single boot log line.
+	 */
+	if (achan->dump_state)
+		achan->dump_state(achan->dump_user);
 
 	/* Abrupt flush -- graceful would wait for a response we won't get. */
 	writel_relaxed(0, adev->regs + ADM_CH_FLUSH_STATE0(achan->id, adev->ee));
@@ -1659,6 +1678,8 @@ static int adm_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 			achan->crci = config->crci;
 		achan->exec_func = config->exec_func;
 		achan->exec_user = config->exec_user;
+		achan->dump_state = config->dump_state;
+		achan->dump_user  = config->dump_user;
 		achan->swap_bytes = config->swap_bytes;
 		achan->swap_shorts = config->swap_shorts;
 	}

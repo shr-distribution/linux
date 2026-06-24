@@ -48,6 +48,26 @@ struct qcom_adm_peripheral_config {
 	 */
 	bool swap_bytes;
 	bool swap_shorts;
+
+	/*
+	 * Optional peripheral-side state dumper invoked by the ADM
+	 * driver's per-channel watchdog when a transfer wedges. Lets
+	 * the consumer driver (mmci-pl18x for SDCC, etc.) snapshot its
+	 * own MMIO state (DATACTRL, MMCISTATUS, ...) at the EXACT moment
+	 * the ADM channel determined it didn't get RSLT_VALID within
+	 * the watchdog window. Output goes via dev_warn/dev_info on
+	 * the consumer's device (already throttled by dev_*_ratelimited
+	 * at the call site).
+	 *
+	 * Constraints:
+	 *  - Called from timer softirq context, achan->vc.lock held,
+	 *    IRQs off on the local CPU.
+	 *  - Must not sleep, must not take locks that nest above vc.lock.
+	 *  - Should restrict itself to single readl_relaxed of the
+	 *    relevant peripheral registers and one printk.
+	 */
+	void (*dump_state)(void *dump_user);
+	void *dump_user;
 };
 
 /**

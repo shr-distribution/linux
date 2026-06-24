@@ -651,9 +651,11 @@ void mmci_dmae_error(struct mmci_host *host);
 #ifdef CONFIG_MMC_QCOM_DML
 void qcom_variant_init(struct mmci_host *host);
 void mmci_qcom_atomic_exec_func(void *exec_user);
+void mmci_qcom_dump_state(void *dump_user);
 #else
 static inline void qcom_variant_init(struct mmci_host *host) {}
 static inline void mmci_qcom_atomic_exec_func(void *exec_user) {}
+static inline void mmci_qcom_dump_state(void *dump_user) {}
 #endif
 
 #ifdef CONFIG_MMC_STM32_SDMMC

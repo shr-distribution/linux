@@ -141,6 +141,40 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 	writel(host->atomic_submit.cmd_reg, base + MMCICOMMAND);
 }
 
+/*
+ * mmci_qcom_dump_state - peripheral state snapshot for ADM watchdog
+ *
+ * Called from qcom_adm's adm_watchdog_timeout when an ADM-side transfer
+ * wedges (no RSLT_VALID within 500 ms). Reads the SDCC controller's
+ * MMIO state at THAT instant — DATACTRL, MMCISTATUS, DATACNT, etc — so
+ * we can correlate which side stopped pumping first. Output goes to
+ * dev_warn on the mmci device.
+ *
+ * Constraints (per qcom_adm.h):
+ *   - timer softirq, achan->vc.lock held, IRQs off on local CPU
+ *   - must not sleep, must not nest locks above vc.lock
+ *   - one readl per register, one printk
+ */
+void mmci_qcom_dump_state(void *dump_user)
+{
+	struct mmci_host *host = dump_user;
+	void __iomem *base = host->base;
+
+	dev_warn(mmc_dev(host->mmc),
+		"ADM-WATCHDOG mmc%u snapshot: POWER=0x%08x CLOCK=0x%08x CMD=0x%08x CMDARG=0x%08x DLEN=0x%08x DCTL=0x%08x DCNT=0x%08x STAT=0x%08x MASK0=0x%08x FIFOCNT=0x%08x\n",
+		host->mmc->index,
+		readl_relaxed(base + MMCIPOWER),
+		readl_relaxed(base + MMCICLOCK),
+		readl_relaxed(base + MMCICOMMAND),
+		readl_relaxed(base + MMCIARGUMENT),
+		readl_relaxed(base + MMCIDATALENGTH),
+		readl_relaxed(base + MMCIDATACTRL),
+		readl_relaxed(base + MMCIDATACNT),
+		readl_relaxed(base + MMCISTATUS),
+		readl_relaxed(base + MMCIMASK0),
+		readl_relaxed(base + MMCIFIFOCNT));
+}
+
 static int qcom_dma_start(struct mmci_host *host, unsigned int *datactrl)
 {
 	u32 config;

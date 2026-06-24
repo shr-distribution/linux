@@ -1732,6 +1732,13 @@ static int _mmci_dmae_prep_data(struct mmci_host *host, struct mmc_data *data,
 			host->atomic_submit.armed = true;
 		}
 
+		/*
+		 * Always wire dump_state so the ADM watchdog can snapshot
+		 * the SDCC side when it sees a wedge on this host's channel.
+		 */
+		periph_conf.dump_state = mmci_qcom_dump_state;
+		periph_conf.dump_user  = host;
+
 		conf.peripheral_config = &periph_conf;
 		conf.peripheral_size = sizeof(periph_conf);
 	}
