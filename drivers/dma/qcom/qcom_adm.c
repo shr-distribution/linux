@@ -194,12 +194,54 @@ static inline struct adm_chan *to_adm_chan(struct dma_chan *common)
 	return container_of(common, struct adm_chan, vc.chan);
 }
 
+/*
+ * Per-CRCI default configuration applied to CRCI_CTL at probe so a CRCI
+ * the bootloader never programmed comes up with the block size its
+ * peripheral expects. SDCC CRCIs need a half-FIFO (blk_size 1) handshake.
+ */
+struct adm_crci_default {
+	u8 crci;
+	u8 blk_size;
+	u8 mux;
+};
+
+static const struct adm_crci_default adm_msm8660_crcis[] = {
+	{ .crci = 1,  .blk_size = 1, .mux = 0 },	/* SDCC1 (eMMC) */
+	{ .crci = 5,  .blk_size = 1, .mux = 0 },	/* SDCC4 (WiFi) */
+};
+
+/*
+ * Per-SoC quirks. MSM8660/APQ8060 splits the register banks across
+ * execution environments differently from the IPQ8064 baseline:
+ *  - crci_ctl_at_ee0: the CRCI_CTL config bank is live at EE=0 even when
+ *    the per-channel command bank runs at adev->ee (verified on APQ8060:
+ *    CRCI_CTL writes at EE=1 are silently dropped).
+ *  - trust_bootloader_conf: CH_CONF is programmed by the bootloader with
+ *    the correct priority/security-domain; re-writing it from Linux at the
+ *    EE=0-mapped config bank clears the SD field and wedges the channel, so
+ *    leave it alone and only enable IRQ/FLUSH in RSLT_CONF.
+ */
+struct adm_soc_data {
+	bool crci_ctl_at_ee0;
+	bool trust_bootloader_conf;
+	const struct adm_crci_default *crci_defaults;
+	int nr_crci_defaults;
+};
+
+static const struct adm_soc_data adm_msm8660_data = {
+	.crci_ctl_at_ee0 = true,
+	.trust_bootloader_conf = true,
+	.crci_defaults = adm_msm8660_crcis,
+	.nr_crci_defaults = ARRAY_SIZE(adm_msm8660_crcis),
+};
+
 struct adm_device {
 	void __iomem *regs;
 	struct device *dev;
 	struct dma_device common;
 	struct device_dma_parameters dma_parms;
 	struct adm_chan *channels;
+	const struct adm_soc_data *soc_data;
 
 	u32 ee;
 
@@ -652,12 +694,18 @@ static void adm_start_dma(struct adm_chan *achan)
 	achan->error = 0;
 
 	if (!achan->initialized) {
-		/* enable interrupts */
-		writel(ADM_CH_CONF_SHADOW_EN |
-		       ADM_CH_CONF_PERM_MPU_CONF |
-		       ADM_CH_CONF_MPU_DISABLE |
-		       ADM_CH_CONF_SEC_DOMAIN(adev->ee),
-		       adev->regs + ADM_CH_CONF(achan->id));
+		/*
+		 * On SoCs where the bootloader owns CH_CONF (trust_bootloader_conf)
+		 * the config bank is live at EE=0 and re-writing it here clears the
+		 * security-domain field and wedges the channel; leave CH_CONF as the
+		 * bootloader programmed it and only enable IRQ + FLUSH in RSLT_CONF.
+		 */
+		if (!(adev->soc_data && adev->soc_data->trust_bootloader_conf))
+			writel(ADM_CH_CONF_SHADOW_EN |
+			       ADM_CH_CONF_PERM_MPU_CONF |
+			       ADM_CH_CONF_MPU_DISABLE |
+			       ADM_CH_CONF_SEC_DOMAIN(adev->ee),
+			       adev->regs + ADM_CH_CONF(achan->id));
 
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(achan->id, adev->ee));
@@ -667,8 +715,15 @@ static void adm_start_dma(struct adm_chan *achan)
 
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
+		/*
+		 * The CRCI_CTL config bank is at EE=0 on crci_ctl_at_ee0 SoCs
+		 * (MSM8660), at adev->ee elsewhere.
+		 */
+		u32 crci_ee = (adev->soc_data && adev->soc_data->crci_ctl_at_ee0) ?
+			      0 : adev->ee;
+
 		writel(async_desc->mux | async_desc->blk_size,
-		       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
+		       adev->regs + ADM_CRCI_CTL(async_desc->crci, crci_ee));
 	}
 
 	/* make sure IRQ enable doesn't get reordered */
@@ -992,6 +1047,7 @@ static int adm_dma_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	adev->dev = &pdev->dev;
+	adev->soc_data = of_device_get_match_data(&pdev->dev);
 
 	adev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(adev->regs))
@@ -1169,6 +1225,8 @@ static void adm_dma_remove(struct platform_device *pdev)
 
 static const struct of_device_id adm_of_match[] = {
 	{ .compatible = "qcom,adm", },
+	{ .compatible = "qcom,adm-apq8060", .data = &adm_msm8660_data, },
+	{ .compatible = "qcom,adm-msm8660", .data = &adm_msm8660_data, },
 	{}
 };
 MODULE_DEVICE_TABLE(of, adm_of_match);
