@@ -461,12 +461,6 @@ static struct variant_data variant_qcom_msm8660 = {
 	/* No .start_err -- see above. */
 	.opendrain		= MCI_ROD,
 	.supports_sdio_irq	= true,
-	/*
-	 * DEBUG: hold host always-active for the ADM ch2 wedge investigation
-	 * so qcom_adm's watchdog dump_state callback can readl SDCC registers
-	 * from atomic context without a clock-gated-MMIO bus hang.
-	 */
-	.no_pm_autosuspend	= true,
 	.init			= qcom_variant_init,
 };
 
