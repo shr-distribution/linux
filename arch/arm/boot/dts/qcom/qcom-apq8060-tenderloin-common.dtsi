@@ -2858,35 +2858,19 @@
 	qcom,sdcc-crci = <1>;
 
 	/*
-	 * eMMC needs atomic-submit (exec_func) for DMA READs too, matching
-	 * legacy webOS msm_sdcc.c which sets msmsdcc_dma_exec_func
-	 * UNCONDITIONALLY for every DMA transfer (drivers/mmc/host/msm_sdcc.c
-	 * line 733). Mainline mmci's atomic-submit path gates on
-	 *
-	 *   variant->qcom_dml_atomic_submit  (true on our variant)
-	 *   AND host->datactrl_first         (set ONLY when this DT prop is)
-	 *   AND data->flags & MMC_DATA_READ
-	 *
-	 * Without qcom,datactrl-first here, sdcc1's EXT_CSD READ skips the
-	 * exec_func path: mmci writes DATATIMER / DATALENGTH / DATACTRL
-	 * inline *before* the ADM CMD_PTR fires. The ADM then starts pulling
-	 * from the SDCC FIFO before the SDCC's DPSM is fully armed in the
-	 * right direction with the right block count - the CRCI handshake
-	 * never establishes and ADM stalls at FLUSH_STATE5=3 ("drain stage
-	 * 3"). Exact pattern captured on ch2 in 2a9c91f80b47 and on ch5 in
-	 * d450371dfb22 boots.
-	 *
-	 * Adding this prop lifts sdcc1 onto the atomic-submit path:
-	 * mmci_qcom_atomic_exec_func writes DATATIMER + DATALENGTH +
-	 * DATACTRL + ARG + CMD inside ADM's per-controller submit_lock,
-	 * immediately before CMD_PTR, with all other ADM channels blocked.
-	 * Matches legacy ordering.
-	 *
-	 * The earlier comment "Only enable for SDIO (WiFi), not eMMC" on
-	 * sdcc4 was wrong about scope - legacy enabled it for both.
+	 * NOTE: do NOT add qcom,datactrl-first here. It was tried (commit
+	 * 34319a7a297d) and made eMMC WORSE: it routes the EXT_CSD READ
+	 * onto mmci's atomic-submit path, where mmci_qcom_atomic_exec_func
+	 * programs DATACTRL/ARG/CMD from host->atomic_submit.* — but that
+	 * stash is only populated for the WiFi SDIO CMD53 flow, NOT for the
+	 * eMMC command sequence. Live exec_func dump (82c2841e8323) caught:
+	 *   atomic_exec mmc0: datactrl=0 cmd_reg=0 cmd_arg=0 datalen=0x200
+	 * i.e. exec_func wrote DATACTRL=0 + MMCICOMMAND=0, so the SDCC DPSM
+	 * was never armed, CMD8 was never sent, the card never streamed,
+	 * and the ADM waited forever for a CRCI. eMMC must use the standard
+	 * mainline qcom DMA path: inline DATACTRL in mmci_start_data +
+	 * deferred dma_issue_pending on the CMDRESPEND IRQ.
 	 */
-	qcom,datactrl-first;
-
 	/*
 	 * qcom,max-req-kb cap is intentionally NOT set here.
 	 *
