@@ -158,19 +158,16 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 	 * and SDCC was never told to transfer -> ADM waits for a CRCI
 	 * that can't come.
 	 */
-	if (host->data && host->data->blocks > 8 && host->atomic_exec_count < 16) {
-		struct mmc_data *d = host->data;
-
-		host->atomic_exec_count++;
+	if (!host->atomic_exec_logged) {
+		host->atomic_exec_logged = 1;
 		dev_info(mmc_dev(host->mmc),
-			 "atomic_exec mmc%u #%u: datactrl=0x%08x cmd_reg=0x%08x cmd_arg=0x%08x datalen=0x%08x blocks=%u sg_len=%d\n",
-			 host->mmc->index, host->atomic_exec_count,
+			 "atomic_exec mmc%u: datactrl=0x%08x cmd_reg=0x%08x cmd_arg=0x%08x datalen=0x%08x datatimer=0x%08x\n",
+			 host->mmc->index,
 			 host->atomic_submit.datactrl,
 			 host->atomic_submit.cmd_reg,
 			 host->atomic_submit.cmd_arg,
 			 host->atomic_submit.datalen,
-			 d ? d->blocks : 0,
-			 d ? (int)d->sg_len : -1);
+			 host->atomic_submit.datatimer);
 	}
 
 	writel_relaxed(host->atomic_submit.datatimer, base + MMCIDATATIMER);
@@ -207,6 +204,7 @@ void mmci_qcom_dump_state(void *dump_user)
 {
 	struct mmci_host *host = dump_user;
 	void __iomem *base = host->base;
+	struct mmc_data *data = host->data;
 
 	dev_warn(mmc_dev(host->mmc),
 		"ADM-WATCHDOG mmc%u snapshot: POWER=0x%08x CLOCK=0x%08x CMD=0x%08x CMDARG=0x%08x DLEN=0x%08x DCTL=0x%08x DCNT=0x%08x STAT=0x%08x MASK0=0x%08x FIFOCNT=0x%08x\n",
@@ -221,6 +219,19 @@ void mmci_qcom_dump_state(void *dump_user)
 		readl_relaxed(base + MMCISTATUS),
 		readl_relaxed(base + MMCIMASK0),
 		readl_relaxed(base + MMCIFIFOCNT));
+
+	/* The wedged transfer's shape (read at watchdog time; host->data is
+	 * still set while the request is in flight). Identifies exactly which
+	 * transfer wedged: direction, block count, sg fragmentation. */
+	if (data)
+		dev_warn(mmc_dev(host->mmc),
+			"ADM-WATCHDOG mmc%u xfer: %s blksz=%u blocks=%u sg_len=%u size=%u stash{dctl=0x%08x cmd=0x%08x arg=0x%08x}\n",
+			host->mmc->index,
+			(data->flags & MMC_DATA_READ) ? "READ" : "WRITE",
+			data->blksz, data->blocks, data->sg_len, host->size,
+			host->atomic_submit.datactrl,
+			host->atomic_submit.cmd_reg,
+			host->atomic_submit.cmd_arg);
 }
 
 static int qcom_dma_start(struct mmci_host *host, unsigned int *datactrl)
