@@ -1828,6 +1828,15 @@ static void adm_start_dma(struct adm_chan *achan)
 	 * in CRCI_CTL.
 	 */
 	unsigned int lock_idx = async_desc->crci & 0xf;
+	/*
+	 * CRCI_CTL arming is deferred to after exec_func (just before
+	 * CMD_PTR) to match legacy set_crci_mask ordering — see the
+	 * write site below. These carry the computed value/window/decision
+	 * out of the crci-handling block to that write site.
+	 */
+	u32 crci_ctl_val = 0;
+	u32 crci_ctl_ee = 0;
+	bool crci_ctl_write = false;
 
 	if (need_submit_lock)
 		spin_lock_irqsave(&adev->submit_lock[lock_idx], submit_flags);
@@ -1892,71 +1901,65 @@ static void adm_start_dma(struct adm_chan *achan)
 		crci_val = async_desc->mux | blk_size;
 
 		/*
-		 * Fix 2: skip the CRCI_CTL MMIO write when the cached value
-		 * matches the desired value.  CRCI 1 (eMMC) and CRCI 9 (BT)
-		 * both write the same constants on every submit so 95%+ of
-		 * these MMIO writes are no-ops.  See
-		 * project_adm_submit_lock_starvation for the rationale.
-		 *
-		 * The cache is updated under submit_lock when need_submit_lock
-		 * is true.  When BT RX runs without the lock the read is racy
-		 * but harmless: at worst we do one redundant write, and the
-		 * value being written would be identical to whatever a racing
-		 * mmci start writes (same CRCI = same blk_size+mux constants).
+		 * On SoCs with crci_ctl_at_ee0 (Tenderloin / APQ8060)
+		 * CRCI_CTL is live in the EE=0 window; the EE-aware macro
+		 * target is hardcoded to 0. On other SoCs CRCI_CTL is in
+		 * adev->ee like every other per-channel register.
 		 */
-		{
-			/*
-			 * On SoCs with crci_ctl_at_ee0 (Tenderloin / APQ8060)
-			 * CRCI_CTL is live in the EE=0 window; the EE-aware
-			 * macro target is hardcoded to 0. On other SoCs
-			 * CRCI_CTL is in adev->ee like every other per-channel
-			 * register. Pick the right window once.
-			 */
-			u32 ctl_ee = (adev->soc_data && adev->soc_data->crci_ctl_at_ee0)
-				     ? 0 : adev->ee;
-			bool is_qce = adev->soc_data &&
-				      adev->soc_data->crci_ctl_at_ee0 &&
-				      (async_desc->crci == 4 ||
-				       async_desc->crci == 5 ||
-				       async_desc->crci == 15);
-			/*
-			 * Force-write CRCI_CTL for QCE CRCIs regardless of
-			 * cache match (commit 02090386de45 cache-skip drops a
-			 * load-bearing side effect the CE2 engine relies on
-			 * for per-op pacing on Tenderloin). SDCC / BT / NAND
-			 * keep the cache-skip. Gated on crci_ctl_at_ee0 so
-			 * non-Tenderloin SoCs don't pay the cost.
-			 */
-			bool need_write = is_qce ||
-					  !(adev->crci_ctl_cache_valid &
-					    BIT(async_desc->crci)) ||
-					  adev->crci_ctl_cache[async_desc->crci] != crci_val;
+		crci_ctl_ee = (adev->soc_data && adev->soc_data->crci_ctl_at_ee0)
+			      ? 0 : adev->ee;
+		crci_ctl_val = crci_val;
 
-			if (need_write) {
-				writel(crci_val,
-				       adev->regs + ADM_CRCI_CTL(async_desc->crci, ctl_ee));
-				adev->crci_ctl_cache[async_desc->crci] = crci_val;
-				adev->crci_ctl_cache_valid |= BIT(async_desc->crci);
-			}
-		}
+		/*
+		 * Decide whether to (re)write CRCI_CTL. On Tenderloin
+		 * (crci_ctl_at_ee0) the write is LOAD-BEARING, not just a
+		 * value update: it arms the CRCI flow-control state machine
+		 * for this transfer, and it MUST happen after the SDCC DPSM
+		 * is armed + the command is dispatched (in exec_func), right
+		 * before CMD_PTR — exactly mirroring legacy webOS
+		 * arch/arm/mach-msm/dma.c set_crci_mask(), which msm_dmov
+		 * calls AFTER exec_func and immediately before the CMD_PTR
+		 * write. Writing it earlier (before exec_func) or skipping
+		 * it on a cache hit leaves the CRCI handshake un-armed: the
+		 * ADM walks the descriptor, starts draining, and stalls at
+		 * FLUSH_STATE5=3 waiting for a CRCI assertion that never
+		 * connects (the SDCC<->ADM eMMC/WiFi wedge). So force the
+		 * write for every Tenderloin CRCI. Non-Tenderloin SoCs keep
+		 * the cache-skip optimisation.
+		 */
+		crci_ctl_write = (adev->soc_data && adev->soc_data->crci_ctl_at_ee0) ||
+				 !(adev->crci_ctl_cache_valid &
+				   BIT(async_desc->crci)) ||
+				 adev->crci_ctl_cache[async_desc->crci] != crci_val;
 	}
 
 	/*
-	 * Order the CRCI_CTL write before exec_func + CMD_PTR.  Full wmb()
-	 * (DSB on ARMv7) is overkill — these are MMIO writes via writel
-	 * which already emits dmb_st; dma_wmb is the lighter device-write
-	 * barrier and is sufficient here.
-	 */
-	dma_wmb();
-
-	/*
 	 * Peripheral pre-submit hook (legacy msm_dmov exec_func). Called
-	 * with submit_lock held, IRQs off, right before the CMD_PTR write.
-	 * Lets the consumer driver (mmci, etc.) commit its own MMIO setup
-	 * atomically with the ADM start.
+	 * with submit_lock held, IRQs off, BEFORE the CRCI_CTL arm + the
+	 * CMD_PTR write. Lets the consumer driver (mmci, etc.) commit its
+	 * own MMIO setup — for SDCC: DATATIMER + DATALENGTH + DATACTRL
+	 * (arms the DPSM in the transfer direction) + ARG + the data
+	 * command (CMD8 SEND_EXT_CSD / CMD18 / CMD53) — so the SDCC side
+	 * is fully armed and the card is already streaming before we arm
+	 * the CRCI handshake and kick the ADM. Matches legacy ordering:
+	 *   exec_func -> set_crci_mask (CRCI_CTL) -> writel(CMD_PTR).
 	 */
 	if (async_desc->exec_func)
 		async_desc->exec_func(async_desc->exec_user);
+
+	/*
+	 * Arm CRCI_CTL now — after exec_func (SDCC DPSM armed + command
+	 * dispatched), before CMD_PTR. See the load-bearing rationale at
+	 * the crci_ctl_write assignment above. dma_wmb() orders this
+	 * device write ahead of the CMD_PTR write that follows.
+	 */
+	if (async_desc->crci && crci_ctl_write) {
+		writel(crci_ctl_val,
+		       adev->regs + ADM_CRCI_CTL(async_desc->crci, crci_ctl_ee));
+		adev->crci_ctl_cache[async_desc->crci] = crci_ctl_val;
+		adev->crci_ctl_cache_valid |= BIT(async_desc->crci);
+	}
+	dma_wmb();
 
 	dev_dbg(adev->dev, "ADM start_dma: chan=%d crci=%d cmd_ptr=0x%08x len=%zu\n",
 		achan->id, async_desc->crci,
