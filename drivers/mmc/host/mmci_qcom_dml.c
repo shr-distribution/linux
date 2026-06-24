@@ -158,16 +158,19 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 	 * and SDCC was never told to transfer -> ADM waits for a CRCI
 	 * that can't come.
 	 */
-	if (!host->atomic_exec_logged) {
-		host->atomic_exec_logged = 1;
+	if (host->atomic_exec_count < 32) {
+		struct mmc_data *d = host->data;
+
+		host->atomic_exec_count++;
 		dev_info(mmc_dev(host->mmc),
-			 "atomic_exec mmc%u: datactrl=0x%08x cmd_reg=0x%08x cmd_arg=0x%08x datalen=0x%08x datatimer=0x%08x\n",
-			 host->mmc->index,
+			 "atomic_exec mmc%u #%u: datactrl=0x%08x cmd_reg=0x%08x cmd_arg=0x%08x datalen=0x%08x blocks=%u sg_len=%d\n",
+			 host->mmc->index, host->atomic_exec_count,
 			 host->atomic_submit.datactrl,
 			 host->atomic_submit.cmd_reg,
 			 host->atomic_submit.cmd_arg,
 			 host->atomic_submit.datalen,
-			 host->atomic_submit.datatimer);
+			 d ? d->blocks : 0,
+			 d ? (int)d->sg_len : -1);
 	}
 
 	writel_relaxed(host->atomic_submit.datatimer, base + MMCIDATATIMER);
