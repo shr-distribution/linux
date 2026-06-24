@@ -2852,10 +2852,31 @@
 	 * concurrent eMMC + WiFi load because the eMMC's next-descriptor
 	 * start was deferred past the SDCC DPSM data window.
 	 */
-	/* 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share). */
-	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
-	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <1>;
+	/*
+	 * DEBUG: sdcc1 (eMMC) on PIO until the ADM ch2 / SDCC1 CRCI handshake
+	 * stall is root-caused with a different debug approach. Every boot
+	 * with sdcc1 DMA enabled hits a cascade of bugs:
+	 *   1. ch2 DMA wedges at FLUSH_STATE5=3 mid EXT_CSD READ
+	 *   2. mmc_rescan blocks waiting → mmc sysfs in half-built state
+	 *   3. pm8xxx_xoadc_probe → devm_regulator_get → device_link_add →
+	 *      sysfs traversal infinite-loops in kernfs_next_descendant_post
+	 *      capturing CPU0 forever
+	 *   4. ADM watchdog timer (queued on CPU0) never gets a chance to
+	 *      fire → no recovery, no dump, kernel proceeds via the slow
+	 *      hung-task / RCU stall reporters but never escapes
+	 * Even the ARMED/FIRED bracket logs at 7b6d40153df2 confirm
+	 * mod_timer runs but the timer never gets serviced.
+	 *
+	 * Until we have a different way to inspect the wedge - e.g. boot
+	 * legacy webOS with instrumentation to capture its runtime SDCC1/
+	 * ADM ch2 state during EXT_CSD READ - leave sdcc1 on PIO so the
+	 * system is stable.
+	 *
+	 * 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share).
+	 * dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
+	 * dma-names = "rx", "tx";
+	 * qcom,sdcc-crci = <1>;
+	 */
 
 	/*
 	 * qcom,max-req-kb cap is intentionally NOT set here.
