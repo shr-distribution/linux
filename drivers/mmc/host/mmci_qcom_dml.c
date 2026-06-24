@@ -63,7 +63,30 @@ static bool qcom_dma_is_adm(struct device_node *np)
 
 	dma_node = dma_spec.np;
 	if (dma_node) {
-		is_adm = of_device_is_compatible(dma_node, "qcom,adm");
+		struct property *prop;
+		const char *compat;
+
+		/*
+		 * The qcom_adm driver binds the bare "qcom,adm" AND several
+		 * per-SoC compatibles ("qcom,adm-apq8060", "qcom,adm-msm8660",
+		 * "qcom,adm-ipq8064", ...). The original exact match on
+		 * "qcom,adm" missed all the SoC-specific strings, so a node
+		 * like tenderloin's "qcom,adm-apq8060" was NOT recognised as
+		 * ADM: qcom_dma_start() then fell through to the BAM path
+		 * (mmci_dmae_start = submit + issue immediately) instead of the
+		 * ADM submit-only path. That issued the channel during
+		 * dma_start — before mmci stashed DATACTRL/ARG/CMD for the
+		 * atomic-submit exec_func — so exec_func fired with an empty
+		 * stash, the SDCC was never armed, and eMMC reads wedged
+		 * (ADM ch2 waiting on a CRCI that never came). Match any
+		 * "qcom,adm" / "qcom,adm-*" compatible by prefix.
+		 */
+		of_property_for_each_string(dma_node, "compatible", prop, compat) {
+			if (!strncmp(compat, "qcom,adm", strlen("qcom,adm"))) {
+				is_adm = true;
+				break;
+			}
+		}
 		of_node_put(dma_node);
 	}
 

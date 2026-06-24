@@ -1746,24 +1746,6 @@ static void adm_start_dma(struct adm_chan *achan)
 	async_desc = container_of(vd, struct adm_async_desc, vd);
 	achan->curr_txd = async_desc;
 
-	/*
-	 * DEBUG one-shot (eMMC ch2): dump the caller chain of the first
-	 * start so we can see WHO issued the channel (adm_issue_pending via
-	 * mmci dma_issue_pending at __mmci_start_request vs the cmd_irq
-	 * deferred path vs the completion IRQ). Needed to explain why
-	 * exec_func runs before mmci stashes DATACTRL/CMD.
-	 */
-	if (achan->id == 2 && async_desc->exec_func) {
-		static bool dumped;
-
-		if (!dumped) {
-			dumped = true;
-			dev_info(adev->dev,
-				 "ADM-CALLER-DIAG ch2 first exec_func start — call chain:\n");
-			dump_stack();
-		}
-	}
-
 	/* reset channel error */
 	achan->error = 0;
 
