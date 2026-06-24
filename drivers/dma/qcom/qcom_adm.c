@@ -731,14 +731,34 @@ static void adm_start_dma(struct adm_chan *achan)
 
 	/* set the crci block size if this transaction requires CRCI */
 	if (async_desc->crci) {
+		const struct adm_soc_data *sd = adev->soc_data;
+		u32 mux = async_desc->mux;
+		u32 blk_size = async_desc->blk_size;
+		u32 crci_ee;
+		int k;
+
 		/*
 		 * The CRCI_CTL config bank is at EE=0 on crci_ctl_at_ee0 SoCs
 		 * (MSM8660), at adev->ee elsewhere.
 		 */
-		u32 crci_ee = (adev->soc_data && adev->soc_data->crci_ctl_at_ee0) ?
-			      0 : adev->ee;
+		crci_ee = (sd && sd->crci_ctl_at_ee0) ? 0 : adev->ee;
 
-		writel(async_desc->mux | async_desc->blk_size,
+		/*
+		 * Apply the per-CRCI default if the SoC provides one. SDCC
+		 * CRCIs need a half-FIFO block size (1), not the value
+		 * adm_get_blksize() derives from the 64-byte burst (2), or the
+		 * ADM<->FIFO handshake drifts on sustained transfers.
+		 */
+		for (k = 0; sd && k < sd->nr_crci_defaults; k++) {
+			if (sd->crci_defaults[k].crci == async_desc->crci) {
+				mux = sd->crci_defaults[k].mux ?
+					ADM_CRCI_CTL_MUX_SEL : 0;
+				blk_size = sd->crci_defaults[k].blk_size;
+				break;
+			}
+		}
+
+		writel(mux | blk_size,
 		       adev->regs + ADM_CRCI_CTL(async_desc->crci, crci_ee));
 	}
 
