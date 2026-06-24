@@ -808,6 +808,19 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	if (mmci_should_atomic_submit(host, data))
 		host->atomic_submit.active = true;
 
+	if (!host->dma_start_diag_logged) {
+		host->dma_start_diag_logged = true;
+		dev_info(mmc_dev(host->mmc),
+			 "DMA-START-DIAG mmc%u: qdas=%d datactrl_first=%d read=%d should_atomic=%d active=%d datactrl=0x%08x host_data=%p data=%p\n",
+			 host->mmc->index,
+			 host->variant->qcom_dml_atomic_submit,
+			 host->datactrl_first,
+			 !!(data->flags & MMC_DATA_READ),
+			 mmci_should_atomic_submit(host, data),
+			 host->atomic_submit.active,
+			 datactrl, host->data, data);
+	}
+
 	if (host->atomic_submit.active) {
 		/*
 		 * Atomic-submission path (variant->qcom_dml_atomic_submit +

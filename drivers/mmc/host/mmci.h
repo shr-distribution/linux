@@ -531,6 +531,7 @@ struct mmci_host {
 	u8			dma_issue_deferred:1;
 	u8			deferred_datactrl_pending:1;
 	u8			dma_engaged_once:1;	/* diagnostic flag */
+	u8			dma_start_diag_logged:1;	/* DEBUG: one-shot dma_start should_atomic/active dump */
 	u8			cmdto_diag_seen:1;	/* DEBUG: one-shot
 						 * eMMC CMDTIMEOUT
 						 * diag dump
