@@ -819,37 +819,41 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 		 */
 		host->atomic_submit.datactrl = datactrl;
 	} else {
-		bool defer_for_sdio_write =
+		bool defer_for_adm_write =
 			host->ops && host->ops->dma_issue_pending &&
 			host->datactrl_first &&
 			!(data->flags & MMC_DATA_READ) &&
-			host->variant->qcom_dml &&
-			(host->mmc->caps & MMC_CAP_SDIO_IRQ);
+			host->variant->qcom_dml;
 
-		if (defer_for_sdio_write) {
+		if (defer_for_adm_write) {
 			/*
-			 * Match legacy webOS msm_sdcc WRITE order for SDIO:
-			 * msmsdcc_request_start writes CMD53 first (no DATACTRL
-			 * yet); the CMDRESPEND IRQ calls msmsdcc_start_data,
-			 * which enqueues ADM with exec_func -- and only inside
-			 * that exec_func (just before ADM kicks CMD_PTR_LIST)
-			 * does DATACTRL get written.  DPSM is therefore NEVER
-			 * armed before the chip has accepted CMD53.
+			 * ADM WRITES must follow legacy webOS msm_sdcc's
+			 * CMD-first order, for BOTH SDIO (sdcc4/WiFi CMD53) and
+			 * eMMC (sdcc1 CMD25): the data command is written first
+			 * (mmci_start_command), and only on the CMDRESPEND IRQ —
+			 * once the card has accepted the command and entered the
+			 * receive state — does mmci_cmd_irq write DATACTRL and
+			 * kick the ADM (dma_issue_pending). The DPSM is therefore
+			 * never armed in WRITE direction before the card is ready.
 			 *
-			 * Mainline historically wrote DATACTRL here, before
-			 * mmci_start_command issued CMD53.  That arms DPSM in
-			 * WRITE-direction + DMAENABLE several microseconds
-			 * before CMD53 reaches the wire.  On tenderloin /
-			 * AR6003 the chip silently NAKs CMD53 in that window
-			 * (CMDTIMEOUT, STATUS=0x00445400) for the cold-boot
-			 * 128 B mailbox WR @ 0xF80; the workaround was to force
-			 * <256 B SDIO writes through PIO (mmci.c:1614 / commit
-			 * c3081cab34f8 / 45716816e246).
+			 * Mainline historically wrote DATACTRL here and issued the
+			 * ADM immediately, BEFORE mmci_start_command sent the data
+			 * command. That arms the write-direction DPSM + DMAENABLE
+			 * and starts the ADM filling the FIFO microseconds before
+			 * the command reaches the card. On SDIO/AR6003 the chip
+			 * NAKed CMD53 in that window; on eMMC the write wedged —
+			 * ADM ch2 fills the FIFO and waits on a CRCI the SDCC never
+			 * asserts (card not yet receiving), no RSLT_VALID, 500 ms
+			 * watchdog (ADM-WATCHDOG xfer: WRITE blocks=16). This is
+			 * the write-direction twin of the read arming gap the
+			 * atomic-submit path fixes; writes have no atomic path
+			 * (mmci_should_atomic_submit is read-only), so they use
+			 * this deferral instead.
 			 *
-			 * Stash DATACTRL here; mmci_cmd_irq writes it just
-			 * before dma_issue_pending() on CMDRESPEND -- matching
-			 * legacy exec_func: chip ACKs CMD53 -> DATACTRL ->
-			 * udelay -> ADM kicks -> CRCI handshake -> data on wire.
+			 * Stash DATACTRL here; mmci_cmd_irq writes it just before
+			 * dma_issue_pending() on CMDRESPEND -- matching legacy
+			 * exec_func: card ACKs CMD -> DATACTRL -> udelay -> ADM
+			 * kicks -> CRCI handshake -> data on wire.
 			 */
 			host->deferred_datactrl = datactrl;
 			host->deferred_datactrl_pending = true;
