@@ -2853,40 +2853,16 @@
 	 * start was deferred past the SDCC DPSM data window.
 	 */
 	/*
-	 * DEBUG: eMMC parked on PIO for a reliably-booting system while the
-	 * ADM ch2 / SDCC1 CRCI handshake stall is investigated out-of-band.
-	 *
-	 * Status of that investigation (so a future session doesn't repeat
-	 * the dead ends): the ADM gets a byte-perfect box descriptor
-	 * (verified by live devmem: cmd=0x8000000B BOX|SRC_CRCI(1)|LC,
-	 * src=0x12400080 SDCC1 FIFO, dst=mem, row_len=0x00400040,
-	 * num_rows=8) and every static ADM register matches running webOS
-	 * (CONF=0x8d5, CRCI_CTL[1]=0x1, CI_CONF, GP_CTL). It still stalls at
-	 * FLUSH_STATE5=3 with num_rows untouched (zero rows drained),
-	 * waiting for a CRCI-1 assertion from SDCC that never arrives.
-	 *
-	 * Ruled out, each by experiment + reflash:
-	 *   - atomic-submit / qcom,datactrl-first: made it WORSE (stash not
-	 *     populated for eMMC -> DATACTRL=0/CMD=0, SDCC never armed).
-	 *   - CH_CONF SHADOW_EN at EE=1 (config_datamover parity): no change.
-	 *   - CRCI_CTL write moved after exec_func, before CMD_PTR
-	 *     (set_crci_mask ordering parity): no change.
-	 *   - descriptor / CRCI line / block size / FIFO addr: all correct.
-	 *
-	 * The remaining divergence from webOS is dynamic (live-transfer
-	 * timing/state), not static register content. Cracking it needs a
-	 * webOS capture taken DURING an active eMMC DMA read (poll ADM ch2
-	 * STATUS + SDCC1 MMCISTATUS while data flows) to see the CRCI
-	 * actually asserting — the mainline side can't be observed because
-	 * the eMMC wedge half-builds mmc sysfs and the next probe spins
-	 * forever in kernfs_new_node, capturing the CPU before the ADM
-	 * watchdog can dump state.
-	 *
-	 * 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share).
-	 * dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
-	 * dma-names = "rx", "tx";
-	 * qcom,sdcc-crci = <1>;
+	 * DEBUG: sdcc1 DMA re-enabled to fire the one-shot SDCC FIFO poll
+	 * (mmci __mmci_start_request, mmc0 first DMA read) and capture
+	 * whether the card streams into the RX FIFO during the wedge —
+	 * the one measurement still missing. Park back on PIO afterwards
+	 * if the wedge persists.
 	 */
+	/* 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share). */
+	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
+	dma-names = "rx", "tx";
+	qcom,sdcc-crci = <1>;
 
 	/*
 	 * NOTE: do NOT add qcom,datactrl-first here. It was tried (commit
