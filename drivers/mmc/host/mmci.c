@@ -859,8 +859,40 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 				udelay(1);
 			}
 
-			if (host->ops && host->ops->dma_issue_pending)
+			/*
+			 * Defer the ADM CMD_PTR kick to the CMDRESPEND IRQ for
+			 * ADM-flow-controlled READS on this variant. The MSM8660
+			 * ADM latches CRCI state when CMD_PTR is written: if we
+			 * kick it HERE (before mmci_start_command sends the data
+			 * command), the channel arms while CRCI is idle and the
+			 * card hasn't streamed yet — and it never re-samples when
+			 * the card later fills the SDCC FIFO and asserts CRCI. The
+			 * channel sits with the command queued (STATUS CMD_COUNT=1)
+			 * forever; the SDCC FIFO fills to RXFIFOFULL and stalls,
+			 * never drained. Proven on eMMC ch2 by a live FIFO poll
+			 * (datactrl=0x200b, STATUS RXFIFOFULL+RXDATAAVLBL, ADM
+			 * transferred 0 rows) vs the webOS fingerprint where the
+			 * same channel cycles normally.
+			 *
+			 * Legacy webOS arch/arm/mach-msm/dma.c issues CMD_PTR from
+			 * msm_dmov_enqueue_cmd_ext AFTER msmsdcc_dma_exec_func has
+			 * already written DATACTRL + the data command — i.e. the
+			 * card is already streaming before CMD_PTR. DATACTRL stays
+			 * written inline here (DPSM armed before the command, as
+			 * legacy does); only the CMD_PTR kick is deferred to
+			 * CMDRESPEND so it lands after the command, matching
+			 * legacy ordering. SDIO writes use the separate
+			 * defer_for_sdio_write path above (which also defers
+			 * DATACTRL); this read path keeps DATACTRL inline.
+			 */
+			if (host->variant->qcom_dml_atomic_submit &&
+			    (data->flags & MMC_DATA_READ) &&
+			    host->ops && host->ops->dma_issue_pending) {
+				host->dma_issue_deferred = true;
+				host->deferred_datactrl_pending = false;
+			} else if (host->ops && host->ops->dma_issue_pending) {
 				host->ops->dma_issue_pending(host);
+			}
 		}
 	}
 
@@ -3543,50 +3575,6 @@ static void __mmci_start_request(struct mmci_host *host,
 		host->ops->dma_issue_pending(host);
 	}
 
-	/*
-	 * DEBUG one-shot (mmc0 first DMA READ): the ADM ch2 is now armed
-	 * (CMD_PTR fired in mmci_start_data) and the data command has just
-	 * been issued. Busy-poll MMCISTATUS/FIFOCNT for ~3 ms to see
-	 * whether the card actually streams EXT_CSD into the SDCC RX FIFO.
-	 * FIFOCNT is updated by hardware as the card clocks data in and the
-	 * ADM drains it via CRCI — no IRQ needed — so this works even with
-	 * host->lock held + IRQs off. Compared against the live webOS
-	 * fingerprint (SDCC STATUS=0x0020A400, FIFOCNT cycling 0..0x8000):
-	 *   - FIFO fills (fifo_max > 0) but ADM never drains -> SDCC IS
-	 *     receiving, the ADM CRCI input/drain is the problem.
-	 *   - FIFO stays 0 + STATUS idle -> the card never streamed (the
-	 *     command/DPSM-direction side), not an ADM problem.
-	 * Runs in mmci request context, well before the eMMC-wedge
-	 * kernfs_new_node cascade that prevents the ADM watchdog dump.
-	 */
-	if (host->mmc->index == 0 && mrq->data &&
-	    (mrq->data->flags & MMC_DATA_READ) &&
-	    !host->dbg_emmc_dma_polled &&
-	    (readl(host->base + MMCIDATACTRL) & MCI_DPSM_DMAENABLE)) {
-		u32 st0 = readl(host->base + MMCISTATUS);
-		u32 dc0 = readl(host->base + MMCIDATACTRL);
-		u32 fc_first = 0, fc_max = 0, stN = st0;
-		int i;
-
-		host->dbg_emmc_dma_polled = 1;
-		for (i = 0; i < 3000; i++) {
-			u32 fc = readl(host->base + MMCIFIFOCNT);
-			u32 st = readl(host->base + MMCISTATUS);
-
-			if (fc && !fc_first)
-				fc_first = fc;
-			if (fc > fc_max)
-				fc_max = fc;
-			stN = st;
-			if (st & (MCI_DATAEND | MCI_DATACRCFAIL |
-				  MCI_DATATIMEOUT | MCI_RXOVERRUN))
-				break;
-			udelay(1);
-		}
-		dev_info(mmc_dev(host->mmc),
-			 "DBG-EMMC-DMA poll: datactrl0=0x%08x status0=0x%08x -> statusN=0x%08x fifo_first=0x%x fifo_max=0x%x iters=%d\n",
-			 dc0, st0, stN, fc_first, fc_max, i);
-	}
 }
 
 static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
