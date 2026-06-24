@@ -3542,6 +3542,51 @@ static void __mmci_start_request(struct mmci_host *host,
 	    host->ops->dma_issue_pending) {
 		host->ops->dma_issue_pending(host);
 	}
+
+	/*
+	 * DEBUG one-shot (mmc0 first DMA READ): the ADM ch2 is now armed
+	 * (CMD_PTR fired in mmci_start_data) and the data command has just
+	 * been issued. Busy-poll MMCISTATUS/FIFOCNT for ~3 ms to see
+	 * whether the card actually streams EXT_CSD into the SDCC RX FIFO.
+	 * FIFOCNT is updated by hardware as the card clocks data in and the
+	 * ADM drains it via CRCI — no IRQ needed — so this works even with
+	 * host->lock held + IRQs off. Compared against the live webOS
+	 * fingerprint (SDCC STATUS=0x0020A400, FIFOCNT cycling 0..0x8000):
+	 *   - FIFO fills (fifo_max > 0) but ADM never drains -> SDCC IS
+	 *     receiving, the ADM CRCI input/drain is the problem.
+	 *   - FIFO stays 0 + STATUS idle -> the card never streamed (the
+	 *     command/DPSM-direction side), not an ADM problem.
+	 * Runs in mmci request context, well before the eMMC-wedge
+	 * kernfs_new_node cascade that prevents the ADM watchdog dump.
+	 */
+	if (host->mmc->index == 0 && mrq->data &&
+	    (mrq->data->flags & MMC_DATA_READ) &&
+	    !host->dbg_emmc_dma_polled &&
+	    (readl(host->base + MMCIDATACTRL) & MCI_DPSM_DMAENABLE)) {
+		u32 st0 = readl(host->base + MMCISTATUS);
+		u32 dc0 = readl(host->base + MMCIDATACTRL);
+		u32 fc_first = 0, fc_max = 0, stN = st0;
+		int i;
+
+		host->dbg_emmc_dma_polled = 1;
+		for (i = 0; i < 3000; i++) {
+			u32 fc = readl(host->base + MMCIFIFOCNT);
+			u32 st = readl(host->base + MMCISTATUS);
+
+			if (fc && !fc_first)
+				fc_first = fc;
+			if (fc > fc_max)
+				fc_max = fc;
+			stN = st;
+			if (st & (MCI_DATAEND | MCI_DATACRCFAIL |
+				  MCI_DATATIMEOUT | MCI_RXOVERRUN))
+				break;
+			udelay(1);
+		}
+		dev_info(mmc_dev(host->mmc),
+			 "DBG-EMMC-DMA poll: datactrl0=0x%08x status0=0x%08x -> statusN=0x%08x fifo_first=0x%x fifo_max=0x%x iters=%d\n",
+			 dc0, st0, stN, fc_first, fc_max, i);
+	}
 }
 
 static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
