@@ -158,7 +158,7 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 	 * and SDCC was never told to transfer -> ADM waits for a CRCI
 	 * that can't come.
 	 */
-	if (host->atomic_exec_count < 32) {
+	if (host->data && host->data->blocks > 8 && host->atomic_exec_count < 16) {
 		struct mmc_data *d = host->data;
 
 		host->atomic_exec_count++;
