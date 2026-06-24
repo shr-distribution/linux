@@ -2852,21 +2852,10 @@
 	 * concurrent eMMC + WiFi load because the eMMC's next-descriptor
 	 * start was deferred past the SDCC DPSM data window.
 	 */
-	/*
-	 * DEBUG: sdcc1 DMA disabled (mmci falls back to PIO) so the kernel
-	 * boots to telnet / netconsole while we validate the ADM runtime-PM
-	 * fix (9c99f4b8d2bc) against sdcc4 DMA. After the PM revert + DMA
-	 * re-enable on both hosts (709a5270a04a), the kernel hangs hard at
-	 * ~11 s on serial output with no soft-lockup trace. Since PIO-on-
-	 * both worked (7f9bd93f01f5), the hang is now in the eMMC-DMA path
-	 * specifically. Keep sdcc4 DMA enabled so /proc/interrupts will
-	 * tell us whether ch5 IRQ now fires post-fix (was masked before).
-	 *
-	 * 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share).
-	 * dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
-	 * dma-names = "rx", "tx";
-	 * qcom,sdcc-crci = <1>;
-	 */
+	/* 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share). */
+	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
+	dma-names = "rx", "tx";
+	qcom,sdcc-crci = <1>;
 
 	/*
 	 * qcom,max-req-kb cap is intentionally NOT set here.
