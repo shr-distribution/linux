@@ -2852,10 +2852,20 @@
 	 * concurrent eMMC + WiFi load because the eMMC's next-descriptor
 	 * start was deferred past the SDCC DPSM data window.
 	 */
-	/* 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share). */
-	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
-	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <1>;
+	/*
+	 * DEBUG: sdcc1 (eMMC) on PIO. With sdcc1 DMA re-enabled and dyndbg
+	 * removed from cmdline, the kernel now hangs in clk_pm_runtime_get
+	 * (inside mmc_power_up → mmci_set_ios → clk_set_rate) instead of
+	 * the old console_flush_all stall. This is the same underlying ch2
+	 * wedge but without dyndbg saturation we see a different downstream
+	 * block. Watchdog dev_warn never lands in serial either - timer
+	 * softirq blocked or output stuck behind clk wait.
+	 *
+	 * 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share).
+	 * dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
+	 * dma-names = "rx", "tx";
+	 * qcom,sdcc-crci = <1>;
+	 */
 
 	/*
 	 * qcom,max-req-kb cap is intentionally NOT set here.
