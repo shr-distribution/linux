@@ -3315,14 +3315,49 @@ static int adm_dma_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * Per-channel state: RSLT_CONF gets IRQ + FLUSH enable. CH_CONF
-	 * is deliberately NOT rewritten — the bootloader-programmed
-	 * values carry SD + priority and Linux must not stomp them.
-	 * Only touch channels Linux owns.
+	 * Per-channel state: RSLT_CONF gets IRQ + FLUSH enable, and CH_CONF
+	 * gets SHADOW_EN — both at adev->ee (the AARM/master window).
+	 *
+	 * CH_CONF + SHADOW_EN is the piece this driver was missing and the
+	 * root cause of the SDCC↔ADM CRCI handshake stall (FLUSH_STATE5=3
+	 * "drain stage 3"): the ADM walked the descriptor and waited for a
+	 * CRCI assertion that never connected, because the channel's
+	 * config-bank shadow (CRCI_CTL/CONF live at EE=0 on this SoC) was
+	 * never linked to the per-channel command bank (CMD_PTR/RSLT/STATUS
+	 * live at EE=1). SHADOW_EN in the EE=1 (master) CONF is what arms
+	 * that link.
+	 *
+	 * Legacy webOS arch/arm/mach-msm/dma.c config_datamover() does
+	 * exactly this for every AARM channel:
+	 *
+	 *   conf = readl(DMOV_CONF(i));            // master window (SD=1)
+	 *   conf &= ~DMOV_CONF_SD(7);
+	 *   conf |= DMOV_CONF_SD(chan_conf[i].sd); // sd = 1 (AARM)
+	 *   writel(conf | DMOV_CONF_SHADOW_EN, DMOV_CONF(i));
+	 *
+	 * An earlier iteration of this driver concluded EE=1 CH_CONF writes
+	 * were "silently dropped" because the register reads back 0 — but
+	 * SHADOW_EN is a write-effect bit: readback 0 does NOT mean the
+	 * write had no effect. The effective per-channel config (priority,
+	 * IRQ_EN, FORCE_RSLT, MPU_DISABLE) stays in the EE=0 shadow that the
+	 * bootloader programmed (0x8d5 for ch2); SHADOW_EN connects it. We
+	 * only set SD + SHADOW_EN here and leave the EE=0 shadow untouched,
+	 * matching legacy.
 	 */
 	for_each_set_bit(i, adev->channels_aarm, ADM_MAX_CHANNELS) {
 		writel(ADM_CH_RSLT_CONF_IRQ_EN | ADM_CH_RSLT_CONF_FLUSH_EN,
 		       adev->regs + ADM_CH_RSLT_CONF(i, adev->ee));
+
+		if (adev->soc_data && adev->soc_data->crci_ctl_at_ee0) {
+			u32 conf = readl(adev->regs +
+					 ADM_CH_CONF(i, adev->ee));
+
+			conf &= ~ADM_CH_CONF_SEC_DOMAIN(7);
+			conf |= ADM_CH_CONF_SEC_DOMAIN(adev->ee);
+			conf |= ADM_CH_CONF_SHADOW_EN;
+			writel(conf, adev->regs + ADM_CH_CONF(i, adev->ee));
+		}
+
 		adev->channels[i].initialized = 1;
 	}
 
