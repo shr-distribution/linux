@@ -125,6 +125,28 @@ void mmci_qcom_atomic_exec_func(void *exec_user)
 	 * corrupted single-CMD53 128 B HTC mailbox reads (root cause of
 	 * the A3 PIO split workaround at ath6kl/sdio.c:228-250).
 	 */
+	/*
+	 * DEBUG one-shot per host: dump the exact stash values this
+	 * exec_func is about to program. Captures DATACTRL / CMD at the
+	 * instant of the atomic submit, with no CPSM/DPSM auto-clear
+	 * ambiguity (the +500ms watchdog readback can't distinguish
+	 * "never written" from "written then auto-cleared on completion").
+	 * If datactrl/cmd_reg read 0 here, the stash was never populated
+	 * and SDCC was never told to transfer -> ADM waits for a CRCI
+	 * that can't come.
+	 */
+	if (!host->atomic_exec_logged) {
+		host->atomic_exec_logged = 1;
+		dev_info(mmc_dev(host->mmc),
+			 "atomic_exec mmc%u: datactrl=0x%08x cmd_reg=0x%08x cmd_arg=0x%08x datalen=0x%08x datatimer=0x%08x\n",
+			 host->mmc->index,
+			 host->atomic_submit.datactrl,
+			 host->atomic_submit.cmd_reg,
+			 host->atomic_submit.cmd_arg,
+			 host->atomic_submit.datalen,
+			 host->atomic_submit.datatimer);
+	}
+
 	writel_relaxed(host->atomic_submit.datatimer, base + MMCIDATATIMER);
 	writel_relaxed(host->atomic_submit.datalen, base + MMCIDATALENGTH);
 	if (delay_us)

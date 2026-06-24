@@ -526,6 +526,7 @@ struct mmci_host {
 	 */
 	u8			pio_entered_logged:1;
 	u8			pio_dma_bailed_logged:1;
+	u8			atomic_exec_logged:1;	/* DEBUG: one-shot exec_func stash dump */
 	u8			datactrl_first:1;
 	u8			dma_issue_deferred:1;
 	u8			deferred_datactrl_pending:1;
