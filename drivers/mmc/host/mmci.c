@@ -785,14 +785,27 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 
 	/*
 	 * Commit to the atomic-submission path only AFTER dma_start
-	 * succeeded AND _mmci_dmae_prep_data confirmed the channel
-	 * actually carries the qcom_adm exec_func wiring (armed). If
-	 * dma_start had failed, the PIO fallback in mmci_start_data +
-	 * mmci_start_command would mis-route their writes into the
-	 * stash. If the channel isn't ADM (e.g. BAM), armed stays
-	 * false and we keep the conventional write path.
+	 * succeeded. If dma_start had failed we return above, so the PIO
+	 * fallback in mmci_start_data + mmci_start_command keeps the
+	 * conventional write path (active stays false).
+	 *
+	 * Gate on mmci_should_atomic_submit() rather than the host->
+	 * atomic_submit.armed flag: armed is set during prep but cleared at
+	 * __mmci_start_request() entry, and on the EXT_CSD/eMMC read path it
+	 * was not reliably re-set before this latch — so active never became
+	 * true, mmci_start_command() skipped stashing ARG/CMD, and
+	 * mmci_qcom_atomic_exec_func() fired with an empty stash
+	 * (datactrl=0/cmd=0) leaving the SDCC unarmed and the ADM waiting on
+	 * a CRCI forever. should_atomic_submit() is recomputed here from
+	 * stable inputs (variant->qcom_dml_atomic_submit + host->
+	 * datactrl_first + READ) and cannot be lost. It is BAM-safe:
+	 * qcom_dml_atomic_submit is set only on the ADM variant
+	 * (variant_qcom_msm8660); BAM hosts use variant_qcom and never reach
+	 * here. The exec_func itself is wired in _mmci_dmae_prep_data only
+	 * when dmae->crci is present, which every datactrl-first host on this
+	 * SoC has.
 	 */
-	if (host->atomic_submit.armed)
+	if (mmci_should_atomic_submit(host, data))
 		host->atomic_submit.active = true;
 
 	if (host->atomic_submit.active) {
