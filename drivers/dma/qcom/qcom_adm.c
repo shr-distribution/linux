@@ -2087,11 +2087,39 @@ static void adm_start_dma(struct adm_chan *achan)
 				 first_word, status_pre, rslt_conf,
 				 async_desc->crci, ctl_ee_dbg, crci_ctl,
 				 ch_conf_ee0);
-			achan->first_submit_logged = 1;
 		}
 
 		writel(cmd_ptr_val,
 		       adev->regs + ADM_CH_CMD_PTR(achan->id, adev->ee));
+
+		/*
+		 * Post-CMD_PTR snapshot. If the ADM hardware accepted the
+		 * command, STATUS_SD's CMD_PTR_RDY bit should go to 0 within
+		 * a few cycles (hardware now "owns" CMD_PTR). If the bit
+		 * stays at 1 then the hardware silently ignored the write,
+		 * which on Tenderloin is the symptom of ADM ch2 (eMMC
+		 * sdcc1) wedging — confirmed by webOS-live devmem readback:
+		 * ch2 STATUS_SD = CMD_PTR_RDY=1 across mainline boots where
+		 * no real DMA happens vs. WORKING webOS where ch2 actively
+		 * transfers EXT_CSD and STATUS_SD oscillates.
+		 *
+		 * Log once per channel + log the CMD_PTR readback so we can
+		 * see if the channel's CMD_PTR register actually latched
+		 * our value (further proves hardware accepted write).
+		 */
+		if (!achan->first_submit_logged) {
+			u32 status_post = readl_relaxed(adev->regs +
+				ADM_CH_STATUS_SD(achan->id, adev->ee));
+			u32 cmd_ptr_rb = readl_relaxed(adev->regs +
+				ADM_CH_CMD_PTR(achan->id, adev->ee));
+			dev_info(adev->dev,
+				 "ADM first submit ch%u POST CMD_PTR: status_sd=0x%08x cmd_ptr_rb=0x%08x (wrote 0x%08x; CMD_PTR_RDY %s)\n",
+				 achan->id, status_post, cmd_ptr_rb, cmd_ptr_val,
+				 (status_post & ADM_CH_STATUS_CMD_PTR_RDY) ?
+				 "STILL SET (hardware ignored)" :
+				 "CLEARED (hardware accepted)");
+			achan->first_submit_logged = 1;
+		}
 	}
 
 	/*
