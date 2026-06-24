@@ -461,6 +461,12 @@ static struct variant_data variant_qcom_msm8660 = {
 	/* No .start_err -- see above. */
 	.opendrain		= MCI_ROD,
 	.supports_sdio_irq	= true,
+	/*
+	 * DEBUG: hold host always-active for the ADM ch2 wedge investigation
+	 * so qcom_adm's watchdog dump_state callback can readl SDCC registers
+	 * from atomic context without a clock-gated-MMIO bus hang.
+	 */
+	.no_pm_autosuspend	= true,
 	.init			= qcom_variant_init,
 };
 
@@ -4421,14 +4427,26 @@ static int mmci_probe(struct amba_device *dev,
 	if (ret == -EPROBE_DEFER)
 		goto clk_disable;
 
-	pm_runtime_set_autosuspend_delay(&dev->dev, 50);
-	pm_runtime_use_autosuspend(&dev->dev);
+	/*
+	 * Per-variant override: leave runtime PM in "always-active" state
+	 * by NOT calling pm_runtime_use_autosuspend + not dropping the
+	 * pm_runtime_get_sync reference that probe took. The host then
+	 * never autosuspends, its clocks stay enabled, and its MMIO is
+	 * always reachable — needed for the ADM watchdog dump_state
+	 * callback to read SDCC registers from atomic context without
+	 * risking a bus hang on a clock-gated controller.
+	 */
+	if (!variant->no_pm_autosuspend) {
+		pm_runtime_set_autosuspend_delay(&dev->dev, 50);
+		pm_runtime_use_autosuspend(&dev->dev);
+	}
 
 	ret = mmc_add_host(mmc);
 	if (ret)
 		goto clk_disable;
 
-	pm_runtime_put(&dev->dev);
+	if (!variant->no_pm_autosuspend)
+		pm_runtime_put(&dev->dev);
 	return 0;
 
  clk_disable:

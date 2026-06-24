@@ -388,6 +388,15 @@ struct variant_data {
 	u8			qcom_datactrl_delay:1;
 	u8			qcom_data_timeout_2x:1;
 	u8			qcom_dml_atomic_submit:1;
+	/*
+	 * DEBUG: keep mmci host always-active (no runtime PM autosuspend).
+	 * Set on variant_qcom_msm8660 so the SDCC MMIO is always reachable —
+	 * lets qcom_adm's watchdog dump_state callback (mmci_qcom_dump_state)
+	 * read SDCC registers from atomic context without risking a bus
+	 * hang on a clock-gated controller. Pair with the ADM ch2 DMA
+	 * debug; revert once the CRCI handshake stall is root-caused.
+	 */
+	u8			no_pm_autosuspend:1;
 	u8			reversed_irq_handling:1;
 	u8			mmcimask1:1;
 	unsigned int		irq_pio_mask;
