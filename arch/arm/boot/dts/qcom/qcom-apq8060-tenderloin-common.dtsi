@@ -3052,10 +3052,31 @@
 	 * Channel 21 = ADM1 channel 5 (ADM1 starts at global channel 16)
 	 * CRCI 5 provides flow control for SDC4 transfers
 	 */
-	/* 3-cell: SDC4 WiFi = ADM1 ch5 CRCI 5 MUX 0 (RX and TX share). */
-	dmas = <&adm_dma1 5 5 0>, <&adm_dma1 5 5 0>;
-	dma-names = "rx", "tx";
-	qcom,sdcc-crci = <5>;
+	/*
+	 * DEBUG: sdcc4 (WiFi) on PIO. With sdcc4 DMA enabled, ch5 wedges
+	 * at the same FLUSH_STATE5=3 SDCC↔ADM CRCI handshake stall as
+	 * ch2 (proven by ADM ch5 watchdog dump on the d450371dfb22 boot:
+	 * STATE0..5 = 0000c003 7c200008 00000000 00400040 00080008
+	 * 00000003 — descriptor walked, 8x64B box, stalled at drain
+	 * stage 3 — identical pattern to ch2).
+	 *
+	 * After watchdog completes the wedged cookie with -EIO,
+	 * ath6kl_sdio's IRQ handler enters a tight retry loop:
+	 *   sdio_irq_work -> ath6kl_htc_rx_packet -> sdio_readsb ->
+	 *   mmc_io_rw_extended -> mmci_request -> another DMA submit ->
+	 *   wedges again ... CPU0 captured for 200+ seconds, boot
+	 *   never reaches LVM activation.
+	 *
+	 * Parking sdcc4 on PIO breaks that loop: ath6kl SDIO transfers
+	 * are small (sub-FIFO) and go PIO anyway in mmci, so DMA wasn't
+	 * doing much for it. Same stable telnet boot we had at
+	 * g7d266ddccc39 (sdcc1 PIO + sdcc4 PIO).
+	 *
+	 * 3-cell: SDC4 WiFi = ADM1 ch5 CRCI 5 MUX 0 (RX and TX share).
+	 * dmas = <&adm_dma1 5 5 0>, <&adm_dma1 5 5 0>;
+	 * dma-names = "rx", "tx";
+	 * qcom,sdcc-crci = <5>;
+	 */
 
 	/*
 	 * DFAB interconnect path for WiFi SDIO.
