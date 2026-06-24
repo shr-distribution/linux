@@ -438,6 +438,16 @@ struct adm_chan {
 	u8 watchdog_raced_logged;
 
 	/*
+	 * One-shot debug flags: log first time the watchdog timer was
+	 * armed for this channel, and first time the timer callback
+	 * actually fired. Together they prove or disprove "did the
+	 * watchdog ever execute on this channel" when a log gap makes
+	 * it ambiguous.
+	 */
+	u8 watchdog_armed_logged;
+	u8 watchdog_fired_logged;
+
+	/*
 	 * One-shot diagnostic on the first RSLT_VALID IRQ per channel.
 	 * Confirms the ADM hardware actually walked the chain to
 	 * completion (result code, FLUSH state). Logging only the first
@@ -854,6 +864,18 @@ static void adm_watchdog_timeout(struct timer_list *t)
 	struct adm_device *adev = achan->adev;
 	struct adm_async_desc *async_desc;
 	unsigned long flags;
+
+	/*
+	 * One-shot diagnostic: prove the timer actually fired for this
+	 * channel. Logs once per (channel, boot) so even if everything
+	 * downstream of the lock acquisition wedges, we see this.
+	 */
+	if (!achan->watchdog_fired_logged) {
+		achan->watchdog_fired_logged = 1;
+		dev_info(adev->dev,
+			 "ADM ch%u watchdog FIRED (entering timeout fn)\n",
+			 achan->id);
+	}
 
 	spin_lock_irqsave(&achan->vc.lock, flags);
 
@@ -2220,9 +2242,22 @@ static void adm_start_dma(struct adm_chan *achan)
 	 * non-Tenderloin SoCs don't depend on this magic.
 	 */
 	if (async_desc->exec_func ||
-	    async_desc->crci == 1 || async_desc->crci == 5)
+	    async_desc->crci == 1 || async_desc->crci == 5) {
 		mod_timer(&achan->watchdog,
 			  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
+		/*
+		 * One-shot diagnostic: prove mod_timer ran for this channel.
+		 * If we never see the matching "watchdog fired" or "watchdog
+		 * armed" pair in the log on a wedged boot, mod_timer never
+		 * even executed (gate path bug) - this disambiguates.
+		 */
+		if (!achan->watchdog_armed_logged) {
+			achan->watchdog_armed_logged = 1;
+			dev_info(adev->dev,
+				 "ADM ch%u watchdog ARMED (crci=%u jiffies=%lu)\n",
+				 achan->id, async_desc->crci, jiffies);
+		}
+	}
 }
 
 /**
