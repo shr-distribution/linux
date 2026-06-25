@@ -466,6 +466,22 @@ struct mmci_host {
 	struct delayed_work	icc_idle_work;
 	u8			singleirq:1;
 
+	/*
+	 * ADM write/read throughput instrumentation (debug). While an ADM
+	 * data transfer is in flight, adm_sample_work periodically logs the
+	 * SDCC FIFO occupancy, STATUS and the residual byte count (DATACNT)
+	 * so the per-burst cadence is visible before any watchdog wedge. The
+	 * key signal is FIFOCNT: pinned near full => the SDCC->card drain is
+	 * the bottleneck (card/flow-control); near empty => the ADM->FIFO
+	 * fill (memory side) is. Gated on the qcom ADM variant + large
+	 * transfers; capped at adm_sample_max samples to bound log volume.
+	 */
+	struct delayed_work	adm_sample_work;
+	unsigned long		adm_sample_t0;		/* jiffies at arm */
+	u32			adm_sample_last_dcnt;	/* DATACNT at last tick */
+	unsigned int		adm_sample_n;		/* ticks emitted */
+	bool			adm_sample_write;	/* direction of sampled xfer */
+
 	struct reset_control	*rst;
 
 	spinlock_t		lock;

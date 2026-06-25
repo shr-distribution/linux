@@ -80,6 +80,20 @@ static unsigned int fmax = 515633;
  */
 static unsigned int mmci_mmc1_wr_dma_min = 256;
 
+/*
+ * Debug knobs for the qcom ADM write-throughput investigation.
+ *  - adm_sample: periodically log the SDCC FIFO/DATACNT cadence during
+ *    large ADM transfers so the per-burst rate is visible before any
+ *    watchdog wedge (see mmci_adm_sample_work).
+ *  - qcom_pwrsave: gate MCI_CLK_PWRSAVE on the qcom SDCC. Default on
+ *    (matches legacy webOS CLKREG=0x9f00). Boot with
+ *    mmci_pl18x.qcom_pwrsave=0 to A/B test whether per-burst clock
+ *    gating is throttling writes.
+ */
+static bool adm_sample = true;
+static bool qcom_pwrsave = true;
+static void mmci_adm_sample_arm(struct mmci_host *host, struct mmc_data *data);
+
 static struct variant_data variant_arm = {
 	.fifosize		= 16 * 4,
 	.fifohalfsize		= 8 * 4,
@@ -589,7 +603,8 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		 * inserts a CMD52 between CMD53 writes and the next request
 		 * to drain that state, making PWRSAVE-on-SDIO safe again.
 		 */
-		if (variant->qcom_datactrl_delay && desired > 400000)
+		if (variant->qcom_datactrl_delay && desired > 400000 &&
+		    qcom_pwrsave)
 			clk |= MCI_CLK_PWRSAVE;
 	}
 
@@ -1996,6 +2011,9 @@ int mmci_dmae_submit(struct mmci_host *host, unsigned int *datactrl)
 	 */
 	dmae->curr_cookie = cookie;
 
+	/* Debug: start the FIFO/DATACNT cadence sampler for large transfers. */
+	mmci_adm_sample_arm(host, host->data);
+
 	*datactrl |= MCI_DPSM_DMAENABLE;
 
 	/*
@@ -2176,6 +2194,71 @@ static void mmci_qcom_icc_bump_active(struct mmci_host *host)
  * level.  Re-armed by mmci_qcom_icc_bump_active on every bump so a
  * sustained burst keeps the vote held until quiet.
  */
+/* --- ADM throughput instrumentation (debug) ---------------------------- */
+#define ADM_SAMPLE_PERIOD_MS	40
+#define ADM_SAMPLE_MAX		32
+#define ADM_SAMPLE_MIN_BYTES	(64 * 1024)
+
+/*
+ * Periodically log the SDCC FIFO occupancy and residual byte count while an
+ * ADM data transfer is in flight. DATACNT counts down from DATALENGTH, so
+ * the delta between ticks is the bytes actually moved -> instantaneous rate.
+ * FIFOCNT localises the bottleneck: near full (16 words) => the SDCC->card
+ * drain is the limiter (flow-control / card busy); near empty => the
+ * ADM->FIFO fill (memory/fabric side) is. Self-terminates when the transfer
+ * ends or after ADM_SAMPLE_MAX ticks.
+ */
+static void mmci_adm_sample_work(struct work_struct *work)
+{
+	struct mmci_host *host = container_of(work, struct mmci_host,
+					      adm_sample_work.work);
+	void __iomem *base = host->base;
+	u32 fifocnt, status, dcnt, dlen, moved;
+	unsigned int elapsed_ms, kbs;
+	unsigned long flags;
+	bool in_flight;
+
+	spin_lock_irqsave(&host->lock, flags);
+	in_flight = host->data && host->dma_in_progress;
+	spin_unlock_irqrestore(&host->lock, flags);
+	if (!in_flight)
+		return;
+
+	fifocnt = readl_relaxed(base + MMCIFIFOCNT);
+	status  = readl_relaxed(base + MMCISTATUS);
+	dcnt    = readl_relaxed(base + MMCIDATACNT);
+	dlen    = readl_relaxed(base + MMCIDATALENGTH);
+	elapsed_ms = jiffies_to_msecs(jiffies - host->adm_sample_t0);
+	moved = host->adm_sample_last_dcnt > dcnt ?
+		host->adm_sample_last_dcnt - dcnt : 0;
+	kbs = (moved * 1000U / 1024U) / ADM_SAMPLE_PERIOD_MS;
+
+	dev_info(mmc_dev(host->mmc),
+		 "ADM-SAMPLE mmc%u %s #%u t=%ums FIFOCNT=%u STATUS=0x%08x DCNT=0x%08x/0x%08x moved=%uB (~%u KB/s)\n",
+		 host->mmc->index, host->adm_sample_write ? "WR" : "RD",
+		 host->adm_sample_n, elapsed_ms, fifocnt, status, dcnt, dlen,
+		 moved, kbs);
+
+	host->adm_sample_last_dcnt = dcnt;
+	if (++host->adm_sample_n < ADM_SAMPLE_MAX)
+		mod_delayed_work(system_wq, &host->adm_sample_work,
+				 msecs_to_jiffies(ADM_SAMPLE_PERIOD_MS));
+}
+
+static void mmci_adm_sample_arm(struct mmci_host *host, struct mmc_data *data)
+{
+	if (!adm_sample || !host->variant->qcom_dml_atomic_submit || !data)
+		return;
+	if ((size_t)data->blksz * data->blocks < ADM_SAMPLE_MIN_BYTES)
+		return;
+	host->adm_sample_t0 = jiffies;
+	host->adm_sample_last_dcnt = readl_relaxed(host->base + MMCIDATACNT);
+	host->adm_sample_n = 0;
+	host->adm_sample_write = !(data->flags & MMC_DATA_READ);
+	mod_delayed_work(system_wq, &host->adm_sample_work,
+			 msecs_to_jiffies(ADM_SAMPLE_PERIOD_MS));
+}
+
 static void mmci_qcom_icc_idle_work(struct work_struct *work)
 {
 	struct mmci_host *host = container_of(work, struct mmci_host,
@@ -4194,6 +4277,7 @@ static int mmci_probe(struct amba_device *dev,
 		 */
 		spin_lock_init(&host->icc_vote_lock);
 		INIT_DELAYED_WORK(&host->icc_idle_work, mmci_qcom_icc_idle_work);
+		INIT_DELAYED_WORK(&host->adm_sample_work, mmci_adm_sample_work);
 		/*
 		 * Hold the SDCC Daytona Fabric at a constant 64 MHz, the value
 		 * every MSM8660 reference kernel uses: legacy webOS, Samsung and
@@ -4619,8 +4703,10 @@ static void mmci_remove(struct amba_device *dev)
 		if (host->dummy52_required)
 			cancel_delayed_work_sync(&host->qcom_dummy52_watchdog);
 
-		if (host->icc_path && host->variant->qcom_dml)
+		if (host->icc_path && host->variant->qcom_dml) {
 			cancel_delayed_work_sync(&host->icc_idle_work);
+			cancel_delayed_work_sync(&host->adm_sample_work);
+		}
 
 		mmci_dma_release(host);
 		clk_disable_unprepare(host->clk);
@@ -4797,6 +4883,12 @@ module_param(fmax, uint, 0444);
 module_param_named(mmc1_wr_dma_min, mmci_mmc1_wr_dma_min, uint, 0644);
 MODULE_PARM_DESC(mmc1_wr_dma_min,
 		 "Min mmc1 SDIO WR length routed through DMA on qcom variant (default 256, set 64 for legacy-equivalent)");
+module_param(adm_sample, bool, 0644);
+MODULE_PARM_DESC(adm_sample,
+		 "Debug: log qcom ADM SDCC FIFO/DATACNT cadence during large transfers (default on)");
+module_param(qcom_pwrsave, bool, 0644);
+MODULE_PARM_DESC(qcom_pwrsave,
+		 "Enable MCI_CLK_PWRSAVE clock-gating on the qcom SDCC (default on = legacy; boot =0 to A/B test write throttling)");
 
 MODULE_DESCRIPTION("ARM PrimeCell PL180/181 Multimedia Card Interface driver");
 MODULE_LICENSE("GPL");
