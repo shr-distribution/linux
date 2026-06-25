@@ -76,6 +76,21 @@
 #define MSM8660_FABRIC_PIN_RATE		384000000UL	/* 384 MHz */
 
 /*
+ * The Daytona (DFAB) peripheral fabric is the exception to the 384 MHz
+ * floor.  Every MSM8660 reference kernel (legacy webOS, Samsung, HTC) runs
+ * dfab_sdc_clk at exactly 64 MHz via clk_set_rate(dfab_pclk, 64000000) +
+ * a persistent clk_enable, and SPS/BAM does the same.  Measured live on
+ * stock webOS 3.0.5 over novacom: dfab_clk / dfab_sdc1_clk hold a constant
+ * 64 MHz at idle, during a sustained eMMC transfer, and during concurrent
+ * eMMC+WiFi DMA -- never higher.  Driving Daytona at the 384 MHz fabric
+ * floor (let alone the earlier INT_MAX vote) overdrives this slow
+ * peripheral fabric ~6x and mistimes the ADM<->DFAB<->SDCC-FIFO handshake,
+ * provoking the SDCC ADM-drain stall (FLUSH_STATE5=3 at the eMMC channel)
+ * that crawls/wedges large eMMC transfers.  Pin Daytona at 64 MHz instead.
+ */
+#define MSM8660_DFAB_PIN_RATE		64000000UL	/* 64 MHz */
+
+/*
  * RPM fabric arbitration data format (from legacy vendor kernel msm_bus_fabric.c):
  *
  * Each u16 arb entry: bit 15 = tier (1=TIER1 high priority), bits 14-0 = BW
@@ -144,6 +159,12 @@ struct msm8660_icc_node {
  * @bus_width: representative fabric bus width in bytes, used as the
  *             divisor for translating aggregate bytes/sec into a single
  *             clock rate that drives the whole fabric
+ * @pin_rate: per-fabric bus-clock floor in Hz; the fabric never runs below
+ *            this.  When 0 the code uses MSM8660_FABRIC_PIN_RATE (384 MHz),
+ *            correct for the fast fabrics (AFAB/SFAB/MMFAB, legacy ~314 MHz).
+ *            The Daytona (DFAB) fabric overrides it to MSM8660_DFAB_PIN_RATE
+ *            (64 MHz) -- see that macro for why overdriving Daytona wedges
+ *            eMMC DMA.
  */
 struct msm8660_icc_desc {
 	struct msm8660_icc_node * const *nodes;
@@ -157,6 +178,7 @@ struct msm8660_icc_desc {
 	u8 default_tiered_slave;
 	u8 rpm_buf_size;
 	u8 bus_width;
+	unsigned long pin_rate;
 };
 
 /**
@@ -1193,6 +1215,7 @@ static const struct msm8660_icc_desc msm8660_dfab = {
 	.arb_resource = -1,		/* No RPM ARB for DFAB */
 	.bus_clk_id = QCOM_RPM_DAYTONA_FABRIC_CLK,
 	.bus_width = 8,			/* 64-bit Daytona fabric datapath */
+	.pin_rate = MSM8660_DFAB_PIN_RATE,	/* 64 MHz, not the 384 MHz floor */
 };
 
 /*
@@ -1488,7 +1511,8 @@ static int msm8660_icc_set(struct icc_node *src, struct icc_node *dst)
 			rate = max(rate, node_rate);
 		}
 
-		rate = max_t(u64, rate, MSM8660_FABRIC_PIN_RATE);
+		rate = max_t(u64, rate,
+			     desc->pin_rate ?: MSM8660_FABRIC_PIN_RATE);
 
 		guard(mutex)(&qp->commit_lock);
 		if (rate != qp->bus_rate) {
@@ -1546,6 +1570,7 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	struct icc_provider *provider;
 	struct icc_node *node;
 	size_t num_nodes, i;
+	unsigned long pin_rate;
 	int ret;
 
 	desc = of_device_get_match_data(dev);
@@ -1611,21 +1636,21 @@ static int msm8660_icc_probe(struct platform_device *pdev)
 	 * an in-flight DMA can race a transient micro-sleep to a
 	 * SLEEP_STATE = 0 fabric and starve.
 	 */
-	ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->bus_clk_id,
-				       MSM8660_FABRIC_PIN_RATE);
+	pin_rate = desc->pin_rate ?: MSM8660_FABRIC_PIN_RATE;
+	ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->bus_clk_id, pin_rate);
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "RPM bus clk %u pin vote failed\n",
 				     desc->bus_clk_id);
 	if (desc->extra_clk_id) {
 		ret = msm8660_rpm_set_bus_rate(qp->rpm, desc->extra_clk_id,
-					       MSM8660_FABRIC_PIN_RATE);
+					       pin_rate);
 		if (ret)
 			return dev_err_probe(dev, ret,
 					     "RPM bus clk %u pin vote failed\n",
 					     desc->extra_clk_id);
 	}
-	qp->bus_rate = MSM8660_FABRIC_PIN_RATE;
+	qp->bus_rate = pin_rate;
 
 	if (desc->arb_resource >= 0) {
 		int arb_size = desc->nmasters * desc->ntieredslaves;
