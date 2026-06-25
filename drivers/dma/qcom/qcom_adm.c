@@ -343,16 +343,6 @@ struct adm_async_desc {
  * proceed before they declare the device dead.
  */
 #define ADM_WATCHDOG_TIMEOUT_MS	500
-/*
- * DEBUG (write-wedge investigation): make the watchdog progress-aware.
- * Fire every ADM_WD_SAMPLE_MS and log the channel's cmd_ptr/rslt/box-row
- * state; only declare a real wedge after ADM_WD_WEDGE_SAMPLES consecutive
- * samples with NO progress (~= ADM_WATCHDOG_TIMEOUT_MS total). This shows
- * the ADM-side cadence during the large-write freeze — whether the ADM
- * keeps walking boxes (SDCC-drain-bound) or hard-stalls on CRCI.
- */
-#define ADM_WD_SAMPLE_MS	80
-#define ADM_WD_WEDGE_SAMPLES	6
 
 struct adm_chan {
 	struct virt_dma_chan vc;
@@ -394,10 +384,6 @@ struct adm_chan {
 
 	struct list_head node;
 	struct timer_list watchdog;
-	/* DEBUG: progress-aware watchdog sampling state (write-wedge probe) */
-	u32 wd_last_cmd_ptr;
-	u32 wd_last_fs4;
-	u16 wd_no_progress;
 
 	int error;
 	/*
@@ -909,49 +895,6 @@ static void adm_watchdog_timeout(struct timer_list *t)
 		}
 		spin_unlock_irqrestore(&achan->vc.lock, flags);
 		return;
-	}
-
-	/*
-	 * DEBUG progress-aware sampling. Read where the channel is now and
-	 * compare to the previous sample: if cmd_ptr walked the chain or the
-	 * box row counter (FLUSH_STATE4) moved, the transfer is PROGRESSING
-	 * (SDCC-drain-paced), so log a compact sample and re-arm at the short
-	 * interval rather than tearing the channel down. Only after
-	 * ADM_WD_WEDGE_SAMPLES consecutive no-progress samples do we treat it
-	 * as a genuine wedge and fall through to the teardown below. This
-	 * captures the ADM-side cadence across the large-write freeze.
-	 */
-	{
-		u32 s_cmd_ptr = readl_relaxed(adev->regs +
-			ADM_CH_CMD_PTR(achan->id, adev->ee));
-		u32 s_rslt = readl_relaxed(adev->regs +
-			ADM_CH_RSLT(achan->id, adev->ee));
-		u32 s_fs4 = readl_relaxed(adev->regs +
-			ADM_CH_FLUSH_STATE4(achan->id, adev->ee));
-		bool progressed = (s_cmd_ptr != achan->wd_last_cmd_ptr) ||
-				  (s_fs4 != achan->wd_last_fs4);
-
-		dev_info(adev->dev,
-			"ADM ch%u WD-SAMPLE cmd_ptr=0x%08x rslt=0x%08x fs4=0x%08x %s (stall=%u)\n",
-			achan->id, s_cmd_ptr, s_rslt, s_fs4,
-			progressed ? "PROGRESSING" : "stalled",
-			achan->wd_no_progress);
-
-		if (progressed) {
-			achan->wd_last_cmd_ptr = s_cmd_ptr;
-			achan->wd_last_fs4 = s_fs4;
-			achan->wd_no_progress = 0;
-		} else {
-			achan->wd_no_progress++;
-		}
-
-		if (achan->wd_no_progress < ADM_WD_WEDGE_SAMPLES) {
-			mod_timer(&achan->watchdog,
-				  jiffies + msecs_to_jiffies(ADM_WD_SAMPLE_MS));
-			spin_unlock_irqrestore(&achan->vc.lock, flags);
-			return;
-		}
-		/* genuine wedge — fall through to teardown */
 	}
 
 	achan->error = 1;
@@ -2129,14 +2072,9 @@ static void adm_start_dma(struct adm_chan *achan)
 			 * since we are bailing out before the normal
 			 * mod_timer call after the CMD_PTR write.
 			 */
-			if (async_desc->exec_func) {
-				/* DEBUG: reset progress-aware sampler state */
-				achan->wd_no_progress = 0;
-				achan->wd_last_cmd_ptr = 0;
-				achan->wd_last_fs4 = 0;
+			if (async_desc->exec_func)
 				mod_timer(&achan->watchdog,
-					  jiffies + msecs_to_jiffies(ADM_WD_SAMPLE_MS));
-			}
+					  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
 
 			if (need_submit_lock)
 				spin_unlock_irqrestore(&adev->submit_lock[lock_idx],
@@ -2308,12 +2246,8 @@ static void adm_start_dma(struct adm_chan *achan)
 	 */
 	if (async_desc->exec_func ||
 	    async_desc->crci == 1 || async_desc->crci == 5) {
-		/* DEBUG: reset progress-aware sampler state for this transfer */
-		achan->wd_no_progress = 0;
-		achan->wd_last_cmd_ptr = 0;
-		achan->wd_last_fs4 = 0;
 		mod_timer(&achan->watchdog,
-			  jiffies + msecs_to_jiffies(ADM_WD_SAMPLE_MS));
+			  jiffies + msecs_to_jiffies(ADM_WATCHDOG_TIMEOUT_MS));
 		/*
 		 * One-shot diagnostic: prove mod_timer ran for this channel.
 		 * If we never see the matching "watchdog fired" or "watchdog
