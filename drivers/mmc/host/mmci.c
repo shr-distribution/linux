@@ -823,7 +823,7 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 			host->ops && host->ops->dma_issue_pending &&
 			host->datactrl_first &&
 			!(data->flags & MMC_DATA_READ) &&
-			host->variant->qcom_dml;
+			host->variant->qcom_dml_atomic_submit;
 
 		if (defer_for_adm_write) {
 			/*
