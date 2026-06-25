@@ -2199,6 +2199,22 @@ static void mmci_qcom_icc_idle_work(struct work_struct *work)
 				 deadline - jiffies);
 		return;
 	}
+	/*
+	 * Never drop the DFAB vote while a request/DMA is still in flight.
+	 * icc_last_active is only refreshed in pre_request, so a single
+	 * transfer longer than icc_idle_ms (e.g. a multi-MB eMMC write) would
+	 * otherwise have the fabric lowered out from under it: the ADM can no
+	 * longer drain the SDCC FIFO to EBI, starves mid-transfer and the
+	 * channel wedges (500 ms watchdog). Legacy webOS holds dfab_sdc_clk at
+	 * 64 MHz for the whole active period (persistent clk_enable); mirror
+	 * that by keeping the vote until the controller is genuinely idle.
+	 */
+	if (host->mrq || host->data || host->dma_in_progress) {
+		spin_unlock_irqrestore(&host->icc_vote_lock, flags);
+		mod_delayed_work(system_wq, &host->icc_idle_work,
+				 msecs_to_jiffies(host->icc_idle_ms));
+		return;
+	}
 	if (host->icc_voted_active) {
 		host->icc_voted_active = false;
 		need_lower = true;
@@ -4178,8 +4194,29 @@ static int mmci_probe(struct amba_device *dev,
 		 */
 		spin_lock_init(&host->icc_vote_lock);
 		INIT_DELAYED_WORK(&host->icc_idle_work, mmci_qcom_icc_idle_work);
-		host->icc_idle_bw = 64000;
-		host->icc_active_bw = 1024000;
+		/*
+		 * Hold the SDCC Daytona Fabric at a constant 64 MHz, the value
+		 * every MSM8660 reference kernel uses: legacy webOS, Samsung and
+		 * HTC msm_sdcc.c all do clk_set_rate(dfab_sdc_clk, 64000000) +
+		 * clk_enable (persistent, never scaled), and SPS/BAM does the
+		 * same. Confirmed live on stock webOS 3.0.5 via novacom:
+		 * dfab_clk / dfab_sdc1_clk read 64 MHz at idle, during a
+		 * sustained eMMC transfer, and during concurrent eMMC+WiFi DMA --
+		 * always, never higher, never lower (only EBI/AFAB scale).
+		 *
+		 * 512000 kBps = 64 MHz at buswidth 8. Both the idle floor and the
+		 * active vote are 64 MHz so the fabric is held constant like the
+		 * legacy clk_enable; there is no 128 MHz "burst" tier (no
+		 * reference kernel uses one and 64 MHz sustains every workload).
+		 * The ADM fills/drains the SDCC FIFO to EBI continuously; if DFAB
+		 * drops below 64 MHz it starves mid-transfer (a 1.5 MB write
+		 * crawls to the 500 ms ch2 watchdog and wedges the eMMC). The
+		 * earlier 64000 kBps (8 MHz) idle floor + dynamic bump regressed
+		 * large writes once the interconnect started scaling the bus
+		 * clock dynamically.
+		 */
+		host->icc_idle_bw = 512000;
+		host->icc_active_bw = 512000;
 		host->icc_idle_ms = 200;
 		host->icc_voted_active = false;
 
