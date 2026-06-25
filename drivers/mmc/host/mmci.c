@@ -2394,8 +2394,32 @@ static void mmci_start_data(struct mmci_host *host, struct mmc_data *data)
 					 readl(host->base + MMCIDATACTRL));
 			writel(stale, host->base + MMCICLEAR);
 		}
-		writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
 	}
+
+	/*
+	 * Clear any stale PROG_DONE before arming the data path.
+	 *
+	 * Legacy webOS msm_sdcc clears MCI_PROGDONE every cycle (it is in
+	 * MCI_CLR_MASK) on *every* SDCC.  Our driver previously cleared it for
+	 * mmc1 (WiFi) only, so the eMMC (mmc0) carried PROG_DONE latched-set
+	 * from the previous write.  On the qcom SDCC the data-path FSM
+	 * consults PROG_DONE, and a stale-set bit gates it from asserting the
+	 * write CRCI partway through a large multi-block write: the ADM stalls
+	 * on DST_CRCI with the card not busy (MCI_ST_CARDBUSY clear) and the
+	 * TX FIFO holding data (MCI_TXDATAAVLBL set) while DATACNT freezes,
+	 * until the 500 ms ADM ch2 watchdog fires.  Live ADM-SAMPLE capture on
+	 * tenderloin showed exactly this: STATUS=0x00901400 (PROG_DONE set,
+	 * CARDBUSY clear) during both the ~250 ms start stall and the tail
+	 * stall.  Clear it for every qcom ADM host so each transfer arms with
+	 * a clean FSM, matching legacy.
+	 *
+	 * Gate on qcom_dml_atomic_submit (set only on variant_qcom_msm8660,
+	 * the ADM SDCC variant used by both sdcc1/eMMC and sdcc4/WiFi) rather
+	 * than qcom_dml: bit 23 is PROG_DONE only on the ADM SDCC; on BAM
+	 * qcom SoCs (variant_qcom) it is CE-ATA and must not be cleared here.
+	 */
+	if (host->variant->qcom_dml_atomic_submit)
+		writel(MCI_QCOM_PROGDONE, host->base + MMCICLEAR);
 
 	clks = (unsigned long long)data->timeout_ns * host->cclk;
 	do_div(clks, NSEC_PER_SEC);
