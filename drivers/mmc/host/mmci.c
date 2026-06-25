@@ -970,6 +970,19 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 		else
 			extra_mask = MCI_TXFIFOHALFEMPTYMASK;
 
+		/*
+		 * Also unmask MCI_DATABLOCKEND. The eMMC ADM transfers stall at
+		 * block boundaries with DATABLOCKEND latched set, DATACNT frozen
+		 * and the card idle (live ADM-SAMPLE: STATUS=0x00101400 writes /
+		 * 0x00082400 reads, bit 10 set every time). Legacy webOS clears
+		 * MCI_DATABLOCKEND every cycle (it is in MCI_CLR_MASK); our DMA
+		 * path masked it out and never cleared it, so a latched
+		 * DATABLOCKEND gates the DPSM from advancing to the next block.
+		 * Take the per-block IRQ and clear it in mmci_data_irq so the
+		 * SDCC proceeds, matching legacy.
+		 */
+		extra_mask |= MCI_DATABLOCKENDMASK;
+
 		writel(readl(host->base + MMCIMASK0) | MCI_DATAENDMASK |
 				extra_mask,
 		       host->base + MMCIMASK0);
@@ -2795,8 +2808,20 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		data->bytes_xfered = round_down(success, data->blksz);
 	}
 
-	if (status & MCI_DATABLOCKEND)
-		dev_err(mmc_dev(host->mmc), "stray MCI_DATABLOCKEND interrupt\n");
+	/*
+	 * Clear MCI_DATABLOCKEND every time we see it (legacy webOS keeps it
+	 * in MCI_CLR_MASK). On the qcom ADM SDCC a latched DATABLOCKEND gates
+	 * the DPSM from advancing to the next block, stalling multi-block
+	 * eMMC transfers at the block boundary. If this is a per-block
+	 * DATABLOCKEND (no DATAEND, no error, DMA still in flight), just clear
+	 * it and let the DPSM continue — do not run the completion path.
+	 */
+	if (status & MCI_DATABLOCKEND) {
+		writel(MCI_DATABLOCKEND, host->base + MMCICLEAR);
+		if (!(status & MCI_DATAEND) && !data->error &&
+		    host->dma_in_progress)
+			return;
+	}
 
 	if (status & MCI_DATAEND || data->error) {
 		/*
