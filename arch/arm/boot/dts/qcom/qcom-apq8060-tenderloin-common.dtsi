@@ -2853,24 +2853,26 @@
 	 * start was deferred past the SDCC DPSM data window.
 	 */
 	/*
-	 * eMMC ADM DMA, atomic-submit path (fix for the inline-DATACTRL
-	 * CRCI arming gap — see reports/emmc-dma-wedge-rootcause.md).
+	 * eMMC ADM DMA. NOTE: qcom,datactrl-first is intentionally NOT set
+	 * on sdcc1.
 	 *
-	 * qcom,datactrl-first routes eMMC reads through mmci's atomic
-	 * exec_func path so DATACTRL + ARG + CMD are written in a µs
-	 * IRQs-off window right before the ADM CMD_PTR — matching working
-	 * WiFi (ch5) and legacy msm_sdcc, closing the gap where the card
-	 * streamed and asserted CRCI before the ADM was armed (ADM1 ch2
-	 * parked at rslt=TPD until the 500ms watchdog). The matching
-	 * MMC_CAP_CMD23 clear in mmci_probe() keeps every read
-	 * single-command so the atomic stash is always populated.
+	 * git bisect (good=d450371 .. bad=a78b76a2) identified commit
+	 * 34319a7a "sdcc1 needs qcom,datactrl-first too" as the regression:
+	 * adding qcom,datactrl-first flips on mmci_should_atomic_submit() and
+	 * routes the eMMC off the normal inline-DATACTRL path onto the
+	 * atomic-submit / exec_func / CRCI-arm path. On this hardware that
+	 * path wedges ADM1 ch2 — first read fails (mmcblk0p13 not found) and,
+	 * once later commits patched reads back into working, large writes
+	 * still stall to the 500 ms watchdog. The eMMC worked on the normal
+	 * path before that commit (and on legacy webOS msm_sdcc), so route it
+	 * back there. Dropping this property also disables defer_for_adm_write
+	 * and restores MMC_CAP_CMD23 (both gated on datactrl_first).
 	 *
 	 * 3-cell: SDC1 eMMC = ADM1 ch2 CRCI 1 MUX 0 (RX and TX share).
 	 */
 	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
 	dma-names = "rx", "tx";
 	qcom,sdcc-crci = <1>;
-	qcom,datactrl-first;
 
 	/*
 	 * History: qcom,datactrl-first was first tried at commit
