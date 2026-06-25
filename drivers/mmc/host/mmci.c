@@ -603,18 +603,8 @@ static void mmci_set_clkreg(struct mmci_host *host, unsigned int desired)
 		 * inserts a CMD52 between CMD53 writes and the next request
 		 * to drain that state, making PWRSAVE-on-SDIO safe again.
 		 */
-		/*
-		 * eMMC (mmc0) pwrsave test: the large-write wedge shows the
-		 * SDCC parked with TX data available, card not busy, yet
-		 * DATACNT frozen and the ADM stuck on DST_CRCI -- i.e. the SD
-		 * clock is gated mid CRCI-handshake. MCI_CLK_PWRSAVE is the only
-		 * clock-gate in that signature. Exclude mmc0 from pwrsave to
-		 * test whether clock-gating during the flow-controlled ADM
-		 * handshake is the cause; mmc1 (WiFi) keeps pwrsave (turning it
-		 * off there regressed AR6003 BMI -- see PWRSAVE comment above).
-		 */
 		if (variant->qcom_datactrl_delay && desired > 400000 &&
-		    qcom_pwrsave && host->mmc->index != 0)
+		    qcom_pwrsave)
 			clk |= MCI_CLK_PWRSAVE;
 	}
 
