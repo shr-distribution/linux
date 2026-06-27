@@ -4498,6 +4498,18 @@
 		#pwm-cells = <2>;
 		status = "okay";
 	};
+
+	/*
+	 * Restart/power-off via the PM8058 PON latch + SoC PS_HOLD.  A
+	 * PS_HOLD-triggered PMIC reset power-cycles the rails, giving the
+	 * eMMC (vmmc = pm8901_l5) a clean power-on reset -- the watchdog
+	 * bite alone leaves the PMIC powered and wedges the eMMC on warm
+	 * boot.
+	 */
+	restart {
+		compatible = "qcom,pm8058-poweroff";
+		qcom,ps-hold = <&ps_hold>;
+	};
 };
 
 /*

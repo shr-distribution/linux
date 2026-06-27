@@ -691,6 +691,17 @@
 
 		};
 
+		/*
+		 * PS_HOLD lives inside the TLMM register block (which
+		 * pinctrl-msm already claims), so expose just that word as a
+		 * syscon -- syscon maps via ioremap and does not request the
+		 * region, avoiding a conflict with the pinctrl driver.
+		 */
+		ps_hold: syscon@800820 {
+			compatible = "syscon";
+			reg = <0x800820 0x4>;
+		};
+
 		sfpb_mutex: hwmutex@1200600 {
 			compatible = "qcom,sfpb-mutex";
 			reg = <0x01200600 0x100>;
