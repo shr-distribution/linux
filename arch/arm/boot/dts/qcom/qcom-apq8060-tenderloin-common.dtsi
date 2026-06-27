@@ -2870,7 +2870,16 @@
 	dmas = <&adm_dma1 2 1 0>, <&adm_dma1 2 1 0>;
 	dma-names = "rx", "tx";
 	qcom,sdcc-crci = <1>;
-	qcom,datactrl-first;
+	/*
+	 * qcom,datactrl-first DROPPED for sdcc1 (eMMC): the atomic-submit
+	 * read path intermittently STALLS (live ADM-SAMPLE "RD moved=0B",
+	 * DST_CRCI drain stall) which hangs lvm.static's scan of the PV ->
+	 * LVM never activates -> stuck in initramfs. The normal inline-
+	 * DATACTRL read path is fast + reliable (~32 MB/s, 20760a3d). The
+	 * large-WRITE wedge datactrl-first was meant to mitigate is now
+	 * handled direction-aware by mmci_multi_io_quirk (128KB write cap),
+	 * so reads no longer pay the atomic-submit stall tax.
+	 */
 
 	/*
 	 * History: qcom,datactrl-first was first tried at commit
