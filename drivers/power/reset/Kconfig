@@ -154,6 +154,18 @@ config POWER_RESET_QCOM_PON
 	  power-on and reboot reason, Say Y.
 	  If unsure, Say N.
 
+config POWER_RESET_QCOM_PM8058
+	tristate "Qualcomm PM8058 PS_HOLD restart/power-off driver"
+	depends on MFD_PM8XXX || COMPILE_TEST
+	depends on OF
+	select MFD_SYSCON
+	help
+	  Restart and power-off support for boards using the Qualcomm PM8058
+	  PMIC over SSBI, such as the APQ8060/MSM8660 HP TouchPad.  Configures
+	  the PM8058 PON latch and drops the SoC PS_HOLD line so the PMIC
+	  performs a full reset (power-cycling the rails, giving the eMMC a
+	  clean power-on reset) or a power-off.
+
 config POWER_RESET_OCELOT_RESET
 	bool "Microsemi Ocelot reset driver"
 	depends on MSCC_OCELOT || ARCH_SPARX5 || COMPILE_TEST
