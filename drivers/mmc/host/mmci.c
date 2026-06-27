@@ -2727,6 +2727,29 @@ static void mmci_diag_dump_state(struct mmci_host *host, const char *reason)
 	}
 }
 
+/*
+ * Qualcomm SDCC controller reset, mirroring legacy msm_sdcc's
+ * msmsdcc_reset_and_restore(): clk_reset the SDCC IP to wipe stale
+ * CPSM/DPSM state from a wedged/half-finished transfer, then restore the
+ * clock / power / interrupt-mask registers identically.  It is 2 MMIO
+ * writes + udelay(2) and the qcom reset backend is regmap-mmio
+ * (atomic-safe), so it is callable from both the data and command IRQ
+ * paths.  No-op on variants without a reset control.
+ */
+static void mmci_qcom_reset_restore(struct mmci_host *host)
+{
+	if (!host->rst)
+		return;
+
+	reset_control_assert(host->rst);
+	udelay(2);
+	reset_control_deassert(host->rst);
+	writel(host->clk_reg, host->base + MMCICLOCK);
+	writel(host->pwr_reg, host->base + MMCIPOWER);
+	writel(MCI_IRQENABLE | host->variant->start_err,
+	       host->base + MMCIMASK0);
+}
+
 static void
 mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 	      unsigned int status)
@@ -2894,16 +2917,8 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		 * Reset is 2 MMIO writes + udelay(2); cheap inside the data
 		 * IRQ path, and crucial that it happens BEFORE CMD12 below.
 		 */
-		if (data->error && host->variant->qcom_datactrl_delay &&
-		    host->rst) {
-			reset_control_assert(host->rst);
-			udelay(2);
-			reset_control_deassert(host->rst);
-			writel(host->clk_reg, host->base + MMCICLOCK);
-			writel(host->pwr_reg, host->base + MMCIPOWER);
-			writel(MCI_IRQENABLE | host->variant->start_err,
-			       host->base + MMCIMASK0);
-		}
+		if (data->error && host->variant->qcom_datactrl_delay)
+			mmci_qcom_reset_restore(host);
 
 		if (!data->error)
 			/* The error clause is handled above, success! */
@@ -3074,6 +3089,21 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 				jiffies);
 			host->cmdto_diag_seen = true;
 		}
+
+		/*
+		 * Qualcomm SDCC: a command-response timeout on a busy (R1b)
+		 * command -- e.g. the eMMC CMD6 SWITCH issued during init or a
+		 * partition switch -- leaves the CPSM wedged so every following
+		 * CMD also times out.  This is the intermittent warm-boot eMMC
+		 * failure: a storm of CMD6 CMDTIMEOUTs -> I/O error -> rootfs
+		 * mount fails.  Mirror legacy msm_sdcc's
+		 * msmsdcc_reset_and_restore() and reset the controller now so the
+		 * mmc-core retry hits a clean command engine.  Gated on busy_resp
+		 * so the benign SD/SDIO probe timeouts (CMD5/8/52/55, not R1b)
+		 * and the WiFi data path are left untouched.
+		 */
+		if (host->variant->qcom_datactrl_delay && busy_resp)
+			mmci_qcom_reset_restore(host);
 	} else if (status & MCI_CMDCRCFAIL && cmd->flags & MMC_RSP_CRC) {
 		cmd->error = -EILSEQ;
 	} else if (host->variant->busy_timeout && busy_resp &&
