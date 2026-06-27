@@ -799,6 +799,25 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 		return ret;
 
 	/*
+	 * Bulletproof recovery (eMMC read-stall backstop): the ADM read path
+	 * intermittently stalls mid-transfer (live ADM-SAMPLE "RD moved=0B",
+	 * DST_CRCI drain stall) with NO ch2 watchdog FIRED and NO DATATIMEOUT,
+	 * so the read task hangs forever -> boot dies / card left stuck. The
+	 * existing qcom_dma_timeout_work is only armed on the deferred-issue
+	 * path and proved unreliable for normal-path reads. Arm it HERE, at the
+	 * single guaranteed point every eMMC (mmc0) DMA transfer passes through,
+	 * for BOTH directions. On a stall it fires qcom_dma_data_timeout_work ->
+	 * mmci_dma_error() + data->error=-ETIMEDOUT -> mmc-core retries, so the
+	 * boot SURVIVES the intermittent stall instead of hanging. Cancelled on
+	 * normal completion (mmci_data_irq / the ADM done callback). 2s is far
+	 * above any real transfer (a 4 MB read at 26 MB/s is ~150 ms) yet bounds
+	 * the worst-case hang. WiFi (mmc1) keeps its own 500ms deferred-path arm.
+	 */
+	if (host->variant->qcom_dml && host->mmc->index == 0)
+		mod_delayed_work(system_wq, &host->qcom_dma_timeout_work,
+				 msecs_to_jiffies(2000));
+
+	/*
 	 * Commit to the atomic-submission path only AFTER dma_start
 	 * succeeded. If dma_start had failed we return above, so the PIO
 	 * fallback in mmci_start_data + mmci_start_command keeps the
