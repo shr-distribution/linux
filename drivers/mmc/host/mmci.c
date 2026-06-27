@@ -4057,8 +4057,32 @@ static void mmci_ack_sdio_irq(struct mmc_host *mmc)
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
+/*
+ * ADM (qcom_dml) long-write wedge mitigation (#2): writes larger than 128 KB
+ * intermittently stall the ADM box-walk on eMMC/WiFi (ch2 watchdog, FLUSH
+ * STATE5=0x8003). The wedge is WRITE-ONLY and far likelier on long transfers,
+ * so cap WRITES to 128 KB (256 x 512B sectors) per data transfer; the block
+ * layer re-issues the remainder, turning a large write into a sequence of
+ * 128 KB ADM transfers that each complete cleanly (legacy webOS msm_sdcc's
+ * max_xfer was also 128 KB). READS are left fully uncapped so DMA reads keep
+ * native speed (~26 MB/s) -- the per-direction cap the bidirectional host
+ * limits (max_req_size) cannot express.
+ */
+static int mmci_multi_io_quirk(struct mmc_card *card,
+			       unsigned int direction, int blk_size)
+{
+	struct mmci_host *host = mmc_priv(card->host);
+
+	if (host->variant->qcom_dml && direction == MMC_DATA_WRITE &&
+	    blk_size > 256)
+		return 256;
+
+	return blk_size;
+}
+
 static struct mmc_host_ops mmci_ops = {
 	.request	= mmci_request,
+	.multi_io_quirk	= mmci_multi_io_quirk,
 	.pre_req	= mmci_pre_request,
 	.post_req	= mmci_post_request,
 	.set_ios	= mmci_set_ios,
