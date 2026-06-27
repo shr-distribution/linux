@@ -633,6 +633,13 @@ struct mmci_host {
 	 * DATAEND path.  (Sashiko Medium #46.)
 	 */
 	struct delayed_work	qcom_dummy52_watchdog;
+
+	/*
+	 * Warm-boot eMMC ADM-drain workaround (prototype): force the first
+	 * N data transfers on the qcom eMMC (mmc0) through PIO, then resume
+	 * DMA.  Counts down from mmci_qcom_emmc_pio_first at probe.
+	 */
+	unsigned int		qcom_pio_first_remaining;
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)

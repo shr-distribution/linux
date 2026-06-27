@@ -81,6 +81,15 @@ static unsigned int fmax = 515633;
 static unsigned int mmci_mmc1_wr_dma_min = 256;
 
 /*
+ * Warm-boot eMMC ADM-drain workaround (prototype): force the first N data
+ * transfers on the qcom eMMC (mmc0) through PIO before resuming DMA.  The
+ * first multi-block DMA reads right after a warm reset can stall the ADM
+ * ch2 drain (RXOVERRUN -> FLUSH STATE0=0x8000c003); PIO sidesteps that
+ * fragile init/partition-scan window.  0 = always DMA.
+ */
+static unsigned int mmci_qcom_emmc_pio_first = 24;
+
+/*
  * Debug knobs for the qcom ADM write-throughput investigation.
  *  - adm_sample: periodically log the SDCC FIFO/DATACNT cadence during
  *    large ADM transfers so the per-burst rate is visible before any
@@ -781,6 +790,19 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 
 	if (!host->use_dma)
 		return -EINVAL;
+
+	/*
+	 * Warm-boot eMMC ADM-drain workaround (prototype): the first
+	 * multi-block DMA reads right after a warm reset can stall the ADM
+	 * ch2 drain (RXOVERRUN).  Force the first N data transfers on the
+	 * qcom eMMC (mmc0) through PIO (return -EINVAL -> PIO fallback),
+	 * then resume DMA.  mmc1 (WiFi) and non-qcom hosts are untouched.
+	 */
+	if (host->variant->qcom_datactrl_delay && host->mmc->index == 0 &&
+	    host->qcom_pio_first_remaining) {
+		host->qcom_pio_first_remaining--;
+		return -EINVAL;
+	}
 
 	ret = mmci_prep_data(host, data, false);
 	if (ret)
@@ -4377,6 +4399,8 @@ static int mmci_probe(struct amba_device *dev,
 
 	host->plat = plat;
 	host->variant = variant;
+	/* Warm-boot eMMC ADM-drain workaround; takes effect only on mmc0. */
+	host->qcom_pio_first_remaining = mmci_qcom_emmc_pio_first;
 	/*
 	 * Initialize datactrl_first from variant default, then allow
 	 * device tree to override. This enables per-controller tuning
@@ -4937,6 +4961,9 @@ module_param(fmax, uint, 0444);
 module_param_named(mmc1_wr_dma_min, mmci_mmc1_wr_dma_min, uint, 0644);
 MODULE_PARM_DESC(mmc1_wr_dma_min,
 		 "Min mmc1 SDIO WR length routed through DMA on qcom variant (default 256, set 64 for legacy-equivalent)");
+module_param_named(qcom_emmc_pio_first, mmci_qcom_emmc_pio_first, uint, 0644);
+MODULE_PARM_DESC(qcom_emmc_pio_first,
+		 "Force PIO for the first N qcom eMMC (mmc0) data transfers to clear the warm-boot ADM drain window, then resume DMA (0 = always DMA)");
 module_param(adm_sample, bool, 0644);
 MODULE_PARM_DESC(adm_sample,
 		 "Debug: log qcom ADM SDCC FIFO/DATACNT cadence during large transfers (default on)");
