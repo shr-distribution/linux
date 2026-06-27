@@ -767,6 +767,11 @@ static void adm_recover_channel(struct adm_chan *achan, u32 crci_for_desc)
 
 		writel_relaxed(ADM_CRCI_CTL_RST,
 			       adev->regs + ADM_CRCI_CTL(c, ctl_ee));
+		/* Also reset the AARM/SD-1 shadow the engine consults. */
+		if (adev->soc_data && adev->soc_data->crci_ctl_at_ee0 &&
+		    ctl_ee != adev->ee)
+			writel_relaxed(ADM_CRCI_CTL_RST,
+				       adev->regs + ADM_CRCI_CTL(c, adev->ee));
 		adev->crci_ctl_cache_valid &= ~BIT(c);
 	}
 
@@ -1954,6 +1959,24 @@ static void adm_start_dma(struct adm_chan *achan)
 	if (async_desc->crci && crci_ctl_write) {
 		writel(crci_ctl_val,
 		       adev->regs + ADM_CRCI_CTL(async_desc->crci, crci_ctl_ee));
+		/*
+		 * crci_ctl_at_ee0 programs the READABLE master mirror at EE=0
+		 * (what a /dev/mem peek on webOS shows, reading back 0x1).  But
+		 * the copy the channel's CRCI flow-control engine actually
+		 * consults is the AARM/SD-1 shadow at adev->ee -- exactly legacy
+		 * DMOV_SD_AARM_ADDR(0x400, crci) in arch/arm/mach-msm/dma.c
+		 * set_crci_mask().  Without arming it, the blk_size=1 half-FIFO
+		 * pacing never takes effect: ch2 runs at the bootloader
+		 * full-FIFO default, the SDCC RX FIFO overruns the ADM drain at
+		 * the 64 MHz DFAB rate, and a long read graceful-flushes
+		 * (STATE0=0x8000c003, bytes_xfered=0).  The shadow is
+		 * write-effect and reads back 0, so this MUST NOT be validated
+		 * by readback -- only by transfer success.
+		 */
+		if (adev->soc_data && adev->soc_data->crci_ctl_at_ee0 &&
+		    crci_ctl_ee != adev->ee)
+			writel(crci_ctl_val,
+			       adev->regs + ADM_CRCI_CTL(async_desc->crci, adev->ee));
 		adev->crci_ctl_cache[async_desc->crci] = crci_ctl_val;
 		adev->crci_ctl_cache_valid |= BIT(async_desc->crci);
 	}
