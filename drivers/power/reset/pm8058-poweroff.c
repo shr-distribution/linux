@@ -122,9 +122,15 @@ static int pm8058_poweroff_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return devm_register_sys_off_handler(dev, SYS_OFF_MODE_POWER_OFF,
-					     SYS_OFF_PRIO_DEFAULT,
-					     pm8058_poweroff, po);
+	ret = devm_register_sys_off_handler(dev, SYS_OFF_MODE_POWER_OFF,
+					    SYS_OFF_PRIO_DEFAULT,
+					    pm8058_poweroff, po);
+	if (ret)
+		return ret;
+
+	dev_info(dev, "PM8058 PS_HOLD restart/power-off registered\n");
+
+	return 0;
 }
 
 static const struct of_device_id pm8058_poweroff_of_match[] = {
