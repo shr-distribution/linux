@@ -81,6 +81,23 @@ static unsigned int fmax = 515633;
 static unsigned int mmci_mmc1_wr_dma_min = 256;
 
 /*
+ * Active-transfer ICC bandwidth vote for the qcom eMMC (mmc0), in the icc
+ * units mmci passes to icc_set_bw (~kBps; 512000 -> ~64 MHz DFAB at the
+ * 8-byte DFAB-SDC node width).  The idle vote stays 512000 (the
+ * webOS-measured ~64 MHz DFAB idle rate); this is voted by
+ * mmci_qcom_icc_bump_active() for the duration of a data transfer so the
+ * dynamic fabric scaling (interconnect/qcom/msm8660.c) ramps DFAB up while
+ * the eMMC drains.  Flat active==idle==512000 pinned DFAB at 64 MHz, which
+ * is enough raw bandwidth (512 MB/s) but leaves no latency headroom for the
+ * ADM<->SDCC drain handshake -- the first multi-block read graceful-flushes
+ * (STATE0=0x8000c003, RXOVERRUN).  The pre-v5 fabric ran higher and masked
+ * this.  Default ~200 MHz of DFAB headroom; tunable on the kernel cmdline
+ * (mmci_pl18x.qcom_emmc_active_bw=...) to sweep the threshold without a
+ * rebuild.  0 falls back to 512000 (no active ramp).
+ */
+static unsigned int mmci_qcom_emmc_active_bw = 1600000;
+
+/*
  * Debug knobs for the qcom ADM write-throughput investigation.
  *  - adm_sample: periodically log the SDCC FIFO/DATACNT cadence during
  *    large ADM transfers so the per-burst rate is visible before any
@@ -4354,7 +4371,7 @@ static int mmci_probe(struct amba_device *dev,
 		 * clock dynamically.
 		 */
 		host->icc_idle_bw = 512000;
-		host->icc_active_bw = 512000;
+		host->icc_active_bw = mmci_qcom_emmc_active_bw ?: 512000;
 		host->icc_idle_ms = 200;
 		host->icc_voted_active = false;
 
@@ -4937,6 +4954,9 @@ module_param(fmax, uint, 0444);
 module_param_named(mmc1_wr_dma_min, mmci_mmc1_wr_dma_min, uint, 0644);
 MODULE_PARM_DESC(mmc1_wr_dma_min,
 		 "Min mmc1 SDIO WR length routed through DMA on qcom variant (default 256, set 64 for legacy-equivalent)");
+module_param_named(qcom_emmc_active_bw, mmci_qcom_emmc_active_bw, uint, 0644);
+MODULE_PARM_DESC(qcom_emmc_active_bw,
+		 "Active-transfer ICC bw vote for qcom eMMC so dynamic fabric scaling ramps DFAB during transfers (default 1600000 ~200MHz DFAB; idle stays 512000 ~64MHz; 0 = no ramp)");
 module_param(adm_sample, bool, 0644);
 MODULE_PARM_DESC(adm_sample,
 		 "Debug: log qcom ADM SDCC FIFO/DATACNT cadence during large transfers (default on)");
