@@ -98,6 +98,17 @@ static unsigned int mmci_mmc1_wr_dma_min = 256;
 static unsigned int mmci_qcom_emmc_active_bw = 1600000;
 
 /*
+ * DEBUG instrumentation: cap the per-request size on the qcom eMMC so the
+ * transfer-size threshold where the ADM ch2 drain breaks can be swept.
+ * 512 B reads always succeed; 4 KB reads fail.  Set bytes via
+ * armmmci.qcom_emmc_max_bytes=N (e.g. 512, 1024, 2048, 3072, 4096) to bisect
+ * the breaking size: if it breaks just above the 64 B FIFO / a fixed size it
+ * is a FIFO/burst-depth limit; if it scales with DFAB rate it is bandwidth.
+ * 0 = no cap.  A small working cap also doubles as a reliable-boot workaround.
+ */
+static unsigned int mmci_qcom_emmc_max_bytes;
+
+/*
  * Debug knobs for the qcom ADM write-throughput investigation.
  *  - adm_sample: periodically log the SDCC FIFO/DATACNT cadence during
  *    large ADM transfers so the per-burst rate is visible before any
@@ -4640,6 +4651,21 @@ static int mmci_probe(struct amba_device *dev,
 		}
 	}
 
+	/*
+	 * DEBUG: cmdline-tunable per-request size cap for the qcom eMMC, to
+	 * sweep the transfer-size threshold where the ADM ch2 drain breaks.
+	 * armmmci.qcom_emmc_max_bytes=N; 0 = no cap.
+	 */
+	if (mmci_qcom_emmc_max_bytes && host->variant->qcom_datactrl_delay &&
+	    mmci_qcom_emmc_max_bytes < mmc->max_req_size) {
+		mmc->max_req_size = mmci_qcom_emmc_max_bytes;
+		mmc->max_seg_size = mmci_qcom_emmc_max_bytes;
+		dev_info(mmc_dev(mmc),
+			 "DEBUG qcom_emmc_max_bytes=%u -> max_req=%u max_seg=%u\n",
+			 mmci_qcom_emmc_max_bytes, mmc->max_req_size,
+			 mmc->max_seg_size);
+	}
+
 	spin_lock_init(&host->lock);
 
 	writel(0, host->base + MMCIMASK0);
@@ -4957,6 +4983,9 @@ MODULE_PARM_DESC(mmc1_wr_dma_min,
 module_param_named(qcom_emmc_active_bw, mmci_qcom_emmc_active_bw, uint, 0644);
 MODULE_PARM_DESC(qcom_emmc_active_bw,
 		 "Active-transfer ICC bw vote for qcom eMMC so dynamic fabric scaling ramps DFAB during transfers (default 1600000 ~200MHz DFAB; idle stays 512000 ~64MHz; 0 = no ramp)");
+module_param_named(qcom_emmc_max_bytes, mmci_qcom_emmc_max_bytes, uint, 0644);
+MODULE_PARM_DESC(qcom_emmc_max_bytes,
+		 "DEBUG: cap qcom eMMC per-request size to sweep the ADM-drain breaking threshold (e.g. 512/1024/2048/4096; 0 = no cap)");
 module_param(adm_sample, bool, 0644);
 MODULE_PARM_DESC(adm_sample,
 		 "Debug: log qcom ADM SDCC FIFO/DATACNT cadence during large transfers (default on)");
