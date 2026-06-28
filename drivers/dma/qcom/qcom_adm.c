@@ -2363,6 +2363,13 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 
 			if ((result & ADM_CH_RSLT_FLUSH) && (i == 2 || i == 5) &&
 			    !achan->flush_state_dumped) {
+				u32 ssd = readl_relaxed(adev->regs +
+					ADM_CH_STATUS_SD(i, adev->ee));
+				u32 rslt = readl_relaxed(adev->regs +
+					ADM_CH_RSLT(i, adev->ee));
+				u32 cptr = readl_relaxed(adev->regs +
+					ADM_CH_CMD_PTR(i, adev->ee));
+
 				achan->flush_state_dumped = 1;
 				dev_warn(adev->dev,
 					"ADM-DIAG ch%u FLUSH result=0x%08x STATE 0..5: %08x %08x %08x %08x %08x %08x (one-shot)\n",
@@ -2370,6 +2377,27 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 					flush_snap[0], flush_snap[1],
 					flush_snap[2], flush_snap[3],
 					flush_snap[4], flush_snap[5]);
+				/*
+				 * Decode: STATE4 low half = rows remaining
+				 * (x64B); STATUS_SD bits[31:29]=RSLT_COUNT,
+				 * [28:27]=CMD_COUNT; RSLT V/E/F/T bits show how
+				 * the channel stopped.  Tells us whether the ADM
+				 * finished its command list or stalled mid-box,
+				 * and how much was left at the flush.
+				 */
+				dev_warn(adev->dev,
+					"ADM-DIAG ch%u DECODE: rows_left=%u (%uB) status_sd=0x%08x rslt_cnt=%u cmd_cnt=%u valid=%d cmdptr_rdy=%d rslt=0x%08x[V%d E%d F%d T%d] cmd_ptr=0x%08x\n",
+					i, flush_snap[4] & 0xffff,
+					(flush_snap[4] & 0xffff) * 64, ssd,
+					ssd >> 29, (ssd >> 27) & 0x3,
+					!!(ssd & ADM_CH_STATUS_VALID),
+					!!(ssd & ADM_CH_STATUS_CMD_PTR_RDY),
+					rslt,
+					!!(rslt & ADM_CH_RSLT_VALID),
+					!!(rslt & ADM_CH_RSLT_ERR),
+					!!(rslt & ADM_CH_RSLT_FLUSH),
+					!!(rslt & ADM_CH_RSLT_TPD),
+					cptr);
 			}
 		}
 
