@@ -466,6 +466,7 @@ struct adm_chan {
 	 * controller's matching channel index).
 	 */
 	u8 flush_state_dumped;
+	u8 ok_state_dumped;	/* DEBUG: one-shot OK-transfer snapshot */
 };
 
 static inline struct adm_chan *to_adm_chan(struct dma_chan *common)
@@ -2398,7 +2399,45 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 					!!(rslt & ADM_CH_RSLT_FLUSH),
 					!!(rslt & ADM_CH_RSLT_TPD),
 					cptr);
+				/*
+				 * CRCI flow-control config at the flush: is the
+				 * blk_size pacing armed at the EE the channel
+				 * runs at (adev->ee) vs the EE=0 mirror, and is
+				 * the channel security-domain (CH_CONF) correct?
+				 * 0 rows drained + STATE0=0x8000c003 means the
+				 * SDCC<->ADM CRCI handshake never connected.
+				 */
+				dev_warn(adev->dev,
+					"ADM-DIAG ch%u CRCI(FAIL): crci=%u crci_ctl[ee0]=0x%08x crci_ctl[ee%u]=0x%08x ch_conf=0x%08x\n",
+					i, achan->crci,
+					readl_relaxed(adev->regs +
+						ADM_CRCI_CTL(achan->crci, 0)),
+					adev->ee,
+					readl_relaxed(adev->regs +
+						ADM_CRCI_CTL(achan->crci, adev->ee)),
+					readl_relaxed(adev->regs +
+						ADM_CH_CONF(i, adev->ee)));
 			}
+		} else if ((i == 2 || i == 5) && !achan->ok_state_dumped) {
+			/*
+			 * One-shot snapshot of a SUCCESSFUL (VALID, non-flush)
+			 * transfer, for a working-vs-failing register diff of
+			 * the CRCI/channel config.  The first ch2/ch5 transfer
+			 * (e.g. the 512 B eMMC enumeration read) succeeds.
+			 */
+			achan->ok_state_dumped = 1;
+			dev_warn(adev->dev,
+				"ADM-DIAG ch%u CRCI(OK): crci=%u status_sd=0x%08x rslt=0x%08x crci_ctl[ee0]=0x%08x crci_ctl[ee%u]=0x%08x ch_conf=0x%08x cmd_ptr=0x%08x\n",
+				i, achan->crci, status, result,
+				readl_relaxed(adev->regs +
+					ADM_CRCI_CTL(achan->crci, 0)),
+				adev->ee,
+				readl_relaxed(adev->regs +
+					ADM_CRCI_CTL(achan->crci, adev->ee)),
+				readl_relaxed(adev->regs +
+					ADM_CH_CONF(i, adev->ee)),
+				readl_relaxed(adev->regs +
+					ADM_CH_CMD_PTR(i, adev->ee)));
 		}
 
 		if (result & ADM_CH_RSLT_ERR) {
