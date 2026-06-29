@@ -109,6 +109,19 @@ static unsigned int mmci_qcom_emmc_active_bw = 1600000;
 static unsigned int mmci_qcom_emmc_max_bytes;
 
 /*
+ * Proactive early-PIO window for the qcom eMMC (mmc0): route the first N data
+ * transfers after probe through PIO, before the interconnect/fabric clocks
+ * have fully settled.  The ADM drain flush (0x8000c003) is most likely during
+ * this early-boot window and an early flush can cascade into a cmd6
+ * PARTITION_CONFIG CMDTIMEOUT storm (card-stuck) that the reactive per-flush
+ * PIO window cannot undo.  Covering enumeration + the first boot reads in PIO
+ * avoids that initial flush; DMA takes over once the prime drains, so runtime
+ * throughput is unaffected.  Tunable via armmmci.qcom_emmc_pio_first=N; 0
+ * disables the proactive prime (reactive window still applies).
+ */
+static unsigned int mmci_qcom_emmc_pio_first = 24;
+
+/*
  * Debug knobs for the qcom ADM write-throughput investigation.
  *  - adm_sample: periodically log the SDCC FIFO/DATACNT cadence during
  *    large ADM transfers so the per-burst rate is visible before any
@@ -803,29 +816,28 @@ static inline bool mmci_should_atomic_submit(struct mmci_host *host,
 }
 
 /*
- * Graded DMA->PIO recovery bookkeeping for the eMMC (mmc0) on the qcom ADM
- * variant. Counts consecutive data errors; after the second consecutive
- * flush, arm a one-shot PIO retry (consumed in mmci_dma_start()) so a read
- * that keeps overrunning the ADM drain completes in PIO instead of failing
- * the mount. A clean transfer resets the counter, so DMA stays the norm and
- * full-speed runtime throughput is preserved. Scoped to mmc0 on the ADM
- * variant (qcom_datactrl_delay) so SDIO (mmc1) and non-qcom hosts are
- * untouched.
+ * Graded DMA->PIO recovery for the eMMC (mmc0) on the qcom ADM variant.
+ * An eMMC data error (typically the ADM drain flush 0x8000c003) opens a
+ * PIO window of MMCI_QCOM_PIO_WINDOW transfers; mmci_dma_start() routes
+ * those through PIO -- which bypasses the ADM and cannot overrun -- then
+ * DMA resumes once the window drains. A window rather than a one-shot is
+ * required because the mmc core interleaves the failed read's retries with
+ * unrelated/re-init reads, so a single forced-PIO transfer can be consumed
+ * by the wrong request and miss the retry. DMA stays the default outside
+ * the window, so steady-state throughput is unaffected. Scoped to mmc0 on
+ * the ADM variant (qcom_datactrl_delay) so SDIO (mmc1) and non-qcom hosts
+ * are untouched.
  */
+#define MMCI_QCOM_PIO_WINDOW	16
+
 static void mmci_qcom_grade_recovery(struct mmci_host *host,
 				     struct mmc_data *data)
 {
 	if (!host->variant->qcom_datactrl_delay || host->mmc->index != 0)
 		return;
 
-	if (data->error) {
-		if (++host->qcom_flush_count >= 2) {
-			host->qcom_force_pio = true;
-			host->qcom_flush_count = 0;
-		}
-	} else {
-		host->qcom_flush_count = 0;
-	}
+	if (data->error)
+		host->qcom_pio_budget = MMCI_QCOM_PIO_WINDOW;
 }
 
 static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
@@ -834,16 +846,30 @@ static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 	int ret;
 
 	/*
-	 * One-shot PIO fallback: a previous read flushed the ADM drain
-	 * repeatedly, so retry this single transfer in PIO (which never
-	 * touches the ADM). Cleared here so the very next transfer is back
-	 * on DMA -- we do NOT call mmci_dma_release(), which would kill DMA
-	 * for the rest of the session.
+	 * Proactive early-PIO prime: on the first eMMC data transfer, open a
+	 * PIO window covering enumeration + early boot reads, before the fabric
+	 * clocks have settled (when the ADM drain flush is most likely and most
+	 * damaging). Drains into the same budget the reactive path uses.
 	 */
-	if (host->qcom_force_pio) {
-		host->qcom_force_pio = false;
-		dev_warn_ratelimited(mmc_dev(host->mmc),
-			"eMMC: PIO fallback for this transfer after repeated ADM drain flush\n");
+	if (host->variant->qcom_datactrl_delay && host->mmc->index == 0 &&
+	    !host->qcom_pio_primed) {
+		host->qcom_pio_primed = true;
+		if (mmci_qcom_emmc_pio_first > host->qcom_pio_budget)
+			host->qcom_pio_budget = mmci_qcom_emmc_pio_first;
+	}
+
+	/*
+	 * PIO window: a recent eMMC read flushed the ADM drain, so route this
+	 * transfer through PIO (which never touches the ADM) and drain the
+	 * window. We do NOT call mmci_dma_release(), which would kill DMA for
+	 * the rest of the session -- DMA resumes automatically once the window
+	 * empties.
+	 */
+	if (host->qcom_pio_budget) {
+		host->qcom_pio_budget--;
+		dev_info_ratelimited(mmc_dev(host->mmc),
+			"eMMC: PIO for this transfer (ADM drain-flush avoidance window, %u left)\n",
+			host->qcom_pio_budget);
 		return -EINVAL;
 	}
 
@@ -5032,6 +5058,9 @@ MODULE_PARM_DESC(qcom_emmc_active_bw,
 module_param_named(qcom_emmc_max_bytes, mmci_qcom_emmc_max_bytes, uint, 0644);
 MODULE_PARM_DESC(qcom_emmc_max_bytes,
 		 "DEBUG: cap qcom eMMC per-request size to sweep the ADM-drain breaking threshold (e.g. 512/1024/2048/4096; 0 = no cap)");
+module_param_named(qcom_emmc_pio_first, mmci_qcom_emmc_pio_first, uint, 0644);
+MODULE_PARM_DESC(qcom_emmc_pio_first,
+		 "Proactive early-PIO window: route the first N qcom eMMC data transfers through PIO to avoid the ADM-drain flush during early boot (default 24; 0 = disable, reactive per-flush window still applies)");
 module_param(adm_sample, bool, 0644);
 MODULE_PARM_DESC(adm_sample,
 		 "Debug: log qcom ADM SDCC FIFO/DATACNT cadence during large transfers (default on)");

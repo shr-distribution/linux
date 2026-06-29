@@ -645,13 +645,17 @@ struct mmci_host {
 	 * the default for every other transfer, so runtime throughput is
 	 * unchanged.
 	 *
-	 * qcom_flush_count: consecutive eMMC data errors since the last clean
-	 *                   transfer.
-	 * qcom_force_pio:   one-shot; mmci_dma_start() consumes it to push the
-	 *                   next data transfer down the PIO path.
+	 * qcom_pio_budget: PIO window. A flushed eMMC read opens a window of
+	 *                  N transfers (set in mmci_qcom_grade_recovery());
+	 *                  mmci_dma_start() routes each of those through PIO and
+	 *                  decrements, then DMA resumes. A window (not a
+	 *                  one-shot) is required because the mmc core interleaves
+	 *                  the failed read's retries with unrelated/re-init
+	 *                  reads, so a single forced-PIO transfer can be consumed
+	 *                  by the wrong request and miss the retry.
 	 */
-	u8			qcom_flush_count;
-	bool			qcom_force_pio;
+	u8			qcom_pio_budget;
+	bool			qcom_pio_primed;	/* proactive early-PIO prime applied */
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)
