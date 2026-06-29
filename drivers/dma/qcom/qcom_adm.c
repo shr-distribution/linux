@@ -33,6 +33,9 @@
 #include "../dmaengine.h"
 #include "../virt-dma.h"
 
+/* Default-off gate for one-shot ADM submit/IRQ debug dumps (see adm_dma_irq). */
+static bool adm_dbg;
+
 /* ADM registers - calculated from channel number and security domain */
 #define ADM_CHAN_MULTI			0x4
 #define ADM_CI_MULTI			0x4
@@ -2143,7 +2146,7 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * boot wedges on the first transfer. Disambiguates "channel
 		 * setup wrong" vs "channel started but never completed."
 		 */
-		if (!achan->first_submit_logged) {
+		if (adm_dbg && !achan->first_submit_logged) {
 			u32 ctl_ee_dbg = (adev->soc_data &&
 					  adev->soc_data->crci_ctl_at_ee0)
 					 ? 0 : adev->ee;
@@ -2184,7 +2187,7 @@ static void adm_start_dma(struct adm_chan *achan)
 		 * see if the channel's CMD_PTR register actually latched
 		 * our value (further proves hardware accepted write).
 		 */
-		if (!achan->first_submit_logged) {
+		if (adm_dbg && !achan->first_submit_logged) {
 			u32 status_post = readl_relaxed(adev->regs +
 				ADM_CH_STATUS_SD(achan->id, adev->ee));
 			u32 cmd_ptr_rb = readl_relaxed(adev->regs +
@@ -2286,6 +2289,19 @@ static void adm_start_dma(struct adm_chan *achan)
 	}
 }
 
+/*
+ * Default-off gate for the one-shot ADM hot-path debug dumps. These
+ * dev_info/dev_warn lines print synchronously to a slow netconsole (the boot
+ * cmdline uses ignore_loglevel) from inside the submit/IRQ path; on the eMMC
+ * FLUSH path that can blow mmci's busy-poll recovery deadline and turn an
+ * otherwise-recoverable ADM drain flush (0x8000c003) into a fatal cmd6
+ * PARTITION_CONFIG cascade. Keep the instrumentation compiled-in but silent by
+ * default; re-enable with qcom_adm.adm_dbg=1 only for bring-up triage.
+ */
+module_param(adm_dbg, bool, 0644);
+MODULE_PARM_DESC(adm_dbg,
+	"Enable one-shot ADM submit/IRQ debug dumps (default off; on a slow/verbose console they can break eMMC flush recovery)");
+
 /**
  * adm_dma_irq - irq handler for ADM controller
  * @irq: IRQ of interrupt
@@ -2361,8 +2377,8 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 			flush_snap[5] = readl_relaxed(adev->regs +
 				ADM_CH_FLUSH_STATE5(i, adev->ee));
 
-			if ((result & ADM_CH_RSLT_FLUSH) && (i == 2 || i == 5) &&
-			    !achan->flush_state_dumped) {
+			if (adm_dbg && (result & ADM_CH_RSLT_FLUSH) &&
+			    (i == 2 || i == 5) && !achan->flush_state_dumped) {
 				achan->flush_state_dumped = 1;
 				dev_warn(adev->dev,
 					"ADM-DIAG ch%u FLUSH result=0x%08x STATE 0..5: %08x %08x %08x %08x %08x %08x (one-shot)\n",
@@ -2399,7 +2415,7 @@ static irqreturn_t adm_dma_irq(int irq, void *data)
 		 * watchdog log + this irq log together bracket every
 		 * possible outcome of the first submit.
 		 */
-		if (!achan->first_irq_logged) {
+		if (adm_dbg && !achan->first_irq_logged) {
 			achan->first_irq_logged = 1;
 			dev_info(adev->dev,
 				 "ADM first IRQ ch%u: result=0x%08x flush=%08x %08x %08x %08x %08x %08x async_desc=%s\n",
