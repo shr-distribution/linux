@@ -802,10 +802,50 @@ static inline bool mmci_should_atomic_submit(struct mmci_host *host,
 	       (data->flags & MMC_DATA_READ);
 }
 
+/*
+ * Graded DMA->PIO recovery bookkeeping for the eMMC (mmc0) on the qcom ADM
+ * variant. Counts consecutive data errors; after the second consecutive
+ * flush, arm a one-shot PIO retry (consumed in mmci_dma_start()) so a read
+ * that keeps overrunning the ADM drain completes in PIO instead of failing
+ * the mount. A clean transfer resets the counter, so DMA stays the norm and
+ * full-speed runtime throughput is preserved. Scoped to mmc0 on the ADM
+ * variant (qcom_datactrl_delay) so SDIO (mmc1) and non-qcom hosts are
+ * untouched.
+ */
+static void mmci_qcom_grade_recovery(struct mmci_host *host,
+				     struct mmc_data *data)
+{
+	if (!host->variant->qcom_datactrl_delay || host->mmc->index != 0)
+		return;
+
+	if (data->error) {
+		if (++host->qcom_flush_count >= 2) {
+			host->qcom_force_pio = true;
+			host->qcom_flush_count = 0;
+		}
+	} else {
+		host->qcom_flush_count = 0;
+	}
+}
+
 static int mmci_dma_start(struct mmci_host *host, unsigned int datactrl)
 {
 	struct mmc_data *data = host->data;
 	int ret;
+
+	/*
+	 * One-shot PIO fallback: a previous read flushed the ADM drain
+	 * repeatedly, so retry this single transfer in PIO (which never
+	 * touches the ADM). Cleared here so the very next transfer is back
+	 * on DMA -- we do NOT call mmci_dma_release(), which would kill DMA
+	 * for the rest of the session.
+	 */
+	if (host->qcom_force_pio) {
+		host->qcom_force_pio = false;
+		dev_warn_ratelimited(mmc_dev(host->mmc),
+			"eMMC: PIO fallback for this transfer after repeated ADM drain flush\n");
+		return -EINVAL;
+	}
 
 	if (!host->use_dma)
 		return -EINVAL;
@@ -1723,6 +1763,9 @@ static void mmci_qcom_dma_complete(void *param)
 
 	if (!data->error)
 		data->bytes_xfered = data->blksz * data->blocks;
+
+	/* Graded DMA->PIO recovery: arm a one-shot PIO retry if eMMC keeps flushing. */
+	mmci_qcom_grade_recovery(host, data);
 
 	if (!data->stop) {
 		mmci_request_end(host, data->mrq);
@@ -2951,6 +2994,9 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		if (!data->error)
 			/* The error clause is handled above, success! */
 			data->bytes_xfered = data->blksz * data->blocks;
+
+		/* Graded DMA->PIO recovery: arm a one-shot PIO retry if eMMC keeps flushing. */
+		mmci_qcom_grade_recovery(host, data);
 
 		if (!data->stop) {
 			if (host->variant->cmdreg_stop && data->error)
