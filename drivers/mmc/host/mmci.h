@@ -633,25 +633,6 @@ struct mmci_host {
 	 * DATAEND path.  (Sashiko Medium #46.)
 	 */
 	struct delayed_work	qcom_dummy52_watchdog;
-	/*
-	 * Graded DMA->PIO recovery for the eMMC ADM drain (mmc0, qcom ADM
-	 * variant). The ADM<->SDCC-FIFO drain handshake can intermittently
-	 * RX-FIFO-overrun (ADM FLUSH_STATE0=0x8000c003) on a marginal cold
-	 * boot, aborting a block read. Rather than permanently disabling DMA
-	 * (mmci_dma_release() -> PIO for the whole session), we let the first
-	 * couple of flushed reads retry on DMA after the inline SDCC reset, and
-	 * only if a read keeps flushing do we retry that *single* transfer in
-	 * PIO -- which bypasses the ADM entirely and cannot overrun. DMA stays
-	 * the default for every other transfer, so runtime throughput is
-	 * unchanged.
-	 *
-	 * qcom_flush_count: consecutive eMMC data errors since the last clean
-	 *                   transfer.
-	 * qcom_force_pio:   one-shot; mmci_dma_start() consumes it to push the
-	 *                   next data transfer down the PIO path.
-	 */
-	u8			qcom_flush_count;
-	bool			qcom_force_pio;
 };
 
 #define dma_inprogress(host)	((host)->dma_in_progress)
