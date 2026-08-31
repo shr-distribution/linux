@@ -250,8 +250,9 @@ static __init int mrdump_parse_chosen(void)
 			mrdump_sram_cb.start_addr = reg[0];
 			mrdump_sram_cb.size = reg[1];
 			pr_notice("%s: mrdump_cbaddr=%llx, mrdump_cbsize=%llx\n",
-				  __func__, mrdump_sram_cb.start_addr,
-				  mrdump_sram_cb.size);
+				  __func__,
+				  (unsigned long long)mrdump_sram_cb.start_addr,
+				  (unsigned long long)mrdump_sram_cb.size);
 		}
 
 		if (of_property_read_string(node, "mrdump,lk", &lkver) == 0) {
