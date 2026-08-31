@@ -1,4 +1,4 @@
-subdir-ccflags-y += -Wall -Werror
+subdir-ccflags-y += -Wall
 obj-$(CONFIG_DUAL_ROLE_USB_INTF)	+= tcpci_dual_role.o
 obj-$(CONFIG_TCPC_MT6360)		+= tcpc_mt6360.o
 obj-$(CONFIG_TCPC_MT6362)	+= tcpc_mt6362.o
