@@ -270,7 +270,11 @@ static int get_speed_str(u64 speed, char buf[], int size)
 		rem = do_div(speed, 1000);
 		ret = snprintf(buf, size, "%llu.%03lluGbps", speed, rem);
 	} else if (speed >= 1000000LL) {
+#ifdef __LP64__
 		speed = speed / 1000LL;
+#else
+		do_div(speed, 1000LL);
+#endif
 		rem = do_div(speed, 1000);
 		ret = snprintf(buf, size, "%llu.%03lluMbps", speed, rem);
 	} else if (speed >= 1000LL) {

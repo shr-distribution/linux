@@ -102,7 +102,9 @@ enum check_err {
 /* #define HIGH_SPEED_I2C */
 
 
-#define GSL_GESTURE
+/* The shipped point-id object is the no_gesture variant; it has no
+ * gsl_obtain_gesture(), so gesture wake cannot be linked in. */
+/* #define GSL_GESTURE */
 
 #ifdef GSL_GESTURE
 static int gsl_gesture_flag = 1;
