@@ -113,9 +113,10 @@ int freqhopping_config(unsigned int fh_id
 				array->domain,
 				array->fh_id);
 		on = false;
-	} else
+	} else {
 		/*FHDBG("already %s\n",
 				on ? "enabled" : "disabled");*/
+	}
 	mutex_unlock(&lock);
 
 	return 0;
