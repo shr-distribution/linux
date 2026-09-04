@@ -753,6 +753,14 @@ KBUILD_CFLAGS  += $(call cc-option,-Wno-error=parentheses)
 KBUILD_CFLAGS  += $(call cc-option,-Wno-error=bool-operation)
 KBUILD_CFLAGS  += $(call cc-option,-Wno-error=duplicate-decl-specifier)
 KBUILD_CFLAGS  += $(call cc-option,-Wno-error=misleading-indentation)
+# Only reached when building modules (qcacld-3.0 in particular):
+#   missing-attributes  module_init/module_exit aliases vs the 'cold'
+#                       attribute GCC infers on the target - the classic
+#                       init/cleanup_module warning, benign.
+#   array-parameter     prototypes declaring uint8_t * where the definition
+#                       says uint8_t[6] (and similar) across the WMI/SME API.
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=missing-attributes)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=array-parameter)
 endif
 
 # Tell gcc to never replace conditional load with a non-conditional one
