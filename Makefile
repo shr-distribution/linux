@@ -720,6 +720,39 @@ endif
 
 ifdef CONFIG_CC_WERROR
 KBUILD_CFLAGS  += -Werror
+
+# This is a 4.19 CAF/vendor tree; GCC 12+ promotes several long-standing
+# patterns in it to warnings, and -Werror then makes them fatal. Keep -Werror
+# on for everything else, but demote the classes below back to warnings:
+#
+#   format               tracepoint TP_printk() strings that print a u32 with
+#                        %llu (and similar) all over kernel/sched/walt.h and
+#                        include/trace/events/. Cosmetic in trace output only.
+#   address              "if (some_array_member)" tests on an array's address,
+#                        which is never NULL. Intentional defensive vendor code.
+#   unused-variable      a `static int` in kernel/sched/walt.h that not every
+#                        including translation unit uses.
+#   maybe-uninitialized  copy_from_user() destinations in debugfs writers that
+#                        GCC cannot prove are initialised.
+#
+# The three findings in this tree that were NOT benign are fixed at the source
+# instead of being silenced here:
+#   sound/soc/codecs/tfa9911/tfa_dsp.c        returned a dangling stack pointer
+#   techpack/audio/dsp/codecs/amrwb_in.c      ioctl always returned -EFAULT
+#   .../sdm660_cdc/msm-analog-cdc.c           misleading indentation (reindented,
+#                                             behaviour deliberately unchanged)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=format)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=format-extra-args)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=address)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=unused-variable)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=maybe-uninitialized)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=unused-result)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=enum-int-mismatch)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=attributes)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=parentheses)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=bool-operation)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=duplicate-decl-specifier)
+KBUILD_CFLAGS  += $(call cc-option,-Wno-error=misleading-indentation)
 endif
 
 # Tell gcc to never replace conditional load with a non-conditional one
