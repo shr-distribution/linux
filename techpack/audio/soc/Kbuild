@@ -1,106 +1,106 @@
 # We can build either as part of a standalone Kernel build or as
 # an external module.  Determine which mechanism is being used
 ifeq ($(MODNAME),)
-	KERNEL_BUILD := 1
+    KERNEL_BUILD := 1
 else
-	KERNEL_BUILD := 0
+    KERNEL_BUILD := 0
 endif
 
 ifeq ($(KERNEL_BUILD), 1)
-	# These are configurable via Kconfig for kernel-based builds
-	# Need to explicitly configure for Android-based builds
-	AUDIO_BLD_DIR := $(shell pwd)/kernel/msm-4.19
-	AUDIO_ROOT := $(AUDIO_BLD_DIR)/techpack/audio
-	ifeq ($(CONFIG_ARCH_SDM660), y)
-		include $(srctree)/techpack/audio/config/sdm660auto.conf
-		export
-		INCS    +=  -include $(srctree)/techpack/audio/config/sdm660autoconf.h
-	endif
+    # These are configurable via Kconfig for kernel-based builds
+    # Need to explicitly configure for Android-based builds
+    AUDIO_BLD_DIR := $(shell pwd)/kernel/msm-4.19
+    AUDIO_ROOT := $(AUDIO_BLD_DIR)/techpack/audio
+    ifeq ($(CONFIG_ARCH_SDM660), y)
+        include $(srctree)/techpack/audio/config/sdm660auto.conf
+        export $(shell sed 's/=.*//' $(srctree)/techpack/audio/config/sdm660auto.conf)
+        INCS    +=  -include $(srctree)/techpack/audio/config/sdm660autoconf.h
+    endif
 endif
 
 ifeq ($(KERNEL_BUILD), 0)
-	ifeq ($(CONFIG_ARCH_SM8150), y)
-		ifdef CONFIG_SND_SOC_SA8155
-			include $(AUDIO_ROOT)/config/sa8155auto.conf
-			export
-			INCS    +=  -include $(AUDIO_ROOT)/config/sa8155autoconf.h
-		else
-			include $(AUDIO_ROOT)/config/sm8150auto.conf
-			export
-			INCS    +=  -include $(AUDIO_ROOT)/config/sm8150autoconf.h
-		endif
-	endif
-	ifeq ($(CONFIG_ARCH_KONA), y)
-		include $(AUDIO_ROOT)/config/konaauto.conf
-		INCS    +=  -include $(AUDIO_ROOT)/config/konaautoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_LITO), y)
-		include $(AUDIO_ROOT)/config/litoauto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/litoautoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_BENGAL), y)
-		include $(AUDIO_ROOT)/config/bengalauto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/bengalautoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_SM6150), y)
-		ifdef CONFIG_SND_SOC_SA6155
-			include $(AUDIO_ROOT)/config/sa6155auto.conf
-			export
-			INCS    +=  -include $(AUDIO_ROOT)/config/sa6155autoconf.h
-		else
-			include $(AUDIO_ROOT)/config/sm6150auto.conf
-			export
-			INCS    +=  -include $(AUDIO_ROOT)/config/sm6150autoconf.h
-		endif
-	endif
-	ifeq ($(CONFIG_ARCH_TRINKET), y)
-		include $(AUDIO_ROOT)/config/sm6150auto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/sm6150autoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_SDMSHRIKE), y)
-		ifdef CONFIG_SND_SOC_SA8155
-			include $(AUDIO_ROOT)/config/sa8155auto.conf
-			export
-			INCS    +=  -include $(AUDIO_ROOT)/config/sa8155autoconf.h
-		else
-			include $(AUDIO_ROOT)/config/sm8150auto.conf
-			export
-			INCS    +=  -include $(AUDIO_ROOT)/config/sm8150autoconf.h
-		endif
-	endif
-	ifeq ($(CONFIG_ARCH_QCS405), y)
-		include $(AUDIO_ROOT)/config/qcs405auto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/qcs405autoconf.h
-	endif
-	ifeq ($(CONFIG_QTI_GVM), y)
-		include $(AUDIO_ROOT)/config/gvmauto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/gvmautoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_SDM660), y)
-		include $(AUDIO_ROOT)/config/sdm660auto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/sdm660autoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_SDM450), y)
-		include $(AUDIO_ROOT)/config/sdm450auto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/sdm450autoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_SDM439), y)
-		include $(AUDIO_ROOT)/config/sdm450auto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/sdm450autoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_MSM8917), y)
-		include $(AUDIO_ROOT)/config/sdm450auto.conf
-		export
-		INCS    +=  -include $(AUDIO_ROOT)/config/sdm450autoconf.h
-	endif
+    ifeq ($(CONFIG_ARCH_SM8150), y)
+        ifdef CONFIG_SND_SOC_SA8155
+            include $(AUDIO_ROOT)/config/sa8155auto.conf
+            export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sa8155auto.conf)
+            INCS    +=  -include $(AUDIO_ROOT)/config/sa8155autoconf.h
+        else
+            include $(AUDIO_ROOT)/config/sm8150auto.conf
+            export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sm8150auto.conf)
+            INCS    +=  -include $(AUDIO_ROOT)/config/sm8150autoconf.h
+        endif
+    endif
+    ifeq ($(CONFIG_ARCH_KONA), y)
+        include $(AUDIO_ROOT)/config/konaauto.conf
+        INCS    +=  -include $(AUDIO_ROOT)/config/konaautoconf.h
+    endif
+    ifeq ($(CONFIG_ARCH_LITO), y)
+        include $(AUDIO_ROOT)/config/litoauto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/litoauto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/litoautoconf.h
+    endif
+    ifeq ($(CONFIG_ARCH_BENGAL), y)
+        include $(AUDIO_ROOT)/config/bengalauto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/bengalauto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/bengalautoconf.h
+    endif
+    ifeq ($(CONFIG_ARCH_SM6150), y)
+        ifdef CONFIG_SND_SOC_SA6155
+            include $(AUDIO_ROOT)/config/sa6155auto.conf
+            export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sa6155auto.conf)
+            INCS    +=  -include $(AUDIO_ROOT)/config/sa6155autoconf.h
+        else
+            include $(AUDIO_ROOT)/config/sm6150auto.conf
+            export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sm6150auto.conf)
+            INCS    +=  -include $(AUDIO_ROOT)/config/sm6150autoconf.h
+        endif
+    endif
+    ifeq ($(CONFIG_ARCH_TRINKET), y)
+        include $(AUDIO_ROOT)/config/sm6150auto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sm6150auto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/sm6150autoconf.h
+    endif
+    ifeq ($(CONFIG_ARCH_SDMSHRIKE), y)
+        ifdef CONFIG_SND_SOC_SA8155
+            include $(AUDIO_ROOT)/config/sa8155auto.conf
+            export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sa8155auto.conf)
+            INCS    +=  -include $(AUDIO_ROOT)/config/sa8155autoconf.h
+        else
+            include $(AUDIO_ROOT)/config/sm8150auto.conf
+            export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sm8150auto.conf)
+            INCS    +=  -include $(AUDIO_ROOT)/config/sm8150autoconf.h
+        endif
+    endif
+    ifeq ($(CONFIG_ARCH_QCS405), y)
+        include $(AUDIO_ROOT)/config/qcs405auto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/qcs405auto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/qcs405autoconf.h
+    endif
+    ifeq ($(CONFIG_QTI_GVM), y)
+        include $(AUDIO_ROOT)/config/gvmauto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/gvmauto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/gvmautoconf.h
+    endif
+    ifeq ($(CONFIG_ARCH_SDM660), y)
+        include $(AUDIO_ROOT)/config/sdm660auto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sdm660auto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/sdm660autoconf.h
+    endif
+    ifeq ($(CONFIG_ARCH_SDM450), y)
+        include $(AUDIO_ROOT)/config/sdm450auto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sdm450auto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/sdm450autoconf.h
+    endif
+    ifeq ($(CONFIG_ARCH_SDM439), y)
+        include $(AUDIO_ROOT)/config/sdm450auto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sdm450auto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/sdm450autoconf.h
+    endif
+    ifeq ($(CONFIG_ARCH_MSM8917), y)
+        include $(AUDIO_ROOT)/config/sdm450auto.conf
+        export $(shell sed 's/=.*//' $(AUDIO_ROOT)/config/sdm450auto.conf)
+        INCS    +=  -include $(AUDIO_ROOT)/config/sdm450autoconf.h
+    endif
 endif
 
 # As per target team, build is done as follows:
@@ -131,60 +131,60 @@ COMMON_INC :=	-I$(AUDIO_ROOT)/$(COMMON_DIR)
 
 # for pinctrl WCD driver
 ifdef CONFIG_PINCTRL_WCD
-	PINCTRL_WCD_OBJS += pinctrl-wcd.o
+    PINCTRL_WCD_OBJS += pinctrl-wcd.o
 endif
 
 # for pinctrl LPI driver
 ifdef CONFIG_PINCTRL_LPI
-	PINCTRL_LPI_OBJS += pinctrl-lpi.o
+    PINCTRL_LPI_OBJS += pinctrl-lpi.o
 endif
 
 # for pinctrl LPI legacy driver
 ifdef CONFIG_PINCTRL_LPI_LEGACY
-	PINCTRL_LPI_OBJS += pinctrl-lpi-legacy.o
+    PINCTRL_LPI_OBJS += pinctrl-lpi-legacy.o
 endif
 
 # for soundwire driver
 ifdef CONFIG_SOUNDWIRE_WCD_CTRL
-	SWR_CTRL_OBJS += swr-wcd-ctrl.o
+    SWR_CTRL_OBJS += swr-wcd-ctrl.o
 endif
 
 # for new soundwire driver
 ifdef CONFIG_SOUNDWIRE_MSTR_CTRL
-	SWR_CTRL_OBJS += swr-mstr-ctrl.o
+    SWR_CTRL_OBJS += swr-mstr-ctrl.o
 endif
 
 ifdef CONFIG_SOUNDWIRE
-	SWR_OBJS += regmap-swr.o
-	SWR_OBJS += soundwire.o
+    SWR_OBJS += regmap-swr.o
+    SWR_OBJS += soundwire.o
 endif
 
 ifdef CONFIG_SND_EVENT
-	SND_EVENT_OBJS += snd_event.o
+    SND_EVENT_OBJS += snd_event.o
 endif
 
 ifdef CONFIG_WCD_SPI_AC
-	WCD_SPI_ACC_CTL_OBJS += wcd-spi-ac.o
-	WCD_SPI_ACC_CTL_OBJS += wcd_spi_ctl_v01.o
+    WCD_SPI_ACC_CTL_OBJS += wcd-spi-ac.o
+    WCD_SPI_ACC_CTL_OBJS += wcd_spi_ctl_v01.o
 endif
 
 LINUX_INC +=	-Iinclude/linux
 
 INCS +=		$(COMMON_INC) \
-		$(UAPI_INC)
+        $(UAPI_INC)
 
 EXTRA_CFLAGS += $(INCS)
 
 
 CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \
-		-DANI_LITTLE_BIT_ENDIAN \
-		-DDOT11F_LITTLE_ENDIAN_HOST \
-		-DANI_COMPILER_TYPE_GCC \
-		-DANI_OS_TYPE_ANDROID=6 \
-		-DPTT_SOCK_SVC_ENABLE \
-		-Wall\
-		-Werror\
-		-D__linux__
+        -DANI_LITTLE_BIT_ENDIAN \
+        -DDOT11F_LITTLE_ENDIAN_HOST \
+        -DANI_COMPILER_TYPE_GCC \
+        -DANI_OS_TYPE_ANDROID=6 \
+        -DPTT_SOCK_SVC_ENABLE \
+        -Wall\
+        -Werror\
+        -D__linux__
 
 KBUILD_CPPFLAGS += $(CDEFINES)
 
