@@ -7,14 +7,21 @@
 # over include/linux/input/synaptics_dsx.h which is the upstream one.
 ccflags-y += -I$(srctree)/$(src)
 
-# 4.19 + newer clang are stricter than 4.4 was. Relax a few Werrors the
+# 4.19 + newer compilers are stricter than 4.4 was. Relax a few Werrors the
 # original BlackBerry code trips (VLAs, typedef redefinitions, unused
 # vars, NULL/0 non-literal conversions, -Wfortify-source).
-ccflags-y += -Wno-error=vla-extension \
-	     -Wno-error=typedef-redefinition \
-	     -Wno-error=unused-variable \
-	     -Wno-error=non-literal-null-conversion \
-	     -Wno-error=fortify-source
+#
+# Wrapped in cc-option: vla-extension, typedef-redefinition,
+# non-literal-null-conversion and fortify-source are clang spellings. GCC does
+# not know them and rejects the whole -Wno-error=<x> outright
+# ("cc1: error: '-Wno-error=vla-extension': no option '-Wvla-extension'"),
+# which broke the GCC build of every file in this directory.
+ccflags-y += $(call cc-option,-Wno-error=vla-extension)
+ccflags-y += $(call cc-option,-Wno-error=vla)
+ccflags-y += $(call cc-option,-Wno-error=typedef-redefinition)
+ccflags-y += $(call cc-option,-Wno-error=unused-variable)
+ccflags-y += $(call cc-option,-Wno-error=non-literal-null-conversion)
+ccflags-y += $(call cc-option,-Wno-error=fortify-source)
 
 # Each configuration option enables a list of files.
 obj-y += synaptics_dsx_i2c.o
