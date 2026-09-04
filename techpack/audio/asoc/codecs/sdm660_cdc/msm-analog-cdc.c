@@ -722,10 +722,20 @@ static void msm_anlg_cdc_mbhc_calc_impedance(struct wcd_mbhc *mbhc,
 						dev_dbg(component->dev,
 							"%s: Mono Headset\n",
 							__func__);
-						sdm660_cdc->imped_det_pin =
-							WCD_MBHC_DET_NONE;
-						mbhc->hph_type =
-							WCD_MBHC_HPH_MONO;
+					/*
+					 * NOTE: the two assignments below were
+					 * indented as if guarded by the 'if' above,
+					 * but never were. Only the indentation is
+					 * corrected here - behaviour is deliberately
+					 * left as vendor/LineageOS ship it. This
+					 * looks like a genuine vendor bug in mono/
+					 * stereo impedance detection; do not "fix"
+					 * it without testing on real hardware.
+					 */
+					sdm660_cdc->imped_det_pin =
+						WCD_MBHC_DET_NONE;
+					mbhc->hph_type =
+						WCD_MBHC_HPH_MONO;
 				} else {
 					dev_dbg(component->dev,
 						"%s: STEREO headset is found\n",
