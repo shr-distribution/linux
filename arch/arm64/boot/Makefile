@@ -26,7 +26,18 @@ DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
 else
 DTB_LIST := $(dtb-y)
 endif
+# CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES exists precisely so a product
+# can append only the device trees it needs, and DTB_LIST above already
+# resolves it - but Image-dtb/Image.gz-dtb then ignored DTB_LIST and globbed
+# every .dtb in the build tree instead. On sdm660 that is 27 blobs, ~8 MB of
+# which 26 are for other boards, and the oversized kernel then runs past the
+# ramdisk load address in the boot image. Honour the list when one is given
+# and keep the glob only as the default.
+ifneq ($(DTB_NAMES),)
+DTB_OBJS := $(addprefix $(obj)/dts/,$(DTB_LIST))
+else
 DTB_OBJS := $(shell find $(obj)/dts/ -name \*.dtb)
+endif
 
 # Add RTIC DTB to the DTB list if RTIC MPGen is enabled
 # Note, we keep this for compatibility with
