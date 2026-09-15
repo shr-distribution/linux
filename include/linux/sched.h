@@ -967,10 +967,6 @@ struct task_struct {
 
 	struct nameidata		*nameidata;
 
-#ifdef CONFIG_SYSVIPC
-	struct sysv_sem			sysvsem;
-	struct sysv_shm			sysvshm;
-#endif
 #ifdef CONFIG_DETECT_HUNG_TASK
 	unsigned long			last_switch_count;
 	unsigned long			last_switch_time;
@@ -1382,9 +1378,42 @@ struct task_struct {
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
 	ANDROID_KABI_RESERVE(5);
+#ifdef CONFIG_SYSVIPC
+	/*
+	 * SysV IPC without moving the ABI.
+	 *
+	 * Enabling CONFIG_SYSVIPC normally appends sysvsem/sysvshm in the
+	 * middle of task_struct, which shifts every field after them and moves
+	 * module_layout along with every other CRC - measured on this SoC as
+	 * 344 of 344 stock modules refusing to load. Park both members in the
+	 * reserved KABI padding instead, which is what the padding is for.
+	 *
+	 * genksyms expands _ANDROID_KABI_REPLACE to its _orig arm, so the CRC
+	 * input stays "u64 android_kabi_reservedN" exactly as the stock
+	 * CONFIG_SYSVIPC=n kernel saw it, and the CRCs cannot move.
+	 *
+	 * sysv_sem is one pointer and fits slot 6. sysv_shm is a list_head, so
+	 * it is 16 bytes and spans slots 7 and 8; there is no USE macro for a
+	 * member wider than one slot, so that union is written out longhand.
+	 */
+	ANDROID_KABI_USE(6, struct sysv_sem sysvsem);
+#ifdef __GENKSYMS__
+	u64 android_kabi_reserved7;
+	u64 android_kabi_reserved8;
+#else
+	union {
+		struct sysv_shm sysvshm;
+		struct {
+			u64 android_kabi_reserved7;
+			u64 android_kabi_reserved8;
+		};
+	};
+#endif
+#else
 	ANDROID_KABI_RESERVE(6);
 	ANDROID_KABI_RESERVE(7);
 	ANDROID_KABI_RESERVE(8);
+#endif
 
 	/*
 	 * New fields for task_struct should be added above here, so that
