@@ -510,7 +510,21 @@ static int rt5133_probe(struct i2c_client *i2c)
 	priv->enable_gpio = devm_gpiod_get_optional(&i2c->dev, "enable",
 						    GPIOD_OUT_HIGH);
 	if (IS_ERR(priv->enable_gpio)) {
-		dev_err(&i2c->dev, "Failed to request HWEN gpio\n");
+		/* Print the errno. Without it this message cannot be acted on:
+		 * -517 (EPROBE_DEFER) means no pinctrl gpio range covers the
+		 * pin, -16 (EBUSY) means something else holds it, -22 (EINVAL)
+		 * means the DT spec is wrong - three unrelated bugs behind one
+		 * string. On the MP01 it is -517, and it takes the GPU down
+		 * with it: rt5133's LDOs never register, so gpufreq, ged and
+		 * mali defer forever and there is no /dev/mali0.
+		 *
+		 * Do not be tempted to continue without the gpio - HWEN really
+		 * does gate the chip. Tried on 15 Sep 2026: probe then fails
+		 * later with "Failed to check vendor info [-6]" (-ENXIO),
+		 * because the part is powered down and will not ACK on i2c.
+		 */
+		dev_err(&i2c->dev, "Failed to request HWEN gpio (%ld)\n",
+			PTR_ERR(priv->enable_gpio));
 		return PTR_ERR(priv->enable_gpio);
 	}
 
