@@ -1,0 +1,591 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Copyright (C) 2021 MediaTek Inc.
+ */
+/dts-v1/;
+/plugin/;
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/pinctrl/mt6789-pinfunc.h>
+#include "mediatek/cust_mt6789_camera.dtsi"
+
+&chosen {
+
+};
+
+&mtk_leds {
+	compatible = "mediatek,pwm-leds";
+
+	backlight {
+		label = "lcd-backlight";
+		led_mode = <5>;
+		gate_enable = <0>;
+		pwm_config = <0 1 0 0 0>;
+		pwms = <&disp_pwm 0 39385>;
+		pwm-names = "lcd-backlight";
+	};
+};
+
+&pio {
+	mtkfb_pins_lcm_led_en1: lcm_led_en1_gpio {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO12__FUNC_GPIO12>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+
+	mtkfb_pins_lcm_led_en0: lcm_led_en0_gpio {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO12__FUNC_GPIO12>;
+			slew-rate = <1>;
+			output-low;
+		};
+	};
+
+	mtkfb_pins_lcm_rst_out1_gpio: lcm_rst_out1_gpio {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO85__FUNC_GPIO85>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+
+	mtkfb_pins_lcm_rst_out0_gpio: lcm_rst_out0_gpio {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO85__FUNC_GPIO85>;
+			slew-rate = <1>;
+			output-low;
+		};
+	};
+	mtkfb_pins_lcm_dsi_te: lcm_dsi_te {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO83__FUNC_DSI_TE>;
+		};
+	};
+};
+
+&mtkfb {
+	pinctrl-names = "lcm_led_en1_gpio", "lcm_led_en0_gpio",
+		"lcm_rst_out1_gpio", "lcm_rst_out0_gpio",
+		"mode_te_te";
+	pinctrl-0 = <&mtkfb_pins_lcm_led_en1>;
+	pinctrl-1 = <&mtkfb_pins_lcm_led_en0>;
+	pinctrl-2 = <&mtkfb_pins_lcm_rst_out1_gpio>;
+	pinctrl-3 = <&mtkfb_pins_lcm_rst_out0_gpio>;
+	pinctrl-4 = <&mtkfb_pins_lcm_dsi_te>;
+	status = "okay";
+};
+
+&dispsys_config {
+	pinctrl-names =
+		"lcm_rst_out1_gpio", "lcm_rst_out0_gpio",
+		"mode_te_te";
+	pinctrl-0 = <&mtkfb_pins_lcm_rst_out1_gpio>;
+	pinctrl-1 = <&mtkfb_pins_lcm_rst_out0_gpio>;
+	pinctrl-2 = <&mtkfb_pins_lcm_dsi_te>;
+	status = "okay";
+	
+	//kcm added by phf, 20250118
+	#if 1
+	helper-value = <0>, /*MTK_DRM_OPT_STAGE*/
+				<1>, /*MTK_DRM_OPT_USE_CMDQ*/
+				<1>, /*MTK_DRM_OPT_USE_M4U*/
+				<1>, /*MTK_DRM_OPT_MMQOS_SUPPORT*/
+				<1>, /*MTK_DRM_OPT_MMDVFS_SUPPORT*/
+				<0>, /*MTK_DRM_OPT_SODI_SUPPORT*/
+				<1>, /*MTK_DRM_OPT_IDLE_MGR*/
+				<0>, /*MTK_DRM_OPT_IDLEMGR_SWTCH_DECOUPLE*/
+				<1>, /*MTK_DRM_OPT_IDLEMGR_BY_REPAINT*/
+				<0>, /*MTK_DRM_OPT_IDLEMGR_ENTER_ULPS*/
+				<0>, /*MTK_DRM_OPT_IDLEMGR_KEEP_LP11*/
+				<0>, /*MTK_DRM_OPT_DYNAMIC_RDMA_GOLDEN_SETTING*/
+				<1>, /*MTK_DRM_OPT_IDLEMGR_DISABLE_ROUTINE_IRQ*/
+				<0>, /*MTK_DRM_OPT_MET_LOG*/
+				<0>,	//<1>, /*MTK_DRM_OPT_USE_PQ*/		//KCM modify by phf, 20250118, fix z10 E-INK pixtel flash bug
+				<1>, /*MTK_DRM_OPT_ESD_CHECK_RECOVERY*/
+				<1>, /*MTK_DRM_OPT_ESD_CHECK_SWITCH*/
+				<1>, /*MTK_DRM_OPT_PRESENT_FENCE*/
+				<0>, /*MTK_DRM_OPT_RDMA_UNDERFLOW_AEE*/
+				<1>, /*MTK_DRM_OPT_DSI_UNDERRUN_AEE*/
+				<1>, /*MTK_DRM_OPT_HRT*/
+				<1>, /*MTK_DRM_OPT_HRT_MODE*/
+				<0>, /*MTK_DRM_OPT_DELAYED_TRIGGER*/
+				<1>, /*MTK_DRM_OPT_OVL_EXT_LAYER*/
+				<0>, /*MTK_DRM_OPT_AOD*/
+				<1>, /*MTK_DRM_OPT_RPO*/
+				<0>, /*MTK_DRM_OPT_DUAL_PIPE*/
+				<0>, /*MTK_DRM_OPT_DC_BY_HRT*/
+				<0>, /*MTK_DRM_OPT_OVL_WCG*/
+				<0>, /*MTK_DRM_OPT_OVL_SBCH*/
+				<1>, /*MTK_DRM_OPT_COMMIT_NO_WAIT_VBLANK*/
+				<0>, /*MTK_DRM_OPT_MET*/
+				<0>, /*MTK_DRM_OPT_REG_PARSER_RAW_DUMP*/
+				<0>, /*MTK_DRM_OPT_VP_PQ*/
+				<0>, /*MTK_DRM_OPT_GAME_PQ*/
+				<0>, /*MTK_DRM_OPT_MMPATH*/
+				<0>, /*MTK_DRM_OPT_HBM*/
+				<0>, /*MTK_DRM_OPT_VDS_PATH_SWITCH*/
+				<0>, /*MTK_DRM_OPT_LAYER_REC*/
+				<1>, /*MTK_DRM_OPT_CLEAR_LAYER*/
+				<1>, /*MTK_DRM_OPT_LFR*/
+				<0>, /*MTK_DRM_OPT_SF_PF*/
+				<1>, /*MTK_DRM_OPT_DYN_MIPI_CHANGE*/
+				<0>, /*MTK_DRM_OPT_PRIM_DUAL_PIPE*/
+				<0>, /*MTK_DRM_OPT_MSYNC2_0*/
+				<0>, /*MTK_DRM_OPT_VIRTUAL_DISP*/
+				<0>; /*MTK_DRM_OPT_MML_PRIMARY*/
+	#endif			
+};
+
+&dsi0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	
+	panel1@0 {
+		compatible = "z10,eink,vdo";
+		reg = <0>;
+		pm-enable-gpios = <&pio 12 0>;
+		reset-gpios = <&pio 85 0>;
+		
+		v12_en-gpios = <&pio 158 0>;
+		v33_en-gpios = <&pio 159 0>;
+		v18_en-gpios = <&pio 43 0>;
+		
+		//gate-ic = <4831>;
+		pinctrl-names = "default";
+		port {
+			panel_in1: endpoint {
+				remote-endpoint = <&dsi_out>;
+			};
+		};
+	};
+	
+	ports {
+		port {
+			dsi_out: endpoint {
+				remote-endpoint = <&panel_in1>;
+			};
+		};
+	};
+};
+
+/* GPS GPIO standardization start */
+&pio {
+	gps_pins_default: gps_default {
+	};
+	gps_l1_lna_pins_ol: gps_l1_lna@0 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO25__FUNC_GPIO25>;
+			output-low;
+		};
+	};
+	gps_l1_lna_pins_dsp_ctrl: gps_l1_lna@1 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO25__FUNC_GPS_L1_ELNA_EN>;
+		};
+	};
+	gps_l1_lna_pins_oh: gps_l1_lna@2 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO25__FUNC_GPIO25>;
+			output-high;
+		};
+	};
+	gps_l5_lna_pins_ol: gps_l5_lna@0 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO26__FUNC_GPIO26>;
+			output-low;
+		};
+	};
+	gps_l5_lna_pins_dsp_ctrl: gps_l5_lna@1 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO26__FUNC_GPS_L5_ELNA_EN>;
+		};
+	};
+	gps_l5_lna_pins_oh: gps_l5_lna@2 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO26__FUNC_GPIO26>;
+			output-high;
+		};
+	};
+};
+&gps {
+	pinctrl-names = "default",
+		"gps_l1_lna_disable",
+		"gps_l1_lna_dsp_ctrl",
+		"gps_l1_lna_enable",
+		"gps_l5_lna_disable",
+		"gps_l5_lna_dsp_ctrl",
+		"gps_l5_lna_enable";
+	pinctrl-0 = <&gps_pins_default>;
+	pinctrl-1 = <&gps_l1_lna_pins_ol>;
+	pinctrl-2 = <&gps_l1_lna_pins_dsp_ctrl>;
+	pinctrl-3 = <&gps_l1_lna_pins_oh>;
+	pinctrl-4 = <&gps_l5_lna_pins_ol>;
+	pinctrl-5 = <&gps_l5_lna_pins_dsp_ctrl>;
+	pinctrl-6 = <&gps_l5_lna_pins_oh>;
+	status = "okay";
+};
+/* GPS GPIO standardization end */
+
+//#include "mediatek/cust_mt6789_touch_1080x2400.dtsi"
+#include "mediatek/cust_mt6789_camera_v4l2.dtsi"
+#if 1
+&i2c0 {
+	focaltech@38{ 
+			compatible = "focaltech,fts";	
+			reg = <0x38>;  					
+			//interrupt-parent = <&pio>;
+			//interrupts = <9 IRQ_TYPE_EDGE_FALLING 9 0>;
+            //vdd-supply = <&pm8916_l15>;
+            //vcc_i2c-supply = <&pm8916_l16>;
+			focaltech,reset-gpio = <&pio 152 0x0>; 
+			focaltech,irq-gpio = <&pio 9 0x0>; 	
+			focaltech,max-touch-number = <10>;			
+			focaltech,display-coords =  <0 0 600 800>;	 
+
+			focaltech,have-key;
+			focaltech,key-number = <3>;	
+			focaltech,keys = <158 172 580>; 	
+			focaltech,key-x-coords = <120 300 480>;
+			focaltech,key-y-coords = <1000 1000 1000>; 
+			status = "okay";
+		};
+};
+#endif
+
+&i2c3 {
+	nfc@28 {
+		compatible = "nxp,nxpnfc";
+		reg = <0x28>;
+		status = "okay";
+		nxp,nxpnfc-irq = <&pio 1 0>;
+		nxp,nxpnfc-ven = <&pio 12 0>;
+		nxp,nxpnfc-fw-dwnld = <&pio 3 0>;
+	};
+};
+
+
+&i2c5 {
+	cps-wls-charger-l@30 {
+		compatible = "cps,wls-charger-cps4021";
+		reg = <0x30>;
+		status = "okay";
+		cps,cps_wls_int = <&pio 13 0>;
+		cps,wls_charger_ovp_en = <&pio 151 0>;
+		/*wls_mod0_gp1 detect wireless charger, 0:not attach  1:attach*/
+		cps,wls_mod0_gp1 = <&pio 150 0>;
+		/*wls_mod1_gp2 enable/disable wireless charger output, gpio set 0:enable 1:disable*/
+		cps,wls_mod1_gp2 = <&pio 37 0>;
+		cps,wls_charger_ovp_flag = <&pio 153 0>;
+	};
+	
+	eta6947@6b {
+		compatible = "halo,eta6937";
+		reg = <0x6b>;
+		status = "okay";
+		rt,en_gpio_num = <156>;
+		rt,en_gpio = <&pio 156 0x0>;
+		mt6306_en_pin = <1>;
+		rt,intr_gpio_num = <14>; /* direct defined GPIO num */
+		rt,intr_gpio = <&pio 14 0x0>;
+		interrupt-names = "wdtmri";
+		charger_name = "secondary_chg";
+		ichg = <1500000>; /* uA */
+		mivr = <4500000>; /* uV */
+		cv = <4400000>; /* uV */
+		ieoc = <700000>; /* uA */
+		safety_timer = <12>; /* hour */
+		en_st; /* safety timer */
+		/* en_te; */
+		en_wdt;
+	};	
+
+};
+
+&pe {
+	ta_7v_support;
+	ta_ac_12v_input_current = <2500000>;
+	ta_ac_9v_input_current = <2500000>;
+	ta_ac_7v_input_current = <2500000>;
+	pe_charger_current = <2500000>;
+	vbat_threshold = <4465>;
+};
+
+&pe2 {
+	/* single charger */
+	sc_input_current = <3000000>;
+	sc_charger_current = <2500000>;
+	/* dual charger in series*/
+	dcs_input_current = <3000000>;
+	dcs_chg1_charger_current = <2500000>;
+	dcs_chg2_charger_current = <500000>;
+};
+
+&pdc {
+	pd_vbus_upper_bound = <12500000>;
+	/* dual charger in series*/
+	dcs_input_current = <3000000>;
+	dcs_chg1_charger_current = <2500000>;
+	dcs_chg2_charger_current = <500000>;
+};
+
+&pe45 {
+	/* dual charger in series*/
+		dcs-input-current = <3000000>;
+		dcs-chg1-charger-current = <2500000>;
+		dcs-chg2-charger-current = <500000>;
+};
+
+&charger {
+	charger_configuration= <0>;	//1		
+
+	battery_cv = <4465000>;		//<4450000>
+	/* charging current */
+	usb_charger_current = <500000>;
+	ac_charger_current = <2500000>;  	//3000000	//3500000
+	ac_charger_input_current = <3000000>;		//3200000	//3700000
+	charging_host_charger_current = <3000000>;
+	max_charger_voltage = <125000000>;
+	/*disable_aicl;*/
+};
+
+
+
+&i2c6 {
+	spk: speaker_amp@5c {
+		compatible = "richtek,rt5512";
+		#sound-dai-cells = <0>;
+		reg = <0x5c>;
+		status = "okay";
+		sound-name-prefix = "Left";
+	};
+	
+	
+	/* OCS OCA72390 Smart K PA --mono */
+	oca72xxx_pa@5C {
+		compatible = "ocs,oca72xxx_pa";
+		reg = <0x58>;
+	/*	reset-gpio = <&pio 1 0>; oca72390没有reset，oca72559需要打开*/
+		dev_index = < 0 >;
+		status = "okay";
+	};
+	/* OCS OCA72390 Smart K PA End */
+	
+	//key-scan-start
+	aw9523b_led@5b {
+		compatible = "awinic,aw9523b";
+		reg = <0x5b>; //addr	AD0/AD1接高电平，这两个bit置1,5B 1011011        驱动默认:0x58  1011000
+		reset-gpio = <&pio 35 0>; //rst gpio
+		irq-gpio = <&pio 5 0>; //irq gpio
+		//aw9523b_power-supply = <&pm8909_l6>; //VCC
+		aw9523b,single_key_enable = <0>; //enable single key function, 0 to disable
+		aw9523b,matrix_key_enable = <1>; //enable matrix key function, 0 to disable
+		aw9523b,led_enable = <1>; //1 to enabel led function, 0 to disable 
+		aw9523b,gpio_enable = <0>; //1 to enable gpio function, 0 to disable 
+
+		status = "okay";
+		aw9523b,key{
+			aw9523b,wake_up_enable = <0>; //enabel key function in suspend mode,0 to disable
+			aw9523b,input_port_mask = <0xFC00>;		//input:1111 1100 0000 0000   P1_2-P1_3 , P1_4-P1_7 
+			aw9523b,output_port_mask = <0x00FC>;	//output:0000 0000 1111 1100  P0_2-P0_3 , P0_4-P0_7 
+		};
+		aw9523b,led {
+			aw9523b,default_imax = <0x00>;
+			keyboard-backlight{
+				aw9523b,name = "keyboard-backlight"; //cdev name
+				aw9523b,idx_count = <1>; //The number of ports used
+				aw9523b,idx = <0x00>; //The specific port identifier used, This is used here: P0_0
+				aw9523b,default_brightness = <255>;
+				aw9523b,max_brightness = <255>;
+			};
+			led2{
+				aw9523b,name = "led2";
+				aw9523b,idx_count = <1>;////The number of ports used
+				aw9523b,idx = <0x01>;//The specific port identifier used, This is used here:P0_1
+				aw9523b,default_brightness = <255>;
+				aw9523b,max_brightness = <255>;
+			};
+
+
+		//P0_4 0x04  0_5 0x05 0_6 0x06 0_7 0x07
+		//p1_0 0x08  1_1 0x09 1_2 0x0A 1_3 0x0B 1_4 0x0C 1_5 0x0D 1_6 0x0E 1_1 0x0F
+	
+	
+			led3{
+				aw9523b,name = "led8";
+				aw9523b,idx_count = <1>;
+				aw9523b,idx = <0x08>; //The specific port identifier used, This is used here:P1_0   
+				aw9523b,default_brightness = <255>;
+				aw9523b,max_brightness = <255>;
+			};
+			led4{
+				aw9523b,name = "led9";
+				aw9523b,idx_count = <1>;
+				aw9523b,idx = <0x09>; //The specific port identifier used, This is used here:P1_1   
+				aw9523b,default_brightness = <255>;
+				aw9523b,max_brightness = <255>;
+			};
+		};
+		aw9523b,gpio{
+			aw9523b,gpio_mode = <1>;
+			gpio1{
+				aw9523b,gpio_idx = <4>; // The specific port identifier used, This is used here:P0_4
+				aw9523b,gpio_dir = <1>; // The specific port work in output(1) or input(0)
+				aw9523b,gpio_default_val = <0>;
+			};
+			gpio2{
+				aw9523b,gpio_idx = <5>; // The specific port identifier used, This is used here:P0_5
+				aw9523b,gpio_dir = <1>; //The specific port work in output(1) or input(0)
+				aw9523b,gpio_default_val = <0>;
+			};
+			gpio3{
+				aw9523b,gpio_idx = <6>; // The specific port identifier used, This is used here:P0_6
+				aw9523b,gpio_dir = <1>; //The specific port work in output(1) or input(0)
+				aw9523b,gpio_default_val = <0>;
+			};
+			gpio4{
+				aw9523b,gpio_idx = <7>; // The specific port identifier used, This is used here:P0_7
+				aw9523b,gpio_dir = <1>; //The specific port work in output(1) or input(0)
+				aw9523b,gpio_default_val = <0>;
+			};
+		};
+	};
+	//key-scan-end
+		
+};
+
+&i2c7 {
+	clock-frequency = <1000000>;
+	eink_cpld_i2c@4b {
+		compatible = "mediatek,I2C_LCD_BIAS";
+		reg = <0x4b>;
+		status = "okay";
+	};
+};
+
+
+/* flashlight GPIO standardization */
+&pio {
+	flashlight_hwen_high: flashlight@1 {
+	    pins_cmd_dat {
+			pinmux = <PINMUX_GPIO0__FUNC_GPIO0>; 
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+	
+	flashlight_hwen_low: flashlight@0 {
+	    pins_cmd_dat {
+			pinmux = <PINMUX_GPIO0__FUNC_GPIO0>;	
+			slew-rate = <1>; 
+			output-low;
+		};
+	};
+	
+};
+
+&mtk_flashlight {
+	status = "okay";
+	pinctrl-names = "hwen_high", "hwen_low";
+	pinctrl-0 = <&flashlight_hwen_high>;
+	pinctrl-1 = <&flashlight_hwen_low>;
+	flash@0{
+		reg = <0>;
+		type = <0>;
+		ct = <0>;
+		part = <0>;
+	};
+	
+};
+/* FLASHLIGHT GPIO end */
+
+// FLASHLIGHT
+&i2c8 {
+	//flashlight:ocp81375
+	ocp81375@64 {
+		compatible = "mediatek,strobe_main";
+		reg = <0x64>;
+		status = "okay";
+	};
+};
+
+
+&sound {
+	mediatek,spk-i2s = <3 0>;
+	mediatek,speaker-codec {
+		sound-dai = <&spk>;
+	};
+};
+
+&pdc {
+	pd_vbus_upper_bound = <9000000>;
+};
+
+// kcm added by phf, 20240816
+
+&focaltech_fp{
+	status = "okay";
+	interrupt-parent = <&pio>;
+	interrupts = <8 IRQ_TYPE_EDGE_RISING>;
+
+	focaltech_fp,reset-gpio = <&pio 10 0>;
+	focaltech_fp,irq-gpio = <&pio 8 0>;
+	//focaltech_fp,vdd-gpio = <&pio 92 0>;
+
+	//focaltech_fp,power-always-on;
+	focaltech_fp,use-regulator;
+	ff_vdd-supply = <&mt6358_vio28_reg>;
+    
+    focaltech_fp,read-chip;
+
+	//focaltech_fp,use-pinctrl;
+	//pinctrl-names = "ff_pins_reset_low","ff_pins_reset_high","ff_pins_irq_as_int","ff_pins_power_low","ff_pins_power_high";
+	//pinctrl-0 = <&fp_pins_rst_output0>;
+	//pinctrl-1 = <&fp_pins_rst_output1>;
+	//pinctrl-2 = <&fp_pins_eint>;
+	//pinctrl-3 = <&fp_pins_power_output0>;
+	//pinctrl-4 = <&fp_pins_power_output1>;
+};
+
+
+#if 0
+&pio {
+	fp_pins_rst_output0: fprstout0 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO47__FUNC_GPIO47>;
+			output-low;
+		};
+	};
+	fp_pins_rst_output1: fprstout1 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO47__FUNC_GPIO47>;
+			output-high;
+		};
+	};
+    fp_pins_eint: fpeint {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO5__FUNC_GPIO5>;
+			bias-disable;
+			input-enable;
+		};
+	};
+	fp_pins_power_output0: fppwrout0 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO92__FUNC_GPIO92>;
+			output-low;
+		};
+	};
+	fp_pins_power_output1: fppwrout1 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO92__FUNC_GPIO92>;
+			output-high;
+		};
+	};
+};
+#endif
+
+
+#include <Z10/cust.dtsi>
+/*End of this file, DO NOT ADD ANYTHING HERE*/

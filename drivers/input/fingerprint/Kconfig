@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Input core configuration
+#	  
+	  
+source "drivers/input/fingerprint/focaltech_fp/Kconfig"
+
