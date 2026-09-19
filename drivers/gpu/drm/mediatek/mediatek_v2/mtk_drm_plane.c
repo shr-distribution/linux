@@ -6,6 +6,7 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_plane_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
 #include <linux/mailbox_controller.h>
 
@@ -602,6 +603,30 @@ int mtk_plane_init(struct drm_device *dev, struct mtk_drm_plane *plane,
 	drm_plane_helper_add(&plane->base, &mtk_plane_helper_funcs);
 
 	mtk_plane_attach_property(plane);
+
+	/*
+	 * Also expose the two standard plane properties. This driver carries its
+	 * own PLANE_PROP_PLANE_ALPHA and PLANE_PROP_ALPHA_CON and blends from
+	 * those, so nothing here changes what reaches the panel - but the vendor
+	 * hwcomposer looks the standard names up by string during its DRM probe:
+	 *
+	 *   [DRMDEV] property[alpha] does not do initialize
+	 *   [DRMDEV] property[pixel blend mode] does not do initialize
+	 *   [DRMDEV] failed to check plane[34] property: error=-22
+	 *   [DRMDEV] failed to initialize all plane: -19
+	 *   [DRMDEV] failed to initialize drm resource
+	 *
+	 * and on not finding them abandons DRM entirely and falls back to asking
+	 * hwservicemanager for composer@2.1::IComposer, which libhidl then retries
+	 * forever. Creating the properties is enough to get past that: alpha and
+	 * pixel_blend_mode are plain fields of drm_plane_state, handled generically
+	 * by drm_atomic_uapi.c, so no atomic_check or commit change is needed.
+	 */
+	drm_plane_create_alpha_property(&plane->base);
+	drm_plane_create_blend_mode_property(&plane->base,
+					     BIT(DRM_MODE_BLEND_PREMULTI) |
+					     BIT(DRM_MODE_BLEND_COVERAGE) |
+					     BIT(DRM_MODE_BLEND_PIXEL_NONE));
 
 	return 0;
 }
