@@ -11541,9 +11541,34 @@ enum hw_filter_mode {
  * Usage: Internal/External
  *
  * Supported Feature: PACKET FILTERING
+ *
+ * LuneOS: the default is 7 (IPv6 multicast | IPv4 multicast | IPv4 broadcast)
+ * rather than the upstream 0. Upstream can leave this off because on Android
+ * the framework programs APF rules into the firmware for a suspended STA;
+ * there is no such framework here, and the vendor ini this device ships
+ * (/vendor/firmware/wlan/qca_cld/WCNSS_qcom_cfg.ini) does not set the knob, so
+ * nothing ever installed a filter and every broadcast or multicast datagram on
+ * the LAN was forwarded to the host.
+ *
+ * Measured on sargo in a three-hour unplugged window (2026-09-19): 174
+ * suspends, 145 of them ended by the WLAN copy-engine interrupt, one wake
+ * roughly every 75 s, with WoWLAN magic-packet armed through cfg80211. The
+ * firmware named the reason itself in 147 wake events: 100 "IPV6 UDP Packet
+ * rcvd", 46 "IPV4 UDP Packet rcvd", 1 TCP - i.e. mDNS, SSDP and the rest of
+ * the ordinary LAN chatter, which bits 0-2 are exactly the filters for.
+ *
+ * Bits 3-5 (XID, STP, DTP/LLC/CDP) are left off: none of them appeared in the
+ * measurement, and they are switch-to-switch protocols a phone does not see.
+ *
+ * This does not fight a userspace that later programs its own rules:
+ * hdd_enable_default_pkt_filters() skips the defaults once
+ * user_configured_pkt_filter_rules is set. ARP and IPv6 neighbour discovery
+ * keep working while the host sleeps because hdd_conf_hostoffload() runs in
+ * the same suspend path and both offloads default to enabled, so the firmware
+ * answers for us instead of waking us.
  */
 #define CFG_ENABLE_PACKET_FILTERS_NAME     "g_enable_packet_filter_bitmap"
-#define CFG_ENABLE_PACKET_FILTERS_DEFAULT  (0)
+#define CFG_ENABLE_PACKET_FILTERS_DEFAULT  (7)
 #define CFG_ENABLE_PACKET_FILTERS_MIN      (0)
 #define CFG_ENABLE_PACKET_FILTERS_MAX      (63)
 
