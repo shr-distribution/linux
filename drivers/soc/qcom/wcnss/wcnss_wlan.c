@@ -1815,12 +1815,54 @@ void wcnss_resume_notify(void)
 }
 EXPORT_SYMBOL(wcnss_resume_notify);
 
+static int wcnss_setup_vbat_monitoring(void);
+
+/*
+ * Stop and restart the VSYS threshold monitor around system suspend.
+ *
+ * wcnss_setup_vbat_monitoring() parks a threshold comparator on the PMIC's
+ * ADC_TM at WCNSS_VBATT_THRESHOLD so the WLAN firmware can be told to back its
+ * TX power off when the system rail sags. Every crossing flips the armed
+ * threshold to the opposite side, and the ADC_TM's high and low interrupts are
+ * wake sources (qpnp-adc-tm arms enable_irq_wake() on both), so a rail dip
+ * under a radio burst - or an aged battery sagging past 3.5 V - wakes the whole
+ * SoC purely to re-arm the other side.
+ *
+ * Measured on tissot (2026-09-20, 9 h uptime, 6.9 h of it asleep): irq 110
+ * (low) fired 137 times and irq 109 (high) 16 times, 24 of those resuming the
+ * phone from suspend, several after less than a second asleep.
+ *
+ * Nothing is lost by pausing it: the indication only matters while the host is
+ * running and driving the radio, and wcnss_setup_vbat_monitoring() re-arms both
+ * thresholds on resume, so the first measurement re-establishes the state.
+ */
+static void wcnss_pause_vbat_monitoring(void)
+{
+	if (!penv || !penv->adc_tm_dev)
+		return;
+
+	if (qpnp_adc_tm_disable_chan_meas(penv->adc_tm_dev,
+					  &penv->vbat_monitor_params))
+		wcnss_log(DBG, "could not pause vbatt monitoring\n");
+}
+
+static void wcnss_restart_vbat_monitoring(void)
+{
+	if (!penv || !penv->adc_tm_dev)
+		return;
+
+	wcnss_setup_vbat_monitoring();
+}
+
 static int wcnss_wlan_suspend(struct device *dev)
 {
-	if (penv && dev && (dev == &penv->pdev->dev) &&
-	    penv->smd_channel_ready &&
-	    penv->pm_ops && penv->pm_ops->suspend)
-		return penv->pm_ops->suspend(dev);
+	if (penv && dev && (dev == &penv->pdev->dev)) {
+		wcnss_pause_vbat_monitoring();
+
+		if (penv->smd_channel_ready &&
+		    penv->pm_ops && penv->pm_ops->suspend)
+			return penv->pm_ops->suspend(dev);
+	}
 	return 0;
 }
 
@@ -1835,11 +1877,16 @@ static int wcnss_wlan_suspend_noirq(struct device *dev)
 
 static int wcnss_wlan_resume(struct device *dev)
 {
-	if (penv && dev && (dev == &penv->pdev->dev) &&
-	    penv->smd_channel_ready &&
-	    penv->pm_ops && penv->pm_ops->resume)
-		return penv->pm_ops->resume(dev);
-	return 0;
+	int rc = 0;
+
+	if (penv && dev && (dev == &penv->pdev->dev)) {
+		if (penv->smd_channel_ready &&
+		    penv->pm_ops && penv->pm_ops->resume)
+			rc = penv->pm_ops->resume(dev);
+
+		wcnss_restart_vbat_monitoring();
+	}
+	return rc;
 }
 
 static int wcnss_wlan_resume_noirq(struct device *dev)
