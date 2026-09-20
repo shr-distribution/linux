@@ -527,6 +527,40 @@ static irqreturn_t wdog_bark_handler(int irq, void *dev_id)
 			(unsigned long) wdog_dd->last_pet, nanosec_rem / 1000);
 	if (wdog_dd->do_ipi_ping)
 		dump_cpu_alive_mask(wdog_dd);
+
+	/*
+	 * Say what was stuck before resetting the SoC.
+	 *
+	 * Up to here the handler prints the bark time, the last pet and the
+	 * alive mask, which says that something stalled but never what. On
+	 * sargo the watchdog has bitten twice during long idle runs
+	 * (androidboot.bootreason=watchdog, 2026-09-19 11:46 and 22:16), the
+	 * second time with "PM: suspend entry" as the last line in the
+	 * journal: the suspend transition did not finish within the 11 s
+	 * qcom,bark-time, which this platform deliberately keeps running
+	 * across suspend (qcom,wakeup-enable, so msm_watchdog_suspend() only
+	 * pets and leaves the counter enabled). Which task was stuck, and
+	 * where, was not recorded anywhere.
+	 *
+	 * dump_stack() gives the context that took the bark, and
+	 * show_state_filter(TASK_UNINTERRUPTIBLE) walks every task in D state
+	 * with its backtrace - the signature of a stalled suspend, where the
+	 * thread carrying the transition sits in a device callback. This is
+	 * what sysrq-w does and it runs from interrupt context there too;
+	 * msm_trigger_wdog_bite() then waits 10 s for the bite, so there is
+	 * time for the output to reach the console.
+	 *
+	 * Where that output can be read afterwards is a separate matter on
+	 * this device: the bootloader copies the ramoops region to
+	 * alt_ramoops_region encrypted, so /sys/fs/pstore comes up empty
+	 * unless the vendor's own /vendor/bin/ramoops has supplied the AES key
+	 * and set /sys/devices/virtual/ramoops/pstore/use_alt. A UART console
+	 * sees it regardless.
+	 */
+	pr_emerg("Watchdog bark: dumping the stalled context before the bite\n");
+	dump_stack();
+	show_state_filter(TASK_UNINTERRUPTIBLE);
+
 	msm_trigger_wdog_bite();
 	panic("Failed to cause a watchdog bite! - Falling back to kernel panic!");
 	return IRQ_HANDLED;
