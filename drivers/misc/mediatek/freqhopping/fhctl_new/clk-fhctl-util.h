@@ -24,6 +24,24 @@ do { \
 	val = ((tv & (field)) >> (ffs(field) - 1)); \
 } while (0)
 
+/*
+ * The vendor drop never shipped a definition for FHDBG, although the driver
+ * calls it 73 times and FHDBG_LIMIT() below expands to it. Nothing noticed
+ * because the only file that is not built unconditionally,
+ * clk-fhctl-debug.c, is guarded by CONFIG_DEBUG_FS in the Makefile and the
+ * vendor builds have debugfs off; with it on the build stops at
+ * -Werror=implicit-function-declaration.
+ *
+ * Call sites pass their own newline and some pass nothing else at all
+ * (FHDBG("\n")), so the macro carries the context: subsystem tag and the
+ * calling function. pr_debug keeps it out of the log unless the file is built
+ * with DEBUG or enabled through dynamic debug, which matches the name.
+ */
+#ifndef FHDBG
+#define FHDBG(fmt, args...) \
+	pr_debug("[FHCTL] %s(): " fmt, __func__, ##args)
+#endif
+
 #define FHDBG_LIMIT(FREQ, fmt, args...) do {\
 	static DEFINE_RATELIMIT_STATE(ratelimit, HZ, FREQ);\
 	static int skip_cnt;\
