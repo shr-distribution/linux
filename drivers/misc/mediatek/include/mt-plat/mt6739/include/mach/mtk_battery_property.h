@@ -158,7 +158,18 @@
 #define DIFFERENCE_FGC_FGV_TH3 300
 #define DIFFERENCE_FGC_FGV_TH_SOC1 7000
 #define DIFFERENCE_FGC_FGV_TH_SOC2 3000
-#define NAFG_TIME_SETTING 10
+/*
+ * NAFG sampling period, in minutes. The gauge raises nag_c_dltv at this
+ * cadence, and on a phone that suspends it is a wake: measured on the
+ * mindphone 2026-09-21, three of every four PMIC wakes were nag_c_dltv and
+ * the sleeps between them were 590-599 s, so at the stock 10 this costs six
+ * wakes an hour for a reading nothing consumes while the device is idle -
+ * LuneOS does not run MediaTek's fuelgauged, which is what would otherwise
+ * retune this. 30 keeps the gauge tracking sudden voltage changes, just
+ * three times less often; disabling it outright (command 104) would give it
+ * up entirely.
+ */
+#define NAFG_TIME_SETTING 30
 #define NAFG_RATIO 100
 #define NAFG_RATIO_EN 0
 #define NAFG_RATIO_TMP_THR 1

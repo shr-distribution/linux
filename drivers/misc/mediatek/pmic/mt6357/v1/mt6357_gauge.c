@@ -296,7 +296,15 @@ static int fgauge_initial(struct gauge_device *gauge_dev)
 	pmic_set_register_value(PMIC_FG_SON_SLP_EN, 0);
 #endif
 
-	pmic_set_register_value(PMIC_AUXADC_NAG_PRD, 10);
+	/*
+	 * The NAFG sampling period. This runs before fg_custom_init_from_*()
+	 * has populated fg_cust_data, which is why it cannot read
+	 * nafg_time_setting here and why the value was written as a literal.
+	 * Take the platform's own constant instead, so a board that wants a
+	 * different period changes it in one place and both this and
+	 * fgauge_set_nafg_intr_internal() agree.
+	 */
+	pmic_set_register_value(PMIC_AUXADC_NAG_PRD, NAFG_TIME_SETTING);
 	fgauge_get_info(gauge_dev, GAUGE_BAT_PLUG_STATUS, &bat_flag);
 	fgauge_get_info(gauge_dev, GAUGE_PL_CHARGING_STATUS, &is_charger_exist);
 
