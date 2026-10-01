@@ -42,6 +42,7 @@ DRVGEN_FILE_LIST :=
 endif
 DRVGEN_TOOL := $(srctree)/tools/dct/DrvGen.py
 DRVGEN_FIG := $(wildcard $(dir $(DRVGEN_TOOL))config/*.fig)
+PREBUILT_CUST := $(srctree)/arch/$(SRCARCH)/boot/dts/mediatek/$(MTK_PROJECT)/cust.dtsi
 
 .PHONY: drvgen
 drvgen: $(DRVGEN_FILE_LIST)
@@ -51,7 +52,10 @@ $(DRVGEN_FILE_LIST): $(DRVGEN_TOOL) $(DWS_FILE) $(DRVGEN_FIG) $(PROJ_DTS_FILES)
 	       	| sed 's/\/cust\.dtsi[>"]//g' | sed 's/\/\*//g' | sed 's/\*\///g' | sed 's/ //g'`\
 		prj_path=$(DRVGEN_OUT)/$$base_prj ;\
 		dws_path=$(srctree)/$(DRVGEN_PATH)/$$base_prj.dws ;\
-		if [ -f $$dws_path ] ; then \
+		if [ -f $(PREBUILT_CUST) ] ; then \
+			mkdir -p $$prj_path ;\
+			cp $(PREBUILT_CUST) $$prj_path ;\
+		elif [ -f $$dws_path ] ; then \
 			mkdir -p $$prj_path ;\
 			$(python) $(DRVGEN_TOOL) $$dws_path $$prj_path $$prj_path cust_dtsi;\
 		fi \
