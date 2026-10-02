@@ -1,6 +1,7 @@
 menuconfig MALI400
 	tristate "Mali-300/400/450 support"
 	depends on ARM
+	select DMA_SHARED_BUFFER
 	default y
 	---help---
 	This enables support for the ARM Mali-300, Mali-400, and Mali-450
@@ -18,8 +19,8 @@ choice
 	  help
 	    Choose this option to select DDK version.
 
+endchoice
+
 if MALI_VER_R4P1
 source "drivers/gpu/mali400/r4p1/Kconfig"
 endif
-
-endchoice
