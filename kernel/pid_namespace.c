@@ -276,7 +276,12 @@ static int pidns_install(struct nsproxy *nsproxy, void *ns)
 	struct pid_namespace *active = task_active_pid_ns(current);
 	struct pid_namespace *ancestor, *new = ns;
 
-	if (!ns_capable(new->user_ns, CAP_SYS_ADMIN))
+	/*
+	 * This tree has no per-namespace user_ns in struct pid_namespace (and
+	 * no user namespaces to own one), so entering a pid namespace needs
+	 * CAP_SYS_ADMIN in the initial namespace.
+	 */
+	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	/*
