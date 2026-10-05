@@ -12,7 +12,10 @@ static inline void add_device_randomness(const void *buf, unsigned int size)
 }
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)
+/* This tree already carries the 3.8 prandom API (prandom_u32, prandom_bytes,
+ * prandom_seed, prandom_u32_state); redefining prandom_u32() as random32()
+ * would make the in-tree random32() macro recurse. */
+#if 0
 /* backports 496f2f9 */
 #define prandom_seed(_seed)		srandom32(_seed)
 #define prandom_u32()			random32()
