@@ -2983,6 +2983,95 @@ static struct i2c_registry msm8x60_i2c_devices[] __initdata = {
 #endif 
 
 /*
+ * Power up the gyroscope rails with an off/on cycle, as the 2.6.35 kernel did (power_up_gyroscope() in
+ * its board-tenderloin.c): 8058_l15 at 2.85V, 8901_lvs3, and on later boards 8058_l12 at 1.8V. The
+ * regulators stay enabled and their references are kept.
+ */
+static void __init tenderloin_power_up_gyroscope(void)
+{
+	struct regulator *l15, *lvs3, *l12 = NULL;
+	int need_l12 = (boardtype_is_3g() && board_type >= TOPAZ_3G_DVT) ||
+		       (!boardtype_is_3g() && board_type > TOPAZ_DVT);
+	int rc;
+
+	l15 = regulator_get(NULL, "8058_l15");
+	if (IS_ERR(l15)) {
+		pr_err("%s: failed to get 8058_l15\n", __func__);
+		return;
+	}
+	rc = regulator_set_voltage(l15, 2850000, 2850000);
+	if (rc) {
+		pr_err("%s: failed to set 8058_l15 voltage: %d\n", __func__, rc);
+		goto put_l15;
+	}
+
+	lvs3 = regulator_get(NULL, "8901_lvs3");
+	if (IS_ERR(lvs3)) {
+		pr_err("%s: failed to get 8901_lvs3\n", __func__);
+		goto put_l15;
+	}
+
+	if (need_l12) {
+		l12 = regulator_get(NULL, "8058_l12");
+		if (IS_ERR(l12)) {
+			pr_err("%s: failed to get 8058_l12\n", __func__);
+			l12 = NULL;
+			goto put_lvs3;
+		}
+		rc = regulator_set_voltage(l12, 1800000, 1800000);
+		if (rc) {
+			pr_err("%s: failed to set 8058_l12 voltage: %d\n", __func__, rc);
+			goto put_l12;
+		}
+	}
+
+	/*
+	 * A regulator's use count starts at 0 whatever its state, and disabling one that is believed
+	 * to be off fails. Enable each first, so the off/on cycle below really switches it.
+	 */
+	if (!regulator_is_enabled(l15) && regulator_enable(l15))
+		goto put_l12;
+	if (!regulator_is_enabled(lvs3) && regulator_enable(lvs3))
+		goto put_l12;
+	if (l12 && !regulator_is_enabled(l12) && regulator_enable(l12))
+		goto put_l12;
+
+	regulator_disable(l15);
+	regulator_disable(lvs3);
+	if (l12)
+		regulator_disable(l12);
+
+	msleep(5);
+
+	rc = regulator_enable(l15);
+	if (rc) {
+		pr_err("%s: failed to enable 8058_l15: %d\n", __func__, rc);
+		goto put_l12;
+	}
+	rc = regulator_enable(lvs3);
+	if (rc) {
+		pr_err("%s: failed to enable 8901_lvs3: %d\n", __func__, rc);
+		regulator_disable(l15);
+		goto put_l12;
+	}
+	if (l12) {
+		msleep(1000);
+		rc = regulator_enable(l12);
+		if (rc)
+			pr_err("%s: failed to enable 8058_l12: %d\n", __func__, rc);
+	}
+	return;
+
+put_l12:
+	if (l12)
+		regulator_put(l12);
+put_lvs3:
+	regulator_put(lvs3);
+put_l15:
+	regulator_put(l15);
+}
+
+/*
  *   S3A_1V8
  */
 static struct regulator *board_S3A_1V8 = NULL;
@@ -3457,6 +3546,7 @@ static void __init tenderloin_init(void)
 #endif
 #ifdef CONFIG_MACH_TENDERLOIN
     board_setup_S3A_1V8();
+    tenderloin_power_up_gyroscope();
 #endif
     tenderloin_init_keypad();
     printk(KERN_ERR "%s: --\n", __func__);
