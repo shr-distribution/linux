@@ -103,6 +103,19 @@ config LEDS_RT4505
 	  And it's commonly used to compensate the illuminance for the camera
 	  inside the mobile product like as phones or tablets.
 
+config LEDS_RT5033
+	tristate "LED support for RT5033 PMIC"
+	depends on LEDS_CLASS_FLASH
+	depends on V4L2_FLASH_LED_CLASS || !V4L2_FLASH_LED_CLASS
+	depends on MFD_RT5033
+	help
+	  This option enables support for the flash LED found on the
+	  Richtek RT5033 PMIC. It supports torch and flash (strobe)
+	  modes.
+
+	  This driver can be built as a module. If so, the module will be
+	  called leds-rt5033.
+
 config LEDS_RT8515
 	tristate "LED support for Richtek RT8515 flash/torch LED"
 	depends on GPIOLIB
