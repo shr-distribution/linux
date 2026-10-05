@@ -2436,6 +2436,7 @@ int soc_dpcm_fe_dai_open(struct snd_pcm_substream *fe_substream)
 	if (dpcm_path_get(fe, stream, &list) <= 0) {
 		dev_warn(fe->dev, "asoc: %s no valid %s route from source to sink\n",
 			fe->dai_link->name, stream ? "capture" : "playback");
+		fe->dpcm[stream].runtime = NULL;
 		mutex_unlock(&fe->card->dpcm_mutex);
 		return -EINVAL;
 	}
