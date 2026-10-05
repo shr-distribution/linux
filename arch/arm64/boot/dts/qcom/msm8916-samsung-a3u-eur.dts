@@ -4,6 +4,8 @@
 
 #include "msm8916-samsung-a2015-common.dtsi"
 
+#include <dt-bindings/clock/qcom,gcc-msm8916.h>
+
 / {
 	model = "Samsung Galaxy A3U (EUR)";
 	compatible = "samsung,a3u-eur", "qcom,msm8916";
@@ -82,6 +84,123 @@
 	};
 };
 
+&camss {
+	status = "okay";
+
+	ports {
+		port@0 {
+			reg = <0>;
+			csiphy0_ep: endpoint {
+				clock-lanes = <1>;
+				data-lanes = <0 2>;
+				remote-endpoint = <&imx219_ep>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			csiphy1_ep: endpoint {
+				clock-lanes = <1>;
+				data-lanes = <0 2>;
+				remote-endpoint = <&s5k5e3_ep>;
+			};
+		};
+	};
+};
+
+&cci {
+	status = "okay";
+};
+
+&cci_i2c0 {
+	camera@1a {
+		compatible = "sony,imx219";
+		reg = <0x1a>;
+
+		VANA-supply = <&cam_sensor_a2_8v>;
+		VDIG-supply = <&pm8916_l16>;
+		VDDL-supply = <&cam_sensor_core_1_2v>;
+
+		reset-gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
+
+		/*
+		 * Both sensors are mounted a quarter turn out of the phone's
+		 * portrait orientation: a capture taken with the phone held
+		 * upright comes out on its side.
+		 *
+		 * The property is the mounting angle, NOT the rotation a viewer
+		 * has to apply - a consumer corrects by the inverse. The rear
+		 * image needs a quarter turn anticlockwise to stand up, so the
+		 * module is mounted at +90, and the front at 270. Declaring the
+		 * correction instead puts both out by 180 degrees, which is the
+		 * camera app showing the rear picture upside down.
+		 *
+		 * These are also the vendor's own values: qcom,mount-angle is 90
+		 * for the rear sensor and 270 for the front.
+		 */
+		rotation = <90>;
+		orientation = <1>;	/* rear facing */
+
+		clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		clock-names = "xclk";
+		/*
+		 * imx219 reads the rate back and refuses anything but 24 MHz, and
+		 * nothing else sets it - without this the clock stays at the
+		 * 19.2 MHz XO default and the sensor will not probe.
+		 */
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clock-rates = <24000000>;
+		clock-frequency = <24000000>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk0_default>, <&cam_rear_reset_default>;
+
+		port {
+			imx219_ep: endpoint {
+				data-lanes = <1 2>;
+				remote-endpoint = <&csiphy0_ep>;
+				clock-noncontinuous;
+				link-frequencies = /bits/ 64 <456000000>;
+			};
+		};
+	};
+
+	/*
+	 * Front sensor. The vendor puts both cameras on CCI master 0 - only the
+	 * CSIPHY, the MCLK and the reset line differ - so it shares this bus
+	 * with the rear sensor at 0x1a.
+	 */
+	camera@10 {
+		compatible = "samsung,s5k5e3";
+		reg = <0x10>;
+
+		vana-supply = <&cam_sensor_a2_8v>;
+		vdig-supply = <&cam_sensor_core_1_2v>;
+		vio-supply = <&pm8916_l16>;
+
+		reset-gpios = <&tlmm 28 GPIO_ACTIVE_HIGH>;
+
+		rotation = <270>;
+		orientation = <0>;	/* front facing */
+
+		clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		clock-names = "xclk";
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		assigned-clock-rates = <26000000>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk1_default>, <&cam_front_reset_default>;
+
+		port {
+			s5k5e3_ep: endpoint {
+				data-lanes = <1 2>;
+				remote-endpoint = <&csiphy1_ep>;
+				link-frequencies = /bits/ 64 <442000000>;
+			};
+		};
+	};
+};
+
 &clk_pwm {
 	status = "okay";
 };
@@ -130,7 +249,47 @@
 	status = "okay";
 };
 
+&pm8916_rpm_regulators {
+	/* Camera sensor digital supply. */
+	pm8916_l16: l16 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+};
+
 &tlmm {
+	cam_mclk0_default: cam-mclk0-default-state {
+		pins = "gpio26";
+		function = "cam_mclk0";
+
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	cam_rear_reset_default: cam-rear-reset-default-state {
+		pins = "gpio35";
+		function = "gpio";
+
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	cam_mclk1_default: cam-mclk1-default-state {
+		pins = "gpio27";
+		function = "cam_mclk1";
+
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	cam_front_reset_default: cam-front-reset-default-state {
+		pins = "gpio28";
+		function = "gpio";
+
+		drive-strength = <16>;
+		bias-disable;
+	};
+
 	panel_vdd3_default: panel-vdd3-default-state {
 		pins = "gpio9";
 		function = "gpio";

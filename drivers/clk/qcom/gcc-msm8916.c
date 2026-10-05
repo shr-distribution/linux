@@ -850,6 +850,15 @@ static struct clk_rcg2 jpeg0_clk_src = {
 static const struct freq_tbl ftbl_gcc_camss_mclk0_1_clk[] = {
 	F(9600000, P_XO, 2, 0, 0),
 	F(23880000, P_GPLL0, 1, 2, 67),
+	/*
+	 * 24 and 26 MHz exactly. Sensor drivers tend to require one of these
+	 * rather than merely prefer it - imx219 refuses to probe on anything but
+	 * 24 MHz, and s5k5e3 declares 26 MHz in its own EXCK_FREQ register and
+	 * derives its PLL from it. GPLL0 is 800 MHz, so both land exactly and
+	 * n - m stays inside the 8-bit MND width (97 and 187).
+	 */
+	F(24000000, P_GPLL0, 1, 3, 100),
+	F(26000000, P_GPLL0, 2, 13, 200),
 	F(66670000, P_GPLL0, 12, 0, 0),
 	{ }
 };
