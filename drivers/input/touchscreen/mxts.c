@@ -2030,21 +2030,16 @@ static int mxt_input_open(struct input_dev *dev)
 	struct mxt_data *data = input_get_drvdata(dev);
 	int ret;
 
-	ret = wait_for_completion_interruptible_timeout(&data->init_done,
-			msecs_to_jiffies(90 * MSEC_PER_SEC));
-
-	if (ret < 0) {
-		tsp_debug_err(true, &data->client->dev,
-			"error while waiting for device to init (%d)\n", ret);
-		ret = -ENXIO;
-		goto err_open;
-	}
-	if (ret == 0) {
-		tsp_debug_err(true, &data->client->dev,
-			"timedout while waiting for device to init\n");
-		ret = -ENXIO;
-		goto err_open;
-	}
+	/*
+	 * Do not wait for the firmware here: probe registers the input device
+	 * before it asks for the firmware, so an input handler that opens the
+	 * device from input_register_device() (the VT keyboard handler does)
+	 * would wait for a completion that only the probing thread can signal.
+	 * mxt_touch_rest_init() starts the device once it is ready if somebody
+	 * has opened it by then.
+	 */
+	if (!completion_done(&data->init_done))
+		return 0;
 
 	ret = mxt_start(data);
 	if (ret)
@@ -2139,6 +2134,12 @@ static int mxt_touch_finish_init(struct mxt_data *data)
 
 	/* for blocking to be excuted open function untile finishing ts init */
 	complete_all(&data->init_done);
+
+	/* open() returned early if it came before init finished; start now */
+	mutex_lock(&data->input_dev->mutex);
+	if (data->input_dev->users)
+		mxt_start(data);
+	mutex_unlock(&data->input_dev->mutex);
 	return 0;
 
 err_req_irq:
