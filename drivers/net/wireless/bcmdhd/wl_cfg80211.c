@@ -3479,8 +3479,15 @@ wl_set_set_cipher(struct net_device *dev, struct cfg80211_connect_params *sme)
 							WL_AKM_SUITE_MFP_1X))) {
 							wsec_val |= MFP_SHA256;
 						} else if (sme->crypto.n_akm_suites > 1) {
-							WL_ERR(("Multiple AKM Specified \n"));
-							return -EINVAL;
+							/*
+							 * wpa_supplicant 2.x offers WPA-PSK and
+							 * WPA-PSK-SHA256 together for every PSK
+							 * network. Refusing that makes every WPA2
+							 * connect fail with "Invalid ciper", so go
+							 * on with the first suite, which is all
+							 * wl_set_key_mgmt() looks at.
+							 */
+							WL_DBG(("Multiple AKM Specified, using the first\n"));
 						}
 
 						wsec_val |= MFP_CAPABLE;
