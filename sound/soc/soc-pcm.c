@@ -1041,6 +1041,7 @@ static int be_add_new(struct snd_soc_pcm_runtime *fe, int stream,
 	struct snd_soc_card *card = fe->card;
 	struct snd_soc_dapm_widget_list *list = *list_;
 	enum snd_soc_dapm_type be_type;
+	struct snd_pcm_substream *be_substream;
 	int i, new = 0, err;
 
 	if (stream == SNDRV_PCM_STREAM_PLAYBACK)
@@ -1065,6 +1066,20 @@ static int be_add_new(struct snd_soc_pcm_runtime *fe, int stream,
 			/* don't connect if FE is not running */
 			if (!fe->dpcm[stream].runtime && !fe->fe_compr)
 				continue;
+
+			/* A BE only gets its substream's private_data (the rtd)
+			 * for a direction its DAIs support. A path that ends in
+			 * one that does not would be opened below with a NULL
+			 * rtd.
+			 */
+			be_substream = snd_soc_dpcm_get_substream(be, stream);
+			if (!be_substream || !be_substream->private_data) {
+				dev_warn(fe->dev, "asoc: BE %s has no %s stream, not connecting it to %s\n",
+					be->dai_link->name,
+					stream ? "capture" : "playback",
+					fe->dai_link->name);
+				continue;
+			}
 
 			/* newly connected FE and BE */
 			err = be_connect(fe, be, stream);
