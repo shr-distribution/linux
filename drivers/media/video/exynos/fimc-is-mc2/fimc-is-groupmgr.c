@@ -580,7 +580,16 @@ int fimc_is_group_open(struct fimc_is_groupmgr *groupmgr,
 	struct fimc_is_framemgr *framemgr;
 	struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
 
-	BUG_ON(!groupmgr);
+	/*
+	 * A failed sensor/flite pipeline setup leaves the ischain without a group
+	 * manager. open() of the video node then arrives here with it NULL, and that
+	 * must be an error for the opener, not a kernel BUG.
+	 */
+	if (!groupmgr) {
+		pr_err("%s: no group manager for group %d, instance %d\n",
+			__func__, id, instance);
+		return -ENODEV;
+	}
 	BUG_ON(!group);
 	BUG_ON(!device);
 	BUG_ON(!vctx);
