@@ -5,6 +5,7 @@
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/sound/apq8016-lpass.h>
@@ -246,6 +247,32 @@
 		vdd-supply = <&pm8916_l17>;
 		vddio-supply = <&pm8916_l5>;
 	};
+
+	light-sensor@60 {
+		compatible = "capella,cm36652";
+		reg = <0x60>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <113 IRQ_TYPE_EDGE_FALLING>;
+
+		/*
+		 * The infrared emitter the proximity half needs is switched by
+		 * this pin, driven high to turn it on.
+		 *
+		 * The vendor node says <&msm_gpio 8 0x1> and 1 is
+		 * GPIO_ACTIVE_LOW, but that flag is never read: its driver
+		 * switches the emitter with the legacy gpio_set_value(), which
+		 * ignores the OF polarity flag entirely and writes the pin
+		 * directly. Taking the flag at face value turns the emitter off.
+		 */
+		leden-gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
+
+		vdd-supply = <&pm8916_l17>;
+		vio-supply = <&pm8916_l5>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&light_sensor_default>;
+	};
 };
 
 &blsp_i2c4 {
@@ -283,13 +310,36 @@
 				regulator-always-on;
 			};
 
+			/* Camera sensor analog and digital core rails. */
+			cam_sensor_a2_8v: LDO {
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			cam_sensor_core_1_2v: BUCK {
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+		};
+
+		led {
+			compatible = "richtek,rt5033-led";
+
+			function = LED_FUNCTION_FLASH;
+			color = <LED_COLOR_ID_WHITE>;
+			flash-max-timeout-us = <544000>;
+
 			/*
-			 * Needed for camera, but not used yet.
-			 * Define empty nodes to allow disabling the unused
-			 * regulators.
+			 * The output is gated by two pins as well as by the
+			 * chip's own enable bit: one holds the LED on for
+			 * torch, the other fires a strobe. The vendor calls
+			 * them led1-gpio and led2-gpio.
 			 */
-			LDO {};
-			BUCK {};
+			enable-gpios = <&tlmm 34 GPIO_ACTIVE_HIGH>;
+			flash-gpios = <&tlmm 36 GPIO_ACTIVE_HIGH>;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&cam_flash_default>;
 		};
 
 		charger: charger {
@@ -357,6 +407,25 @@
 &pm8916_resin {
 	status = "okay";
 	linux,code = <KEY_VOLUMEDOWN>;
+};
+
+/*
+ * The board thermistor, an NTC divider on MPP4. The vendor reads the same
+ * channel (P_MUX4_1_1) through its sec_thermistor driver.
+ *
+ * No thermal zone is declared yet: converting this to a temperature needs a
+ * lookup table, and the vendor's table is in raw qpnp-vadc codes which do not
+ * map onto the microvolts the mainline driver reports without calibrating
+ * against known temperatures on this hardware.
+ */
+&pm8916_vadc {
+	channel@13 {
+		reg = <VADC_P_MUX4_1_1>;
+		qcom,pre-scaling = <1 1>;
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		label = "ap_therm";
+	};
 };
 
 &pm8916_rpm_regulators {
@@ -453,6 +522,22 @@
 
 		drive-strength = <2>;
 		bias-pull-up;
+	};
+
+	cam_flash_default: cam-flash-default-state {
+		pins = "gpio34", "gpio36";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	light_sensor_default: light-sensor-default-state {
+		pins = "gpio8", "gpio113";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
 	};
 
 	gpio_hall_sensor_default: gpio-hall-sensor-default-state {
