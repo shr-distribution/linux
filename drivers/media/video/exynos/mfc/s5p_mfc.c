@@ -97,6 +97,9 @@ static void s5p_mfc_dump_regs(struct s5p_mfc_dev *dev)
 
 	pr_err("dumping registers (SFR base = %p)\n", dev->regs_base);
 
+	if (!dev->regs_base)
+		return;
+
 	/* Enable all FW clock gating */
 	writel(0xFFFFFFFF, dev->regs_base + 0x1060);
 
@@ -130,6 +133,19 @@ static int s5p_mfc_sysmmu_fault_handler(struct device *dev, const char *mmuname,
 
 	pr_err("MFC PAGE FAULT occurred at 0x%lx (Page table base: 0x%lx)\n",
 			fault_addr, pgtable_base);
+
+	/*
+	 * Opening /dev/video* from user space (GStreamer's plugin scanner does it for
+	 * every node) can fault the MFC's sysmmu before the MFC has been set up: the
+	 * secure page tables could not be made ("Fail to make MFC secure sysmmu page
+	 * tables") and there is no register mapping. There is nothing to dump or to
+	 * recover then, and the BUG() below took the whole tablet down for an open().
+	 * Report the fault as handled.
+	 */
+	if (!m_dev || !m_dev->regs_base) {
+		pr_err("MFC PAGE FAULT with the MFC not set up, ignoring\n");
+		return 0;
+	}
 
 	s5p_mfc_dump_regs(m_dev);
 
