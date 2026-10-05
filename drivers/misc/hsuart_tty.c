@@ -192,6 +192,12 @@ struct dev_ctxt {
 	unsigned long  			tx_ttl;
 
 	struct tty_struct *tty;
+
+	/*
+	 * Run tty_wakeup() when the UART engine has sent a buffer: a line discipline (N_HCI for the
+	 * Bluetooth BCSP link) that found no room waits for it before it writes again.
+	 */
+	struct work_struct tx_wakeup_work;
 };
 
 struct dev_ctxt tty_info[1];
@@ -1162,6 +1168,18 @@ __tx_get_buffer_cbk(void* p_data )
 	return p_buffer;
 }
 static void
+hsuart_tx_wakeup_work(struct work_struct *work)
+{
+	struct dev_ctxt *p_context = container_of(work, struct dev_ctxt, tx_wakeup_work);
+	struct tty_struct *tty = tty_kref_get(p_context->tty);
+
+	if (tty) {
+		tty_wakeup(tty);
+		tty_kref_put(tty);
+	}
+}
+
+static void
 __tx_put_buffer_cbk(void* p_data, struct buffer_item* p_buffer, int transaction_size)
 {
 	struct dev_ctxt*	p_context;
@@ -1188,6 +1206,10 @@ __tx_put_buffer_cbk(void* p_data, struct buffer_item* p_buffer, int transaction_
 
 	spin_unlock_irqrestore(&(p_context->tx_lists.lock), 
 				flags);
+
+	/* A buffer is free again: let a writer that found no room carry on. */
+	if (test_bit(0, &p_context->is_opened))
+		schedule_work(&p_context->tx_wakeup_work);
 
 	HSUART_LOG(p_context, HS_UART_TX_PUT_BUFF_EVT, 1 , 0 ); 
 
@@ -1800,8 +1822,13 @@ hsuart_write(struct tty_struct *tty, const unsigned char *buf, int count)
 				HSUART_DEBUG("%s:%s, no more free space, try again later...\n",
 					p_context->dev_name, 
 					__PRETTY_FUNCTION__);
-				ret = -EAGAIN;
-				printk(KERN_ERR"%s, %d, p_buffer 0x%x, empty %d\n",__FUNCTION__, __LINE__, (uint32_t)p_buffer, empty);
+				/*
+				 * A tty write reports how much it took; the line discipline keeps the
+				 * rest and writes it again after tty_wakeup() (see tx_wakeup_work).
+				 * -EAGAIN here was added to the byte count by N_HCI and stalled it.
+				 */
+				ret = 0;
+				pr_debug("%s: no free tx buffer, took %d bytes\n", __func__, copied_cnt);
 				goto hsuart_write_done;
 			}
 			ret = wait_event_interruptible(
@@ -2264,6 +2291,9 @@ hsuart_close(struct tty_struct *tty, struct file *f)
 
 	/* mark it as unused */
 	clear_bit(0, &(p_contxt)->is_opened);
+	/* No wakeup and no flip into a tty that is going away. */
+	cancel_work_sync(&p_contxt->tx_wakeup_work);
+	p_contxt->tty = NULL;
 
 	HSUART_EXIT();
 	
@@ -2272,7 +2302,16 @@ hsuart_close(struct tty_struct *tty, struct file *f)
 
 static int hsuart_write_room(struct tty_struct *tty)
 {
-	return 4096;
+	struct dev_ctxt *p_contxt = tty->driver_data;
+	unsigned long flags;
+	int room;
+
+	/* Only empty buffers count: the used one may be in the engine's hands already. */
+	spin_lock_irqsave(&(p_contxt->tx_lists.lock), flags);
+	room = p_contxt->tx_lists.vacant_buffers * p_contxt->tx_buf_size;
+	spin_unlock_irqrestore(&(p_contxt->tx_lists.lock), flags);
+
+	return room;
 }
 
 static int hsuart_chars_in_buffer(struct tty_struct *tty)
@@ -2298,6 +2337,9 @@ void hsuart_tty_flip(void)
 		return;
 
 	hsuart_read(p_contxt,rcv_buf,bytes);
+	/* Data that arrives while the port is closed is read (to free the buffer) and dropped. */
+	if (!tty)
+		return;
 #if 0
 	printk("Bytes: \n");
 	for(i=0; i < bytes; i++)
@@ -2440,6 +2482,7 @@ hsuart_probe(struct platform_device  *dev)
 	p_contxt->uart_speed = p_data->uart_speed;
 
 	init_waitqueue_head(&(p_contxt->got_rx_buffer));
+	INIT_WORK(&p_contxt->tx_wakeup_work, hsuart_tx_wakeup_work);
 	init_waitqueue_head(&(p_contxt->got_tx_buffer));
 
 //	tty_register_device(tty_driver, 0, 0);
