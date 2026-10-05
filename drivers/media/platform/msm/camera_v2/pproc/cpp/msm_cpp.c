@@ -783,6 +783,7 @@ static void cpp_load_fw(struct cpp_device *cpp_dev, char *fw_name_bin)
 			dev_err(dev,
 				"Fail to loc blob %s from dev %pK, Error: %d\n",
 				fw_name_bin, dev, rc);
+			return;
 		}
 		if (NULL != fw)
 			ptr_bin = (uint32_t *)fw->data;
