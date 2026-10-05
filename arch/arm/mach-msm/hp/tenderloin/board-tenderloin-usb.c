@@ -544,6 +544,7 @@ static int msm_hsusb_ldo_enable(int on)
 static void msm_hsusb_vbus_power(unsigned phy_info, int on)
 {
 	static struct regulator *votg_5v_switch;
+	static struct regulator *ext_5v_reg;
 	static int vbus_is_on;
 
 	/* If VBUS is already on (or off), do nothing. */
@@ -558,17 +559,35 @@ static void msm_hsusb_vbus_power(unsigned phy_info, int on)
 			return;
 		}
 	}
+	/* The OTG switch passes on the external 5V, which PM8901 MPP0 switches (as in 2.6.35). */
+	if (!ext_5v_reg) {
+		ext_5v_reg = regulator_get(NULL, "8901_mpp0");
+		if (IS_ERR(ext_5v_reg)) {
+			pr_err("%s: unable to get ext_5v_reg\n", __func__);
+			ext_5v_reg = NULL;
+			return;
+		}
+	}
 
 	if (on) {
+		if (regulator_enable(ext_5v_reg)) {
+			pr_err("%s: Unable to enable the regulator:"
+					" ext_5v_reg\n", __func__);
+			return;
+		}
 		if (regulator_enable(votg_5v_switch)) {
 			pr_err("%s: Unable to enable the regulator:"
 					" votg_5v_switch\n", __func__);
+			regulator_disable(ext_5v_reg);
 			return;
 		}
 	} else {
 		if (regulator_disable(votg_5v_switch))
-			pr_err("%s: Unable to enable the regulator:"
+			pr_err("%s: Unable to disable the regulator:"
 				" votg_5v_switch\n", __func__);
+		if (regulator_disable(ext_5v_reg))
+			pr_err("%s: Unable to disable the regulator:"
+				" ext_5v_reg\n", __func__);
 	}
 
 	vbus_is_on = on;

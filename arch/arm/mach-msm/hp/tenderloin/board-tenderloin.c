@@ -3514,6 +3514,8 @@ static void __init tenderloin_init(void)
 
 	tenderloin_gpio_mpp_init();
         tenderloin_usb_init();
+        /* MPP0 drives the external 5V switch (active low); configure it before its regulator probes. */
+        tenderloin_pm8901_vreg_mpp_init();
         platform_device_register(&tenderloin_8901_mpp_vreg);
 #ifdef CONFIG_MSM_DSPS
 	msm8x60_init_dsps();

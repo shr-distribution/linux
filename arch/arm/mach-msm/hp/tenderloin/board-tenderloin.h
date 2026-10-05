@@ -196,6 +196,7 @@ extern struct rpm_regulator_platform_data tenderloin_rpm_regulator_pdata __devin
 extern struct rpm_regulator_platform_data tenderloin_rpm_regulator_early_pdata __devinitdata;
 extern struct pm8901_vreg_pdata pm8901_regulator_pdata[];
 extern struct platform_device tenderloin_8901_mpp_vreg __devinitdata;
+void __init tenderloin_pm8901_vreg_mpp_init(void);
 extern int pm8901_regulator_pdata_len;
 extern struct platform_device msm_adc_device;
 extern u32 board_type;
