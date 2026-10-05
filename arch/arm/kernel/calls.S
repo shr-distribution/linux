@@ -391,7 +391,7 @@
 		CALL(sys_ni_syscall)
 /* 380 */	CALL(sys_ni_syscall)
 		CALL(sys_ni_syscall)
-		CALL(sys_ni_syscall)
+		CALL(sys_renameat2)
 		CALL(sys_seccomp)
 		CALL(sys_getrandom)
 /* 385 */	CALL(sys_memfd_create)

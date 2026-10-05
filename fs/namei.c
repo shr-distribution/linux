@@ -3467,6 +3467,22 @@ exit:
 	return error;
 }
 
+/*
+ * Android 16's bionic implements rename() and renameat() as renameat2(..., 0)
+ * with no fallback, so a kernel without the syscall fails every rename() with
+ * ENOSYS. This is the flags == 0 case only: renameat2() proper arrived in 3.15
+ * together with RENAME_NOREPLACE and RENAME_EXCHANGE, which need filesystem
+ * support this kernel does not have, so any flag is refused with EINVAL.
+ */
+SYSCALL_DEFINE5(renameat2, int, olddfd, const char __user *, oldname,
+		int, newdfd, const char __user *, newname, unsigned int, flags)
+{
+	if (flags)
+		return -EINVAL;
+
+	return sys_renameat(olddfd, oldname, newdfd, newname);
+}
+
 SYSCALL_DEFINE2(rename, const char __user *, oldname, const char __user *, newname)
 {
 	return sys_renameat(AT_FDCWD, oldname, AT_FDCWD, newname);
