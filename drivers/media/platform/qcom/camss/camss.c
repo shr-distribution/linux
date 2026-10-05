@@ -4692,15 +4692,25 @@ void camss_pm_domain_off(struct camss *camss, int id)
 
 static int vfe_parent_dev_ops_get(struct camss *camss, int id)
 {
-	int ret = -EINVAL;
+	struct vfe_device *vfe;
 
-	if (id < camss->res->vfe_num) {
-		struct vfe_device *vfe = &camss->vfe[id];
+	/*
+	 * The CSID is asked to power up "its" VFE, the one sharing its
+	 * index, which only exists where CSIDs and VFEs pair one to one.
+	 * Older SoCs have more CSIDs than VFEs - msm8916 has two CSIDs and
+	 * a single VFE - and a CSID with no VFE of its own has nothing to
+	 * power up first: its output reaches a VFE through ISPIF, and that
+	 * VFE is powered as part of the pipeline anyway. Failing here
+	 * instead made every such CSID unusable, so a sensor routed
+	 * through CSID1 on msm8916 could never stream. Match
+	 * vfe_parent_dev_ops_put(), which already ignores these indices.
+	 */
+	if (id >= camss->res->vfe_num)
+		return 0;
 
-		ret = vfe_get(vfe);
-	}
+	vfe = &camss->vfe[id];
 
-	return ret;
+	return vfe_get(vfe);
 }
 
 static int vfe_parent_dev_ops_put(struct camss *camss, int id)
