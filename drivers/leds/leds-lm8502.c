@@ -1025,11 +1025,8 @@ static int lm8502_vib_get_time(struct timed_output_dev *dev)
 
 	if (hrtimer_active(&vib->vib_timer)) {
 		r = hrtimer_get_remaining(&vib->vib_timer);
-#ifdef CONFIG_KTIME_SCALAR
-		return r.tv64;
-#else
-		return r.tv.sec * 1000 + r.tv.nsec / 1000000;
-#endif
+		/* timed_output reports milliseconds; r.tv64 under KTIME_SCALAR (ARM) is nanoseconds. */
+		return ktime_to_ms(r);
 	} else
 		return 0;
 }
