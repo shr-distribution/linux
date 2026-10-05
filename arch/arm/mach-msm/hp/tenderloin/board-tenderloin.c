@@ -1484,7 +1484,11 @@ static void __init msm8x60_init_dsps(void)
 #endif
 
 #define MSM_MM_FW_SIZE		(0x200000 - MSM_ION_HOLE_SIZE) /*(2MB-128KB)*/
-#define MSM_ION_MM_SIZE		0x4000000  /* (64MB) */
+/*
+ * The MM heap lives in SMI, after the 2MB firmware region (which includes the hole) and before the 8KB
+ * MFC heap. 64MB here ended 2MB past the 64MB of SMI. 2.6.35 used a 0x3D00000 pool.
+ */
+#define MSM_ION_MM_SIZE		0x3D00000  /* (61MB) */
 #define MSM_ION_MFC_SIZE	SZ_8K
 
 #define MSM_MM_FW_BASE		MSM_SMI_BASE
