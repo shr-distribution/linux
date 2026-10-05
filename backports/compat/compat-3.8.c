@@ -411,6 +411,7 @@ int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long
 }
 EXPORT_SYMBOL_GPL(vm_iomap_memory);
 
+#if 0 /* this tree already has prandom_bytes() in lib/random32.c */
 /**
  *	prandom_bytes - get the requested number of pseudo-random bytes
  *	@buf: where to copy the pseudo-random bytes to
@@ -441,6 +442,7 @@ void prandom_bytes(void *buf, int bytes)
 	}
 }
 EXPORT_SYMBOL_GPL(prandom_bytes);
+#endif
 
 #ifdef CONFIG_OF
 /**
