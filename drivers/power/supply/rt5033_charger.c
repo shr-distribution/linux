@@ -36,7 +36,7 @@ struct rt5033_charger {
 	struct mutex			lock;
 	bool online;
 	bool otg;
-	bool mivr_enabled;
+	bool host_port;
 	u8 cv_regval;
 };
 
@@ -429,6 +429,31 @@ static int rt5033_charger_set_charging(struct rt5033_charger *charger)
 		}
 	}
 
+	/*
+	 * Pick the input current limit to match what the supply can actually
+	 * provide. rt5033_init_fast_charge() programs AICR to 2000 mA at probe
+	 * and nothing reconsiders it for the connector type that is detected
+	 * later, which overdraws a host port badly enough that the host
+	 * controller disables it.
+	 *
+	 * 900 mA rather than the 500 mA a USB 2.0 SDP port is required to
+	 * source: 500 mA is less than this phone draws with the screen on, so
+	 * the input just covers the system load and leaves nothing for the
+	 * battery - the charger then correctly reports that it is not charging
+	 * while the battery slowly drains. 900 mA is the USB 3.0 unit load and
+	 * what phones conventionally draw from a host port, and it is well
+	 * below the 2000 mA that tripped over-current protection.
+	 */
+	ret = regmap_update_bits(charger->regmap, RT5033_REG_CHG_CTRL1,
+			RT5033_CHGCTRL1_IAICR_MASK,
+			charger->host_port ? RT5033_AICR_900_MODE
+					   : RT5033_AICR_2000_MODE);
+	if (ret) {
+		dev_err(charger->dev, "Failed to set input current limit.\n");
+		mutex_unlock(&charger->lock);
+		return -EINVAL;
+	}
+
 	charger->online = true;
 
 	mutex_unlock(&charger->lock);
@@ -436,35 +461,30 @@ static int rt5033_charger_set_charging(struct rt5033_charger *charger)
 	return 0;
 }
 
-static int rt5033_charger_set_mivr(struct rt5033_charger *charger)
+static int rt5033_charger_set_host_port(struct rt5033_charger *charger)
 {
-	int ret;
-
 	mutex_lock(&charger->lock);
 
 	/*
-	 * When connected via USB connector type SDP (Standard Downstream Port),
-	 * the minimum input voltage regulation (MIVR) should be enabled. It
-	 * prevents an input voltage drop due to insufficient current provided
-	 * by the adapter or USB input. As a downside, it may reduces the
-	 * charging current and thus slows the charging.
+	 * Connected to a USB host port (SDP), which is only required to source
+	 * 500 mA. Cap the input current to that and leave the minimum input
+	 * voltage regulation that rt5033_charger_reg_init() disabled alone.
+	 *
+	 * MIVR used to be enabled here at 4600 mV to keep VBUS from sagging.
+	 * That threshold is above the 4.40 V that USB 2.0 permits at the device
+	 * end, so on a real host port the chip regulated the input current down
+	 * to nearly nothing and simply never charged: online=1 with
+	 * status=Discharging and charge_type=N/A while the battery drained.
+	 * Capping the input current achieves what MIVR was there for - not
+	 * overdrawing the host - without stalling the charge, and it is the
+	 * configuration the chip is already in when it charges successfully.
 	 */
-	ret = regmap_update_bits(charger->regmap, RT5033_REG_CHG_CTRL4,
-			RT5033_CHGCTRL4_MIVR_MASK, RT5033_CHARGER_MIVR_4600MV);
-	if (ret) {
-		dev_err(charger->dev, "Failed to set MIVR level.\n");
-		mutex_unlock(&charger->lock);
-		return -EINVAL;
-	}
-
-	charger->mivr_enabled = true;
+	charger->host_port = true;
 
 	mutex_unlock(&charger->lock);
 
 	/* Beyond this, do the same steps like setting charging */
-	rt5033_charger_set_charging(charger);
-
-	return 0;
+	return rt5033_charger_set_charging(charger);
 }
 
 static int rt5033_charger_set_disconnect(struct rt5033_charger *charger)
@@ -473,20 +493,7 @@ static int rt5033_charger_set_disconnect(struct rt5033_charger *charger)
 
 	mutex_lock(&charger->lock);
 
-	/* Disable MIVR if enabled */
-	if (charger->mivr_enabled) {
-		ret = regmap_update_bits(charger->regmap,
-				RT5033_REG_CHG_CTRL4,
-				RT5033_CHGCTRL4_MIVR_MASK,
-				RT5033_CHARGER_MIVR_DISABLE);
-		if (ret) {
-			dev_err(charger->dev, "Failed to disable MIVR.\n");
-			ret = -EINVAL;
-			goto out_unlock;
-		}
-
-		charger->mivr_enabled = false;
-	}
+	charger->host_port = false;
 
 	if (charger->otg) {
 		ret = rt5033_charger_unset_otg(charger);
@@ -596,7 +603,7 @@ static void rt5033_charger_extcon_work(struct work_struct *work)
 
 	switch (connector) {
 	case EXTCON_CHG_USB_SDP:
-		ret = rt5033_charger_set_mivr(charger);
+		ret = rt5033_charger_set_host_port(charger);
 		if (ret) {
 			dev_err(charger->dev, "failed to set USB mode\n");
 			break;
