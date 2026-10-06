@@ -93,7 +93,14 @@ modname_flags  = -DKBUILD_MODNAME=$(call name-fix,$(modname))
 
 orig_c_flags   = $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) \
                  $(ccflags-y) $(CFLAGS_$(basetarget).o)
+# MediaTek and Samsung directories add a bare -Werror, tuned to the vendor's
+# Clang. GCC warns about far more in that code (format strings, indentation,
+# unused statics), so drop it under GCC; targeted -Werror=<name> flags stay.
+ifdef CONFIG_CC_IS_GCC
+_c_flags       = $(filter-out -Werror $(CFLAGS_REMOVE_$(basetarget).o), $(orig_c_flags))
+else
 _c_flags       = $(filter-out $(CFLAGS_REMOVE_$(basetarget).o), $(orig_c_flags))
+endif
 orig_a_flags   = $(KBUILD_CPPFLAGS) $(KBUILD_AFLAGS) \
                  $(asflags-y) $(AFLAGS_$(basetarget).o)
 _a_flags       = $(filter-out $(AFLAGS_REMOVE_$(basetarget).o), $(orig_a_flags))
