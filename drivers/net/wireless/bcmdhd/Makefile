@@ -77,6 +77,8 @@ DHDCFLAGS += -DSKIP_WLFC_ON_CONCURRENT
 DHDCFLAGS += -DIPV6_NDO_SUPPORT
 DHDCFLAGS += -DCUSTOM_EVENT_PM_WAKE=20
 DHDCFLAGS += -DCUSTOM_KEEP_ALIVE_SETTING=30000
+# While suspended, drop multicast IP that an access point converted to unicast (see dhd_preinit_ioctls)
+DHDCFLAGS += -DDHD_DROP_UNICAST_MCAST_IN_SUSPEND
 
 # Extended HANG event with reason codes
 DHDCFLAGS += -DDHD_USE_EXTENDED_HANG_REASON

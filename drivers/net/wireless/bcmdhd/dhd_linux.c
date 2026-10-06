@@ -570,12 +570,13 @@ module_param(dhd_pkt_filter_enable, uint, 0);
 uint dhd_pkt_filter_init = 0;
 module_param(dhd_pkt_filter_init, uint, 0);
 
-/* Pkt filter mode control */
-#if defined(CUSTOMER_HW4) && defined(GAN_LITE_NAT_KEEPALIVE_FILTER)
+/* Pkt filter mode control: TRUE forwards only what a filter matches, FALSE drops what a filter matches */
+#if defined(CUSTOMER_HW4) && (defined(GAN_LITE_NAT_KEEPALIVE_FILTER) || \
+	defined(DHD_DROP_UNICAST_MCAST_IN_SUSPEND))
 uint dhd_master_mode = FALSE;
 #else
 uint dhd_master_mode = TRUE;
-#endif /* CUSTOMER_HW4 && GAN_LITE_NAT_KEEPALIVE_FILTER */
+#endif /* CUSTOMER_HW4 && (GAN_LITE_NAT_KEEPALIVE_FILTER || DHD_DROP_UNICAST_MCAST_IN_SUSPEND) */
 module_param(dhd_master_mode, uint, 0);
 
 int dhd_watchdog_prio = 0;
@@ -5577,6 +5578,36 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 #endif /* PASS_IPV4_SUSPEND */
 #endif /* GAN_LITE_NAT_KEEPALIVE_FILTER */
 #endif /* CUSTOMER_HW4 */
+
+#if defined(CUSTOMER_HW4) && defined(DHD_DROP_UNICAST_MCAST_IN_SUSPEND)
+	/*
+	 * Access points that convert multicast to unicast for their Wi-Fi clients (IGMP snooping /
+	 * WMF) send group traffic to each station's own MAC address, so the "only allow unicast"
+	 * filter above passes it and every such frame wakes the host. An ASUS router's IGMPv3 general
+	 * query to 224.0.0.1, every 20 s, did exactly that: a suspended SM-T520 was woken by the
+	 * SDIO out-of-band interrupt every 20 s, 0.76 s after each query arrived.
+	 *
+	 * Drop instead of forward (dhd_master_mode FALSE), what the GAN_LITE filter set does:
+	 *   100: every group-addressed frame (I/G bit of the destination MAC set), the
+	 *        multicast and broadcast the unicast filter kept out before
+	 *   101: IPv4 with a multicast destination (224.0.0.0/4, top nibble of byte 30), whatever
+	 *        the destination MAC is
+	 *   102: IPv6 with a multicast destination (ff00::/8, byte 38), likewise
+	 * Everything else is forwarded as before: unicast IP, EAPOL (the group key handshake),
+	 * unicast ARP. Broadcast ARP was not forwarded before either; in station mode the ARP filter
+	 * is not applied (_turn_on_arp_filter) and the firmware's ARP offload answers for the host.
+	 * Offsets are into the Ethernet II header the firmware matches, as in the ARP filter above.
+	 */
+	dhd->pktfilter_count = 3;
+	dhd->pktfilter[DHD_UNICAST_FILTER_NUM] = "100 0 0 0 0x01 0x01";
+	dhd->pktfilter[DHD_BROADCAST_FILTER_NUM] =
+		"101 0 0 12 0xFFFF00000000000000000000000000000000F0 0x080000000000000000000000000000000000E0";
+	dhd->pktfilter[DHD_MULTICAST4_FILTER_NUM] =
+		"102 0 0 12 0xFFFF000000000000000000000000000000000000000000000000FF 0x86DD000000000000000000000000000000000000000000000000FF";
+	dhd->pktfilter[DHD_MULTICAST6_FILTER_NUM] = NULL;
+	dhd->pktfilter[DHD_MDNS_FILTER_NUM] = NULL;
+	dhd->pktfilter[DHD_ARP_FILTER_NUM] = NULL;
+#endif /* CUSTOMER_HW4 && DHD_DROP_UNICAST_MCAST_IN_SUSPEND */
 
 #if defined(SOFTAP)
 	if (ap_fw_loaded) {
