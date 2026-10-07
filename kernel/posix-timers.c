@@ -1030,6 +1030,57 @@ SYSCALL_DEFINE2(clock_getres, const clockid_t, which_clock,
 }
 
 /*
+ * The 64-bit time variants, which a 32-bit userspace built for time64 (glibc 2.34 and later)
+ * calls first. Without them every clock_gettime() costs a failing clock_gettime64 syscall
+ * and then the old one, as this kernel has no vDSO clock on ARM.
+ */
+struct kernel_timespec64 {
+	long long tv_sec;
+	long long tv_nsec;
+};
+
+static int put_timespec64_user(const struct timespec *ts, struct kernel_timespec64 __user *uts)
+{
+	struct kernel_timespec64 t = { .tv_sec = ts->tv_sec, .tv_nsec = ts->tv_nsec };
+
+	return copy_to_user(uts, &t, sizeof(t)) ? -EFAULT : 0;
+}
+
+SYSCALL_DEFINE2(clock_gettime64, const clockid_t, which_clock,
+		struct kernel_timespec64 __user *, tp)
+{
+	struct k_clock *kc = clockid_to_kclock(which_clock);
+	struct timespec kernel_tp;
+	int error;
+
+	if (!kc)
+		return -EINVAL;
+
+	error = kc->clock_get(which_clock, &kernel_tp);
+	if (!error)
+		error = put_timespec64_user(&kernel_tp, tp);
+
+	return error;
+}
+
+SYSCALL_DEFINE2(clock_getres_time64, const clockid_t, which_clock,
+		struct kernel_timespec64 __user *, tp)
+{
+	struct k_clock *kc = clockid_to_kclock(which_clock);
+	struct timespec rtn_tp;
+	int error;
+
+	if (!kc)
+		return -EINVAL;
+
+	error = kc->clock_getres(which_clock, &rtn_tp);
+	if (!error && tp)
+		error = put_timespec64_user(&rtn_tp, tp);
+
+	return error;
+}
+
+/*
  * nanosleep for monotonic and realtime clocks
  */
 static int common_nsleep(const clockid_t which_clock, int flags,

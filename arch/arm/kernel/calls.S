@@ -394,6 +394,28 @@
 		CALL(sys_renameat2)
 		CALL(sys_seccomp)
 		CALL(sys_getrandom)
+/* 385 */	CALL(sys_ni_syscall)		/* memfd_create */
+		CALL(sys_ni_syscall)		/* bpf */
+		CALL(sys_ni_syscall)		/* execveat */
+		CALL(sys_ni_syscall)		/* userfaultfd */
+		CALL(sys_ni_syscall)		/* membarrier */
+/* 390 */	CALL(sys_ni_syscall)		/* mlock2 */
+		CALL(sys_ni_syscall)		/* copy_file_range */
+		CALL(sys_ni_syscall)		/* preadv2 */
+		CALL(sys_ni_syscall)		/* pwritev2 */
+		CALL(sys_ni_syscall)		/* pkey_mprotect */
+/* 395 */	CALL(sys_ni_syscall)		/* pkey_alloc */
+		CALL(sys_ni_syscall)		/* pkey_free */
+		CALL(sys_ni_syscall)		/* statx */
+		CALL(sys_ni_syscall)		/* rseq */
+		CALL(sys_ni_syscall)		/* io_pgetevents */
+/* 400 */	CALL(sys_ni_syscall)		/* migrate_pages */
+		CALL(sys_ni_syscall)		/* kexec_file_load */
+		CALL(sys_ni_syscall)
+		CALL(sys_clock_gettime64)
+		CALL(sys_ni_syscall)		/* clock_settime64 */
+/* 405 */	CALL(sys_ni_syscall)		/* clock_adjtime64 */
+		CALL(sys_clock_getres_time64)
 #ifndef syscalls_counted
 .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
 #define syscalls_counted

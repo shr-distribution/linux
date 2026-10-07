@@ -865,4 +865,9 @@ asmlinkage long sys_seccomp(unsigned int op, unsigned int flags,
 			    const char __user *uargs);
 asmlinkage long sys_getrandom(char __user *buf, size_t count,
 			      unsigned int flags);
+struct kernel_timespec64;
+asmlinkage long sys_clock_gettime64(clockid_t which_clock,
+				    struct kernel_timespec64 __user *tp);
+asmlinkage long sys_clock_getres_time64(clockid_t which_clock,
+					struct kernel_timespec64 __user *tp);
 #endif
