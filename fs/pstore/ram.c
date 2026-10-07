@@ -35,6 +35,7 @@
 #include <linux/compiler.h>
 #include <linux/pstore_ram.h>
 #include <linux/of.h>
+#include <linux/memblock.h>
 
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
@@ -691,6 +692,27 @@ static void ramoops_register_dummy(void)
 			PTR_ERR(dummy));
 	}
 }
+
+/*
+ * ramoops_reserve=<size>@<address>: take the region away from the page allocator before
+ * arm_memblock_init() hands RAM to it, so that the console log written there survives a warm
+ * reset for the boot loader to read back. ramoops.mem_address and ramoops.mem_size still say
+ * where the log goes; this only keeps the kernel off that memory.
+ */
+static int __init ramoops_reserve_setup(char *p)
+{
+	unsigned long size, start;
+	char *endp;
+
+	size = memparse(p, &endp);
+	if (!size || *endp != '@')
+		return -EINVAL;
+	start = memparse(endp + 1, NULL);
+	if (memblock_reserve(start, size))
+		pr_err("ramoops: could not reserve %#lx@%#lx\n", size, start);
+	return 0;
+}
+early_param("ramoops_reserve", ramoops_reserve_setup);
 
 static int __init ramoops_init(void)
 {
