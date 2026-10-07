@@ -17,5 +17,15 @@ config MTK_FINGERPRINT_SELECT
 	string "sensor type"
 	default "NA"
 
+config SUNWAVE_FP
+	bool "Sunwave fingerprint sensor (TEE)"
+	depends on SPI_MT65XX
+	default n
+	help
+	  Sunwave fingerprint sensor driver, v2.2.38, for TrustKernel TEE
+	  devices such as the Unihertz Titan Pocket. Provides /dev/sunwave_fp
+	  for the vendor fingerprint HAL; the sensor itself is read inside
+	  the TEE.
+
 
 endmenu
