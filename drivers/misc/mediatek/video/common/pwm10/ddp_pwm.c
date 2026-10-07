@@ -631,6 +631,17 @@ int disp_pwm_set_backlight_cmdq(enum disp_pwm_id_t id,
 
 		level_1024 = disp_pwm_level_remap(id, level_1024);
 
+#ifdef USE_CP2166_INVERTED_PWM
+		/*
+		 * The CP2166 backlight driver on the Titan Pocket's panel
+		 * module reads the PWM duty inverted: more duty, less light.
+		 * Flip every non-zero level; 0 still disables the PWM below,
+		 * which is what blanking relies on.
+		 */
+		if (level_1024 > 0)
+			level_1024 = 1024 - level_1024;
+#endif
+
 #ifdef USE_IS31FL_LED
 		/* Modified hardware control for g83v71c2k_dfl_eea project */
 		if (level_1024 < 1) {

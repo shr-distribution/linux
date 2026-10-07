@@ -24,6 +24,12 @@ ccflags-y += -DUSE_IS31FL_LED=1 -Wno-error=unused-function
 obj-y += is31fl.o is31fl_init.o
 endif
 
+# Titan Pocket: the panel module's CP2166 backlight driver reads the display
+# PWM with inverted sense (stock: AGOLD_CP2166_LCM_BACKLIGHT, not in this tree)
+ifneq (,$(filter "g66v71c2k_dfl_eea" "g66v71c2k_dfl_tee",$(CONFIG_ARCH_MTK_PROJECT)))
+ccflags-y += -DUSE_CP2166_INVERTED_PWM=1
+endif
+
 ccflags-y += \
 				-I$(srctree)/drivers/misc/mediatek/video/include     \
 				-I$(srctree)/drivers/misc/mediatek/video/common/IPv1     \
