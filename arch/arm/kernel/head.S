@@ -76,7 +76,23 @@
 	.arm
 
 	__HEAD
+
+/*
+ * DEBUG (A3 bring-up): fill band \n (100 of every 130 rows) of the boot loader's continuous-splash
+ * framebuffer white. The panel is in video mode and scans out 0x8e000000 (540x960, 3 bytes per pixel,
+ * stride 1620), so the band shows at once. Clobbers \a, \b and \c only.
+ */
+	.macro	a3dbg_band, n, a, b, c
+	ldr	\a, =(0x8e000000 + \n * 130 * 1620)
+	ldr	\b, =(100 * 1620 / 4)
+	mvn	\c, #0
+9998:	str	\c, [\a], #4
+	subs	\b, \b, #1
+	bne	9998b
+	.endm
+
 ENTRY(stext)
+	a3dbg_band 2, r3, r4, r5
 
  THUMB(	adr	r9, BSYM(1f)	)	@ Kernel is always entered in ARM.
  THUMB(	bx	r9		)	@ If this is a Thumb-2 kernel,

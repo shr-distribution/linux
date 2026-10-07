@@ -119,6 +119,21 @@
  * sort out different calling conventions
  */
 		.align
+
+/*
+ * DEBUG (A3 bring-up): fill band \n (100 of every 130 rows) of the boot loader's continuous-splash
+ * framebuffer white. The panel is in video mode and scans out 0x8e000000 (540x960, 3 bytes per pixel,
+ * stride 1620), so the band shows at once. Clobbers \a, \b and \c only.
+ */
+	.macro	a3dbg_band, n, a, b, c
+	ldr	\a, =(0x8e000000 + \n * 130 * 1620)
+	ldr	\b, =(100 * 1620 / 4)
+	mvn	\c, #0
+9998:	str	\c, [\a], #4
+	subs	\b, \b, #1
+	bne	9998b
+	.endm
+
 		.arm				@ Always enter in ARM state
 start:
 		.type	start,#function
@@ -141,6 +156,7 @@ start:
 #endif
 		mov	r7, r1			@ save architecture ID
 		mov	r8, r2			@ save atags pointer
+		a3dbg_band 0, r0, r2, r3
 
 #ifndef __ARM_ARCH_2__
 		/*
@@ -479,6 +495,7 @@ not_relocated:	mov	r0, #0
 		bl	decompress_kernel
 		bl	cache_clean_flush
 		bl	cache_off
+		a3dbg_band 1, r0, r1, r3
 		mov	r1, r7			@ restore architecture number
 		mov	r2, r8			@ restore atags pointer
 

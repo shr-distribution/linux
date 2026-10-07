@@ -472,6 +472,32 @@ static void __init mm_init(void)
 	vmalloc_init();
 }
 
+
+/*
+ * DEBUG (A3 bring-up): fill band n of the boot loader's continuous-splash framebuffer white (see
+ * arch/arm/kernel/head.S), to see on the panel how far the boot gets.
+ */
+#include <linux/io.h>
+#include <asm/cacheflush.h>
+static noinline void a3dbg_band(int n)
+{
+	phys_addr_t phys = 0x8e000000 + n * 130 * 1620;
+	size_t len = 100 * 1620;
+	void *p;
+
+	if (pfn_valid(__phys_to_pfn(phys)) && phys < __pa(high_memory)) {
+		p = phys_to_virt(phys);
+		memset(p, 0xff, len);
+		__cpuc_flush_dcache_area(p, len);
+		return;
+	}
+	p = (void __force *)ioremap(phys, len);
+	if (p) {
+		memset_io((void __iomem *)p, 0xff, len);
+		iounmap((void __iomem *)p);
+	}
+}
+
 asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
@@ -530,6 +556,7 @@ asmlinkage void __init start_kernel(void)
 	sort_main_extable();
 	trap_init();
 	mm_init();
+	a3dbg_band(3);
 
 	/*
 	 * Set up the scheduler prior starting any interrupts (such as the
@@ -820,6 +847,7 @@ static noinline void __init kernel_init_freeable(void);
 static int __ref kernel_init(void *unused)
 {
 	kernel_init_freeable();
+	a3dbg_band(5);
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
 	free_initmem();
@@ -886,6 +914,7 @@ static noinline void __init kernel_init_freeable(void)
 	smp_init();
 	sched_init_smp();
 
+	a3dbg_band(4);
 	do_basic_setup();
 
 	/* Open the /dev/console on the rootfs, this should never fail */
