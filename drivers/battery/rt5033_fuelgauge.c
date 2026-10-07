@@ -270,19 +270,19 @@ unsigned int fg_get_soc(struct i2c_client *client)
 
 	// read rt5033 fg registers for debugging.
 	ret = fg_get_vbat(client);
-	pr_info("%s : FG_VBAT = %d\n", __func__, ret);
+	pr_debug("%s : FG_VBAT = %d\n", __func__, ret);
 	ret = rt5033_fg_i2c_read_word(client, RT5033_FG_IRQ_CTRL);
-	pr_info("%s : FG_IRQ_CTL_FLAG = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_IRQ_CTL_FLAG = 0x%04x\n", __func__, ret);
 	ret = rt5033_fg_i2c_read_word(client, RT5033_VOLT_ALRT_TH);
-	pr_info("%s : FG_VMIN_SMIN_FLAG = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_VMIN_SMIN_FLAG = 0x%04x\n", __func__, ret);
 	ret = rt5033_fg_i2c_read_word(client, RT5033_CRATE);
-	pr_info("%s : FG_CRATE_DEVICEID = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_CRATE_DEVICEID = 0x%04x\n", __func__, ret);
 
 	/* clear ri */
 	ret = rt5033_fg_i2c_read_word(client, RT5033_CONFIG_MSB);
 
 	// read FG_CONFIG  for debugging.
-	pr_info("%s : FG_CONFIG = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_CONFIG = 0x%04x\n", __func__, ret);
 
 	if (ret & 0x0040) {
 		ret &= ~(0x0040);
@@ -298,13 +298,13 @@ unsigned int fg_get_soc(struct i2c_client *client)
 
 	rt5033_fg_i2c_write_word(client, RT5033_MFA_MSB, 0x8085);
 	ret = rt5033_fg_i2c_read_word(client, RT5033_MFA_MSB);
-	pr_info("%s : FG_CVS = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_CVS = 0x%04x\n", __func__, ret);
 
 	ocv = fg_get_ocv(client);
 	volt = fg_get_vbat(client);
 
 	/* report FG_OCV & FG_TEMP for debugging. */
-	pr_info("%s : FG_OCV = %d, FG_TEMP = %d, FG_VBAT = %d\n",
+	pr_debug("%s : FG_OCV = %d, FG_TEMP = %d, FG_VBAT = %d\n",
 			__func__, ocv, temp, volt);
 
 	vgcomp = rt5033_fg_get_vgcomp(fuelgauge,
@@ -315,15 +315,15 @@ unsigned int fg_get_soc(struct i2c_client *client)
 
 	ret = (vgcomp.data[2] << 8) | vgcomp.data[3];
 	rt5033_fg_i2c_write_word(client, RT5033_VGCOMP3, ret);
-	pr_info("%s : VGCOMP(%s) = 0x%04x, 0x%04x\n", __func__,
+	pr_debug("%s : VGCOMP(%s) = 0x%04x, 0x%04x\n", __func__,
 			idle ? "idle" : "normal",
 			(vgcomp.data[0] << 8) | vgcomp.data[1],
 			(vgcomp.data[2] << 8) | vgcomp.data[3]);
 	/* report VGCOMP1~4 for debugging. */
 	ret = rt5033_fg_i2c_read_word(client, RT5033_VGCOMP1);
-	pr_info("%s : FG_VGCOMP1_2 = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_VGCOMP1_2 = 0x%04x\n", __func__, ret);
 	ret = rt5033_fg_i2c_read_word(client, RT5033_VGCOMP3);
-	pr_info("%s : FG_VGCOMP3_4 = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_VGCOMP3_4 = 0x%04x\n", __func__, ret);
 
 
 	/* read soc */
@@ -343,9 +343,9 @@ unsigned int fg_get_soc(struct i2c_client *client)
 					soc_val, fuelgauge->info.temperature);
 	soc_val = soc_val + offset_chg_dischg + offset;
 	/* report FG_SOC_RAW for debugging. */
-	pr_info("%s : FG_SOC_RAW = 0x%04x\n", __func__, ret);
-	pr_info("%s : CHG/DISCHG OFFSET  = %d\n", __func__, offset_chg_dischg);
-	pr_info("%s : FG_LOW_POWER_OFFS = %d\n", __func__, offset);
+	pr_debug("%s : FG_SOC_RAW = 0x%04x\n", __func__, ret);
+	pr_debug("%s : CHG/DISCHG OFFSET  = %d\n", __func__, offset_chg_dischg);
+	pr_debug("%s : FG_LOW_POWER_OFFS = %d\n", __func__, offset);
 
 	if (soc_val < 0) {
 		soc_val = 0;
@@ -353,7 +353,7 @@ unsigned int fg_get_soc(struct i2c_client *client)
 
 	fuelgauge->info.batt_soc = soc_val;
 	/* report FG_SOC for debugging. */
-	pr_info("%s : FG_SOC = %d\n", __func__, soc_val);
+	pr_debug("%s : FG_SOC = %d\n", __func__, soc_val);
 
 	return soc_val;
 }
@@ -1122,7 +1122,7 @@ bool sec_hal_fg_init(struct i2c_client *client)
     int i, index;
 	struct sec_fuelgauge_info *fuelgauge = i2c_get_clientdata(client);
 	struct battery_data_t *battery_data;
-	pr_info("rt5033 hal fg init...\n");
+	pr_debug("rt5033 hal fg init...\n");
 	mutex_init(&fuelgauge->info.param_lock);
 	mutex_lock(&fuelgauge->info.param_lock);
 	if (client->dev.of_node) {
@@ -1191,7 +1191,7 @@ bool sec_hal_fg_init(struct i2c_client *client)
     rt5033_fg_create_debug_files(fuelgauge);
 #endif
     mutex_unlock(&fuelgauge->info.param_lock);
-    pr_info("rt5033 hal fg init OK\n");
+    pr_debug("rt5033 hal fg init OK\n");
 	return true;
 }
 
@@ -1209,7 +1209,7 @@ bool sec_hal_fg_suspend(struct i2c_client *client)
 	temp_suspend = fuelgauge->info.temperature/10;
 
 	// report FG_AVG_VOLT & FG_TEMP for debugging.
-	pr_info("%s : FG_AVG_VOLT = %d, FG_TEMP = %d\n", __func__,
+	pr_debug("%s : FG_AVG_VOLT = %d, FG_TEMP = %d\n", __func__,
             volt_suspend, fuelgauge->info.temperature);
 
 	vgcomp = rt5033_fg_get_vgcomp(fuelgauge, VGCOMP_IDLE,
@@ -1221,9 +1221,9 @@ bool sec_hal_fg_suspend(struct i2c_client *client)
 
 	// report VGCOMP1 ~ 4 for debugging.
 	ret = rt5033_fg_i2c_read_word(client, RT5033_VGCOMP1);
-	pr_info("%s : FG_VGCOMP1_2_Idle = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_VGCOMP1_2_Idle = 0x%04x\n", __func__, ret);
 	ret = rt5033_fg_i2c_read_word(client, RT5033_VGCOMP3);
-	pr_info("%s : FG_VGCOMP3_4_Idle = 0x%04x\n", __func__, ret);
+	pr_debug("%s : FG_VGCOMP3_4_Idle = 0x%04x\n", __func__, ret);
 
 	return true;
 }
@@ -1274,11 +1274,11 @@ bool sec_hal_fg_is_fuelalerted(struct i2c_client *client)
 	union power_supply_propval val;
 	struct sec_fuelgauge_info *fuelgauge = i2c_get_clientdata(client);
 
-	pr_info("%s ------------------------------------------\n ",__func__);
+	pr_debug("%s ------------------------------------------\n ",__func__);
 
 	ret = rt5033_fg_i2c_read_word(client, RT5033_FG_IRQ_CTRL);
     if (ret < 0) {
-        pr_info("rt5033 fg is alerted : i2c read error(%d)\n", ret);
+        pr_debug("rt5033 fg is alerted : i2c read error(%d)\n", ret);
         return false;
     }
     retval = (ret & 0x03) ? true : false;
@@ -1305,7 +1305,7 @@ bool sec_hal_fg_is_fuelalerted(struct i2c_client *client)
 					POWER_SUPPLY_PROP_PRESENT, val);
 			}
 		} else {
-			pr_info("%s: Battery Removed !!!\n",__func__);
+			pr_debug("%s: Battery Removed !!!\n",__func__);
 			if (!sec_bat_check_jig_status()) {
 				val.intval = false;
 				psy_do_property("battery", set,
@@ -1533,7 +1533,7 @@ static int rt5033_get_current_average(struct i2c_client *client)
 	/* if 0% && under 3.4v, power off */
 	if (!poweroff_charging && (soc <= 0) && (vcell < 3400) &&
 		((check_discharge < 0) || (value_bat.intval != POWER_SUPPLY_HEALTH_GOOD))) {
-		pr_info("%s: SOC(%d), Vnow(%d)\n", __func__, soc, vcell);
+		pr_debug("%s: SOC(%d), Vnow(%d)\n", __func__, soc, vcell);
 		curr_avg = -1;
 	} else {
 		curr_avg = 0;
@@ -1549,11 +1549,11 @@ void rt5033_fg_reset_capacity_by_jig_connection(struct i2c_client *client)
 	int ret = 0;
 
 	ret = rt5033_fg_i2c_read_word(fuelgauge->client, RT5033_CONFIG_MSB);
-	pr_info("%s : Before jig attached. 0x0C = 0x%x\n", __func__, ret);
+	pr_debug("%s : Before jig attached. 0x0C = 0x%x\n", __func__, ret);
 	ret |= 0x0004;
 	rt5033_fg_i2c_write_word(fuelgauge->client, RT5033_CONFIG_MSB, ret);
 	ret = rt5033_fg_i2c_read_word(fuelgauge->client, RT5033_CONFIG_MSB);
-	pr_info("%s : Jig attached. 0x0C = 0x%x\n", __func__, ret);
+	pr_debug("%s : Jig attached. 0x0C = 0x%x\n", __func__, ret);
 
 	/* If JIG is attached, the voltage is set as 1079 */
 	value.intval = 1079;
@@ -1594,7 +1594,7 @@ bool sec_hal_fg_get_property(struct i2c_client *client,
 		break;
 		case POWER_SUPPLY_PROP_PRESENT:
 			val->intval = rt5033_fg_get_batt_present(client);
-			pr_info("%s batt id = %d \n",__func__,val->intval);
+			pr_debug("%s batt id = %d \n",__func__,val->intval);
 			break;
 			/* Current (mA) */
 		case POWER_SUPPLY_PROP_CURRENT_NOW:
@@ -1647,7 +1647,7 @@ static int rt5033_fg_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_TEMP:
 	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
 		if (!sec_hal_fg_get_property(fuelgauge->client, psp, val))
-			return -EINVAL;
+			return -ENODATA;
 		if (psp == POWER_SUPPLY_PROP_CAPACITY) {
 			if (soc_type == SEC_FUELGAUGE_CAPACITY_TYPE_RAW)
 				break;
@@ -1941,14 +1941,14 @@ static int fuelgauge_parse_dt(struct device *dev,
 		ret = of_get_named_gpio(np, "fuelgauge,fuel_int", 0);
 		if (ret > 0) {
 			pdata->fg_irq = ret;
-			pr_info("%s reading fg_irq = %d\n", __func__, ret);
+			pr_debug("%s reading fg_irq = %d\n", __func__, ret);
 		}
 
 		ret = of_get_named_gpio(np, "fuelgauge,bat_int", 0);
 		if (ret > 0) {
 			pdata->bat_irq_gpio = ret;
 			pdata->bat_irq = gpio_to_irq(ret);
-			pr_info("%s reading bat_int_gpio = %d\n", __func__, ret);
+			pr_debug("%s reading bat_int_gpio = %d\n", __func__, ret);
 		}
 
 		ret = of_property_read_u32(np, "fuelgauge,capacity_calculation_type",
@@ -1964,7 +1964,7 @@ static int fuelgauge_parse_dt(struct device *dev,
 		pdata->repeated_fuelalert = of_property_read_bool(np,
 				"fuelgaguge,repeated_fuelalert");
 
-		pr_info("%s: fg_irq: %d, "
+		pr_debug("%s: fg_irq: %d, "
 				"calculation_type: 0x%x, fuel_alert_soc: %d,\n"
 				"repeated_fuelalert: %d\n", __func__, pdata->fg_irq,
 				pdata->capacity_calculation_type,
@@ -2217,7 +2217,7 @@ static struct i2c_driver rt5033_fuelgauge_driver = {
 
 static int __init rt5033_fuelgauge_init(void)
 {
-	pr_info("%s \n", __func__);
+	pr_debug("%s \n", __func__);
 
 	return i2c_add_driver(&rt5033_fuelgauge_driver);
 }

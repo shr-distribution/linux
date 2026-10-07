@@ -147,19 +147,19 @@ static void rt5033_test_read(struct i2c_client *i2c)
 	sprintf(str+strlen(str), "0x1A = 0x%02x, ", rt5033_reg_read(i2c, 0x1A));
 	sprintf(str+strlen(str), "0x22 = 0x%02x, ", rt5033_reg_read(i2c, 0x22));
 	sprintf(str+strlen(str), "#");
-	pr_info("%s: %s\n", __func__, str);
+	pr_debug("%s: %s\n", __func__, str);
 
 	/* for charging fail issue */
 	data = rt5033_reg_read(i2c, RT5033_UUG);
 	if ((data & (~0x2)) != 0x45) {
-		pr_info("%s: RT5033_UUG is incorrect, 0x19 = 0x%x \n", __func__, data);
+		pr_debug("%s: RT5033_UUG is incorrect, 0x19 = 0x%x \n", __func__, data);
 		rt5033_assign_bits(i2c, RT5033_UUG, ~0x02, 0x45);
 	}
 
 	/* for leakage current issue */
 	data = rt5033_reg_read(i2c, RT5033_CHG_STAT_CTRL);
 	if ((data & 0x82) != 0x02) {
-		pr_info("%s: SW_HW_CTRL is incorrect (0x%x)\n", __func__, data);
+		pr_debug("%s: SW_HW_CTRL is incorrect (0x%x)\n", __func__, data);
 		rt5033_assign_bits(i2c, RT5033_CHG_STAT_CTRL, 0x82, 0x02);
 	}
 }
@@ -169,7 +169,7 @@ static void rt5033_charger_otg_control(struct rt5033_charger_data *charger,
 {
 	struct i2c_client *i2c = charger->rt5033->i2c_client;
 
-	pr_info("%s: called charger otg control : %s\n", __func__,
+	pr_debug("%s: called charger otg control : %s\n", __func__,
 		enable ? "on" : "off");
 
 	if (!enable) {
@@ -214,11 +214,11 @@ static void rt5033_enable_charger_switch(struct rt5033_charger_data *charger,
 	prev_charging_status = charger->is_charging;
 	iic = charger->rt5033->i2c_client;
 
-	pr_info("%s rev_id = %d \n",__func__, charger->rev_id);
+	pr_debug("%s rev_id = %d \n",__func__, charger->rev_id);
 	charger->is_charging = onoff ? true : false;
 	if ((onoff > 0) && (prev_charging_status == false)) {
 		charger->full_charged = false;
-		pr_info("%s: turn on charger\n", __func__);
+		pr_debug("%s: turn on charger\n", __func__);
 
 #ifdef CONFIG_FLED_RT5033
 		if (charger->fled_info == NULL)
@@ -241,7 +241,7 @@ static void rt5033_enable_charger_switch(struct rt5033_charger_data *charger,
 				POWER_SUPPLY_PROP_STATUS, val);
 		if (val.intval != POWER_SUPPLY_STATUS_FULL)
 			charger->full_charged = false;
-		pr_info("%s: turn off charger\n", __func__);
+		pr_debug("%s: turn off charger\n", __func__);
 		charger->charging_current = DEFAULT_CHARGING_CURRENT;
 		charger->eoc_cnt = 0;
 		/* Disable EOC */
@@ -260,7 +260,7 @@ static void rt5033_enable_charger_switch(struct rt5033_charger_data *charger,
 			__rt5033_set_fast_charging_current(charger, 500);
 		}
 	} else {
-	    pr_info("%s: repeated to set charger switch(%d), prev stat = %d\n",
+	    pr_debug("%s: repeated to set charger switch(%d), prev stat = %d\n",
              __func__, onoff, prev_charging_status ? 1 : 0);
 	}
 	mutex_unlock(&charger->io_lock);
@@ -269,7 +269,7 @@ static void rt5033_enable_charger_switch(struct rt5033_charger_data *charger,
 static void rt5033_enable_charging_termination(struct i2c_client *i2c,
 		int onoff)
 {
-	pr_info("%s:[BATT] Do termination set(%d)\n", __func__, onoff);
+	pr_debug("%s:[BATT] Do termination set(%d)\n", __func__, onoff);
 	if (onoff)
 		rt5033_set_bits(i2c, RT5033_CHG_CTRL1, RT5033_TEEN_MASK);
 	else
@@ -321,7 +321,7 @@ static void rt5033_set_input_current_limit(struct rt5033_charger_data *charger,
 				(data) << RT5033_AICR_LIMIT_SHIFT);
 		} else {
 			/* disable AICR */
-			pr_info("%s: AICR Disabled", __func__);
+			pr_debug("%s: AICR Disabled", __func__);
 			rt5033_clr_bits(i2c, RT5033_CHG_CTRL1, RT5033_AICR_LIMIT_MASK);
 		}
 	}
@@ -331,13 +331,13 @@ static void rt5033_set_input_current_limit(struct rt5033_charger_data *charger,
 		if((charger->cable_type != POWER_SUPPLY_TYPE_BATTERY) && !poweroff_charging){
 			rt5033_assign_bits(i2c, RT5033_CHG_CTRL1, RT5033_AICR_LIMIT_MASK,
 				(1) << RT5033_AICR_LIMIT_SHIFT);
-			pr_info("%s: Soft Start Charging\n", __func__);
+			pr_debug("%s: Soft Start Charging\n", __func__);
 			msleep(100);
 		}
 #endif
 		rt5033_assign_bits(i2c, RT5033_CHG_CTRL1, RT5033_AICR_LIMIT_MASK,
 		(data) << RT5033_AICR_LIMIT_SHIFT);
-		pr_info("%s: AICR Enabled", __func__);
+		pr_debug("%s: AICR Enabled", __func__);
 	}
 
 	mutex_unlock(&charger->io_lock);
@@ -380,11 +380,11 @@ static int rt5033_get_regulation_voltage(struct rt5033_charger_data *charger)
 	int data;
 	data = rt5033_reg_read(charger->rt5033->i2c_client, RT5033_CHG_CTRL2);
 	if (data < 0) {
-		pr_info("%s: warning --> fail to read i2c register(%d)\n", __func__, data);
+		pr_debug("%s: warning --> fail to read i2c register(%d)\n", __func__, data);
 		return data;
 	}
 	data &= RT5033_VOREG_MASK;
-	pr_info("%s: battery cv voltage 0x%x\n", __func__, data);
+	pr_debug("%s: battery cv voltage 0x%x\n", __func__, data);
 
 	return data;
 }
@@ -440,7 +440,7 @@ static int rt5033_get_current_eoc_setting(struct rt5033_charger_data *charger)
 	ret = rt5033_reg_read(charger->rt5033->i2c_client, RT5033_CHG_CTRL4);
 	mutex_unlock(&charger->io_lock);
 	if (ret < 0) {
-		pr_info("%s: warning --> fail to read i2c register(%d)\n", __func__, ret);
+		pr_debug("%s: warning --> fail to read i2c register(%d)\n", __func__, ret);
 		return ret;
 	}
 	return rt5033_eoc_level[(RT5033_IEOC_MASK & ret) >> RT5033_IEOC_SHIFT];
@@ -465,7 +465,7 @@ static void __rt5033_set_termination_current_limit(struct i2c_client *i2c,
 	int data = rt5033_get_eoc_level(current_limit);
 	int ret;
 
-	pr_info("%s : Set Termination\n", __func__);
+	pr_debug("%s : Set Termination\n", __func__);
 
 	ret = rt5033_assign_bits(i2c, RT5033_CHG_CTRL4, RT5033_IEOC_MASK,
 			data << RT5033_IEOC_SHIFT);
@@ -480,7 +480,7 @@ static void rt5033_set_charging_current(struct rt5033_charger_data *charger,
 	if(charger->siop_level < 100 && adj_current > CONFIG_SIOP_CHARGING_LIMIT_CURRENT)
 		adj_current = CONFIG_SIOP_CHARGING_LIMIT_CURRENT;
 #endif
-	pr_info("%s adj_current = %dmA charger->siop_level = %d\n",__func__, adj_current,charger->siop_level);
+	pr_debug("%s adj_current = %dmA charger->siop_level = %d\n",__func__, adj_current,charger->siop_level);
 	mutex_lock(&charger->io_lock);
 	__rt5033_set_fast_charging_current(charger,
 					   adj_current);
@@ -539,9 +539,9 @@ static void rt5033_configure_charger(struct rt5033_charger_data *charger)
 	union power_supply_propval val;
 	union power_supply_propval chg_mode,swelling_state;
 
-	pr_info("%s : Set config charging\n", __func__);
+	pr_debug("%s : Set config charging\n", __func__);
 	if (charger->charging_current < 0) {
-		pr_info("%s : OTG is activated. Ignore command!\n",
+		pr_debug("%s : OTG is activated. Ignore command!\n",
 				__func__);
 		return;
 	}
@@ -564,14 +564,14 @@ static void rt5033_configure_charger(struct rt5033_charger_data *charger)
 		[charger->cable_type].input_current_limit;
 #endif
 	/* Input current limit */
-	pr_info("%s : input current (%dmA)\n",
+	pr_debug("%s : input current (%dmA)\n",
 		__func__, input_current_limit);
 	rt5033_set_input_current_limit(charger, input_current_limit);
 	/*  The MIVR deglitch enable bit is reg0x14[0]
 	 * and its deglitch time is around 4us.*/
 	rt5033_set_bits(charger->rt5033->i2c_client, 0x14, 0x01);
 	/* Float voltage */
-	pr_info("%s : float voltage (%dmV)\n",
+	pr_debug("%s : float voltage (%dmV)\n",
 		__func__, charger->pdata->chg_float_voltage);
 
 	rt5033_set_regulation_voltage(charger,
@@ -606,10 +606,10 @@ static void rt5033_configure_charger(struct rt5033_charger_data *charger)
 				[charger->cable_type].full_check_current_1st;
 	}
 	/* Fast charge and Termination current */
-	pr_info("%s : fast charging current (%dmA)\n",
+	pr_debug("%s : fast charging current (%dmA)\n",
 		__func__, charger->charging_current);
 
-	pr_info("%s : termination current (%dmA)\n",
+	pr_debug("%s : termination current (%dmA)\n",
 		__func__, eoc);
 	rt5033_set_charging_current(charger, eoc, 1);
 }
@@ -625,7 +625,7 @@ int rt5033_chg_fled_init(struct i2c_client *client)
 	if (charger) {
 		is_fixed_switching = charger->pdata->is_fixed_switching;
 		is_750k_switching = charger->pdata->is_750kHz_switching;
-		pr_info("%s rt5033 chg: is_750k_switching = %d, is_fixed_switching = %d\n",
+		pr_debug("%s rt5033 chg: is_750k_switching = %d, is_fixed_switching = %d\n",
 				__func__, is_750k_switching, is_fixed_switching);
 	}
 	charger->rev_id = chip->rev_id;
@@ -717,10 +717,10 @@ static int rt5033_get_charging_status(struct rt5033_charger_data *charger)
 
 	ret = rt5033_reg_read(charger->rt5033->i2c_client, RT5033_CHG_STAT_CTRL);
 	if (ret<0) {
-	    pr_info("Error : can't get charging status (%d)\n", ret);
+	    pr_debug("Error : can't get charging status (%d)\n", ret);
 
 	}
-	pr_info("%s charger->full_charged = %d \n",__func__,charger->full_charged);
+	pr_debug("%s charger->full_charged = %d \n",__func__,charger->full_charged);
 	if (charger->full_charged)
 		return POWER_SUPPLY_STATUS_FULL;
 	switch (ret & 0x30) {
@@ -742,7 +742,7 @@ static int rt5033_get_charging_status(struct rt5033_charger_data *charger)
 		status = POWER_SUPPLY_STATUS_DISCHARGING;
 		ret = rt5033_reg_read(charger->rt5033->i2c_client, RT5033_CHG_IRQ3);
 		if (ret & 0x80) {
-			pr_info("%s: otg overcurrent limit\n", __func__);
+			pr_debug("%s: otg overcurrent limit\n", __func__);
 #ifdef CONFIG_USB_HOST_NOTIFY
 			send_otg_notify(n, NOTIFY_EVENT_OVERCURRENT, 0);
 #endif
@@ -876,7 +876,7 @@ static int sec_chg_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_ONLINE:
 		charger->cable_type = val->intval;
 		if (charger->cable_type == POWER_SUPPLY_TYPE_BATTERY) {
-			pr_info("%s:[BATT] Type Battery\n", __func__);
+			pr_debug("%s:[BATT] Type Battery\n", __func__);
 			rt5033_enable_charger_switch(charger, 0);
 			if (previous_cable_type == POWER_SUPPLY_TYPE_OTG)
 				rt5033_charger_otg_control(charger, false);
@@ -885,17 +885,17 @@ static int sec_chg_set_property(struct power_supply *psy,
 					POWER_SUPPLY_PROP_STATUS, value);
 			if(value.intval) {
 				rt5033_charger_otg_control(charger, true);
-				pr_info("%s: Power sharing enable\n", __func__);
+				pr_debug("%s: Power sharing enable\n", __func__);
 			} else {
 				rt5033_charger_otg_control(charger, false);
-				pr_info("%s: Power sharing disable\n", __func__);
+				pr_debug("%s: Power sharing disable\n", __func__);
 			}
 			break;
 		} else if (charger->cable_type == POWER_SUPPLY_TYPE_OTG) {
-			pr_info("%s: OTG mode\n", __func__);
+			pr_debug("%s: OTG mode\n", __func__);
 			rt5033_charger_otg_control(charger, true);
 		} else {
-			pr_info("%s:[BATT] Set charging"
+			pr_debug("%s:[BATT] Set charging"
 					", Cable type = %d\n", __func__, charger->cable_type);
 			/* Enable charger */
 			rt5033_configure_charger(charger);
@@ -909,7 +909,7 @@ static int sec_chg_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 		/* decrease the charging current according to siop level */
 		charger->siop_level = val->intval;
-		pr_info("%s:SIOP level = %d, chg current = %d\n", __func__,
+		pr_debug("%s:SIOP level = %d, chg current = %d\n", __func__,
 				val->intval, charger->charging_current);
 		if(charger->is_charging) {
 			eoc = rt5033_get_current_eoc_setting(charger);
@@ -922,13 +922,13 @@ static int sec_chg_set_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_POWER_NOW:
 		eoc = rt5033_get_current_eoc_setting(charger);
-		pr_info("%s:Set Power Now -> chg current = %d mA, eoc = %d mA\n", __func__,
+		pr_debug("%s:Set Power Now -> chg current = %d mA, eoc = %d mA\n", __func__,
 			val->intval, eoc);
 		rt5033_set_charging_current(charger, eoc, 0);
 		break;
 #if defined(CONFIG_BATTERY_SWELLING)
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
-		pr_info("%s: float voltage(%d)\n", __func__, val->intval);
+		pr_debug("%s: float voltage(%d)\n", __func__, val->intval);
 		rt5033_set_regulation_voltage(charger, val->intval);
 		break;
 		
@@ -944,7 +944,7 @@ static int sec_chg_set_property(struct power_supply *psy,
 			} else {
 				charger->is_aicr_changed = false;
 			}
-			pr_info("%s: input current limit(%d, %d)\n",
+			pr_debug("%s: input current limit(%d, %d)\n",
 				__func__, val->intval, charger->is_aicr_changed);
 			rt5033_set_input_current_limit(charger, val->intval);
 		}
@@ -1070,9 +1070,9 @@ static irqreturn_t rt5033_chg_bad_adp_irq_handler(int irq,
 {
 	struct rt5033_charger_data *info = data;
 	cancel_delayed_work(&info->activate_bad_adp_work);
-	pr_info("%s : Bad adaptor : enable MIVR temporarily\n",
+	pr_debug("%s : Bad adaptor : enable MIVR temporarily\n",
 						__func__);
-	pr_info("%s : set MIVR = 4200mV\n", __func__);
+	pr_debug("%s : set MIVR = 4200mV\n", __func__);
 	rt5033_assign_bits(info->rt5033->i2c_client,
 			RT5033_CHG_CTRL4, RT5033_MIVR_MASK,
 			RT5033_MIVR_4200MV << RT5033_MIVR_SHIFT);
@@ -1103,7 +1103,7 @@ static irqreturn_t rt5033_chg_vin_ovp_irq_handler(int irq, void *data)
 		 * H/W will do it automatically */
 		info->unhealth_cnt = HEALTH_DEBOUNCE_CNT;
 		info->ovp = true;
-		pr_info("%s: OVP triggered\n", __func__);
+		pr_debug("%s: OVP triggered\n", __func__);
 		value.intval = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
 		psy_do_property("battery", set,
 				POWER_SUPPLY_PROP_HEALTH, value);
@@ -1129,7 +1129,7 @@ static irqreturn_t rt5033_chg_vin_ovpr_irq_handler(int irq, void *data)
 		if (status & (0x01 << 2)) {
 			info->unhealth_cnt = 0;
 			info->ovp = false;
-			pr_info("%s: OVP recover triggered\n", __func__);
+			pr_debug("%s: OVP recover triggered\n", __func__);
 			value.intval = POWER_SUPPLY_HEALTH_GOOD;
 			psy_do_property("battery", set,
 					POWER_SUPPLY_PROP_HEALTH, value);
@@ -1159,18 +1159,18 @@ static irqreturn_t rt5033_chg_ieoc_irq_handler(int irq, void *data)
 	info->eoc_cnt++;
 #endif
 	mutex_unlock(&info->io_lock);
-	pr_info("%s : EOC CNT = %d / %d\n", __func__,
+	pr_debug("%s : EOC CNT = %d / %d\n", __func__,
 		info->eoc_cnt, EOC_DEBOUNCE_CNT);
 	if (info->eoc_cnt >= EOC_DEBOUNCE_CNT) {
 		/* set full charged flag
 		 * until TA/USB unplug event / stop charging by PSY
 		 * / recharging event
 		 */
-		pr_info("%s : Full charged\n", __func__);
+		pr_debug("%s : Full charged\n", __func__);
 		info->full_charged = true;
 		info->eoc_cnt = 0;
 	} else {
-		pr_info("%s : Reset EOC detection\n", __func__);
+		pr_debug("%s : Reset EOC detection\n", __func__);
 		msleep(10);
 		/* Reset EOC loop, and make it re-detect */
 		mutex_lock(&info->io_lock);
@@ -1201,7 +1201,7 @@ static irqreturn_t rt5033_chg_ieoc_irq_handler(int irq, void *data)
 static irqreturn_t rt5033_chg_rechg_request_irq_handler(int irq, void *data)
 {
 	struct rt5033_charger_data *info = data;
-	pr_info("%s: Recharging requesting\n", __func__);
+	pr_debug("%s: Recharging requesting\n", __func__);
 
 	info->full_charged = false;
 	info->eoc_cnt = 0;
@@ -1213,7 +1213,7 @@ static irqreturn_t rt5033_chg_rechg_request_irq_handler(int irq, void *data)
 #if EN_TR_IRQ
 static irqreturn_t rt5033_chg_otp_tr_irq_handler(int irq, void *data)
 {
-	pr_info("%s : Over temperature : thermal regulation loop active\n",
+	pr_debug("%s : Over temperature : thermal regulation loop active\n",
 			__func__);
 	// if needs callback, do it here
 	return IRQ_HANDLED;
@@ -1307,7 +1307,7 @@ static int register_irq(struct platform_device *pdev,
 			goto err_irq;
 		}
 
-		pr_info("%s : Register IRQ%d(%s) successfully\n",
+		pr_debug("%s : Register IRQ%d(%s) successfully\n",
 				__func__, irq, irq_name);
 	}
 
@@ -1365,7 +1365,7 @@ static int rt5033_charger_parse_dualized_dt(struct device *dev,
 
 	np = of_find_node_by_name(NULL, "charger");
 	if (!np) {
-		pr_info("%s : np NULL\n", __func__);
+		pr_debug("%s : np NULL\n", __func__);
 		return -ENODATA;
 	}
 
@@ -1380,7 +1380,7 @@ static int rt5033_charger_parse_dualized_dt(struct device *dev,
 			 "battery,fast_charging_current_5033a", i,
 			 &pdata->charging_current_table[i].fast_charging_current);
 	}
-	pr_info("%s : length of 5033a : %d, AICR = %d\n", __func__, len, pdata->dualized_charging_current);
+	pr_debug("%s : length of 5033a : %d, AICR = %d\n", __func__, len, pdata->dualized_charging_current);
 	return ret;
 }
 static int rt5033_charger_parse_dt(struct device *dev,
@@ -1394,35 +1394,35 @@ static int rt5033_charger_parse_dt(struct device *dev,
 		pdata->is_750kHz_switching = 1;
 	if (of_find_property(np, "is_fixed_switching", NULL))
 		pdata->is_fixed_switching = 1;
-	pr_info("%s : is_750kHz_switching = %d\n", __func__,
+	pr_debug("%s : is_750kHz_switching = %d\n", __func__,
 		pdata->is_750kHz_switching);
-	pr_info("%s : is_fixed_switching = %d\n", __func__,
+	pr_debug("%s : is_fixed_switching = %d\n", __func__,
 		pdata->is_fixed_switching);
 		
 	np = of_find_node_by_name(NULL, "battery");
 	if (!np) {
-		pr_info("%s : np NULL\n", __func__);
+		pr_debug("%s : np NULL\n", __func__);
 		return -ENODATA;
 	}
 	ret = of_property_read_u32(np, "battery,full_check_type",
 			&pdata->full_check_type);
 	if (ret)
-		pr_info("%s: full_check_type is Empty\n", __func__);
+		pr_debug("%s: full_check_type is Empty\n", __func__);
 
 	ret = of_property_read_u32(np, "battery,full_check_type_2nd",
 			&pdata->full_check_type_2nd);
 	if (ret)
-		pr_info("%s: full_check_type_2nd is Empty\n", __func__);
+		pr_debug("%s: full_check_type_2nd is Empty\n", __func__);
 	
 	np = of_find_node_by_name(NULL, "charger");
 	if (!np) {
-		pr_info("%s : np NULL\n", __func__);
+		pr_debug("%s : np NULL\n", __func__);
 		return -ENODATA;
 	}
 	ret = of_property_read_u32(np, "battery,chg_float_voltage",
 				   &pdata->chg_float_voltage);
 	if (ret < 0) {
-		pr_info("%s : cannot get chg float voltage\n", __func__);
+		pr_debug("%s : cannot get chg float voltage\n", __func__);
 		return -ENODATA;
 	}
 
@@ -1486,7 +1486,7 @@ static int rt5033_charger_probe(struct platform_device *pdev)
 	struct rt5033_charger_data *charger;
 	int ret = 0;
 
-	pr_info("%s:[BATT] RT5033 Charger driver probe..0x%x\n", __func__, (unsigned int)mfd_pdata);
+	pr_debug("%s:[BATT] RT5033 Charger driver probe..0x%x\n", __func__, (unsigned int)mfd_pdata);
 
 	charger = kzalloc(sizeof(*charger), GFP_KERNEL);
 	if (!charger)
@@ -1552,7 +1552,7 @@ static int rt5033_charger_probe(struct platform_device *pdev)
         goto err_reg_irq;
 
 	rt5033_test_read(charger->rt5033->i2c_client);
-	pr_info("%s:[BATT] RT5033 charger driver loaded OK\n", __func__);
+	pr_debug("%s:[BATT] RT5033 charger driver loaded OK\n", __func__);
 
 	return 0;
 err_reg_irq:
@@ -1595,7 +1595,7 @@ static int rt5033_charger_resume(struct device *dev)
 
 static void rt5033_charger_shutdown(struct device *dev)
 {
-	pr_info("%s: RT5033 Charger driver shutdown\n", __func__);
+	pr_debug("%s: RT5033 Charger driver shutdown\n", __func__);
 }
 
 static SIMPLE_DEV_PM_OPS(rt5033_charger_pm_ops, rt5033_charger_suspend,
@@ -1617,7 +1617,7 @@ static int __init rt5033_charger_init(void)
 {
 	int ret = 0;
 
-	pr_info("%s \n", __func__);
+	pr_debug("%s \n", __func__);
 	ret = platform_driver_register(&rt5033_charger_driver);
 
 	return ret;
