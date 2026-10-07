@@ -315,7 +315,7 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->dsi.ssc_disable = 1;
 }
 
-static void lcm_init()
+static void lcm_init(void)
 {
 	LCM_LOGD("%s enter\n", __func__);
 
