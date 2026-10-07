@@ -536,6 +536,73 @@ static noinline void a3dbg_trace_add(unsigned long addr)
 	__cpuc_flush_dcache_area(a3dbg_trace, 8);
 }
 
+
+/*
+ * DEBUG (A3 bring-up): a console that writes everything printk prints into lk2nd's ramoops console
+ * record at 0x9ffc0000, in the persistent_ram layout lk2nd reads ("fastboot oem ramoops console"):
+ * signature DBGC, write offset, size, then the text as a ring. The region is reserved with
+ * ramoops_reserve= on the command line; ignore_loglevel lets every message through.
+ */
+#include <linux/console.h>
+#define A3DBG_KCON_PHYS		0x9ffc0000
+#define A3DBG_KCON_SIG		0x43474244
+#define A3DBG_KCON_CAP		(0x40000 - 12)
+struct a3dbg_kcon_buf {
+	u32 sig;
+	u32 offt;
+	u32 size;
+	u8 data[];
+};
+static struct a3dbg_kcon_buf *a3dbg_kcon;
+
+static void a3dbg_kcon_write(struct console *con, const char *str, unsigned int len)
+{
+	struct a3dbg_kcon_buf *b = a3dbg_kcon;
+	unsigned int start, chunk, done = 0;
+
+	if (!b)
+		return;
+	/* The Samsung fuel gauge and charger drivers print a dozen lines several times a second. */
+	if (strnstr(str, "fg_get_soc", len) || strnstr(str, "rt5033_", len) ||
+	    strnstr(str, "sec_hal_fg", len) || strnstr(str, "sec_bat", len) ||
+	    strnstr(str, "energy_now", len))
+		return;
+	/* Keep the beginning of the boot: stop when the record is full. */
+	if (b->size >= A3DBG_KCON_CAP)
+		return;
+	len = min(len, (unsigned int)(A3DBG_KCON_CAP - b->size));
+	while (done < len) {
+		start = b->offt;
+		chunk = min(len - done, (unsigned int)A3DBG_KCON_CAP - start);
+		memcpy(b->data + start, str + done, chunk);
+		__cpuc_flush_dcache_area(b->data + start, chunk);
+		done += chunk;
+		b->offt = (start + chunk) % A3DBG_KCON_CAP;
+		if (b->size < A3DBG_KCON_CAP)
+			b->size = min(b->size + chunk, (u32)A3DBG_KCON_CAP);
+	}
+	__cpuc_flush_dcache_area(b, sizeof(*b));
+}
+
+static struct console a3dbg_kcon_console = {
+	.name	= "a3dbg",
+	.write	= a3dbg_kcon_write,
+	.flags	= CON_PRINTBUFFER | CON_ENABLED | CON_ANYTIME,
+	.index	= -1,
+};
+
+static noinline void a3dbg_kcon_init(void)
+{
+	if (!pfn_valid(__phys_to_pfn(A3DBG_KCON_PHYS)) || A3DBG_KCON_PHYS >= __pa(high_memory))
+		return;
+	a3dbg_kcon = phys_to_virt(A3DBG_KCON_PHYS);
+	a3dbg_kcon->sig = A3DBG_KCON_SIG;
+	a3dbg_kcon->offt = 0;
+	a3dbg_kcon->size = 0;
+	__cpuc_flush_dcache_area(a3dbg_kcon, sizeof(*a3dbg_kcon));
+	register_console(&a3dbg_kcon_console);
+}
+
 asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
@@ -596,6 +663,7 @@ asmlinkage void __init start_kernel(void)
 	mm_init();
 	a3dbg_band(3);
 	a3dbg_trace_init();
+	a3dbg_kcon_init();
 
 	/*
 	 * Set up the scheduler prior starting any interrupts (such as the
