@@ -498,6 +498,44 @@ static noinline void a3dbg_band(int n)
 	}
 }
 
+
+/*
+ * DEBUG (A3 bring-up): a table of the initcalls started, at 0x9ff00000, in lk2nd's scratch area,
+ * which it can read back after a warm reset ("fastboot oem debug readl"). Word 0 is a magic,
+ * word 1 the number of entries, then the address of each initcall in the order it started. The
+ * region is kept from the page allocator by ramoops_reserve= on the command line. Each entry is
+ * flushed to RAM before the call, so a hang leaves the culprit last.
+ */
+#define A3DBG_TRACE_PHYS	0x9ff00000
+#define A3DBG_TRACE_MAGIC	0xa3d60001
+#define A3DBG_TRACE_MAX		((0x80000 / 4) - 2)
+static u32 *a3dbg_trace;
+
+static noinline void a3dbg_trace_init(void)
+{
+	if (!pfn_valid(__phys_to_pfn(A3DBG_TRACE_PHYS)) || A3DBG_TRACE_PHYS >= __pa(high_memory))
+		return;
+	a3dbg_trace = phys_to_virt(A3DBG_TRACE_PHYS);
+	a3dbg_trace[0] = A3DBG_TRACE_MAGIC;
+	a3dbg_trace[1] = 0;
+	__cpuc_flush_dcache_area(a3dbg_trace, 8);
+}
+
+static noinline void a3dbg_trace_add(unsigned long addr)
+{
+	u32 n;
+
+	if (!a3dbg_trace)
+		return;
+	n = a3dbg_trace[1];
+	if (n >= A3DBG_TRACE_MAX)
+		return;
+	a3dbg_trace[2 + n] = addr;
+	a3dbg_trace[1] = n + 1;
+	__cpuc_flush_dcache_area(&a3dbg_trace[2 + n], 4);
+	__cpuc_flush_dcache_area(a3dbg_trace, 8);
+}
+
 asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
@@ -557,6 +595,7 @@ asmlinkage void __init start_kernel(void)
 	trap_init();
 	mm_init();
 	a3dbg_band(3);
+	a3dbg_trace_init();
 
 	/*
 	 * Set up the scheduler prior starting any interrupts (such as the
@@ -718,6 +757,7 @@ int __init_or_module do_one_initcall(initcall_t fn)
 	if (initcall_debug)
 		ret = do_one_initcall_debug(fn);
 	else
+		a3dbg_trace_add((unsigned long)fn);
 		ret = fn();
 
 	msgbuf[0] = 0;
