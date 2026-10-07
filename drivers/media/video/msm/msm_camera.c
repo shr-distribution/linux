@@ -726,6 +726,10 @@ static int __msm_get_frame(struct msm_sync *sync,
 	}
 
 	frame->ts = qcmd->ts;
+	/* A real frame: report no error. The caller's struct is copied in from userspace and back, so
+	 * without this error_code comes back as whatever the caller left there. HP's liboemcamera
+	 * leaves it uninitialized on its stack and treats any non-zero value as a camera error. */
+	frame->error_code = 0;
 	frame->buffer = (unsigned long)pmem_info.vaddr;
 	frame->y_off = pmem_info.y_off;
 	frame->cbcr_off = pmem_info.cbcr_off;
