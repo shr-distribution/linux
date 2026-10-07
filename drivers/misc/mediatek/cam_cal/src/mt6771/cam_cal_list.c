@@ -49,6 +49,8 @@ struct stCAM_CAL_LIST_STRUCT g_camCalList[] = {
 	{IMX376_SENSOR_ID, 0xA2, Common_read_region},
 	{IMX214_SENSOR_ID, 0xA0, Common_read_region},
 	{IMX214_MONO_SENSOR_ID, 0xA0, Common_read_region},
+	/* Titan Pocket rear module: OTP EEPROM at 0xA0, as in the stock kernel */
+	{OV16880_SENSOR_ID, 0xA0, Common_read_region},
 	/*  ADD before this line */
 	{0, 0, 0}	/*end of list */
 };

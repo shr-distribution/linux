@@ -20,4 +20,9 @@ obj-y		+= regulator/
 obj-y		+= gpio/
 obj-y		+= mclk/
 obj-y		+= imgsensor_cfg_table.o
+
+# Titan Pocket (g66): rear camera AVDD is a GPIO-switched LDO, DVDD the PMIC
+ifneq (,$(filter "g66v71c2k_dfl_eea" "g66v71c2k_dfl_tee",$(CONFIG_ARCH_MTK_PROJECT)))
+ccflags-y += -DTITAN_POCKET_MAIN_AVDD_GPIO=1
+endif
 #obj-y           += imgsensor_oc.o
