@@ -173,7 +173,13 @@ KEY_STATE key_map[] = {
     { "BACK",   KEY_BACK,         0,   5,   3 },
     { "MENU",   KEY_APPSELECT,    0,   5,   4 },
     { "SHIFT-L", KEY_LEFTSHIFT,    0,   5,   1 },
-    { "F13",    KEY_F13,          0,   6,   1 },
+    /*
+     * The key printed Fn. Stock Android calls it FUNC1, a code only
+     * Unihertz's framework knows, and it types nothing, so it is the one
+     * key free to be Ctrl: the keyboard has no other, and Ctrl+C/X/V/A
+     * could not be typed at all.
+     */
+    { "CTRL",   KEY_LEFTCTRL,     0,   6,   1 },
     { "ALT",    KEY_RIGHTALT,     0,   7,   1 },
 };
 #else
