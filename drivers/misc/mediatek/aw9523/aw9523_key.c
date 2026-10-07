@@ -131,6 +131,52 @@ static unsigned char keyst_old[AW9523_NUM_COLS];
 static unsigned char keyst_new[AW9523_NUM_COLS];
 static int touchpad_flag = 1;
 
+#ifdef TITAN_POCKET_KEYMAP
+/*
+ * Titan Pocket (g66). The matrix below is the stock Pocket kernel's own
+ * key table, read out of its .data (same struct, same order); the table
+ * in the #else branch is from a different stock kernel and scrambles every
+ * letter on the Pocket (Q gave Enter, W gave M, ...).
+ */
+KEY_STATE key_map[] = {
+    /*  name     code              val  row  col */
+    { "Q",      KEY_Q,            0,   4,   2 },
+    { "W",      KEY_W,            0,   3,   2 },
+    { "E",      KEY_E,            0,   2,   2 },
+    { "R",      KEY_R,            0,   1,   2 },
+    { "T",      KEY_T,            0,   0,   2 },
+    { "P",      KEY_P,            0,   4,   1 },
+    { "O",      KEY_O,            0,   3,   1 },
+    { "U",      KEY_U,            0,   1,   1 },
+    { "I",      KEY_I,            0,   2,   1 },
+    { "J",      KEY_J,            0,   3,   4 },
+    { "K",      KEY_K,            0,   2,   4 },
+    { "L",      KEY_L,            0,   1,   4 },
+    { "DEL",    KEY_BACKSPACE,    0,   0,   4 },
+    { "A",      KEY_A,            0,   4,   3 },
+    { "S",      KEY_S,            0,   3,   3 },
+    { "D",      KEY_D,            0,   2,   3 },
+    { "F",      KEY_F,            0,   1,   3 },
+    { "G",      KEY_G,            0,   0,   3 },
+    { "Y",      KEY_Y,            0,   0,   1 },
+    { "H",      KEY_H,            0,   4,   4 },
+    { "SPACE",  KEY_SPACE,        0,   4,   5 },
+    { "Z",      KEY_Z,            0,   3,   5 },
+    { "X",      KEY_X,            0,   2,   5 },
+    { "C",      KEY_C,            0,   1,   5 },
+    { "V",      KEY_V,            0,   0,   5 },
+    { "ENTER",  KEY_ENTER,        0,   3,   6 },
+    { "M",      KEY_M,            0,   2,   6 },
+    { "B",      KEY_B,            0,   1,   6 },
+    { "N",      KEY_N,            0,   0,   6 },
+    { "SYM",    KEY_COMPOSE,      0,   5,   2 },
+    { "BACK",   KEY_BACK,         0,   5,   3 },
+    { "MENU",   KEY_APPSELECT,    0,   5,   4 },
+    { "SHIFT-L", KEY_LEFTSHIFT,    0,   5,   1 },
+    { "F13",    KEY_F13,          0,   6,   1 },
+    { "ALT",    KEY_RIGHTALT,     0,   7,   1 },
+};
+#else
 KEY_STATE key_map[] = {
     /*  name     code              val  row  col */
     { "ENTER",   KEY_ENTER,        0,   4,   2 },
@@ -169,6 +215,7 @@ KEY_STATE key_map[] = {
     { "F13",     KEY_F13,          0,   6,   1 },
     { "ALT",     KEY_RIGHTALT,     0,   7,   1 },
 };
+#endif
 
 // Function implementations
 static int noinline aw9523_read_chipid(struct i2c_client *client)
