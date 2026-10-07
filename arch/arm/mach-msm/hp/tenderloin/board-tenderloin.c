@@ -75,7 +75,7 @@
 #include <mach/irqs.h>
 #include <mach/msm_spi.h>
 
-#ifdef CONFIG_BT
+#if defined(CONFIG_BT) || defined(CONFIG_BACKPORT_BT)
 #include <mach/msm_serial_hs.h>
 #include <mach/htc_bdaddress.h>
 #endif
@@ -1655,7 +1655,7 @@ static int board_gsbi6_init(void)
 	return (board_gsbi_init(6, &inited, UART_WITH_FLOW_CONTROL));
 }
 
-#ifdef CONFIG_BT
+#if defined(CONFIG_BT) || defined(CONFIG_BACKPORT_BT)
 #ifdef CONFIG_HSUART
 
 static int btuart_pin_mux(int on)
@@ -2096,7 +2096,7 @@ static struct platform_device *tenderloin_devices[] __initdata = {
 #ifdef CONFIG_SERIAL_MSM_HS 
         &msm_device_uart_dm1,
 #endif
-#ifdef CONFIG_BT
+#if defined(CONFIG_BT) || defined(CONFIG_BACKPORT_BT)
 #ifdef CONFIG_HSUART
 	&btuart_device,
 #endif

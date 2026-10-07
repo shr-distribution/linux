@@ -70,7 +70,7 @@
 #include <mach/irqs.h>
 #include <mach/msm_spi.h>
 
-#ifdef CONFIG_BT
+#if defined(CONFIG_BT) || defined(CONFIG_BACKPORT_BT)
 #include <mach/msm_serial_hs.h>
 #endif
 
