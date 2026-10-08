@@ -317,7 +317,29 @@ static int msm8660_i2s_hw_params(struct snd_pcm_substream *substream,
 }
 
         snd_mask_set(&params->masks[SNDRV_PCM_HW_PARAM_FORMAT - SNDRV_PCM_HW_PARAM_FIRST_MASK], SNDRV_PCM_FORMAT_S16_LE);
-        return wm8994_hw_params(substream, params, codec_dai);
+	ret = wm8994_hw_params(substream, params, codec_dai);
+	if (ret < 0)
+		return ret;
+
+	/*
+	 * The LPASS sends only BCLK and data; GPIO 108, where LRCLK would be,
+	 * is the codec's LDO2 enable. So the codec, still a slave, has to
+	 * make its own LRCLK every WM_CHANNELS * WM_BITS clocks
+	 * (AIF1_LRCLK_FRC). wm8994_hw_params() has just written the
+	 * codec-master divider into the LRCLK rate, so this has to come after
+	 * it. MSTR is cleared explicitly: the chip comes out of reset as
+	 * master but the register cache defaults to slave, so asking for
+	 * slave alone was never written out.
+	 */
+	snd_soc_update_bits(codec_dai->codec, WM8994_AIF1_MASTER_SLAVE,
+			    WM8994_AIF1_MSTR | WM8994_AIF1_LRCLK_FRC,
+			    WM8994_AIF1_LRCLK_FRC);
+	snd_soc_update_bits(codec_dai->codec, WM8994_AIF1DAC_LRCLK,
+			    WM8994_AIF1DAC_RATE_MASK, WM_CHANNELS * WM_BITS);
+	snd_soc_update_bits(codec_dai->codec, WM8994_AIF1ADC_LRCLK,
+			    WM8994_AIF1ADC_RATE_MASK, WM_CHANNELS * WM_BITS);
+
+	return 0;
 }
 
 static void msm8660_i2s_shutdown(struct snd_pcm_substream *substream)
