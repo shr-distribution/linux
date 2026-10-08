@@ -71,6 +71,7 @@ struct isl29023_data {
 	u16 rext;
 	u8 polled;
 	u16 poll_interval;
+	u16 cover_gain;
         struct isl29023_platform_data *platform_data;
 };
 
@@ -328,7 +329,7 @@ static int isl29023_get_adc_value(struct i2c_client *client)
 {
         struct isl29023_data *data = NULL;
 	int lsb, msb, range, bitdepth;
-	u32 raw;
+	u64 raw;
 
         client = i2c_client;
 	data = i2c_get_clientdata(client);
@@ -352,12 +353,14 @@ static int isl29023_get_adc_value(struct i2c_client *client)
 
 	/*
 	 * The datasheet's conversion: the full-scale range of the selected gain spread over the
-	 * ADC's counts, rounded to the nearest lux. The ISL29023 has no external resistor, so the
-	 * 499/rext factor of the other helpers (from Freescale's driver for a part that has one)
-	 * does not belong here. 65535 * 64000 still fits in 32 bits.
+	 * ADC's counts, times the cover glass's loss, rounded to the nearest lux (the gain goes in
+	 * before the rounding, so a low light keeps its resolution). The ISL29023 has no external
+	 * resistor, so the 499/rext factor of the other helpers (from Freescale's driver for a part
+	 * that has one) does not belong here. 64 bits: 65535 * 64000 * the gain need more than 32.
 	 */
 	raw = (msb << 8) | lsb;
-	return (raw * gain_range[range] + (1U << (bitdepth - 1))) >> bitdepth;
+	return (int)((raw * gain_range[range] * data->cover_gain +
+		      (1ULL << (bitdepth - 1))) >> bitdepth);
 }
 
 static int isl29023_get_int_lt_value(struct i2c_client *client)
@@ -918,6 +921,8 @@ static int __devinit isl29023_probe(struct i2c_client *client,
 	data->rext = data->platform_data->rext;
 	data->polled = data->platform_data->polled;
 	data->poll_interval = data->platform_data->poll_interval;
+	data->cover_gain = data->platform_data->cover_gain > 0 ?
+			data->platform_data->cover_gain : 1;
 
 	snprintf(data->phys, sizeof(data->phys),
 		 "%s", dev_name(&client->dev));

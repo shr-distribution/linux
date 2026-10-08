@@ -49,6 +49,11 @@ struct isl29023_platform_data {
 	int rext;
 	int polled;
 	int poll_interval;
+	/*
+	 * Optical loss of the cover glass in front of the sensor: the reading is multiplied by
+	 * it, so lux is the ambient level rather than what gets through. 0 means 1.
+	 */
+	int cover_gain;
 };
 
 #endif

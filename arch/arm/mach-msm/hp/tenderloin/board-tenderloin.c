@@ -2542,6 +2542,13 @@ static struct isl29023_platform_data isl29023_pdata = {
     .rext = 10,
     .polled = 1,
     .poll_interval = 500,
+    /*
+     * The sensor sits behind the tinted front cover and gets about a hundredth of the light: a
+     * normally lit room read a few lux without this, a few hundred with it: the INDOOR
+     * region of the display manager. The same factor as the mainline device tree's
+     * isil,cover-comp-gain, measured there the same way.
+     */
+    .cover_gain = 100,
 };
 
 static struct lsm303dlh_acc_platform_data lsm303dlh_acc_pdata = {
