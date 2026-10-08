@@ -856,44 +856,69 @@ static int cgroup_call_pre_destroy(struct cgroup *cgrp)
 	return ret;
 }
 
+static void cgroup_free_fn(struct work_struct *work)
+{
+	struct cgroup *cgrp = container_of(work, struct cgroup, free_work);
+	struct cgroup_subsys *ss;
+
+	mutex_lock(&cgroup_mutex);
+	/*
+	 * Release the subsystem state objects.
+	 */
+	for_each_subsys(cgrp->root, ss)
+		ss->destroy(cgrp);
+
+	cgrp->root->number_of_cgroups--;
+	mutex_unlock(&cgroup_mutex);
+
+	/*
+	 * We get a ref to the parent's dentry, and put the ref when
+	 * this cgroup is being freed, so it's guaranteed that the
+	 * parent won't be destroyed before its children.
+	 */
+	dput(cgrp->parent->dentry);
+
+	/*
+	 * Drop the active superblock reference that we took when we
+	 * created the cgroup
+	 */
+	deactivate_super(cgrp->root->sb);
+
+	/*
+	 * if we're getting rid of the cgroup, refcount should ensure
+	 * that there are no pidlists left.
+	 */
+	BUG_ON(!list_empty(&cgrp->pidlists));
+
+	kfree(cgrp);
+}
+
+static void cgroup_free_rcu(struct rcu_head *head)
+{
+	struct cgroup *cgrp = container_of(head, struct cgroup, rcu_head);
+
+	schedule_work(&cgrp->free_work);
+}
+
 static void cgroup_diput(struct dentry *dentry, struct inode *inode)
 {
 	/* is dentry a directory ? if so, kfree() associated cgroup */
 	if (S_ISDIR(inode->i_mode)) {
 		struct cgroup *cgrp = dentry->d_fsdata;
-		struct cgroup_subsys *ss;
+
 		BUG_ON(!(cgroup_is_removed(cgrp)));
-		/* It's possible for external users to be holding css
-		 * reference counts on a cgroup; css_put() needs to
-		 * be able to access the cgroup after decrementing
-		 * the reference count in order to know if it needs to
-		 * queue the cgroup to be handled by the release
-		 * agent */
-		synchronize_rcu();
-
-		mutex_lock(&cgroup_mutex);
 		/*
-		 * Release the subsystem state objects.
+		 * It's possible for external users to be holding css
+		 * reference counts on a cgroup; css_put() needs to be able
+		 * to access the cgroup after decrementing the reference
+		 * count in order to know if it needs to queue the cgroup to
+		 * be handled by the release agent. Free it after an RCU
+		 * grace period rather than waiting for one here: this runs
+		 * for every rmdir, and systemd removes each unit's cgroup
+		 * from every hierarchy one after another, so a grace period
+		 * each paced shutdown at a few units a second.
 		 */
-		for_each_subsys(cgrp->root, ss)
-			ss->destroy(cgrp);
-
-		cgrp->root->number_of_cgroups--;
-		mutex_unlock(&cgroup_mutex);
-
-		/*
-		 * Drop the active superblock reference that we took when we
-		 * created the cgroup
-		 */
-		deactivate_super(cgrp->root->sb);
-
-		/*
-		 * if we're getting rid of the cgroup, refcount should ensure
-		 * that there are no pidlists left.
-		 */
-		BUG_ON(!list_empty(&cgrp->pidlists));
-
-		kfree_rcu(cgrp, rcu_head);
+		call_rcu(&cgrp->rcu_head, cgroup_free_rcu);
 	}
 	iput(inode);
 }
@@ -2115,6 +2140,10 @@ static int cgroup_attach_proc(struct cgroup *cgrp, struct task_struct *leader)
 
 	/*
 	 * step 5: success! and cleanup
+	 *
+	 * No synchronize_rcu() here: put_css_set() defers the css_set's
+	 * teardown past a grace period itself, which is why
+	 * cgroup_attach_task() does not wait either.
 	 */
 	cgroup_wakeup_rmdir_waiter(cgrp);
 	retval = 0;
@@ -3795,6 +3824,7 @@ static long cgroup_create(struct cgroup *parent, struct dentry *dentry,
 	cgrp->parent = parent;
 	cgrp->root = parent->root;
 	cgrp->top_cgroup = parent->top_cgroup;
+	INIT_WORK(&cgrp->free_work, cgroup_free_fn);
 
 	if (notify_on_release(parent))
 		set_bit(CGRP_NOTIFY_ON_RELEASE, &cgrp->flags);
@@ -3836,6 +3866,9 @@ static long cgroup_create(struct cgroup *parent, struct dentry *dentry,
 
 	err = cgroup_populate_dir(cgrp);
 	/* If err < 0, we have a half-filled directory - oh well ;) */
+
+	/* Dropped in cgroup_free_fn(), so the parent outlives this cgroup. */
+	dget(parent->dentry);
 
 	mutex_unlock(&cgroup_mutex);
 	mutex_unlock(&cgrp->dentry->d_inode->i_mutex);
