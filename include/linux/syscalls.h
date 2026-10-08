@@ -321,6 +321,11 @@ asmlinkage long sys_clock_adjtime(clockid_t which_clock,
 				struct timex __user *tx);
 asmlinkage long sys_clock_getres(clockid_t which_clock,
 				struct timespec __user *tp);
+struct kernel_timespec64;
+asmlinkage long sys_clock_gettime64(clockid_t which_clock,
+				    struct kernel_timespec64 __user *tp);
+asmlinkage long sys_clock_getres_time64(clockid_t which_clock,
+					struct kernel_timespec64 __user *tp);
 asmlinkage long sys_clock_nanosleep(clockid_t which_clock, int flags,
 				const struct timespec __user *rqtp,
 				struct timespec __user *rmtp);
