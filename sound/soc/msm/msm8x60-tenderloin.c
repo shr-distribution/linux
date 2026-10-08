@@ -259,8 +259,13 @@ static int msm8660_i2s_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	static const unsigned int aif1_regs[] = {
+		WM8994_AIF1_CONTROL_1, WM8994_AIF1_MASTER_SLAVE,
+		WM8994_AIF1ADC_LRCLK, WM8994_AIF1DAC_LRCLK,
+	};
 	int rate = params_rate(params), ret = 0;
 	int fll_rate = 0;
+	int i;
         int bclk_rate = 0;
 	int rc = 0;
 
@@ -338,6 +343,16 @@ static int msm8660_i2s_hw_params(struct snd_pcm_substream *substream,
 			    WM8994_AIF1DAC_RATE_MASK, WM_CHANNELS * WM_BITS);
 	snd_soc_update_bits(codec_dai->codec, WM8994_AIF1ADC_LRCLK,
 			    WM8994_AIF1ADC_RATE_MASK, WM_CHANNELS * WM_BITS);
+
+	/*
+	 * update_bits() only writes when the cache changes, and the chip does
+	 * not always hold what the cache says: AIF1 control 1 was found at
+	 * 0x0070, 32-bit words, with the cache at 16, and the speakers silent
+	 * until it was rewritten. Write these four through from the cache.
+	 */
+	for (i = 0; i < ARRAY_SIZE(aif1_regs); i++)
+		snd_soc_write(codec_dai->codec, aif1_regs[i],
+			      snd_soc_read(codec_dai->codec, aif1_regs[i]));
 
 	return 0;
 }
