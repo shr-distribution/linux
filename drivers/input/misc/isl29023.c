@@ -327,7 +327,8 @@ static int isl29023_get_power_state(struct i2c_client *client)
 static int isl29023_get_adc_value(struct i2c_client *client)
 {
         struct isl29023_data *data = NULL;
-	int lsb, msb, range, bitdepth, raw, lux, scale;
+	int lsb, msb, range, bitdepth;
+	u32 raw;
 
         client = i2c_client;
 	data = i2c_get_clientdata(client);
@@ -349,12 +350,14 @@ static int isl29023_get_adc_value(struct i2c_client *client)
 	range = isl29023_get_range(client);
 	bitdepth = (4 - isl29023_get_resolution(client)) * 4;
 
+	/*
+	 * The datasheet's conversion: the full-scale range of the selected gain spread over the
+	 * ADC's counts, rounded to the nearest lux. The ISL29023 has no external resistor, so the
+	 * 499/rext factor of the other helpers (from Freescale's driver for a part that has one)
+	 * does not belong here. 65535 * 64000 still fits in 32 bits.
+	 */
 	raw = (msb << 8) | lsb;
-	scale = gain_range[range] >> bitdepth;
-	if (!scale)
-		scale = 1;
-	lux = raw * scale;
-	return lux;
+	return (raw * gain_range[range] + (1U << (bitdepth - 1))) >> bitdepth;
 }
 
 static int isl29023_get_int_lt_value(struct i2c_client *client)
