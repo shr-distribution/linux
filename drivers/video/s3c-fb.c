@@ -2974,6 +2974,36 @@ static int s3c_fb_set_win_buffer(struct s3c_fb *sfb, struct s3c_fb_win *win,
 		goto err_map;
 	}
 
+	{
+		/* DEBUG (SM-T520 bring-up): say what the compositor hands the display, about
+		 * every two seconds, and whether the buffer holds anything but zeros. */
+		static unsigned int dbg_cnt;
+
+		if ((dbg_cnt++ % 120) == 0) {
+			u32 *va = ion_map_kernel(sfb->fb_ion_client, handle);
+			u32 top = 0, mid = 0, bot = 0, any = 0;
+
+			if (!IS_ERR_OR_NULL(va)) {
+				u8 *base = (u8 *)va + win_config->offset;
+				u32 col = (win_config->w / 2) * 4;
+				u32 i;
+
+				top = *(u32 *)(base + col);
+				mid = *(u32 *)(base + win_config->stride * (win_config->h / 2) + col);
+				bot = *(u32 *)(base + win_config->stride * (win_config->h - 1) + col);
+				for (i = 0; i < win_config->h; i += 16)
+					any |= *(u32 *)(base + win_config->stride * i + col);
+				ion_unmap_kernel(sfb->fb_ion_client, handle);
+			}
+			dev_info(sfb->dev, "DBG win%u fmt %u blend %u alpha %d %ux%u+%d+%d stride %u off %u dma 0x%x pix top %08x mid %08x bot %08x any %08x (va %p)\n",
+				win_no, win_config->format, win_config->blending,
+				win_config->plane_alpha, win_config->w, win_config->h,
+				win_config->x, win_config->y, win_config->stride,
+				win_config->offset, (u32)dma_buf_data.dma_addr,
+				top, mid, bot, any, va);
+		}
+	}
+
 	handle = NULL;
 	buf = NULL;
 
