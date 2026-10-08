@@ -620,6 +620,39 @@ static struct msm_gpiomux_config msm8x60_aux_pcm_configs[] __initdata = {
 		},
 	},
 };
+
+/*
+ * The speaker I2S from the LPASS to the WM8958: GPIO 109 is the bit clock,
+ * GPIO 110 the data. There is no LRCLK line - GPIO 108 is the codec's LDO2
+ * enable - so the codec makes its own (see msm8x60-tenderloin.c). Nothing
+ * else muxes these pins and the bootloader leaves them as GPIO inputs, so
+ * without this the DSP played into nothing. No driver takes a gpiomux
+ * reference on them, which leaves them in their suspended setting, hence
+ * the same function in both. Wifi boards only: on the 3G ones GPIO 110 is
+ * the Bluetooth power.
+ */
+static struct gpiomux_setting spkr_i2s_config = {
+	.func = GPIOMUX_FUNC_1,
+	.drv = GPIOMUX_DRV_8MA,
+	.pull = GPIOMUX_PULL_NONE,
+};
+
+static struct msm_gpiomux_config msm8x60_spkr_i2s_configs[] __initdata = {
+	{
+		.gpio = 109,
+		.settings = {
+			[GPIOMUX_ACTIVE]    = &spkr_i2s_config,
+			[GPIOMUX_SUSPENDED] = &spkr_i2s_config,
+		},
+	},
+	{
+		.gpio = 110,
+		.settings = {
+			[GPIOMUX_ACTIVE]    = &spkr_i2s_config,
+			[GPIOMUX_SUSPENDED] = &spkr_i2s_config,
+		},
+	},
+};
 #endif
 
 /* boot configuration: pins are already muxed */
@@ -1484,6 +1517,7 @@ tenderloin_gpiomux_cfgs[] __initdata = {
 #ifdef CONFIG_MSM8X60_AUDIO
 	{msm8x60_aud_configs, ARRAY_SIZE(msm8x60_aud_configs)},
 	{msm8x60_aux_pcm_configs, ARRAY_SIZE(msm8x60_aux_pcm_configs)},
+	{msm8x60_spkr_i2s_configs, ARRAY_SIZE(msm8x60_spkr_i2s_configs)},
 #endif
 
 	{msm8x60_gsbi_configs, ARRAY_SIZE(msm8x60_gsbi_configs)},
@@ -1569,6 +1603,7 @@ tenderloin_dvt_gpiomux_cfgs[] __initdata = {
 #ifdef CONFIG_MSM8X60_AUDIO
 	{msm8x60_aud_configs, ARRAY_SIZE(msm8x60_aud_configs)},
 	{msm8x60_aux_pcm_configs, ARRAY_SIZE(msm8x60_aux_pcm_configs)},
+	{msm8x60_spkr_i2s_configs, ARRAY_SIZE(msm8x60_spkr_i2s_configs)},
 #endif
 	{msm8x60_system_gpio_cfgs, ARRAY_SIZE(msm8x60_system_gpio_cfgs)},
 
