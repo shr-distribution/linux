@@ -83,7 +83,8 @@ int check_permissions(void)
 {
 	int rc = 0;
 	if (uid_eq(current_euid(), GLOBAL_ROOT_UID) ||
-	    capable(CAP_NET_RAW) || capable(CAP_NET_BIND_SERVICE))
+	    capable(CAP_NET_RAW) || capable(CAP_NET_BIND_SERVICE) ||
+	    in_egroup_p(KGIDT_INIT(AID_NET_RAW)))
 		rc = 1;
 	return rc;
 }
