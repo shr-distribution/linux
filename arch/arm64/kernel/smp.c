@@ -428,7 +428,7 @@ void __init smp_init_cpus(void)
 			continue;
 		}
 
-		if (cpu >= NR_CPUS)
+		if (cpu >= nr_cpu_ids)
 			goto next;
 
 		if (cpu_read_ops(dn, cpu) != 0)
@@ -457,7 +457,7 @@ next:
 	 * All the cpus that made it to the cpu_logical_map have been
 	 * validated so set them as possible cpus.
 	 */
-	for (i = 0; i < NR_CPUS; i++)
+	for (i = 0; i < nr_cpu_ids; i++)
 		if (cpu_logical_map(i) != INVALID_HWID)
 			set_cpu_possible(i, true);
 }
