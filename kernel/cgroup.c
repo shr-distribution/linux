@@ -2144,6 +2144,14 @@ static int cgroup_attach_proc(struct cgroup *cgrp, struct task_struct *leader)
 		if (ss->attach)
 			ss->attach(cgrp, &tset);
 	}
+	/*
+	 * CGRP_RELEASABLE means "has ever had a task" here, and is what lets
+	 * check_for_release() notify userspace once the cgroup empties.
+	 * cgroup_attach_task() sets it; this path has to as well, or a cgroup
+	 * filled only through cgroup.procs - which is how systemd places every
+	 * process it starts - never gets a release notification.
+	 */
+	set_bit(CGRP_RELEASABLE, &cgrp->flags);
 
 	/*
 	 * step 5: success! and cleanup
