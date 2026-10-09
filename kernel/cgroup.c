@@ -890,7 +890,14 @@ static void cgroup_free_fn(struct work_struct *work)
 	 */
 	BUG_ON(!list_empty(&cgrp->pidlists));
 
-	kfree(cgrp);
+	/*
+	 * Not kfree(): the subsystems' destroy callbacks have only just run,
+	 * and an RCU reader that looked the cgroup up while they did may still
+	 * hold it. The code this replaces waited a grace period before destroy
+	 * and freed with kfree_rcu() after it; keep that second grace period.
+	 * The rcu_head is free again - cgroup_free_rcu() has already run.
+	 */
+	kfree_rcu(cgrp, rcu_head);
 }
 
 static void cgroup_free_rcu(struct rcu_head *head)
