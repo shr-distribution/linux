@@ -705,9 +705,12 @@ __SYSCALL(__NR_seccomp, sys_seccomp)
 __SYSCALL(__NR_getrandom, sys_getrandom)
 #define __NR_memfd_create 279
 __SYSCALL(__NR_memfd_create, sys_memfd_create)
+/* 280 is bpf, which this kernel does not have */
+#define __NR_execveat 281
+__SYSCALL(__NR_execveat, sys_execveat)
 
 #undef __NR_syscalls
-#define __NR_syscalls 280
+#define __NR_syscalls 282
 
 /*
  * All syscalls below here should go away really,

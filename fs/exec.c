@@ -1736,6 +1736,76 @@ SYSCALL_DEFINE3(execve,
 	}
 	return error;
 }
+
+/*
+ * execveat() the way glibc's fexecve() emulated it before 3.19: by executing
+ * the /proc/self/fd/<fd> link of the descriptor, followed by the path when one
+ * is given. A glibc built for kernels from 4.9 on assumes the syscall and has
+ * no such fallback, so fexecve() returned ENOSYS here, and with it every
+ * program that re-executes itself from a memfd (lxc-attach).
+ *
+ * Differences from the 3.19 syscall: /proc has to be mounted in the caller's
+ * mount namespace, AT_SYMLINK_NOFOLLOW is refused with EINVAL, and a script
+ * run this way sees /proc/self/fd/<fd>, which is gone for its interpreter when
+ * the descriptor is close-on-exec (the 3.19 syscall refuses that case with
+ * ENOENT instead).
+ */
+SYSCALL_DEFINE5(execveat,
+		int, fd, const char __user *, filename,
+		const char __user *const __user *, argv,
+		const char __user *const __user *, envp,
+		int, flags)
+{
+	struct filename *path = NULL;
+	struct fd f;
+	char *name;
+	char c;
+	int error;
+
+	if (flags & ~AT_EMPTY_PATH)
+		return -EINVAL;
+	if (get_user(c, filename))
+		return -EFAULT;
+	if (!c && !(flags & AT_EMPTY_PATH))
+		return -ENOENT;
+	if (c) {
+		path = getname(filename);
+		if (IS_ERR(path))
+			return PTR_ERR(path);
+		if (fd == AT_FDCWD || path->name[0] == '/') {
+			error = do_execve(path->name, argv, envp);
+			goto out;
+		}
+	}
+
+	/* the descriptor itself (empty path), or a path relative to it */
+	if (fd < 0) {
+		error = fd == AT_FDCWD ? -EACCES : -EBADF;
+		goto out;
+	}
+	f = fdget(fd);
+	if (!f.file) {
+		error = -EBADF;
+		goto out;
+	}
+	fdput(f);
+
+	if (path)
+		name = kasprintf(GFP_KERNEL, "/proc/self/fd/%d/%s", fd, path->name);
+	else
+		name = kasprintf(GFP_KERNEL, "/proc/self/fd/%d", fd);
+	if (!name) {
+		error = -ENOMEM;
+		goto out;
+	}
+	error = do_execve(name, argv, envp);
+	kfree(name);
+out:
+	if (path)
+		putname(path);
+	return error;
+}
+
 #ifdef CONFIG_COMPAT
 asmlinkage long compat_sys_execve(const char __user * filename,
 	const compat_uptr_t __user * argv,
