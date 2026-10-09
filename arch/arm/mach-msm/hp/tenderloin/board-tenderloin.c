@@ -152,6 +152,8 @@
 #include <linux/msm_ion.h>
 #include <mach/ion.h>
 #include <mach/msm_rtb.h>
+#include <linux/memblock.h>
+#include <linux/persistent_ram.h>
 #include <linux/msm_tsens.h>
 
 extern int ps_type;
@@ -2242,9 +2244,60 @@ static void __init tenderloin_early_memory(void)
 	reserve_info = &msm8x60_reserve_info;
 }
 
+#ifdef CONFIG_ANDROID_PERSISTENT_RAM
+/*
+ * A RAM console, so that a boot or shutdown that hangs and has to be forced
+ * leaves its kernel log in /proc/last_kmsg on the next boot. The journal
+ * cannot: the last seconds before a forced reset never reach the disk.
+ *
+ * It takes the last megabyte of RAM below the carveouts msm_reserve() has
+ * removed from the top (pool 3 at 0x76b00000 today), which nothing on the
+ * way back in touches: moboot loads the uImage at its scratch area
+ * 0x70000000-0x74000000, moves the ramdisk to 0x60000000 and the kernel to
+ * 0x40208000.
+ */
+#define TENDERLOIN_PERSISTENT_RAM_SIZE	SZ_1M
+#define TENDERLOIN_BOOTLOADER_SCRATCH_END	0x74000000
+
+static struct persistent_ram_descriptor tenderloin_pram_descs[] = {
+	{
+		.name = "ram_console",
+		.size = TENDERLOIN_PERSISTENT_RAM_SIZE,
+	},
+};
+
+static struct persistent_ram tenderloin_persistent_ram = {
+	.size = TENDERLOIN_PERSISTENT_RAM_SIZE,
+	.num_descs = ARRAY_SIZE(tenderloin_pram_descs),
+	.descs = tenderloin_pram_descs,
+};
+
+static void __init tenderloin_reserve_persistent_ram(void)
+{
+	phys_addr_t start = memblock_end_of_DRAM() - TENDERLOIN_PERSISTENT_RAM_SIZE;
+
+	if (start < TENDERLOIN_BOOTLOADER_SCRATCH_END) {
+		pr_err("%s: end of RAM at %08lx is inside the bootloader's scratch area, no RAM console\n",
+		       __func__, (unsigned long)memblock_end_of_DRAM());
+		return;
+	}
+	tenderloin_persistent_ram.start = start;
+	persistent_ram_early_init(&tenderloin_persistent_ram);
+}
+
+static struct platform_device tenderloin_ram_console_device = {
+	.name = "ram_console",
+	.id = -1,
+};
+#endif
+
 static void __init tenderloin_reserve(void)
 {
 	msm_reserve();
+#ifdef CONFIG_ANDROID_PERSISTENT_RAM
+	/* After msm_reserve(), so that its carveouts are already off the top. */
+	tenderloin_reserve_persistent_ram();
+#endif
 }
 
 #define EXT_CHG_VALID_MPP 10
@@ -3498,6 +3551,10 @@ static void __init tenderloin_init(void)
        msm8x60_init_ebi2();
 
 	platform_add_devices(early_devices, ARRAY_SIZE(early_devices));
+#ifdef CONFIG_ANDROID_PERSISTENT_RAM
+	if (tenderloin_persistent_ram.start)
+		platform_device_register(&tenderloin_ram_console_device);
+#endif
 
 	msm8x60_init_uart12dm();
 	msm8x60_init_mmc();
