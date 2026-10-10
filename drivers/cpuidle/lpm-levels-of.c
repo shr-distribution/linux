@@ -604,6 +604,49 @@ void free_cluster_node(struct lpm_cluster *cluster)
 }
 
 /*
+ * Whether any CPU of a qcom,pm-cluster node, or of the clusters below it, is a
+ * possible CPU. With nr_cpus= a whole cluster can be left out of the system
+ * (the Nexus 5X runs on its A53s only, nr_cpus=4): its qcom,cpu phandles then
+ * match no logical CPU, and the cluster is skipped rather than failing the
+ * parse of every level above it.
+ */
+static bool cluster_has_possible_cpu(struct device_node *node)
+{
+	struct device_node *n, *cpu_node;
+	int cpu, idx;
+
+	for_each_child_of_node(node, n) {
+		if (!n->name)
+			continue;
+		if (!of_node_cmp(n->name, "qcom,pm-cluster")) {
+			if (cluster_has_possible_cpu(n)) {
+				of_node_put(n);
+				return true;
+			}
+			continue;
+		}
+		if (of_node_cmp(n->name, "qcom,pm-cpu"))
+			continue;
+		/* no qcom,cpu phandle: get_cpumask_for_node() takes all CPUs */
+		if (!of_find_property(node, "qcom,cpu", NULL)) {
+			of_node_put(n);
+			return true;
+		}
+		for (idx = 0; (cpu_node = of_parse_phandle(node, "qcom,cpu", idx)); idx++) {
+			for_each_possible_cpu(cpu) {
+				if (of_get_cpu_node(cpu, NULL) == cpu_node) {
+					of_node_put(cpu_node);
+					of_node_put(n);
+					return true;
+				}
+			}
+			of_node_put(cpu_node);
+		}
+	}
+	return false;
+}
+
+/*
  * TODO:
  * Expects a CPU or a cluster only. This ensures that affinity
  * level of a cluster is consistent with reference to its
@@ -647,6 +690,12 @@ struct lpm_cluster *parse_cluster(struct device_node *node,
 		if (!of_node_cmp(n->name, key)) {
 			struct lpm_cluster *child;
 
+			if (!cluster_has_possible_cpu(n)) {
+				pr_info("%s: none of its CPUs is possible, skipped\n",
+						n->full_name);
+				continue;
+			}
+
 			WARN_ON(c->no_saw_devices);
 			child = parse_cluster(n, c);
 			if (!child)
@@ -682,8 +731,7 @@ struct lpm_cluster *parse_cluster(struct device_node *node,
 
 failed_parse_cluster:
 	pr_err("Failed parse cluster:%s\n", key);
-	if (parent)
-		list_del(&c->list);
+	/* c is added to its parent's child list only after this returns */
 	free_cluster_node(c);
 failed_parse_params:
 	c->parent = NULL;
