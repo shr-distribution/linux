@@ -2266,6 +2266,14 @@ static struct notifier_block cpuset_track_online_nodes_nb = {
 void __init cpuset_init_smp(void)
 {
 	cpumask_copy(top_cpuset.cpus_allowed, cpu_active_mask);
+	/*
+	 * cpuset_init() set every bit up to NR_CPUS, and the root's cpuset.cpus
+	 * shows cpus_requested. With nr_cpus= below NR_CPUS that listed CPUs that
+	 * do not exist, and a child given its parent's list, as LXC does, was
+	 * refused with EINVAL by the cpu_present_mask check in update_cpumask().
+	 */
+	cpumask_and(top_cpuset.cpus_requested, top_cpuset.cpus_requested,
+		    cpu_possible_mask);
 	top_cpuset.mems_allowed = node_states[N_MEMORY];
 
 	register_hotmemory_notifier(&cpuset_track_online_nodes_nb);
