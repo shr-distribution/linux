@@ -744,3 +744,9 @@ CONFIG_PCBID_FLAG=y
 # does not build under GCC 15 (ipa_hdr.c: redefinition of ipa3_del_hdr, wrong
 # arg count to __ipa3_del_hdr). The device does not use it.
 # CONFIG_IPA3 is not set
+
+# Asus power-debug driver (drivers/power/qcom/asus_debug.c). It defines the
+# global `suspend_happened` that the stock tree's core kernel/power/suspend.c
+# references unconditionally, so vmlinux does not link without it ("undefined
+# reference to suspend_happened"). Enabled in zn570kl-msm_defconfig.
+CONFIG_ASUS_POWER_DEBUG=y
