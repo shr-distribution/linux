@@ -429,13 +429,15 @@ asmlinkage long do_ni_syscall(struct pt_regs *regs)
 	}
 #endif
 
-	if (show_unhandled_signals && printk_ratelimit()) {
-		pr_info("%s[%d]: syscall %d\n", current->comm,
-			task_pid_nr(current), (int)regs->syscallno);
-		dump_instr("", regs);
-		if (user_mode(regs))
-			__show_regs(regs);
-	}
+	/*
+	 * A syscall this kernel does not have is ENOSYS and nothing else; the
+	 * caller is expected to fall back. A current glibc and systemd probe
+	 * statx, rseq (every new thread), pidfd_open, clone3 and faccessat2,
+	 * and logging a register dump for each made up nine tenths of the
+	 * journal on the Nexus 5X. Later kernels do not log it at all.
+	 */
+	pr_debug("%s[%d]: syscall %d\n", current->comm,
+		 task_pid_nr(current), (int)regs->syscallno);
 
 	return sys_ni_syscall();
 }
