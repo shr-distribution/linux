@@ -4250,6 +4250,64 @@ static int kgsl_check_gpu_addr_collision(
 	return ret;
 }
 
+/*
+ * The SVM range of a 32-bit GPU is the CPU range below KGSL_SVM_UPPER_BOUND, and
+ * a 64-bit process can fill it: on the Nexus 5X (Adreno 418) every buffer of
+ * WebAppMgr's in-process GPU thread failed here with -ENOMEM, so EGL never
+ * initialised. Show, once per process, what occupies that range.
+ */
+static void kgsl_svm_dump_low_vmas(struct kgsl_device *device)
+{
+	static pid_t last_pid;
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	unsigned long prev_end = KGSL_SVM_LOWER_BOUND, gap, max_gap = 0;
+	unsigned long mapped = 0;
+	unsigned int n = 0;
+
+	if (!mm || current->tgid == last_pid)
+		return;
+	last_pid = current->tgid;
+
+	dev_err(device->dev,
+		"svm: %s[%d] no room below %lx: mmap_base %lx highest_vm_end %lx personality %x\n",
+		current->comm, current->tgid,
+		(unsigned long)KGSL_SVM_UPPER_BOUND, mm->mmap_base,
+		mm->highest_vm_end, current->personality);
+
+	for (vma = mm->mmap; vma && vma->vm_start < KGSL_SVM_UPPER_BOUND;
+	     vma = vma->vm_next) {
+		unsigned long end = min_t(unsigned long, vma->vm_end,
+					  KGSL_SVM_UPPER_BOUND);
+
+		if (vma->vm_start > prev_end) {
+			gap = vma->vm_start - prev_end;
+			if (gap > max_gap)
+				max_gap = gap;
+		}
+		prev_end = end;
+		mapped += end - vma->vm_start;
+		if (n++ < 160)
+			dev_err(device->dev,
+				"svm:  %08lx-%08lx %c%c%c%c %s\n",
+				vma->vm_start, vma->vm_end,
+				vma->vm_flags & VM_READ ? 'r' : '-',
+				vma->vm_flags & VM_WRITE ? 'w' : '-',
+				vma->vm_flags & VM_EXEC ? 'x' : '-',
+				vma->vm_flags & VM_SHARED ? 's' : 'p',
+				vma->vm_file ?
+				(const char *)vma->vm_file->f_path.dentry->d_name.name :
+				(vma->vm_start <= mm->brk &&
+				 vma->vm_end >= mm->start_brk) ? "[heap]" : "");
+	}
+	if (KGSL_SVM_UPPER_BOUND > prev_end &&
+	    KGSL_SVM_UPPER_BOUND - prev_end > max_gap)
+		max_gap = KGSL_SVM_UPPER_BOUND - prev_end;
+	dev_err(device->dev,
+		"svm: %u vmas below the bound, %lu KiB mapped, largest gap %lu KiB\n",
+		n, mapped >> 10, max_gap >> 10);
+}
+
 static unsigned long
 kgsl_get_unmapped_area(struct file *file, unsigned long addr,
 			unsigned long len, unsigned long pgoff,
@@ -4457,6 +4515,8 @@ put:
 		KGSL_MEM_ERR_RATELIMITED(device,
 				"pid %d pgoff %lx len %ld failed error %ld\n",
 				private->pid, pgoff, len, ret);
+	if (ret == (unsigned long)-ENOMEM)
+		kgsl_svm_dump_low_vmas(device);
 	kgsl_mem_entry_put(entry);
 	return ret;
 }
