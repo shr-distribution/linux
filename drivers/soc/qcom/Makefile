@@ -1,3 +1,4 @@
+ccflags-y += -I$(src) # halium-incfix
 KASAN_SANITIZE_scm.o := n
 
 CFLAGS_scm.o :=$(call as-instr,.arch_extension sec,-DREQUIRES_SEC=1)

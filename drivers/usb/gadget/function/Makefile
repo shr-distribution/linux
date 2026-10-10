@@ -1,3 +1,4 @@
+ccflags-y += -I$(src)/.. -I$(src) # halium-incfix
 #
 # USB peripheral controller drivers
 #

@@ -1,3 +1,5 @@
+ccflags-y += -I$(src) # halium-incfix
+ccflags-y += -I$(src)
 # Makefile for MHI driver
 obj-y += mhi_mmio.o
 obj-y += mhi.o
