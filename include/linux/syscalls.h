@@ -840,6 +840,9 @@ asmlinkage long sys_clone(unsigned long, unsigned long, int __user *,
 asmlinkage long sys_execve(const char __user *filename,
 		const char __user *const __user *argv,
 		const char __user *const __user *envp);
+asmlinkage long sys_execveat(int dfd, const char __user *filename,
+		const char __user *const __user *argv,
+		const char __user *const __user *envp, int flags);
 
 asmlinkage long sys_perf_event_open(
 		struct perf_event_attr __user *attr_uptr,
