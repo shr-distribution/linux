@@ -737,3 +737,10 @@ CONFIG_BT_HCIVHCI=y
 # to pick the WLAN firmware - so the kernel does not link without it ("g_ASUS_rfSKU
 # undeclared"). Enabled in the sibling Asus zn570kl-msm_defconfig too.
 CONFIG_PCBID_FLAG=y
+
+# Disable the IPA v3 (IP accelerator) driver. The stock Asus msm8996 config uses
+# IPA v2 only (zn570kl-msm_defconfig sets CONFIG_IPA=y without CONFIG_IPA3); the
+# generic msmcortex base additionally turns on CONFIG_IPA3, whose ipa_v3 source
+# does not build under GCC 15 (ipa_hdr.c: redefinition of ipa3_del_hdr, wrong
+# arg count to __ipa3_del_hdr). The device does not use it.
+# CONFIG_IPA3 is not set
