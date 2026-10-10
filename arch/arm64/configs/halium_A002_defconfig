@@ -730,3 +730,10 @@ CONFIG_AUTOFS4_FS=y
 
 # Virtual HCI for bluebinder (BT over the vendor HAL), as bullhead.
 CONFIG_BT_HCIVHCI=y
+
+# Asus PCB-ID / RF-SKU runtime detection (of_get_pcbid_data). The stock Asus
+# msm8996 tree references the g_ASUS_* globals it defines from core code that is
+# always built - drivers/base/firmware_class.c uses g_ASUS_rfSKU unconditionally
+# to pick the WLAN firmware - so the kernel does not link without it ("g_ASUS_rfSKU
+# undeclared"). Enabled in the sibling Asus zn570kl-msm_defconfig too.
+CONFIG_PCBID_FLAG=y
