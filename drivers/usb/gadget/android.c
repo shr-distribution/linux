@@ -3261,6 +3261,7 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 	char *name;
 	char buf[256], *b;
 	char aliases[256], *a;
+	char ffs_name[256], *first;
 	int err;
 	int is_ffs;
 	int ffs_enabled = 0;
@@ -3308,6 +3309,28 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 		curr_conf = curr_conf->next;
 		while (conf_str) {
 			name = strsep(&conf_str, ",");
+
+			/*
+			 * "ffs" is the template the per-alias FunctionFS
+			 * instances are copied from and has no config of its
+			 * own: enabling it dereferenced a NULL config in
+			 * ffs_function_enable(). Google's android.c takes
+			 * "ffs" and maps aliases to it, and setup scripts
+			 * written for it (LuneOS' android-gadget-setup) write
+			 * "ffs"; give them the first alias instead.
+			 */
+			if (!strcmp(name, "ffs")) {
+				strlcpy(aliases, dev->ffs_aliases, sizeof(aliases));
+				a = strim(aliases);
+				first = strsep(&a, ",");
+				if (!first || !*first) {
+					pr_err("android_usb: \"ffs\" needs f_ffs/aliases\n");
+					continue;
+				}
+				strlcpy(ffs_name, first, sizeof(ffs_name));
+				name = ffs_name;
+			}
+
 			is_ffs = 0;
 			strlcpy(aliases, dev->ffs_aliases, sizeof(aliases));
 			a = aliases;
