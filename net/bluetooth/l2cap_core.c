@@ -1367,7 +1367,7 @@ int __l2cap_wait_ack(struct sock *sk)
 {
 	DECLARE_WAITQUEUE(wait, current);
 	int err = 0;
-	int timeo = HZ/5;
+	int timeo = L2CAP_WAIT_ACK_POLL_PERIOD;
 
 	add_wait_queue(sk_sleep(sk), &wait);
 	while (l2cap_pi(sk)->unacked_frames > 0 && l2cap_pi(sk)->conn &&
@@ -1377,7 +1377,7 @@ int __l2cap_wait_ack(struct sock *sk)
 		BT_DBG("Waiting for %d ACKs", l2cap_pi(sk)->unacked_frames);
 
 		if (!timeo)
-			timeo = HZ/5;
+			timeo = L2CAP_WAIT_ACK_POLL_PERIOD;
 
 		if (signal_pending(current)) {
 			err = sock_intr_errno(timeo);
