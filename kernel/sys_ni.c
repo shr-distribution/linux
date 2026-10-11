@@ -212,3 +212,6 @@ cond_syscall(sys_kcmp);
 
 /* operate on Secure Computing state */
 cond_syscall(sys_seccomp);
+
+/* memfd_create */
+cond_syscall(sys_memfd_create);
