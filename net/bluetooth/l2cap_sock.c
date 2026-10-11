@@ -1190,6 +1190,9 @@ static int l2cap_sock_shutdown(struct socket *sock, int how)
 		err = -sk->sk_err;
 
 	release_sock(sk);
+
+	BT_DBG("err: %d", err);
+
 	return err;
 }
 

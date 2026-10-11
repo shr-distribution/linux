@@ -1374,6 +1374,8 @@ int __l2cap_wait_ack(struct sock *sk)
 		atomic_read(&l2cap_pi(sk)->ertm_queued)) {
 		set_current_state(TASK_INTERRUPTIBLE);
 
+		BT_DBG("Waiting for %d ACKs", l2cap_pi(sk)->unacked_frames);
+
 		if (!timeo)
 			timeo = HZ/5;
 
