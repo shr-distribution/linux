@@ -1368,13 +1368,18 @@ int __l2cap_wait_ack(struct sock *sk)
 	DECLARE_WAITQUEUE(wait, current);
 	int err = 0;
 	int timeo = L2CAP_WAIT_ACK_POLL_PERIOD;
+	/* Timeout to prevent infinite loop */
+	unsigned long timeout = jiffies + L2CAP_WAIT_ACK_TIMEOUT;
 
 	add_wait_queue(sk_sleep(sk), &wait);
 	while (l2cap_pi(sk)->unacked_frames > 0 && l2cap_pi(sk)->conn &&
 		atomic_read(&l2cap_pi(sk)->ertm_queued)) {
 		set_current_state(TASK_INTERRUPTIBLE);
 
-		BT_DBG("Waiting for %d ACKs", l2cap_pi(sk)->unacked_frames);
+		BT_DBG("Waiting for %d ACKs, timeout %04d ms",
+		       l2cap_pi(sk)->unacked_frames,
+		       time_after(jiffies, timeout) ? 0 :
+		       jiffies_to_msecs(timeout - jiffies));
 
 		if (!timeo)
 			timeo = L2CAP_WAIT_ACK_POLL_PERIOD;
@@ -1391,6 +1396,11 @@ int __l2cap_wait_ack(struct sock *sk)
 		err = sock_error(sk);
 		if (err)
 			break;
+
+		if (time_after(jiffies, timeout)) {
+			err = -ENOLINK;
+			break;
+		}
 	}
 	set_current_state(TASK_RUNNING);
 	remove_wait_queue(sk_sleep(sk), &wait);

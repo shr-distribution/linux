@@ -54,6 +54,7 @@
 #define L2CAP_MOVE_TIMEOUT		(4*HZ)  /*  4 seconds */
 #define L2CAP_MOVE_ERTX_TIMEOUT		(60*HZ) /* 60 seconds */
 #define L2CAP_WAIT_ACK_POLL_PERIOD	msecs_to_jiffies(200)
+#define L2CAP_WAIT_ACK_TIMEOUT		msecs_to_jiffies(10000)
 
 /* L2CAP socket address */
 struct sockaddr_l2 {
