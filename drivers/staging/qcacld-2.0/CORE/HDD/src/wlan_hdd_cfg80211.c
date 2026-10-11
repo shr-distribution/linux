@@ -10966,7 +10966,18 @@ int wlan_hdd_cfg80211_init(struct device *dev,
 #endif
     )
     {
-        wiphy->flags |= WIPHY_FLAG_SUPPORTS_FW_ROAM;
+        /*
+         * Do not advertise WIPHY_FLAG_SUPPORTS_FW_ROAM. It only tells user
+         * space (NL80211_ATTR_ROAM_SUPPORT) that the driver selects the BSS,
+         * and roaming in firmware works without it. With the flag set,
+         * wpa_supplicant never turns ieee80211w=1 ("optional", which connman
+         * sets on every PSK network) into MFP required for an AP that
+         * advertises MFPC, and a 3.10 kernel has no MFP_OPTIONAL to pass
+         * instead. The driver then sees an MFP-capable RSN IE with MFP not
+         * enabled, csrIsPMFCapabilitiesInRSNMatch() rejects every
+         * MFP-capable AP, and the connect ends in
+         * eCSR_ROAM_RESULT_SCAN_FOR_SSID_FAILURE.
+         */
     }
 #endif
 #ifdef FEATURE_WLAN_TDLS
