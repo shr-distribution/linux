@@ -316,6 +316,16 @@ config MTK_SPEAKER
 	  This is a config for mediatek internal speaker amp.
 	  Generally you select "N", if unsupport it.
 
+config SND_SOC_MTK_FS16XX_I2C
+	bool "FourSemi FS16xx smart PA register node for the vendor HAL"
+	depends on I2C
+	help
+	  If you say Y, a FourSemi FS16xx amplifier found on the
+	  "mediatek,speaker_amp" node gets /dev/smartpa_i2c, through which
+	  the vendor audio HAL (libfs1860.so) programs it with i2c-dev
+	  style I2C_SLAVE, read() and write(). Without it such a device
+	  plays nothing through its loudspeaker.
+
 config SND_SOC_MTK_BTCVSD
 	bool "MTK BT CVSD ALSA ARICHITECTURE"
 	default n

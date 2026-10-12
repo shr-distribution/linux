@@ -25,6 +25,9 @@
 #include <sound/pcm_params.h>
 
 #include "mtk-soc-speaker-amp.h"
+#ifdef CONFIG_SND_SOC_MTK_FS16XX_I2C
+#include "mtk-soc-fs16xx-i2c.h"
+#endif
 #if defined(CONFIG_SND_SOC_RT5509)
 #include "../../codecs/rt5509.h"
 #endif
@@ -88,6 +91,17 @@ static int mtk_spk_i2c_probe(struct i2c_client *client,
 		break;
 	}
 
+#ifdef CONFIG_SND_SOC_MTK_FS16XX_I2C
+	/*
+	 * A FourSemi amplifier is driven by the vendor HAL from user space, so
+	 * it stays MTK_SPK_NOT_SMARTPA on the dummy codec; it only needs its
+	 * register node.
+	 */
+	if (mtk_spk_type == MTK_SPK_NOT_SMARTPA &&
+	    mtk_fs16xx_i2c_attach(client) == 0)
+		ret = 0;
+#endif
+
 	return ret;
 }
 
@@ -95,6 +109,9 @@ static int mtk_spk_i2c_remove(struct i2c_client *client)
 {
 	dev_info(&client->dev, "%s()\n", __func__);
 
+#ifdef CONFIG_SND_SOC_MTK_FS16XX_I2C
+	mtk_fs16xx_i2c_detach(client);
+#endif
 	if (mtk_spk_list[mtk_spk_type].i2c_remove)
 		mtk_spk_list[mtk_spk_type].i2c_remove(client);
 
