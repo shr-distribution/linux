@@ -177,4 +177,8 @@ int v4l2_subdev_s_ext_ctrls(struct v4l2_subdev *sd, struct v4l2_ext_controls *cs
 int v4l2_subdev_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl);
 int v4l2_subdev_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl);
 
+struct v4l2_fh;
+int v4l2_ctrl_subscribe_event(struct v4l2_fh *fh,
+			     struct v4l2_event_subscription *sub);
+
 #endif

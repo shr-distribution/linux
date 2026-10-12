@@ -214,7 +214,8 @@ struct v4l2_capability {
 	__u8	bus_info[32];	
 	__u32   version;        
 	__u32	capabilities;	
-	__u32	reserved[4];
+	__u32	device_caps;
+	__u32	reserved[3];
 };
 
 #define V4L2_CAP_VIDEO_CAPTURE		0x00000001  
@@ -231,6 +232,8 @@ struct v4l2_capability {
 
 #define V4L2_CAP_VIDEO_CAPTURE_MPLANE	0x00001000
 #define V4L2_CAP_VIDEO_OUTPUT_MPLANE	0x00002000
+
+#define V4L2_CAP_DEVICE_CAPS		0x80000000  /* sets device capabilities field */
 
 #define V4L2_CAP_TUNER			0x00010000  
 #define V4L2_CAP_AUDIO			0x00020000  
@@ -1691,6 +1694,7 @@ struct v4l2_streamparm {
 #define V4L2_EVENT_ALL				0
 #define V4L2_EVENT_VSYNC			1
 #define V4L2_EVENT_EOS				2
+#define V4L2_EVENT_CTRL			3
 #define V4L2_EVENT_PRIVATE_START		0x08000000
 
 struct v4l2_event_vsync {

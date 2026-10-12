@@ -25,6 +25,8 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-dev.h>
+#include <media/v4l2-event.h>
+#include <media/v4l2-fh.h>
 
 struct ctrl_helper {
 	
@@ -1729,3 +1731,14 @@ int v4l2_ctrl_s_ctrl(struct v4l2_ctrl *ctrl, s32 val)
 	return set_ctrl(ctrl, &val);
 }
 EXPORT_SYMBOL(v4l2_ctrl_s_ctrl);
+
+/* Backport shim: v4l2loopback and newer consumers call
+ * v4l2_ctrl_subscribe_event() to subscribe to control-change events. This tree
+ * predates the control-event framework, so provide a minimal implementation
+ * that registers the fh for the event via the existing v4l2-event core. */
+int v4l2_ctrl_subscribe_event(struct v4l2_fh *fh,
+			      struct v4l2_event_subscription *sub)
+{
+	return v4l2_event_subscribe(fh, sub);
+}
+EXPORT_SYMBOL(v4l2_ctrl_subscribe_event);

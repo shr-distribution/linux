@@ -27,6 +27,7 @@
 #define V4L2_FH_H
 
 #include <linux/list.h>
+#include <linux/wait.h>
 
 struct video_device;
 struct v4l2_events;
@@ -36,6 +37,7 @@ struct v4l2_fh {
 	struct video_device	*vdev;
 	struct v4l2_events      *events; 
 	enum v4l2_priority	prio;
+	wait_queue_head_t	wait;
 };
 
 int v4l2_fh_init(struct v4l2_fh *fh, struct video_device *vdev);
