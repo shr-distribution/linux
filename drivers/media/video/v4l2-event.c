@@ -234,6 +234,17 @@ int v4l2_event_subscribe(struct v4l2_fh *fh,
 		return -ENOMEM;
 	}
 
+	/* Drivers in this tree call v4l2_event_alloc() before subscribing, but
+	 * modules written against the modern API (which allocates per
+	 * subscription) do not. Give them a default free list so queued events
+	 * are not dropped for want of a free kevent. Only fires when nothing
+	 * has been allocated yet, so existing callers are unaffected. */
+	if (events->nallocated == 0) {
+		int err = v4l2_event_alloc(fh, 16);
+		if (err < 0)
+			return err;
+	}
+
 	sev = kmalloc(sizeof(*sev), GFP_KERNEL);
 	if (!sev)
 		return -ENOMEM;
@@ -243,6 +254,9 @@ int v4l2_event_subscribe(struct v4l2_fh *fh,
 	if (v4l2_event_subscribed(fh, sub->type) == NULL) {
 		INIT_LIST_HEAD(&sev->list);
 		sev->type = sub->type;
+		sev->fh = fh;
+		sev->flags = 0;
+		sev->ops = NULL;
 
 		list_add(&sev->list, &events->subscribed);
 		sev = NULL;

@@ -326,6 +326,43 @@ int idr_get_new_above(struct idr *idp, void *ptr, int starting_id, int *id)
 EXPORT_SYMBOL(idr_get_new_above);
 
 /**
+ * idr_alloc - allocate an id (backport of the Linux 3.9 interface)
+ * @idp: idr handle
+ * @ptr: pointer to associate with the new id
+ * @start: the minimum id (inclusive)
+ * @end: the maximum id (exclusive, <= 0 for no upper bound)
+ * @gfp_mask: allocation mask
+ *
+ * Returns the allocated id, or -ENOSPC / -ENOMEM on failure. Implemented on
+ * top of this tree's idr_pre_get()/idr_get_new_above() so out-of-tree modules
+ * written against the modern idr API build unchanged.
+ */
+int idr_alloc(struct idr *idp, void *ptr, int start, int end, gfp_t gfp_mask)
+{
+	int id, ret;
+
+	if (start < 0)
+		return -EINVAL;
+
+	do {
+		if (!idr_pre_get(idp, gfp_mask))
+			return -ENOMEM;
+		ret = idr_get_new_above(idp, ptr, start, &id);
+	} while (ret == -EAGAIN);
+
+	if (ret)
+		return ret;
+
+	if (end > 0 && id >= end) {
+		idr_remove(idp, id);
+		return -ENOSPC;
+	}
+
+	return id;
+}
+EXPORT_SYMBOL(idr_alloc);
+
+/**
  * idr_get_new - allocate new idr entry
  * @idp: idr handle
  * @ptr: pointer you want associated with the id

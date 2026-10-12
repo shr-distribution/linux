@@ -29,6 +29,9 @@ static inline void compat_idr_destroy(struct idr *idp)
 }
 #define idr_destroy(idp) compat_idr_destroy(idp)
 
+/* The base kernel now provides a real idr_alloc() (see <linux/idr.h>), so skip
+ * this redundant copy to avoid "static declaration follows non-static". */
+#ifndef __LUNEOS_HAVE_IDR_ALLOC
 static inline int idr_alloc(struct idr *idr, void *ptr, int start, int end,
 			    gfp_t gfp_mask)
 {
@@ -46,6 +49,7 @@ static inline int idr_alloc(struct idr *idr, void *ptr, int start, int end,
 
 	return ret ? ret : id;
 }
+#endif /* __LUNEOS_HAVE_IDR_ALLOC */
 
 static inline void idr_preload(gfp_t gfp_mask)
 {

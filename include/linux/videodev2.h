@@ -184,8 +184,14 @@ enum v4l2_colorspace {
 
 	V4L2_COLORSPACE_JPEG          = 7,
 
-	
+
 	V4L2_COLORSPACE_SRGB          = 8,
+
+	/* Backported enumerators (Linux 3.19/4.x) for out-of-tree modules.
+	 * DEFAULT (0) means "let the driver choose"; DCI_P3 is the current
+	 * maximum, used by callers that range-check colorspace values. */
+	V4L2_COLORSPACE_DEFAULT       = 0,
+	V4L2_COLORSPACE_DCI_P3        = 12,
 };
 
 enum v4l2_priority {
@@ -532,6 +538,11 @@ struct v4l2_buffer {
 #define V4L2_BUF_FLAG_PREPARED	0x0400	
 #define V4L2_BUF_FLAG_NO_CACHE_INVALIDATE	0x0800
 #define V4L2_BUF_FLAG_NO_CACHE_CLEAN		0x1000
+/* Timestamp type flags (Linux 3.6), backported for out-of-tree modules. */
+#define V4L2_BUF_FLAG_TIMESTAMP_MASK		0xe000
+#define V4L2_BUF_FLAG_TIMESTAMP_UNKNOWN		0x0000
+#define V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC	0x2000
+#define V4L2_BUF_FLAG_TIMESTAMP_COPY		0x4000
 
 struct v4l2_framebuffer {
 	__u32			capability;
@@ -1696,6 +1707,11 @@ struct v4l2_streamparm {
 #define V4L2_EVENT_EOS				2
 #define V4L2_EVENT_CTRL			3
 #define V4L2_EVENT_PRIVATE_START		0x08000000
+
+/* Event subscription flag (Linux 3.6), backported for out-of-tree modules:
+ * send the current state as an initial event right after subscribing. */
+#define V4L2_EVENT_SUB_FL_SEND_INITIAL		(1 << 0)
+#define V4L2_EVENT_SUB_FL_ALLOW_FEEDBACK	(1 << 1)
 
 struct v4l2_event_vsync {
 	

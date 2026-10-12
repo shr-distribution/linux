@@ -102,6 +102,12 @@ struct idr {
  */
 
 void *idr_find(struct idr *idp, int id);
+/* Backport of the 3.9 allocator, layered on the existing pre_get/get_new_above
+ * API below, for out-of-tree modules that only know the modern name. The
+ * sentinel tells the vendored Linux-backports tree (backport-include/linux/idr.h)
+ * not to define its own redundant static inline on top of this one. */
+#define __LUNEOS_HAVE_IDR_ALLOC 1
+int idr_alloc(struct idr *idp, void *ptr, int start, int end, gfp_t gfp_mask);
 int idr_pre_get(struct idr *idp, gfp_t gfp_mask);
 int idr_get_new(struct idr *idp, void *ptr, int *id);
 int idr_get_new_above(struct idr *idp, void *ptr, int starting_id, int *id);

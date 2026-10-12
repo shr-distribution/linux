@@ -31,15 +31,31 @@
 
 struct v4l2_fh;
 struct video_device;
+struct v4l2_subscribed_event;
 
 struct v4l2_kevent {
 	struct list_head	list;
 	struct v4l2_event	event;
 };
 
+/* Per-subscription callbacks (Linux 3.6+), backported for out-of-tree modules.
+ * This tree's event core does not invoke them; they exist so modules that
+ * supply a const struct v4l2_subscribed_event_ops compile and link. */
+struct v4l2_subscribed_event_ops {
+	int  (*add)(struct v4l2_subscribed_event *sev, unsigned int elems);
+	void (*del)(struct v4l2_subscribed_event *sev);
+	void (*replace)(struct v4l2_event *old, const struct v4l2_event *new);
+	void (*merge)(const struct v4l2_event *old, struct v4l2_event *new);
+};
+
 struct v4l2_subscribed_event {
 	struct list_head	list;
 	u32			type;
+	/* Backported fields for modules written against the modern event API;
+	 * populated by v4l2_event_subscribe(), unused by this tree's core. */
+	struct v4l2_fh				*fh;
+	unsigned int				flags;
+	const struct v4l2_subscribed_event_ops	*ops;
 };
 
 struct v4l2_events {

@@ -7,6 +7,9 @@
 #include <linux/cdev.h>
 #include <linux/mutex.h>
 #include <linux/videodev2.h>
+/* So out-of-tree modules (v4l2loopback) that use the idr API get its
+ * declarations transitively, as they do on modern kernels. */
+#include <linux/idr.h>
 
 #include <media/media-entity.h>
 
@@ -17,6 +20,18 @@
 #define VFL_TYPE_RADIO		2
 #define VFL_TYPE_SUBDEV		3
 #define VFL_TYPE_MAX		4
+
+/* Device direction (Linux 3.3), backported for out-of-tree modules. */
+#define VFL_DIR_RX		0
+#define VFL_DIR_TX		1
+#define VFL_DIR_M2M		2
+
+/* video_device.dev_debug bits (Linux 4.x), backported for out-of-tree modules. */
+#define V4L2_DEV_DEBUG_IOCTL		0x01
+#define V4L2_DEV_DEBUG_IOCTL_ARG	0x02
+#define V4L2_DEV_DEBUG_FOP		0x04
+#define V4L2_DEV_DEBUG_STREAMING	0x08
+#define V4L2_DEV_DEBUG_POLL		0x10
 
 struct v4l2_ioctl_callbacks;
 struct video_device;
@@ -102,11 +117,17 @@ struct video_device
 	
 	void (*release)(struct video_device *vdev);
 
-	
+
 	const struct v4l2_ioctl_ops *ioctl_ops;
 
-	
+
 	struct mutex *lock;
+
+	/* Backported fields (Linux 3.3/4.x) for out-of-tree modules. Not used
+	 * by this tree's own drivers: vfl_dir records capture/output/mem2mem
+	 * direction, dev_debug holds the per-device debug bitmask. */
+	int vfl_dir;
+	unsigned int dev_debug;
 };
 
 #define media_entity_to_video_device(__e) \
