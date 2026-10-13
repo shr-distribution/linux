@@ -818,6 +818,18 @@ void agold_gpio_set(unsigned gpio, int value)
 	return mtk_gpio_set(&pctl->chip, gpio, value);
 }
 
+/* Counterpart of the stock Agold helper; used for board-variant straps */
+int agold_gpio_get_in(unsigned gpio)
+{
+	if (!pctl) {
+		pr_err("pctl does not exist\n");
+		return -ENODEV;
+	}
+
+	return mtk_gpio_get(&pctl->chip, gpio);
+}
+EXPORT_SYMBOL(agold_gpio_get_in);
+
 static int mtk_gpio_direction_input(struct gpio_chip *chip, unsigned int gpio)
 {
 	struct mtk_pinctrl *hw = gpiochip_get_data(chip);
