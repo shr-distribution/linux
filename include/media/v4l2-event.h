@@ -24,10 +24,26 @@
 
 #ifndef V4L2_EVENT_H
 #define V4L2_EVENT_H
+/* LuneOS: real v4l2_event_subscribe() takes an elems arg. */
+#define V4L2L_SUBSCRIBE_TAKES_ELEMS 1
 
 #include <linux/types.h>
 #include <linux/videodev2.h>
 #include <linux/wait.h>
+
+/* LuneOS: per-subscription ops table (Linux 3.6+), so a module that
+ * supplies a const struct v4l2_subscribed_event_ops compiles and links.
+ * This tree's core does not have to invoke them. */
+#ifndef __LUNEOS_HAVE_SUBSCRIBED_EVENT_OPS
+#define __LUNEOS_HAVE_SUBSCRIBED_EVENT_OPS 1
+struct v4l2_subscribed_event;
+struct v4l2_subscribed_event_ops {
+	int  (*add)(struct v4l2_subscribed_event *sev, unsigned int elems);
+	void (*del)(struct v4l2_subscribed_event *sev);
+	void (*replace)(struct v4l2_event *old, const struct v4l2_event *new);
+	void (*merge)(const struct v4l2_event *old, struct v4l2_event *new);
+};
+#endif
 
 /*
  * Overview:
