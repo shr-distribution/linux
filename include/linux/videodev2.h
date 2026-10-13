@@ -213,6 +213,9 @@ enum v4l2_colorspace {
 
 	/* For RGB colourspaces, this is probably a good start. */
 	V4L2_COLORSPACE_SRGB          = 8,
+	/* LuneOS backport. */
+	V4L2_COLORSPACE_DEFAULT        = 0,
+	V4L2_COLORSPACE_DCI_P3        = 12,
 };
 
 enum v4l2_priority {
@@ -695,6 +698,11 @@ struct v4l2_buffer {
 /* Cache handling flags */
 #define V4L2_BUF_FLAG_NO_CACHE_INVALIDATE	0x0800
 #define V4L2_BUF_FLAG_NO_CACHE_CLEAN		0x1000
+/* LuneOS backport (Linux 3.6). */
+#define V4L2_BUF_FLAG_TIMESTAMP_MASK		0xe000
+#define V4L2_BUF_FLAG_TIMESTAMP_UNKNOWN		0x0000
+#define V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC	0x2000
+#define V4L2_BUF_FLAG_TIMESTAMP_COPY		0x4000
 #define V4L2_BUF_FLAG_EOS		0x2000
 
 /*
