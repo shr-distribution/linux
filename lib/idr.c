@@ -317,6 +317,29 @@ int idr_get_new_above(struct idr *idp, void *ptr, int starting_id, int *id)
 }
 EXPORT_SYMBOL(idr_get_new_above);
 
+/* LuneOS backport of the Linux 3.9 idr_alloc() on top of this tree's
+ * idr_pre_get()/idr_get_new_above(), for out-of-tree modules. */
+int idr_alloc(struct idr *idp, void *ptr, int start, int end, gfp_t gfp_mask)
+{
+	int id, ret;
+
+	if (start < 0)
+		return -EINVAL;
+	do {
+		if (!idr_pre_get(idp, gfp_mask))
+			return -ENOMEM;
+		ret = idr_get_new_above(idp, ptr, start, &id);
+	} while (ret == -EAGAIN);
+	if (ret)
+		return ret;
+	if (end > 0 && id >= end) {
+		idr_remove(idp, id);
+		return -ENOSPC;
+	}
+	return id;
+}
+EXPORT_SYMBOL(idr_alloc);
+
 /**
  * idr_get_new - allocate new idr entry
  * @idp: idr handle

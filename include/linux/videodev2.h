@@ -213,6 +213,9 @@ enum v4l2_colorspace {
 
 	/* For RGB colourspaces, this is probably a good start. */
 	V4L2_COLORSPACE_SRGB          = 8,
+	/* LuneOS backport. */
+	V4L2_COLORSPACE_DEFAULT        = 0,
+	V4L2_COLORSPACE_DCI_P3        = 12,
 };
 
 enum v4l2_priority {
