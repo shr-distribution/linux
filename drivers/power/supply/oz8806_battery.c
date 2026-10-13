@@ -18,6 +18,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/power/oz8806_battery.h>
 #include <linux/power_supply.h>
 #include <linux/workqueue.h>
 
@@ -95,7 +96,15 @@ struct oz8806 {
 	int full_polls;
 	int empty_polls;
 	bool valid;
+#ifdef CONFIG_BATTERY_OZ8806_MTK_FEED
+	int fed_capacity;	/* last capacity the "battery" supply was told of */
+#endif
 };
+
+#ifdef CONFIG_BATTERY_OZ8806_MTK_FEED
+/* Set once the gauge is registered; the phone has one and it never goes away. */
+static struct oz8806 *oz8806_feed;
+#endif
 
 static int oz8806_lut_interp(const struct oz8806_lut *t, int n, int x)
 {
@@ -236,6 +245,62 @@ static void oz8806_seed_car(struct oz8806 *oz)
 	oz8806_write_car(oz, mah);
 }
 
+static int oz8806_capacity(struct oz8806 *oz)
+{
+	return clamp(oz->car_mah * 100 / OZ8806_DESIGN_MAH, 0, 100);
+}
+
+#ifdef CONFIG_BATTERY_OZ8806_MTK_FEED
+/*
+ * As on stock, the phone has one battery supply: MediaTek's "battery", which
+ * reports its capacity and charge from this gauge (mtk_battery.c asks through
+ * oz8806_battery_read()). Tell that supply when the percentage moves, so user
+ * space hears of it from the supply it is listening to.
+ */
+int oz8806_battery_read(struct oz8806_reading *r)
+{
+	struct oz8806 *oz = READ_ONCE(oz8806_feed);
+
+	if (!oz)
+		return -ENODEV;
+
+	mutex_lock(&oz->lock);
+	if (!oz->valid) {
+		mutex_unlock(&oz->lock);
+		return -EAGAIN;
+	}
+	r->capacity = oz8806_capacity(oz);
+	r->charge_now_mah = max(oz->car_mah, 0);
+	r->charge_full_mah = OZ8806_DESIGN_MAH;
+	mutex_unlock(&oz->lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(oz8806_battery_read);
+
+static void oz8806_feed_changed(struct oz8806 *oz)
+{
+	struct power_supply *bat;
+	int cap;
+
+	mutex_lock(&oz->lock);
+	cap = oz->valid ? oz8806_capacity(oz) : -1;
+	mutex_unlock(&oz->lock);
+	if (cap < 0 || cap == oz->fed_capacity)
+		return;
+
+	bat = power_supply_get_by_name("battery");
+	if (!bat)
+		return;
+	oz->fed_capacity = cap;
+	power_supply_changed(bat);
+	power_supply_put(bat);
+}
+#else
+static void oz8806_feed_changed(struct oz8806 *oz)
+{
+}
+#endif
+
 static void oz8806_work(struct work_struct *work)
 {
 	struct oz8806 *oz = container_of(work, struct oz8806, work.work);
@@ -245,12 +310,8 @@ static void oz8806_work(struct work_struct *work)
 	mutex_unlock(&oz->lock);
 
 	power_supply_changed(oz->psy);
+	oz8806_feed_changed(oz);
 	schedule_delayed_work(&oz->work, msecs_to_jiffies(OZ8806_POLL_MS));
-}
-
-static int oz8806_capacity(struct oz8806 *oz)
-{
-	return clamp(oz->car_mah * 100 / OZ8806_DESIGN_MAH, 0, 100);
 }
 
 static int oz8806_get_property(struct power_supply *psy,
@@ -332,7 +393,15 @@ static enum power_supply_property oz8806_props[] = {
 
 static const struct power_supply_desc oz8806_desc = {
 	.name		= "oz8806-battery",
+#ifdef CONFIG_BATTERY_OZ8806_MTK_FEED
+	/*
+	 * Not a second battery: user space lists every supply of type Battery
+	 * and would show two. The readings stay here for inspection.
+	 */
+	.type		= POWER_SUPPLY_TYPE_UNKNOWN,
+#else
 	.type		= POWER_SUPPLY_TYPE_BATTERY,
+#endif
 	.properties	= oz8806_props,
 	.num_properties	= ARRAY_SIZE(oz8806_props),
 	.get_property	= oz8806_get_property,
@@ -383,6 +452,10 @@ static int oz8806_probe(struct i2c_client *client,
 
 	dev_info(&client->dev, "OZ8806 id 0x%02x: %d mV, %d mA, %d%%\n",
 		 chip_id, oz->volt_mv, oz->curr_ma, oz8806_capacity(oz));
+#ifdef CONFIG_BATTERY_OZ8806_MTK_FEED
+	oz->fed_capacity = -1;
+	WRITE_ONCE(oz8806_feed, oz);
+#endif
 	return 0;
 }
 
@@ -390,6 +463,9 @@ static int oz8806_remove(struct i2c_client *client)
 {
 	struct oz8806 *oz = i2c_get_clientdata(client);
 
+#ifdef CONFIG_BATTERY_OZ8806_MTK_FEED
+	WRITE_ONCE(oz8806_feed, NULL);
+#endif
 	cancel_delayed_work_sync(&oz->work);
 	return 0;
 }

@@ -317,6 +317,17 @@ config BATTERY_OZ8806
 	  Say Y here to enable support for the O2Micro OZ8806 coulomb
 	  counter fuel gauge used in the Unihertz Titan Pocket.
 
+config BATTERY_OZ8806_MTK_FEED
+	bool "Report the OZ8806 through MediaTek's battery supply"
+	depends on BATTERY_OZ8806=y && MTK_GAUGE_VERSION=30
+	help
+	  Say Y to keep a single battery, as the stock Titan Pocket kernel
+	  does: MediaTek's "battery" power supply reports its capacity and
+	  charge from the OZ8806, and the gauge's own supply is registered
+	  with type Unknown so that it is not listed as a second battery.
+	  Without it the MediaTek gauge reports from its reference profile
+	  (2946 mAh on this 4250 mAh pack).
+
 config BATTERY_MAX17042
 	tristate "Maxim MAX17042/17047/17050/8997/8966 Fuel Gauge"
 	depends on I2C

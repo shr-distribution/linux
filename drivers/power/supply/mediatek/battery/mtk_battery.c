@@ -58,6 +58,7 @@
 
 
 #include <linux/math64.h> /*div_s64*/
+#include <linux/power/oz8806_battery.h>
 
 #include <mt-plat/aee.h>
 #include <mt-plat/charger_type.h>
@@ -398,9 +399,38 @@ static int battery_get_property(struct power_supply *psy,
 	int ret = 0;
 	int fgcurrent = 0;
 	bool b_ischarging = 0;
+	struct oz8806_reading oz;
 
 	struct battery_data *data =
 		container_of(psy->desc, struct battery_data, psd);
+
+	/*
+	 * A board with an OZ8806 (the Titan Pocket) takes its state of charge
+	 * from that gauge, as its stock kernel does: the MediaTek gauge here
+	 * counts against a reference profile that is not this pack's. An
+	 * engineering-mode fixed_uisoc still wins.
+	 */
+	if (!oz8806_battery_read(&oz)) {
+		switch (psp) {
+		case POWER_SUPPLY_PROP_CAPACITY:
+			if (gm.fixed_uisoc != 0xffff)
+				break;
+			val->intval = oz.capacity;
+			return 0;
+		case POWER_SUPPLY_PROP_CHARGE_FULL:
+		case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+			val->intval = oz.charge_full_mah * 1000;
+			return 0;
+		case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+			val->intval = oz.charge_now_mah * 1000;
+			return 0;
+		case POWER_SUPPLY_PROP_CAPACITY_LEVEL:
+			val->intval = check_cap_level(oz.capacity);
+			return 0;
+		default:
+			break;
+		}
+	}
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
