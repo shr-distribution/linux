@@ -461,6 +461,7 @@ void rx_fill(struct eth_dev *dev, gfp_t gfp_flags)
 	struct usb_request	*req;
 	unsigned long		flags;
 	int			req_cnt = 0;
+	int			ret;
 
 	/* fill unused rxq slots with some skb */
 	spin_lock_irqsave(&dev->reqrx_lock, flags);
@@ -474,11 +475,20 @@ void rx_fill(struct eth_dev *dev, gfp_t gfp_flags)
 		list_del_init(&req->list);
 		spin_unlock_irqrestore(&dev->reqrx_lock, flags);
 
-		if (rx_submit(dev, req, gfp_flags) < 0) {
+		ret = rx_submit(dev, req, gfp_flags);
+		if (ret < 0) {
 			spin_lock_irqsave(&dev->reqrx_lock, flags);
 			list_add(&req->list, &dev->rx_reqs);
 			spin_unlock_irqrestore(&dev->reqrx_lock, flags);
-			defer_kevent(dev, WORK_RX_MEMORY);
+			/*
+			 * Titan Pocket: retry later only when out of memory.
+			 * mtu3 returns -EAGAIN while its descriptor ring is
+			 * full (u_ether keeps more rx requests than it holds);
+			 * completions refill it, and rescheduling here made
+			 * eth_work spin at ~50k runs/s, using a whole CPU.
+			 */
+			if (ret == -ENOMEM)
+				defer_kevent(dev, WORK_RX_MEMORY);
 			return;
 		}
 
