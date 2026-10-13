@@ -24,6 +24,7 @@
 
 #ifndef V4L2_EVENT_H
 #define V4L2_EVENT_H
+#define V4L2L_SUBSCRIBE_TAKES_OPS 1
 
 #include <linux/types.h>
 #include <linux/videodev2.h>
