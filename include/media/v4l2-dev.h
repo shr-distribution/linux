@@ -15,6 +15,7 @@
 #include <linux/cdev.h>
 #include <linux/mutex.h>
 #include <linux/videodev2.h>
+#include <linux/idr.h>
 
 #include <media/media-entity.h>
 
@@ -26,6 +27,11 @@
 #define VFL_TYPE_SUBDEV		3
 #define VFL_TYPE_SDR		4
 #define VFL_TYPE_MAX		5
+#define V4L2_DEV_DEBUG_IOCTL		0x01
+#define V4L2_DEV_DEBUG_IOCTL_ARG	0x02
+#define V4L2_DEV_DEBUG_FOP		0x04
+#define V4L2_DEV_DEBUG_STREAMING	0x08
+#define V4L2_DEV_DEBUG_POLL		0x10
 
 /* Is this a receiver, transmitter or mem-to-mem? */
 /* Ignored for VFL_TYPE_SUBDEV. */
@@ -139,6 +145,8 @@ struct video_device
 	/* serialization lock */
 	DECLARE_BITMAP(disable_locking, BASE_VIDIOC_PRIVATE);
 	struct mutex *lock;
+	/* LuneOS backport. */
+	unsigned int dev_debug;
 };
 
 #define media_entity_to_video_device(__e) \
