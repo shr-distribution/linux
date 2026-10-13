@@ -516,6 +516,14 @@ config INPUT_TWL6040_VIBRA
 	  To compile this driver as a module, choose M here. The module will
 	  be called twl6040_vibra.
 
+config INPUT_TITANPOCKET_TOUCHPAD
+	tristate "Unihertz Titan Pocket keyboard touchpad"
+	depends on RMI4_I2C && OF
+	help
+	  Board glue for the Synaptics RMI4 touchpad on the Titan Pocket
+	  keyboard: releases its reset line and instantiates the RMI4 I2C
+	  device as a touchpad.
+
 config INPUT_UINPUT
 	tristate "User level driver support"
 	help
