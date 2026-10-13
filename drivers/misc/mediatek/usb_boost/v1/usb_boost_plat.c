@@ -25,9 +25,14 @@
 	|| defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6853) \
 	|| defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6885)
 
-static int cpu_freq_test_para[] = {1, 5, 500, 0};
-static int cpu_core_test_para[] = {1, 5, 500, 0};
-static int dram_vcore_test_para[] = {1, 5, 500, 0};
+/*
+ * Off by default (first field = enable). With USB networking
+ * (SSH) any traffic pinned both CPU clusters at the top OPP, all cores on and
+ * DRAM at OPP 0. Enable at runtime: /sys/class/usb_boost/<type>/enable.
+ */
+static int cpu_freq_test_para[] = {0, 5, 500, 0};
+static int cpu_core_test_para[] = {0, 5, 500, 0};
+static int dram_vcore_test_para[] = {0, 5, 500, 0};
 
 /* -1 denote not used*/
 struct act_arg_obj cpu_freq_test_arg = {2500000, -1, -1};

@@ -551,7 +551,7 @@ static int create_sys_fs(void)
 
 		for (n = 0; n < _ATTR_MAXID; n++) {
 			boost_inst[i].attr[n].attr.name = attr_name[n];
-				boost_inst[i].attr[n].attr.mode = 0400;
+				boost_inst[i].attr[n].attr.mode = 0600;
 			boost_inst[i].attr[n].show = attr_show;
 			boost_inst[i].attr[n].store = attr_store;
 
