@@ -173,6 +173,24 @@ extern void getboottime(struct timespec *ts);
 extern void monotonic_to_bootbased(struct timespec *ts);
 extern void get_monotonic_boottime(struct timespec *ts);
 
+/* LuneOS backport (Linux 3.17); 32-bit tree. */
+#ifndef _STRUCT_TIMESPEC64
+#define _STRUCT_TIMESPEC64
+typedef __s64 time64_t;
+struct timespec64 {
+	time64_t	tv_sec;
+	long		tv_nsec;
+};
+extern void ktime_get_ts(struct timespec *ts);
+static inline void ktime_get_ts64(struct timespec64 *ts)
+{
+	struct timespec t;
+	ktime_get_ts(&t);
+	ts->tv_sec = t.tv_sec;
+	ts->tv_nsec = t.tv_nsec;
+}
+#endif
+
 extern struct timespec timespec_trunc(struct timespec t, unsigned gran);
 extern int timekeeping_valid_for_hres(void);
 extern u64 timekeeping_max_deferment(void);
