@@ -221,6 +221,16 @@ static inline int mt_parse_dt(struct device *dev,
 	return 0;
 }
 
+/*
+ * Titan Pocket: the IR LED is powered from this LDO. The IRTX driver asks for
+ * a regulator named "irtx_ldo" (drivers/misc/mediatek/irtx); the stock kernel
+ * maps that consumer name to this LDO, the BSP did not, so the LED was never
+ * powered. The panel driver uses it too (as "mt6370_ldo", also at 2.8 V).
+ */
+static struct regulator_consumer_supply mt6370_ldo_consumers[] = {
+	REGULATOR_SUPPLY("irtx_ldo", NULL),
+};
+
 static struct regulator_init_data *mt_parse_init_data(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
@@ -242,6 +252,10 @@ static struct regulator_init_data *mt_parse_init_data(struct device *dev)
 	} else {
 		dev_err(dev, "no init data mt6370_init\n");
 		return NULL;
+	}
+	if (!init_data->num_consumer_supplies) {
+		init_data->consumer_supplies = mt6370_ldo_consumers;
+		init_data->num_consumer_supplies = ARRAY_SIZE(mt6370_ldo_consumers);
 	}
 	return init_data;
 }
