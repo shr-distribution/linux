@@ -102,6 +102,9 @@ struct idr {
  */
 
 void *idr_find(struct idr *idp, int id);
+/* LuneOS: 3.9 idr allocator, layered on the pre_get/get_new_above API. */
+#define __LUNEOS_HAVE_IDR_ALLOC 1
+int idr_alloc(struct idr *idp, void *ptr, int start, int end, gfp_t gfp_mask);
 int idr_pre_get(struct idr *idp, gfp_t gfp_mask);
 int idr_get_new(struct idr *idp, void *ptr, int *id);
 int idr_get_new_above(struct idr *idp, void *ptr, int starting_id, int *id);
