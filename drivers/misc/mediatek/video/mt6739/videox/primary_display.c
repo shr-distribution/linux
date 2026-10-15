@@ -532,8 +532,8 @@ void debug_print_power_mode_check(enum mtkfb_power_mode prev,
 /* use MAX_SCHEDULE_TIMEOUT to wait for ever
  * NOTES: primary_path_lock should NOT be held when call this func !!!!!!!!
  */
-#define __primary_display_wait_state(condition, timeout)                       \
-	wait_event_timeout(display_state_wait_queue, condition, timeout)
+#define __primary_display_wait_state(condition, timeout)                        \
+	wait_event_interruptible_timeout(display_state_wait_queue, condition, timeout)
 
 long primary_display_wait_state(enum DISP_POWER_STATE state, long timeout)
 {
