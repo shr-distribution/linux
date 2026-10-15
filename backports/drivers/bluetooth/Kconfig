@@ -272,6 +272,20 @@ config BACKPORT_BT_HCIVHCI
 	  Say Y here to compile support for virtual HCI devices into the
 	  kernel or say M to compile it as module (hci_vhci).
 
+config BACKPORT_BT_HCISMD
+	tristate "HCI SMD (Qualcomm WCNSS) driver"
+	depends on !BT_HCISMD
+	depends on MSM_SMD
+	help
+	  Bluetooth HCI driver for the WCNSS (Riva) controller of Qualcomm
+	  SoCs, which talks HCI over the shared-memory channels
+	  APPS_RIVA_BT_CMD and APPS_RIVA_BT_ACL rather than a UART.
+	  Writing 1 to /sys/module/hci_smd/parameters/hcismd_set opens the
+	  channels and registers the HCI device.
+
+	  Say Y here to compile support for HCI SMD into the kernel or
+	  say M to compile it as module (hci_smd).
+
 config BACKPORT_BT_MRVL
 	tristate "Marvell Bluetooth driver support"
 	depends on !BT_MRVL
