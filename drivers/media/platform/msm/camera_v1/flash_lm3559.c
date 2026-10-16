@@ -25,6 +25,7 @@
 #include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/hrtimer.h>
+#include <linux/mutex.h>
 #include <linux/types.h>
 #include <linux/platform_data/flash_lm3559.h>
 #include <mach/camera.h>
@@ -64,6 +65,16 @@ static int lm3559_onoff_state = LM3559_POWER_OFF;
 
 static struct lm3559_flash_platform_data *lm3559_led_flash_pdata = NULL;
 static struct i2c_client *lm3559_i2c_client = NULL;
+
+/*
+ * The enable GPIO is shared by two users: the camera (MSM_CAMERA_LED_INIT ... RELEASE through
+ * lm3559_flash_set_led_state()) and the "spotlight" LED class device, the torch. It stays requested
+ * while either holds it, and the lock keeps the two from interleaving.
+ */
+static DEFINE_MUTEX(lm3559_lock);
+static bool lm3559_gpio_requested;
+static bool lm3559_camera_holds_gpio;
+static bool lm3559_torch_holds_gpio;
 
 static int lm3559_write_reg(struct i2c_client *client, unsigned char addr, unsigned char data)
 {
@@ -187,6 +198,9 @@ static int lm3559_config_gpio_on(void)
 	int rc = 0;
 	pr_debug("%s\n", __func__);
 
+	if (lm3559_gpio_requested)
+		return 0;
+
 	rc = gpio_request(lm3559_led_flash_pdata->gpio_en, "cam_flash_en");
 	if (rc < 0) {
 		pr_warn("%s: gpio_request failed: %d\n", __func__, rc);
@@ -196,6 +210,7 @@ static int lm3559_config_gpio_on(void)
 	gpio_tlmm_config(GPIO_CFG(lm3559_led_flash_pdata->gpio_en, 0, GPIO_CFG_OUTPUT,
 		GPIO_CFG_PULL_UP, GPIO_CFG_2MA), GPIO_CFG_ENABLE);
 	gpio_direction_output(lm3559_led_flash_pdata->gpio_en, 0);
+	lm3559_gpio_requested = true;
 	return rc;
 }
 
@@ -203,8 +218,12 @@ static void lm3559_config_gpio_off(void)
 {
 	pr_info("%s\n", __func__);
 
+	if (!lm3559_gpio_requested || lm3559_camera_holds_gpio || lm3559_torch_holds_gpio)
+		return;
+
 	gpio_direction_input(lm3559_led_flash_pdata->gpio_en);
 	gpio_free(lm3559_led_flash_pdata->gpio_en);
+	lm3559_gpio_requested = false;
 }
 
 static void lm3559_led_enable(void)
@@ -227,6 +246,7 @@ int lm3559_flash_set_led_state(int led_state)
 
 	pr_info("%s: led_state = %d\n", __func__, led_state);
 
+	mutex_lock(&lm3559_lock);
 	switch (led_state) {
 	case MSM_CAMERA_LED_OFF:
 		lm3559_led_disable();
@@ -241,14 +261,18 @@ int lm3559_flash_set_led_state(int led_state)
 		break;
 	case MSM_CAMERA_LED_INIT:
 		err = lm3559_config_gpio_on();
+		if (!err)
+			lm3559_camera_holds_gpio = true;
 		break;
 	case MSM_CAMERA_LED_RELEASE:
+		lm3559_camera_holds_gpio = false;
 		lm3559_config_gpio_off();
 		break;
 	default:
 		err = -EINVAL;
 		break;
 	}
+	mutex_unlock(&lm3559_lock);
 
 	return err;
 }
@@ -260,12 +284,27 @@ static void lm3559_flash_led_set(struct led_classdev *led_cdev,
 {
 	pr_info("%s: led_cdev->brightness[%d]\n", __func__, value);
 
-	led_cdev->brightness = value;
-
-	if (value)
+	mutex_lock(&lm3559_lock);
+	if (value) {
+		/*
+		 * The chip only answers on I2C with its enable pin high; without it every register
+		 * write was NACKed ("i2c write error [-107]") and the torch stayed dark unless the
+		 * camera happened to have set the pin up already.
+		 */
+		if (lm3559_config_gpio_on() < 0) {
+			mutex_unlock(&lm3559_lock);
+			return;
+		}
+		lm3559_torch_holds_gpio = true;
+		lm3559_led_enable();
 		lm3559_enable_torch_mode(LM3559_LED_LOW);
-	else
+	} else {
 		lm3559_led_disable();
+		lm3559_torch_holds_gpio = false;
+		lm3559_config_gpio_off();
+	}
+	led_cdev->brightness = value;
+	mutex_unlock(&lm3559_lock);
 }
 
 static struct led_classdev lm3559_flash_led = {
