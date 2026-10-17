@@ -913,6 +913,75 @@ KBUILD_CFLAGS   += $(call cc-option,-Werror=incompatible-pointer-types)
 # Require designated initializers for all marked structures
 KBUILD_CFLAGS   += $(call cc-option,-Werror=designated-init)
 
+# Warning classes that GCC 12 and newer enable, and that a 2019 MediaTek ALPS
+# tree written against clang r383902 predates. 80 Makefiles in this tree carry
+# a bare "-Werror" (mm/Makefile among them), so any one of these stops the
+# build rather than printing a warning.
+#
+# Demoted, not silenced: they still appear as warnings, and -Werror stays on
+# for everything else, so genuinely new breakage is still fatal. GCC gives
+# "more specific options priority over less specific ones, independently of
+# their position in the command line", so these beat the bare -Werror that
+# ccflags-y adds after KBUILD_CFLAGS.
+#
+# Deliberately NOT demoted, because on this tree they hide real bugs - each of
+# these was fixed properly instead: strict-prototypes (K&R definitions),
+# pointer-to-int-cast (64-bit pointers into u32 traces), int-conversion
+# (-ENOMEM returned from a void * function). Nor are implicit-int,
+# implicit-function-declaration, incompatible-pointer-types or return-type.
+# array-compare: mm/page_alloc.c, kernel/extable.c: comparing two linker-section arrays
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=array-compare)
+# enum-int-mismatch: MTK cpufreq/boot: enum vs unsigned int in prototypes
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=enum-int-mismatch)
+# memset-elt-size: memset over an array without multiplying by element size
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=memset-elt-size)
+# format: MTK vendor printk format/argument mismatches (40 sites)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=format)
+# switch-unreachable: mtk_charger_intf.h: statement before the first case label
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=switch-unreachable)
+# array-parameter: sensors-1.0/alsps: int[] in the header vs int* in the definition
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=array-parameter)
+# unused-variable: 55 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=unused-variable)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=unused-but-set-variable)
+# unused-value: 8 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=unused-value)
+# unused-function: 8 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=unused-function)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=unused-result)
+# address: 9 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=address)
+# enum-compare: 7 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=enum-compare)
+# deprecated-declarations: 7 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=deprecated-declarations)
+# sizeof-pointer-memaccess: 5 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=sizeof-pointer-memaccess)
+# stringop-overread: 4 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=stringop-overread)
+# misleading-indentation: 3 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=misleading-indentation)
+# declaration-after-statement: 3 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=declaration-after-statement)
+# bool-operation: 2 sites
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=bool-operation)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=format-extra-args)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=dangling-else)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=format-overflow)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=format-truncation)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=stringop-overflow)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=maybe-uninitialized)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=attributes)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=parentheses)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=duplicate-decl-specifier)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=restrict)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=dangling-pointer)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=use-after-free)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=packed-not-aligned)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=implicit-fallthrough)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=nonnull)
+KBUILD_CFLAGS   += $(call cc-option,-Wno-error=alloc-size-larger-than)
+
 # use the deterministic mode of AR if available
 KBUILD_ARFLAGS := $(call ar-option,D)
 
