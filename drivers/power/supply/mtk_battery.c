@@ -886,9 +886,17 @@ int force_get_tbat_internal(struct mtk_battery *gm, bool update)
 	return bat_temperature_val;
 }
 
+/*
+ * Every caller asks for a fresh reading, and each one is a PMIC AUXADC
+ * conversion; serve readings younger than this from gm->cur_bat_temp.
+ */
+#define TBAT_MIN_CONV_INTERVAL_MS	5000
+
 int force_get_tbat(struct mtk_battery *gm, bool update)
 {
 	int bat_temperature_val = 0;
+	static ktime_t last_tbat_conv;
+	static bool last_tbat_conv_done;
 
 	if (gm->is_probe_done == false) {
 		gm->cur_bat_temp = 25;
@@ -900,10 +908,19 @@ int force_get_tbat(struct mtk_battery *gm, bool update)
 		return gm->fixed_bat_tmp;
 	}
 
+	if (last_tbat_conv_done &&
+	    ktime_before(ktime_get_boottime(),
+			 ktime_add_ms(last_tbat_conv,
+				      TBAT_MIN_CONV_INTERVAL_MS)))
+		return gm->cur_bat_temp;
+
 	bat_temperature_val = force_get_tbat_internal(gm, true);
 
 	if (bat_temperature_val == -EHOSTDOWN)
 		return gm->cur_bat_temp;
+
+	last_tbat_conv = ktime_get_boottime();
+	last_tbat_conv_done = true;
 
 	gm->cur_bat_temp = bat_temperature_val;
 
