@@ -5,6 +5,10 @@
 
 ccflags-$(CONFIG_SPI_DEBUG) := -DDEBUG
 
+ifneq ($(filter y m,$(CONFIG_TRUSTKERNEL_TEE_FP_SUPPORT)),)
+ccflags-y += -I$(srctree)/drivers/tee/tkcore/include/
+endif
+
 # small core, mostly translating board-specific
 # config declarations into driver model code
 obj-$(CONFIG_SPI_MASTER)		+= spi.o

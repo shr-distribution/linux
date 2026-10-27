@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (c) 2020 MediaTek Inc. */
+
+&i2c6 {
+	status = "okay";
+	clock-frequency = <400000>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	lm3643:lm3643@63 {
+		compatible = "mediatek,lm3643";
+		reg = <0x63>;
+		#cooling-cells = <2>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+		pinctrl-names = "default", "hwen_high", "hwen_low";
+		pinctrl-0 = <&lm3643_pins_default>;
+		pinctrl-1 = <&lm3643_pins_hwen_high>;
+		pinctrl-2 = <&lm3643_pins_hwen_low>;
+		status = "okay";
+		flash@0{
+			reg = <0>;
+			type = <0>;
+			ct = <0>;
+			part = <0>;
+			port@0 {
+				fl_core_0: endpoint {
+					remote-endpoint = <&flashlight_0>;
+				};
+			};
+		};
+		flash@1{
+			reg = <1>;
+			type = <0>;
+			ct = <1>;
+			part = <0>;
+			port@1 {
+				fl_core_1: endpoint {
+					remote-endpoint = <&flashlight_1>;
+				};
+			};
+		};
+	};
+};
+
+&pio {
+	lm3643_pins_default: default {
+	};
+
+	lm3643_pins_hwen_high: hwen_high {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO157__FUNC_GPIO157>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+
+	lm3643_pins_hwen_low: hwen_low {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO157__FUNC_GPIO157>;
+			slew-rate = <1>;
+			output-low;
+		};
+	};
+};
+
+&mtk_composite_v4l2_1 {
+	port@0 {
+		flashlight_0: endpoint {
+			remote-endpoint = <&fl_core_0>;
+		};
+	};
+	port@1 {
+		flashlight_1: endpoint {
+			remote-endpoint = <&fl_core_1>;
+		};
+	};
+};
+
+/* CAMERA AF */
+&i2c4 {
+	status = "okay";
+	clock-frequency = <400000>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	camera_main_af_mtk:camera_main_af@18 {
+		compatible = "mediatek,camera_main_af";
+		reg = <0x18>;
+		status = "okay";
+	};
+};
+
+#if 1
+#if 0//main lens af gpio ctrl ldo move from camera_af_hw_node to kd_camera_hw1
+&pio {
+	main_lens_pins_default: default {
+	};
+
+	lmain_lens_pins_high: lmain_lens_pins_high {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO151__FUNC_GPIO151>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+
+	main_lens_pins_low: main_lens_pins_low {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO151__FUNC_GPIO151>;
+			slew-rate = <1>;
+			output-low;
+		};
+	};
+};
+
+&camera_af_hw_node {
+		pinctrl-names = "default", "camaf_m1_gpio_on", "camaf_m1_gpio_off";
+		pinctrl-0 = <&main_lens_pins_default>;
+		pinctrl-1 = <&lmain_lens_pins_high>;
+		pinctrl-2 = <&main_lens_pins_low>;
+	status = "okay";
+};
+#endif
+#else
+&camera_af_hw_node {
+	camaf_m1_pmic-supply = <&rt5133_ldo3>;
+	camaf_m2_pmic-supply = <&rt5133_gpio1>;
+	camaf_m3_pmic-supply = <&rt5133_gpio1>;
+	status = "okay";
+};
+#endif
+/* CAMERA AF end */

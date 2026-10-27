@@ -797,7 +797,6 @@ config ARM64_ERRATUM_3194386
 	  * ARM Neoverse-V1 erratum 3324341
 	  * ARM Neoverse V2 erratum 3324336
 	  * ARM Neoverse-V3 erratum 3312417
-	  * ARM Neoverse-V3AE erratum 3312417
 
 	  On affected cores "MSR SSBS, #0" instructions may not affect
 	  subsequent speculative instructions, which may permit unexepected
@@ -2134,3 +2133,11 @@ source "arch/arm64/kvm/Kconfig"
 if CRYPTO
 source "arch/arm64/crypto/Kconfig"
 endif
+
+config FAKE_ASYM32_CPU
+	bool "simulate only partial cpus support 32bit application"
+	help
+	  This feature simulate that the cpus in fake_cpu_32bit_el0_mask have
+	  the capability to run 32bit user space program.
+	  This feature should not be enabled in MP project. If you don't know,
+	  say N.

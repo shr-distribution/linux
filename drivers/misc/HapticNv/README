@@ -1,0 +1,75 @@
+/********************************/
+        Catalog Description
+/********************************/
+
+.
+├── 130                                         /* Device tree and RAM waveform file matching with F0=130 */
+│   ├── haptic_nv.dtsi
+│   ├── haptic_ram_12k_101635_130.bin
+│   ├── haptic_ram_24K_101635_130.bin
+├── 170                                         /* Device tree and RAM waveform file matching with F0=170 */
+│   ├── haptic_nv.dtsi
+│   ├── haptic_ram_12k_0809_170.bin
+│   ├── haptic_ram_12K_0815_170.bin
+│   ├── haptic_ram_12k_9595_170.bin
+│   ├── haptic_ram_24K_0619_170.bin
+│   ├── haptic_ram_24k_0809_170.bin
+│   ├── haptic_ram_24K_0815_170.bin
+│   ├── haptic_ram_24K_1010_170.bin
+│   └── haptic_ram_24K_1040_170.bin
+│   └── haptic_ram_24k_9595_170.bin
+├── 205                                         /* Device tree and RAM waveform file matching with F0=205 */
+│   ├── haptic_nv.dtsi
+│   ├── haptic_ram_12K_0832_205.bin
+│   └── haptic_ram_24K_0832_205.bin
+├── 235                                         /* Device tree and RAM waveform file matching with F0=235 */
+│   ├── haptic_nv.dtsi
+│   ├── haptic_ram_12K_0832_235.bin
+│   └── haptic_ram_24K_0832_235.bin
+├── 240                                         /* Device tree and RAM waveform file matching with F0=240 */
+│   ├── haptic_nv.dtsi
+│   ├── haptic_ram_12K_041235_240.bin
+│   └── haptic_ram_24K_041235_240.bin
+├── 260                                         /* Device tree and RAM waveform file matching with F0=260 */
+│   ├── haptic_nv.dtsi
+│   ├── haptic_ram_12K_0832_260.bin
+│   └── haptic_ram_24K_0832_260.bin
+├── document                                    /* Driver porting documentation */
+│   ├── PG_Haptic_NV_QCOM_Porting_Guide_CN_V1.8.pdf
+│   └── PG_Haptic_NV_QCOM_Porting_Guide_EN_V1.8.pdf
+├── dual_170                                    /* Dual motor device tree */
+│   └── haptic_nv.dtsi
+├── input_test                                  /* Input architecture test program */
+│   └── jni
+│       ├── Android.mk
+│       ├── Application.mk
+│       └── src
+│           └── main.c
+├── lk                                          /* lk driver */
+│   ├── aw862xx.c
+│   ├── aw862xx.h
+│   ├── aw8624x.c
+│   ├── aw8624x.h
+│   ├── aw8623x.c
+│   ├── aw8623x.h
+│   ├── aw862x.c
+│   ├── aw862x.h
+│   ├── haptic_nv_lk.c
+│   └── haptic_nv_lk.h
+├── aw862x.c
+├── aw862x_haptic.bin                           /* Referenced RAM waveform file */
+├── aw8623x.c
+├── aw8624x.c
+├── aw862xx.c
+├── aw862xx_haptic.bin                          /* Referenced RAM waveform file */
+├── haptic_nv.c
+├── haptic_nv.h
+├── haptic_nv_reg.h
+├── haptic_nv_rtp.bin                           /* Referenced RTP waveform file */
+├── haptic_nv_rtp_lighthouse.bin                /* Referenced RTP waveform file */
+├── haptic_nv_rtp_osc_24K_5s.bin                /* RTP OSC calibration file */
+├── haptic_nv_rtp_silk.bin                      /* Referenced RTP waveform file */
+├── haptic_nv_rtp_autosin.bin                   /* Referenced RTP auto sin waveform file */
+├── Kconfig
+├── Makefile
+└── README

@@ -23,6 +23,9 @@
 #include <linux/splice.h>
 #include <linux/sched.h>
 
+#ifdef CONFIG_MTK_FUSE_DEBUG
+#include <trace/events/fuse.h>
+#endif
 #include <trace/hooks/fuse.h>
 
 MODULE_ALIAS_MISCDEV(FUSE_MINOR);
@@ -518,6 +521,10 @@ ssize_t fuse_simple_request(struct fuse_mount *fm, struct fuse_args *args)
 	fuse_adjust_compat(fc, args);
 	fuse_args_to_req(req, args);
 
+#ifdef CONFIG_MTK_FUSE_DEBUG
+	trace_fuse_simple_request(fm, args);
+#endif
+
 	if (!args->noreply)
 		__set_bit(FR_ISREPLY, &req->flags);
 	__fuse_request_send(req);
@@ -580,6 +587,10 @@ int fuse_simple_background(struct fuse_mount *fm, struct fuse_args *args,
 	}
 
 	fuse_args_to_req(req, args);
+
+#ifdef CONFIG_MTK_FUSE_DEBUG
+	trace_fuse_simple_background(fm, args);
+#endif
 
 	if (!fuse_request_queue_background(req)) {
 		fuse_put_request(req);

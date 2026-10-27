@@ -664,6 +664,11 @@
 /* Select an area of screen to be copied */
 #define KEY_SELECTIVE_SCREENSHOT	0x27a
 
+#define KEY_SCAN	0x27b
+#define KEY_LEFTSCAN	0x27c
+#define KEY_RIGHTSCAN	0x27d
+
+
 /*
  * Some keyboards have keys which do not have a defined meaning, these keys
  * are intended to be programmed / bound to macros by the user. For most

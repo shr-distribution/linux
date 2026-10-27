@@ -8,6 +8,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/gpio/consumer.h>
 #include <linux/iopoll.h>
 #include <linux/ioport.h>
 #include <linux/irq.h>
@@ -19,6 +20,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_opp.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -31,6 +33,7 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
 #include <linux/mmc/sdio.h>
+#include <linux/mmc/sdio_func.h>
 #include <linux/mmc/slot-gpio.h>
 
 #include "cqhci.h"
@@ -305,6 +308,29 @@
 #define DEFAULT_DEBOUNCE	(8)	/* 8 cycles CD debounce */
 
 #define PAD_DELAY_MAX	32 /* PAD delay cells */
+#define SDIO_CCCR_INTERRUPT_EXT	0x16
+#define SDIO_INTERRUPT_EXT_SAI	(1 << 0)
+#define SDIO_INTERRUPT_EXT_EAI	(1 << 1)
+
+// [Agenew] For MSDC0 SD Card begin@{
+#if IS_ENABLED(CONFIG_AGENEW_MSDC0_TO_SDCARD)
+#define IDENTIFY_NVT4857UK 1
+#define IDENTIFY_NVT4858DS 0
+#define IDENTIFY_UNKOWN 0xFF
+
+static bool is_force_set_vqmmc_to_180;
+#if !IS_ENABLED(CONFIG_AGENEW_NO_GPIO45)
+static int sel_gpio; //level shift sel gpio
+#endif
+static int identify_gpio; // Distinguish between NVT4857UK and NVT4858DS
+static int identify_gpio_value = IDENTIFY_UNKOWN; // 1: NVT4857UK, 0: NVT4858DS
+#endif
+
+#if IS_ENABLED(CONFIG_AGENEW_NOSDCARD)
+static int sel_gpio; //level shift sel gpio
+#endif
+// @}
+
 /*--------------------------------------------------------------------------*/
 /* Descriptor Structure                                                     */
 /*--------------------------------------------------------------------------*/
@@ -418,14 +444,23 @@ struct msdc_host {
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *pins_default;
 	struct pinctrl_state *pins_uhs;
+	struct pinctrl_state *pins_eint;
+	struct pinctrl_state *pins_dat1;
 	struct delayed_work req_timeout;
 	int irq;		/* host interrupt */
+	int eint_irq;           /* device interrupt */
+	int sdio_irq_cnt;       /* irq enable cnt */
 	struct reset_control *reset;
+	int id;     /* host id */
 
+	struct clk *p_clk;		/* msdc power clock */
+	struct clk *axi_clk;	/* msdc axi clock*/
+	struct clk *ahb_clk;	/* msdc ahb2axi_brg_clk clock*/
 	struct clk *src_clk;	/* msdc source clock */
 	struct clk *h_clk;      /* msdc h_clk */
 	struct clk *bus_clk;	/* bus clock which used to access register */
 	struct clk *src_clk_cg; /* msdc source clock control gate */
+
 	u32 mclk;		/* mmc subsystem clock frequency */
 	u32 src_clk_freq;	/* source clock frequency */
 	unsigned char timing;
@@ -439,10 +474,14 @@ struct msdc_host {
 	bool hs400_mode;	/* current eMMC will run at hs400 mode */
 	bool internal_cd;	/* Use internal card-detect logic */
 	bool cqhci;		/* support eMMC hw cmdq */
+	bool sdio_eint_ready;   /* Ready to support SDIO eint interrupt */
+	bool enable_async_irq;
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
 	struct msdc_tune_para saved_tune_para; /* tune result of CMD21/CMD19 */
 	struct cqhci_host *cq_host;
+	struct regulator *vcore_reg;
+	u32 vcore_max_volt;
 };
 
 static const struct mtk_mmc_compatible mt8135_compat = {
@@ -560,6 +599,32 @@ static const struct mtk_mmc_compatible mt6779_compat = {
 	.support_64g = true,
 };
 
+static const struct mtk_mmc_compatible mt6765_compat = {
+	.clk_div_bits = 12,
+	.recheck_sdio_irq = false,
+	.hs400_tune = false,
+	.pad_tune_reg = MSDC_PAD_TUNE0,
+	.async_fifo = true,
+	.data_tune = true,
+	.busy_check = true,
+	.stop_clk_fix = true,
+	.enhance_rx = true,
+	.support_64g = true,
+};
+
+static const struct mtk_mmc_compatible mt6768_compat = {
+	.clk_div_bits = 12,
+	.recheck_sdio_irq = false,
+	.hs400_tune = false,
+	.pad_tune_reg = MSDC_PAD_TUNE0,
+	.async_fifo = true,
+	.data_tune = true,
+	.busy_check = true,
+	.stop_clk_fix = true,
+	.enhance_rx = true,
+	.support_64g = true,
+};
+
 static const struct of_device_id msdc_of_ids[] = {
 	{ .compatible = "mediatek,mt8135-mmc", .data = &mt8135_compat},
 	{ .compatible = "mediatek,mt8173-mmc", .data = &mt8173_compat},
@@ -570,6 +635,8 @@ static const struct of_device_id msdc_of_ids[] = {
 	{ .compatible = "mediatek,mt8516-mmc", .data = &mt8516_compat},
 	{ .compatible = "mediatek,mt7620-mmc", .data = &mt7620_compat},
 	{ .compatible = "mediatek,mt6779-mmc", .data = &mt6779_compat},
+	{ .compatible = "mediatek,mt6765-mmc", .data = &mt6765_compat},
+	{ .compatible = "mediatek,mt6768-mmc", .data = &mt6768_compat},
 	{}
 };
 MODULE_DEVICE_TABLE(of, msdc_of_ids);
@@ -788,18 +855,39 @@ static void msdc_set_busy_timeout(struct msdc_host *host, u64 ns, u64 clks)
 
 static void msdc_gate_clock(struct msdc_host *host)
 {
-	clk_disable_unprepare(host->src_clk_cg);
-	clk_disable_unprepare(host->src_clk);
-	clk_disable_unprepare(host->bus_clk);
-	clk_disable_unprepare(host->h_clk);
+	if (host->src_clk_cg)
+		clk_disable_unprepare(host->src_clk_cg);
+	if (host->src_clk)
+		clk_disable_unprepare(host->src_clk);
+	if (host->bus_clk)
+		clk_disable_unprepare(host->bus_clk);
+	if (host->h_clk)
+		clk_disable_unprepare(host->h_clk);
+	if (host->axi_clk)
+		clk_disable_unprepare(host->axi_clk);
+	if (host->ahb_clk)
+		clk_disable_unprepare(host->ahb_clk);
+	if (host->p_clk)
+		clk_disable_unprepare(host->p_clk);
+
 }
 
 static void msdc_ungate_clock(struct msdc_host *host)
 {
-	clk_prepare_enable(host->h_clk);
-	clk_prepare_enable(host->bus_clk);
-	clk_prepare_enable(host->src_clk);
-	clk_prepare_enable(host->src_clk_cg);
+	if (host->p_clk)
+		clk_prepare_enable(host->p_clk);	//MSDC_PCLK_CK_MSDC1_CKEN
+	if (host->axi_clk)
+		clk_prepare_enable(host->axi_clk); //MSDC_AXI_CK_CKEN
+	if (host->ahb_clk)
+		clk_prepare_enable(host->ahb_clk); //MSDC_AHB2AXI_BRG_AXI_CKEN
+	if (host->bus_clk)
+		clk_prepare_enable(host->bus_clk);
+	if (host->h_clk)
+		clk_prepare_enable(host->h_clk);	//MSDC_HCLK_MST_CK_0P_CKEN
+	if (host->src_clk)
+		clk_prepare_enable(host->src_clk);
+	if (host->src_clk_cg)
+		clk_prepare_enable(host->src_clk_cg);	//MSDC_SRC_CK_0P_CKEN
 	while (!(readl(host->base + MSDC_CFG) & MSDC_CFG_CKSTB))
 		cpu_relax();
 }
@@ -1097,7 +1185,8 @@ static void msdc_track_cmd_data(struct msdc_host *host,
 				struct mmc_command *cmd, struct mmc_data *data)
 {
 	if (host->error)
-		dev_dbg(host->dev, "%s: cmd=%d arg=%08X; host->error=0x%08X\n",
+		//dev_dbg(host->dev, "%s: cmd=%d arg=%08X; host->error=0x%08X\n",
+		printk("%s: cmd=%d arg=%08X; host->error=0x%08X\n",
 			__func__, cmd->opcode, cmd->arg, host->error);
 }
 
@@ -1440,18 +1529,63 @@ static int msdc_ops_switch_volt(struct mmc_host *mmc, struct mmc_ios *ios)
 			return -EINVAL;
 		}
 
-		ret = mmc_regulator_set_vqmmc(mmc, ios);
-		if (ret < 0) {
-			dev_dbg(host->dev, "Regulator set error %d (%d)\n",
-				ret, ios->signal_voltage);
-			return ret;
-		}
+		// [Agenew] For MSDC0 SD Card begin @{
+#if IS_ENABLED(CONFIG_AGENEW_MSDC0_TO_SDCARD)
+		printk("*****sd****** identify chip: %d\n", identify_gpio_value);
+		if (identify_gpio_value == IDENTIFY_NVT4857UK) {
+			printk("******sd******host->id = %d ****",host->id);
+			if (host->id == 0 && ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
+#if !IS_ENABLED(CONFIG_AGENEW_NO_GPIO45)
+			printk("******sd******set gpio45 = high **virtual gpio number = %d**",sel_gpio);
+			gpio_set_value(sel_gpio, 1); //set gpio45 high
+#endif
+			}
 
-		/* Apply different pinctrl settings for different signal voltage */
-		if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180)
-			pinctrl_select_state(host->pinctrl, host->pins_uhs);
-		else
-			pinctrl_select_state(host->pinctrl, host->pins_default);
+			if (!is_force_set_vqmmc_to_180 && ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
+				printk("[%s:%d]set vqmmc voltage to 180\n", __FUNCTION__, __LINE__);
+				ret = mmc_regulator_set_vqmmc(mmc, ios);
+				if (ret < 0) {
+					printk("[%s:%d]Regulator set error %d (%d)\n", __FUNCTION__, __LINE__,
+						ret, ios->signal_voltage);
+					return ret;
+				}
+
+				pinctrl_select_state(host->pinctrl, host->pins_uhs);
+
+				is_force_set_vqmmc_to_180 = true;
+				printk("[%s:%d]set vqmmc voltage to 180 success!\n", __FUNCTION__, __LINE__);
+			}
+		}
+#endif
+
+#if IS_ENABLED(CONFIG_AGENEW_NOSDCARD)
+			printk("******sd******host->id = %d ****",host->id);
+			if (host->id == 0 && ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
+			printk("******sd******set gpio45 = high **virtual gpio number = %d**",sel_gpio);
+			gpio_set_value(sel_gpio, 1); //set gpio45 high
+			}
+#endif
+
+		// @}
+
+#if IS_ENABLED(CONFIG_AGENEW_MSDC0_TO_SDCARD)
+		if ((host->id == 0 && identify_gpio_value == IDENTIFY_NVT4858DS)) {
+#else
+		if (host->id == 1) {
+#endif
+			ret = mmc_regulator_set_vqmmc(mmc, ios);
+			if (ret < 0) {
+				dev_dbg(host->dev, "Regulator set error %d (%d)\n",
+					ret, ios->signal_voltage);
+				return ret;
+			}
+	
+			/* Apply different pinctrl settings for different signal voltage */
+			if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180)
+				pinctrl_select_state(host->pinctrl, host->pins_uhs);
+			else
+				pinctrl_select_state(host->pinctrl, host->pins_default);
+		}
 	}
 	return 0;
 }
@@ -1507,15 +1641,44 @@ static void msdc_enable_sdio_irq(struct mmc_host *mmc, int enb)
 {
 	unsigned long flags;
 	struct msdc_host *host = mmc_priv(mmc);
+	int ret;
+	unsigned char data;
+	struct sdio_func *func;
 
 	spin_lock_irqsave(&host->lock, flags);
 	__msdc_enable_sdio_irq(host, enb);
 	spin_unlock_irqrestore(&host->lock, flags);
 
-	if (enb)
-		pm_runtime_get_noresume(host->dev);
-	else
-		pm_runtime_put_noidle(host->dev);
+	if (host->enable_async_irq && enb) {
+		func = mmc->card->sdio_func[0];
+		func->card->quirks |= MMC_QUIRK_LENIENT_FN0;
+		data = sdio_f0_readb(func, SDIO_CCCR_INTERRUPT_EXT, &ret);
+		if (ret) {
+			dev_info(host->dev, "Failed to read SDIO_CCCR_INTERRUPT_EXT\n");
+			host->enable_async_irq = false;
+			host->sdio_eint_ready = false;
+			goto out;
+		}
+
+		if (data & SDIO_INTERRUPT_EXT_SAI) {
+			data |= SDIO_INTERRUPT_EXT_EAI;
+			sdio_f0_writeb(func, data, SDIO_CCCR_INTERRUPT_EXT, &ret);
+			if (ret) {
+				dev_info(host->dev, "Failed to write SDIO_CCCR_INTERRUPT_EXT\n");
+				host->enable_async_irq = false;
+				host->sdio_eint_ready = false;
+				goto out;
+			}
+		}
+	}
+
+out:
+	if (mmc->card && !host->enable_async_irq) {
+		if (enb)
+			pm_runtime_get_noresume(host->dev);
+		else
+			pm_runtime_put_noidle(host->dev);
+	}
 }
 
 static irqreturn_t msdc_cmdq_irq(struct msdc_host *host, u32 intsts)
@@ -1622,8 +1785,8 @@ static void msdc_init_hw(struct msdc_host *host)
 		reset_control_deassert(host->reset);
 	}
 
-	/* Configure to MMC/SD mode, clock free running */
-	sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_MODE | MSDC_CFG_CKPDN);
+	/* Configure to MMC/SD mode */
+	sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_MODE);
 
 	/* Reset */
 	msdc_reset_hw(host);
@@ -1825,13 +1988,33 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			ret = regulator_enable(mmc->supply.vqmmc);
 			if (ret)
 				dev_err(host->dev, "Failed to set vqmmc power!\n");
-			else
+			else {
 				host->vqmmc_enabled = true;
+				// [Agenew] For MSDC0 SD Card begin @{
+#if IS_ENABLED(CONFIG_AGENEW_MSDC0_TO_SDCARD)
+				is_force_set_vqmmc_to_180 = false;
+#endif
+				// @}
+			}
 		}
 		break;
 	case MMC_POWER_OFF:
 		if (!IS_ERR(mmc->supply.vmmc))
 			mmc_regulator_set_ocr(mmc, mmc->supply.vmmc, 0);
+
+		// [Agenew] For MSDC0 SD Card begin @{
+#if IS_ENABLED(CONFIG_AGENEW_MSDC0_TO_SDCARD)
+		if (host->id == 0)
+#if !IS_ENABLED(CONFIG_AGENEW_NO_GPIO45)
+			gpio_set_value(sel_gpio, 0);  //set gpio35 to low
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_AGENEW_NOSDCARD)
+		if (host->id == 0)
+			gpio_set_value(sel_gpio, 0);  //set gpio35 to low
+#endif
+		// @}
 
 		if (!IS_ERR(mmc->supply.vqmmc) && host->vqmmc_enabled) {
 			regulator_disable(mmc->supply.vqmmc);
@@ -1892,7 +2075,7 @@ static struct msdc_delay_phase get_best_delay(struct msdc_host *host, u32 delay)
 		final_phase = (start_final + len_final / 3) % PAD_DELAY_MAX;
 	else
 		final_phase = (start_final + len_final / 2) % PAD_DELAY_MAX;
-	dev_info(host->dev, "phase: [map:%x] [maxlen:%d] [final:%d]\n",
+	dev_err(host->dev, "phase: [map:%x] [maxlen:%d] [final:%d]\n",
 		 delay, len_final, final_phase);
 
 	delay_phase.maxlen = len_final;
@@ -1934,8 +2117,8 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 	u8 final_delay, final_maxlen;
 	u32 internal_delay = 0;
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
-	int cmd_err;
-	int i, j;
+	int cmd_err = 0;
+	int i = 0, j = 0;
 
 	if (mmc->ios.timing == MMC_TIMING_MMC_HS200 ||
 	    mmc->ios.timing == MMC_TIMING_UHS_SDR104)
@@ -2025,8 +2208,8 @@ static int hs400_tune_response(struct mmc_host *mmc, u32 opcode)
 	u32 cmd_delay = 0;
 	struct msdc_delay_phase final_cmd_delay = { 0,};
 	u8 final_delay;
-	int cmd_err;
-	int i, j;
+	int cmd_err = 0;
+	int i = 0, j = 0;
 
 	/* select EMMC50 PAD CMD tune */
 	sdr_set_bits(host->base + PAD_CMD_TUNE, BIT(0));
@@ -2191,7 +2374,23 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
 
 	if (host->dev_comp->data_tune && host->dev_comp->async_fifo) {
+		if (host->vcore_reg) {
+			/* force lock voltage before tuning */
+			ret = regulator_set_voltage(host->vcore_reg, host->vcore_max_volt,
+						    host->vcore_max_volt);
+			if (ret < 0)
+				dev_info(host->dev, "failed to lock vcore: %d\n", ret);
+		}
+
 		ret = msdc_tune_together(mmc, opcode);
+
+		if (host->vcore_reg) {
+			/* restore voltage after tuning */
+			ret = regulator_set_voltage(host->vcore_reg, 0, INT_MAX);
+			if (ret < 0)
+				dev_info(host->dev, "failed to restore vcore: %d\n", ret);
+		}
+
 		if (host->hs400_mode) {
 			sdr_clr_bits(host->base + MSDC_IOCON,
 				     MSDC_IOCON_DSPL | MSDC_IOCON_W_DSPL);
@@ -2355,6 +2554,49 @@ static const struct mmc_host_ops mt_msdc_ops = {
 	.hw_reset = msdc_hw_reset,
 };
 
+static irqreturn_t msdc_sdio_eint_irq(int irq, void *dev_id)
+{
+	struct msdc_host *host = dev_id;
+	struct mmc_host *mmc = mmc_from_priv(host);
+	unsigned long flags;
+
+	spin_lock_irqsave(&host->lock, flags);
+	if (likely(host->sdio_irq_cnt > 0)) {
+		disable_irq_nosync(host->eint_irq);
+		disable_irq_wake(host->eint_irq);
+		host->sdio_irq_cnt--;
+	}
+	spin_unlock_irqrestore(&host->lock, flags);
+
+	sdio_signal_irq(mmc);
+
+	return IRQ_HANDLED;
+}
+
+static int msdc_request_dat1_eint_irq(struct msdc_host *host)
+{
+	struct gpio_desc *desc;
+	int irq, ret;
+
+	desc = devm_gpiod_get(host->dev, "eint", GPIOD_IN);
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+
+	irq = gpiod_to_irq(desc);
+	if (irq < 0)
+		return irq;
+
+	ret = devm_request_threaded_irq(host->dev, irq, NULL, msdc_sdio_eint_irq,
+					IRQF_TRIGGER_LOW | IRQF_ONESHOT | IRQ_NOAUTOEN,
+					"sdio-eint", host);
+	if (ret)
+		return ret;
+
+	host->eint_irq = irq;
+
+	return 0;
+}
+
 static const struct cqhci_host_ops msdc_cmdq_ops = {
 	.enable         = msdc_cqe_enable,
 	.disable        = msdc_cqe_disable,
@@ -2377,6 +2619,11 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 	of_property_read_u32(pdev->dev.of_node, "mediatek,hs400-cmd-int-delay",
 			     &host->hs400_cmd_int_delay);
 
+	// [Agenew] For MSDC0 SD card Begin@{
+	of_property_read_u32(pdev->dev.of_node, "host-index",
+			     &host->id);
+	// @}
+
 	if (of_property_read_bool(pdev->dev.of_node,
 				  "mediatek,hs400-cmd-resp-sel-rising"))
 		host->hs400_cmd_resp_sel_rising = true;
@@ -2388,6 +2635,8 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 		host->cqhci = true;
 	else
 		host->cqhci = false;
+	of_property_read_u32(pdev->dev.of_node, "max-vcore-volt",
+			     &host->vcore_max_volt);
 }
 
 static int msdc_drv_probe(struct platform_device *pdev)
@@ -2395,7 +2644,9 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	struct mmc_host *mmc;
 	struct msdc_host *host;
 	struct resource *res;
-	int ret;
+	int ret = -111;
+
+	dev_err(&pdev->dev, "[%s %d]ret=%d\n", __func__, __LINE__, ret);
 
 	if (!pdev->dev.of_node) {
 		dev_err(&pdev->dev, "No DT found\n");
@@ -2411,6 +2662,9 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	ret = mmc_of_parse(mmc);
 	if (ret)
 		goto host_free;
+
+	if (device_property_read_bool(mmc->parent, "cap-sdio-async-int"))
+		host->enable_async_irq = true;
 
 	host->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(host->base)) {
@@ -2431,12 +2685,14 @@ static int msdc_drv_probe(struct platform_device *pdev)
 
 	host->src_clk = devm_clk_get(&pdev->dev, "source");
 	if (IS_ERR(host->src_clk)) {
+		dev_dbg(&pdev->dev, "can't find source clk");
 		ret = PTR_ERR(host->src_clk);
 		goto host_free;
 	}
 
 	host->h_clk = devm_clk_get(&pdev->dev, "hclk");
 	if (IS_ERR(host->h_clk)) {
+		dev_dbg(&pdev->dev, "can't find hclk");
 		ret = PTR_ERR(host->h_clk);
 		goto host_free;
 	}
@@ -2444,6 +2700,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	host->bus_clk = devm_clk_get(&pdev->dev, "bus_clk");
 	if (IS_ERR(host->bus_clk))
 		host->bus_clk = NULL;
+
 	/*source clock control gate is optional clock*/
 	host->src_clk_cg = devm_clk_get(&pdev->dev, "source_cg");
 	if (IS_ERR(host->src_clk_cg))
@@ -2453,6 +2710,18 @@ static int msdc_drv_probe(struct platform_device *pdev)
 								"hrst");
 	if (IS_ERR(host->reset))
 		return PTR_ERR(host->reset);
+
+	host->p_clk = devm_clk_get(&pdev->dev, "p_clk");
+	if (IS_ERR(host->p_clk))
+		host->p_clk = NULL;
+
+	host->axi_clk = devm_clk_get(&pdev->dev, "axi_clk");
+	if (IS_ERR(host->axi_clk))
+		host->axi_clk = NULL;
+
+	host->ahb_clk = devm_clk_get(&pdev->dev, "ahb_clk");
+	if (IS_ERR(host->ahb_clk))
+		host->ahb_clk = NULL;
 
 	host->irq = platform_get_irq(pdev, 0);
 	if (host->irq < 0) {
@@ -2479,6 +2748,22 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		ret = PTR_ERR(host->pins_uhs);
 		dev_err(&pdev->dev, "Cannot find pinctrl uhs!\n");
 		goto host_free;
+	}
+
+	if (!(mmc->caps2 & MMC_CAP2_NO_SDIO) && host->enable_async_irq) {
+		/* Support for SDIO eint irq */
+		host->pins_eint = pinctrl_lookup_state(host->pinctrl, "state_eint");
+		if (IS_ERR(host->pins_eint)) {
+			dev_dbg(&pdev->dev, "Cannot find pinctrl eint!\n");
+		} else {
+			host->pins_dat1 = pinctrl_lookup_state(host->pinctrl, "state_dat1");
+			if (IS_ERR(host->pins_dat1)) {
+				dev_info(&pdev->dev, "Cannot find pinctrl dat1!\n");
+				goto host_free;
+			}
+
+			host->sdio_eint_ready = true;
+		}
 	}
 
 	msdc_of_property_parse(pdev, host);
@@ -2568,6 +2853,22 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	if (ret)
 		goto release;
 
+	host->vcore_reg = devm_regulator_get_optional(&pdev->dev, "dvfsrc-vcore");
+	if (IS_ERR(host->vcore_reg)) {
+		dev_info(host->dev, "failed to get dvfsrc-vcore regulator!\n");
+		host->vcore_reg = NULL;
+	}
+
+	if (host->sdio_eint_ready) {
+		ret = msdc_request_dat1_eint_irq(host);
+		if (ret) {
+			dev_info(host->dev, "Failed to register data1 eint irq!\n");
+			goto release;
+		}
+
+		pinctrl_select_state(host->pinctrl, host->pins_dat1);
+	}
+
 	pm_runtime_set_active(host->dev);
 	pm_runtime_set_autosuspend_delay(host->dev, MTK_MMC_AUTOSUSPEND_DELAY);
 	pm_runtime_use_autosuspend(host->dev);
@@ -2576,6 +2877,40 @@ static int msdc_drv_probe(struct platform_device *pdev)
 
 	if (ret)
 		goto end;
+	dev_err(&pdev->dev, "[%s %d]ret=%d\n", __func__, __LINE__, ret);
+
+	// [Agenew] For MSDC0 SD Card begin @{
+#if IS_ENABLED(CONFIG_AGENEW_MSDC0_TO_SDCARD)
+	if (host->id == 0) {
+#if !IS_ENABLED(CONFIG_AGENEW_NO_GPIO45)
+		sel_gpio = of_get_named_gpio(pdev->dev.of_node, "sel-gpios", 0);
+		printk("***sd***sel_gpio = %d ***\n",sel_gpio);
+		if (gpio_is_valid(sel_gpio))
+			gpio_request(sel_gpio,"sel_gpio_pin");
+
+		gpio_direction_output(sel_gpio, 0); // Set to output mode and set output high or low
+#endif
+
+		identify_gpio = of_get_named_gpio(pdev->dev.of_node, "identify_gpios", 0);
+		printk("***sd***identify_gpio = %d ***\n", identify_gpio);
+		if (gpio_is_valid(identify_gpio))
+			gpio_request(identify_gpio, "identify_gpio_pin");
+
+		identify_gpio_value = gpio_get_value(identify_gpio);
+	}
+#endif
+
+#if IS_ENABLED(CONFIG_AGENEW_NOSDCARD)
+	if (host->id == 0) {
+		sel_gpio = of_get_named_gpio(pdev->dev.of_node, "sel-gpios", 0);
+		printk("***sd***sel_gpio = %d ***\n",sel_gpio);
+		if (gpio_is_valid(sel_gpio))
+			gpio_request(sel_gpio,"sel_gpio_pin");
+
+		gpio_direction_output(sel_gpio, 0); // Set to output mode and set output high or low
+	}
+#endif
+	// @}
 
 	return 0;
 end:
@@ -2595,6 +2930,7 @@ release_mem:
 			host->dma.bd, host->dma.bd_addr);
 host_free:
 	mmc_free_host(mmc);
+	dev_err(&pdev->dev, "[%s %d]ret=%d\n", __func__, __LINE__, ret);
 
 	return ret;
 }
@@ -2623,6 +2959,22 @@ static int msdc_drv_remove(struct platform_device *pdev)
 			host->dma.bd, host->dma.bd_addr);
 
 	mmc_free_host(mmc);
+
+	// [Agenew] For MSDC0 SD Card begin @{
+#if IS_ENABLED(CONFIG_AGENEW_MSDC0_TO_SDCARD)
+	if (host->id == 0) {
+#if !IS_ENABLED(CONFIG_AGENEW_NO_GPIO45)
+		gpio_free(sel_gpio);
+#endif
+		gpio_free(identify_gpio);
+	}
+#endif
+
+#if IS_ENABLED(CONFIG_AGENEW_NOSDCARD)
+	if (host->id == 0)
+		gpio_free(sel_gpio);
+#endif
+	// @}
 
 	return 0;
 }
@@ -2689,9 +3041,33 @@ static int __maybe_unused msdc_runtime_suspend(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct msdc_host *host = mmc_priv(mmc);
+	unsigned long flags;
+	int ret;
 
+	if (mmc->caps2 & MMC_CAP2_CQE)
+		cqhci_suspend(mmc);
 	msdc_save_reg(host);
+
+	if (host->sdio_eint_ready) {
+		disable_irq(host->irq);
+		pinctrl_select_state(host->pinctrl, host->pins_eint);
+		spin_lock_irqsave(&host->lock, flags);
+		if (host->sdio_irq_cnt == 0) {
+			enable_irq(host->eint_irq);
+			enable_irq_wake(host->eint_irq);
+			host->sdio_irq_cnt++;
+		}
+		sdr_clr_bits(host->base + SDC_CFG, SDC_CFG_SDIOIDE);
+		spin_unlock_irqrestore(&host->lock, flags);
+	}
 	msdc_gate_clock(host);
+
+	if (host->vcore_reg) {
+		ret = regulator_set_voltage(host->vcore_reg, 0, INT_MAX);
+		if (ret < 0)
+			dev_info(dev, "msdc runtime suspend set voltage returns: %d\n", ret);
+	}
+
 	return 0;
 }
 
@@ -2699,13 +3075,39 @@ static int __maybe_unused msdc_runtime_resume(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct msdc_host *host = mmc_priv(mmc);
+	unsigned long flags;
+	int ret;
 
+	if (mmc->caps2 & MMC_CAP2_CQE)
+		cqhci_resume(mmc);
 	msdc_ungate_clock(host);
 	msdc_restore_reg(host);
+
+	if (host->sdio_eint_ready) {
+		spin_lock_irqsave(&host->lock, flags);
+		if (host->sdio_irq_cnt > 0) {
+			disable_irq_nosync(host->eint_irq);
+			disable_irq_wake(host->eint_irq);
+			host->sdio_irq_cnt--;
+			sdr_set_bits(host->base + SDC_CFG, SDC_CFG_SDIOIDE);
+		} else {
+			sdr_clr_bits(host->base + MSDC_INTEN, MSDC_INTEN_SDIOIRQ);
+		}
+		spin_unlock_irqrestore(&host->lock, flags);
+		pinctrl_select_state(host->pinctrl, host->pins_uhs);
+		enable_irq(host->irq);
+	}
+
+	if (host->vcore_reg) {
+		ret = regulator_set_voltage(host->vcore_reg, host->vcore_max_volt,
+					    host->vcore_max_volt);
+		if (ret < 0)
+			dev_info(dev, "msdc runtime resume set voltage returns: %d\n", ret);
+	}
 	return 0;
 }
 
-static int __maybe_unused msdc_suspend(struct device *dev)
+static int __maybe_unused msdc_suspend_noirq(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	int ret;
@@ -2722,13 +3124,13 @@ static int __maybe_unused msdc_suspend(struct device *dev)
 	return pm_runtime_force_suspend(dev);
 }
 
-static int __maybe_unused msdc_resume(struct device *dev)
+static int __maybe_unused msdc_resume_noirq(struct device *dev)
 {
 	return pm_runtime_force_resume(dev);
 }
 
 static const struct dev_pm_ops msdc_dev_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(msdc_suspend, msdc_resume)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(msdc_suspend_noirq, msdc_resume_noirq)
 	SET_RUNTIME_PM_OPS(msdc_runtime_suspend, msdc_runtime_resume, NULL)
 };
 

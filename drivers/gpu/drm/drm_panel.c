@@ -32,6 +32,8 @@
 static DEFINE_MUTEX(panel_lock);
 static LIST_HEAD(panel_list);
 
+// int lcm_close_smallcharge11 = 1;
+//extern void get_lcm_status(int *status);
 /**
  * DOC: drm panel
  *
@@ -108,6 +110,9 @@ EXPORT_SYMBOL(drm_panel_remove);
  */
 int drm_panel_prepare(struct drm_panel *panel)
 {
+	//lcm_close_smallcharge11=1;
+	printk("pyc_test1 drm_panel_prepare lcm_close_smallcharge11=");
+	//get_lcm_status(1);
 	if (!panel)
 		return -EINVAL;
 
@@ -131,6 +136,9 @@ EXPORT_SYMBOL(drm_panel_prepare);
  */
 int drm_panel_unprepare(struct drm_panel *panel)
 {
+	//lcm_close_smallcharge11=0;
+	printk("pyc_test1 drm_panel_unprepare lcm_close_smallcharge11=");
+	//get_lcm_status(0);
 	if (!panel)
 		return -EINVAL;
 
