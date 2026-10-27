@@ -520,6 +520,7 @@ int tkcore_shm_pool_free(struct device *dev, struct shm_pool *pool,
 				*size = chunk->size;
 
 			if (chunk->counter == 0) {
+				mutex_unlock(&pool->lock);
 				pr_warn(
 					 "< %s() WARNING, paddr=0x%p already released\n",
 					 __func__, (void *) paddr);
