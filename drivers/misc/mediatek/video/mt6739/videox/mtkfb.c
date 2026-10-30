@@ -191,10 +191,6 @@ static int mtkfb_open(struct fb_info *info, int user)
 	NOT_REFERENCED(info);
 	NOT_REFERENCED(user);
 	DISPFUNC();
-	/* Sync kernel display state with hardware on Halium: SurfaceFlinger
-	 * drives the panel directly and does not call mtkfb_blank to resume. */
-	if (primary_display_is_sleepd())
-		mtkfb_late_resume();
 	MSG_FUNC_ENTER();
 	MSG_FUNC_LEAVE();
 	return 0;
