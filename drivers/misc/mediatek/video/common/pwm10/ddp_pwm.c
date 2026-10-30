@@ -173,13 +173,18 @@ int disp_pwm_get_cust_led(unsigned int *clocksource, unsigned int *clockdiv)
 		}
 
 		if (g_pwm_led_mode == MT65XX_LED_MODE_NONE) {
-			ret = of_property_read_u32(led_node, "led_mode",
-				&led_mode);
-			if (!ret) {
+			/* Keep a failed pwm_config in ret: the callers
+			 * use clocksource only when ret is 0.
+			 */
+			int mode_ret = of_property_read_u32(led_node,
+				"led_mode", &led_mode);
+
+			if (!mode_ret) {
 				/* Save current LED mode */
 				g_pwm_led_mode = led_mode;
 			} else {
 				PWM_ERR("led dts can not get led mode data.\n");
+				ret = ret ? ret : mode_ret;
 			}
 		}
 	}
@@ -189,6 +194,37 @@ int disp_pwm_get_cust_led(unsigned int *clocksource, unsigned int *clockdiv)
 
 	return ret;
 }
+
+#if defined(CONFIG_MACH_MT6739)
+/*
+ * Nothing in this driver sets the low half of CON_0 on MT6739; it reads 0
+ * from reset and in normal use. 0x186 has been found there after a
+ * screen-off whose backlight-0 write met the display path switching from
+ * RDMA mode to direct link, and with it set the output is inverted:
+ * backlight 0 is full white and brightness runs backwards. What writes it
+ * is not known, so clear it wherever the driver writes CON_0 or changes
+ * the backlight, and before the clock goes off.
+ */
+#define DISP_PWM_CON_0_LOW_MASK 0xffff
+
+static void disp_pwm_clear_con0_low(unsigned long reg_base, void *cmdq)
+{
+	if (!cmdq) {
+		unsigned int con0 = DISP_REG_GET(reg_base + DISP_PWM_CON_0_OFF);
+
+		if (!(con0 & DISP_PWM_CON_0_LOW_MASK))
+			return;
+		pr_notice_ratelimited("[PWM] %s: CON_0 = 0x%08x, clearing the low half\n",
+			__func__, con0);
+	}
+	DISP_REG_MASK(cmdq, reg_base + DISP_PWM_CON_0_OFF, 0,
+		DISP_PWM_CON_0_LOW_MASK);
+}
+#else
+static inline void disp_pwm_clear_con0_low(unsigned long reg_base, void *cmdq)
+{
+}
+#endif
 
 static void disp_pwm_backlight_status(enum disp_pwm_id_t id,
 	bool is_power_on)
@@ -278,7 +314,7 @@ static int disp_pwm_config_init(enum DISP_MODULE_ENUM module,
 	struct disp_ddp_path_config *pConfig, void *cmdq)
 {
 #ifndef CONFIG_FPGA_EARLY_PORTING
-	unsigned int pwm_div, pwm_src;
+	unsigned int pwm_div, pwm_src = 0;
 	unsigned long reg_base =
 		pwm_get_reg_base(pwm_get_id_from_module(module));
 	int index = index_of_pwm(pwm_get_id_from_module(module));
@@ -326,6 +362,7 @@ static int disp_pwm_config_init(enum DISP_MODULE_ENUM module,
 	/* We don't enable PWM until we really need */
 	DISP_REG_MASK(cmdq, reg_base + DISP_PWM_CON_0_OFF, pwm_div << 16,
 	(0x3ff << 16));
+	disp_pwm_clear_con0_low(reg_base, cmdq);
 
 	/* 1024 levels */
 	DISP_REG_MASK(cmdq, reg_base + DISP_PWM_CON_1_OFF, 1023, 0x3ff);
@@ -621,6 +658,7 @@ int disp_pwm_set_backlight_cmdq(enum disp_pwm_id_t id,
 		level_1024 = disp_pwm_level_remap(id, level_1024);
 
 		reg_base = pwm_get_reg_base(id);
+		disp_pwm_clear_con0_low(reg_base, cmdq);
 
 		if (level_1024 > 0) {
 			DISP_REG_MASK(cmdq, reg_base + DISP_PWM_CON_1_OFF,
@@ -716,6 +754,17 @@ static int ddp_pwm_power_off(enum DISP_MODULE_ENUM module, void *handle)
 	int ret = -1;
 
 	disp_pwm_backlight_status(id, false);
+
+#if defined(CONFIG_MACH_MT6739)
+	/* Off with the low half set leaves the backlight lit */
+	if (module == DISP_MODULE_PWM0) {
+		const unsigned long reg_base = pwm_get_reg_base(id);
+
+		disp_pwm_clear_con0_low(reg_base, NULL);
+		DISP_REG_MASK(NULL, reg_base + DISP_PWM_COMMIT_OFF, 1, ~0);
+		DISP_REG_MASK(NULL, reg_base + DISP_PWM_COMMIT_OFF, 0, ~0);
+	}
+#endif
 
 #if defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
@@ -927,6 +976,7 @@ static int pwm_simple_strtoul(char *ptr, unsigned long *res)
 	int end = 0;
 	int ret = 0;
 
+	*res = 0;
 	for (i = 0; i < 20; i += 1) {
 		end = i;
 		PWM_MSG("%c\n", ptr[i]);
@@ -938,7 +988,7 @@ static int pwm_simple_strtoul(char *ptr, unsigned long *res)
 		strncpy(buffer, ptr, end);
 		buffer[end] = '\0';
 		ret = kstrtoul(buffer, 0, res);
-		if (!ret)
+		if (ret)
 			PWM_ERR("kstrtoul err=%d\n", ret);
 	}
 	return end;
@@ -955,7 +1005,7 @@ static int pwm_parse_triple(const char *cmd, unsigned long *offset,
 	*mask = 0;
 	end = pwm_simple_strtoul(next, offset);
 	next += end;
-	if (*offset > 0x1000UL || (*offset & 0x3UL) != 0)  {
+	if (end == 0 || *offset > 0x1000UL || (*offset & 0x3UL) != 0)  {
 		*offset = 0UL;
 		return 0;
 	}
@@ -965,7 +1015,12 @@ static int pwm_parse_triple(const char *cmd, unsigned long *offset,
 	if (*next == ',')
 		next++;
 
+	/* Count only the fields given: "set:<offset>,<value>" is a plain
+	 * write, which an unparsed mask of 0 used to turn into no write.
+	 */
 	end = pwm_simple_strtoul(next, value);
+	if (end == 0)
+		return count;
 	next += end;
 	count++;
 
@@ -973,7 +1028,8 @@ static int pwm_parse_triple(const char *cmd, unsigned long *offset,
 		next++;
 
 	end = pwm_simple_strtoul(next, mask);
-	next += end;
+	if (end == 0)
+		return count;
 	count++;
 
 	return count;
