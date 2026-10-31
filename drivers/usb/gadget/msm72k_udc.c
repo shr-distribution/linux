@@ -197,6 +197,12 @@ struct usb_info {
 #ifdef CONFIG_USB_MULTIPLE_CHARGER_DETECT
 	// this flag is to indicate if USB Y-cable(charger + data) is attached.
 	unsigned is_cdp;
+	/*
+	 * usb_chg_detect() ran in this VBUS session. Detection drops
+	 * D+ for 10 ms, which the host sees as a disconnect, so it is
+	 * run once per session and not on every soft connect.
+	 */
+	bool chg_detected;
 #endif
 	struct delayed_work chg_det;
 	struct delayed_work chg_stop;
@@ -483,6 +489,9 @@ static void usb_chg_detect(struct work_struct *w)
 		spin_unlock_irqrestore(&ui->lock, flags);
 		return;
 	}
+#ifdef CONFIG_USB_MULTIPLE_CHARGER_DETECT
+	ui->chg_detected = true;
+#endif
 #ifndef CONFIG_USB_MULTIPLE_CHARGER_DETECT
 	temp = usb_get_chg_type(ui);
 	if (temp != USB_CHG_TYPE__WALLCHARGER && temp != USB_CHG_TYPE__SDP
@@ -1965,6 +1974,9 @@ void msm_hsusb_set_vbus_state(int online)
 		ui->flags |= USB_FLAG_VBUS_OFFLINE;
 		ui->chg_type_retry_cnt = 0;
 		ui->proprietary_chg = false;
+#ifdef CONFIG_USB_MULTIPLE_CHARGER_DETECT
+		ui->chg_detected = false;
+#endif
 	}
 	if (in_interrupt()) {
 		schedule_work(&ui->work);
@@ -2595,6 +2607,7 @@ static int msm72k_pullup(struct usb_gadget *_gadget, int is_active)
 	struct usb_info *ui = container_of(_gadget, struct usb_info, gadget);
 	struct msm_otg *otg = to_msm_otg(ui->xceiv);
 	unsigned long flags;
+	bool detect = true;
 
 	atomic_set(&ui->softconnect, is_active);
 
@@ -2604,11 +2617,14 @@ static int msm72k_pullup(struct usb_gadget *_gadget, int is_active)
 		spin_unlock_irqrestore(&ui->lock, flags);
 		return 0;
 	}
+#ifdef CONFIG_USB_MULTIPLE_CHARGER_DETECT
+	detect = !ui->chg_detected;
+#endif
 	spin_unlock_irqrestore(&ui->lock, flags);
 
 	msm72k_pullup_internal(_gadget, is_active);
 
-	if (is_active && !ui->gadget.is_a_peripheral)
+	if (is_active && detect && !ui->gadget.is_a_peripheral)
 		schedule_delayed_work(&ui->chg_det, USB_CHG_DET_DELAY);
 
 	return 0;
