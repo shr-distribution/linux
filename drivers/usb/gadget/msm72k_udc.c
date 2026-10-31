@@ -2412,8 +2412,15 @@ static int msm72k_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 		req->prev->item->next = req->item->next;
 	}
 
+	/*
+	 * req->prev is only valid while a request is queued in front of req.
+	 * When the request in front completes, handle_endpoint() makes req
+	 * the head and leaves req->prev pointing at the completed request,
+	 * which its owner may free. Dequeuing the only request left in the
+	 * queue leaves the queue empty.
+	 */
 	if (!req->next)
-		ep->last = req->prev;
+		ep->last = ep->req ? req->prev : NULL;
 
 	/* initialize request to default */
 	req->item->next = TERMINATE;
