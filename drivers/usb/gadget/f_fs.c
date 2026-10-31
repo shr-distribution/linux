@@ -213,6 +213,18 @@ struct ffs_data {
 	unsigned short			eps_count;
 	unsigned short			_pad1;
 
+	/*
+	 * String IDs reserved from strings_cdev by functionfs_bind().
+	 * The composite core never hands IDs back, so they are kept
+	 * for the life of the mount (ffs_data_reset() leaves them
+	 * alone) and reused on every later bind, as f_mtp does.
+	 * Otherwise each daemon restart leaks IDs until binding fails
+	 * with -ENODEV.
+	 */
+	struct usb_composite_dev	*strings_cdev;
+	int				strings_first_id;
+	unsigned short			strings_reserved;
+
 	/* filled by __ffs_data_got_strings() */
 	/* ids in stringtabs are set in functionfs_bind() */
 	const void			*raw_strings;
@@ -1746,9 +1758,17 @@ static int functionfs_bind(struct ffs_data *ffs, struct usb_composite_dev *cdev)
 		 || test_and_set_bit(FFS_FL_BOUND, &ffs->flags)))
 		return -EBADFD;
 
-	first_id = usb_string_ids_n(cdev, ffs->strings_count);
-	if (unlikely(first_id < 0))
-		return first_id;
+	if (ffs->strings_cdev == cdev &&
+	    ffs->strings_count <= ffs->strings_reserved) {
+		first_id = ffs->strings_first_id;
+	} else {
+		first_id = usb_string_ids_n(cdev, ffs->strings_count);
+		if (unlikely(first_id < 0))
+			return first_id;
+		ffs->strings_cdev = cdev;
+		ffs->strings_first_id = first_id;
+		ffs->strings_reserved = ffs->strings_count;
+	}
 
 	ffs->ep0req = usb_ep_alloc_request(cdev->gadget->ep0, GFP_KERNEL);
 	if (unlikely(!ffs->ep0req))
