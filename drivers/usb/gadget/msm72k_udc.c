@@ -149,6 +149,7 @@ static void usb_do_remote_wakeup(struct work_struct *w);
 #define USB_FLAG_CONFIGURED     0x0020
 
 #define USB_CHG_DET_DELAY	msecs_to_jiffies(1000)
+#define USB_CONNECT_CHECK_DELAY	msecs_to_jiffies(3000)
 #define REMOTE_WAKEUP_DELAY	msecs_to_jiffies(1000)
 #define PHY_STATUS_CHECK_DELAY	(jiffies + msecs_to_jiffies(1000))
 #define EPT_PRIME_CHECK_DELAY	(jiffies + msecs_to_jiffies(1000))
@@ -203,6 +204,8 @@ struct usb_info {
 	 * run once per session and not on every soft connect.
 	 */
 	bool chg_detected;
+	/* see usb_connect_check() */
+	struct delayed_work connect_check;
 #endif
 	struct delayed_work chg_det;
 	struct delayed_work chg_stop;
@@ -537,6 +540,33 @@ static void usb_chg_detect(struct work_struct *w)
 }
 
 #ifdef CONFIG_USB_MULTIPLE_CHARGER_DETECT
+/*
+ * The PHY can stop driving D+ across a soft disconnect and connect, with
+ * USBCMD_RS set and the port held in reset. The host then never sees the
+ * device, so no bus reset arrives and phy_status_timer is never armed.
+ * Charger detection used to rewrite the PHY after every soft connect; it
+ * now runs once per VBUS session. So if no host has shown up on a data
+ * port a while after a soft connect, reset the PHY and link once.
+ */
+static void usb_connect_check(struct work_struct *w)
+{
+	struct usb_info *ui = container_of(w, struct usb_info,
+					   connect_check.work);
+	struct msm_otg *otg = to_msm_otg(ui->xceiv);
+	unsigned long flags;
+
+	spin_lock_irqsave(&ui->lock, flags);
+	if (ui->gadget.speed == USB_SPEED_UNKNOWN &&
+	    ui->usb_state != USB_STATE_NOTATTACHED && ui->driver &&
+	    atomic_read(&ui->softconnect) &&
+	    atomic_read(&otg->chg_type) != USB_CHG_TYPE__WALLCHARGER) {
+		dev_warn(&ui->pdev->dev, "no host after connect, resetting\n");
+		ui->flags |= USB_FLAG_RESET;
+		schedule_work(&ui->work);
+	}
+	spin_unlock_irqrestore(&ui->lock, flags);
+}
+
 static int usb_multi_chg_detect(struct usb_info *ui)
 {
 	struct msm_otg *otg = to_msm_otg(ui->xceiv);
@@ -1618,6 +1648,9 @@ static void usb_prepare(struct usb_info *ui)
 	INIT_WORK(&ui->work, usb_do_work);
 	INIT_DELAYED_WORK(&ui->chg_det, usb_chg_detect);
 	INIT_DELAYED_WORK(&ui->chg_stop, usb_chg_stop);
+#ifdef CONFIG_USB_MULTIPLE_CHARGER_DETECT
+	INIT_DELAYED_WORK(&ui->connect_check, usb_connect_check);
+#endif
 	INIT_DELAYED_WORK(&ui->rw_work, usb_do_remote_wakeup);
 	if (ui->pdata && ui->pdata->is_phy_status_timer_on)
 		INIT_WORK(&ui->phy_status_check, usb_phy_stuck_recover);
@@ -1787,6 +1820,9 @@ static void usb_do_work(struct work_struct *w)
 				/* wait incase chg_detect is running */
 				if (!ui->gadget.is_a_peripheral)
 					cancel_delayed_work_sync(&ui->chg_det);
+#ifdef CONFIG_USB_MULTIPLE_CHARGER_DETECT
+				cancel_delayed_work_sync(&ui->connect_check);
+#endif
 
 				dev_dbg(&ui->pdev->dev,
 					"msm72k_udc: ONLINE -> OFFLINE\n");
@@ -2626,6 +2662,12 @@ static int msm72k_pullup(struct usb_gadget *_gadget, int is_active)
 
 	if (is_active && detect && !ui->gadget.is_a_peripheral)
 		schedule_delayed_work(&ui->chg_det, USB_CHG_DET_DELAY);
+#ifdef CONFIG_USB_MULTIPLE_CHARGER_DETECT
+	cancel_delayed_work(&ui->connect_check);
+	if (is_active && !ui->gadget.is_a_peripheral)
+		schedule_delayed_work(&ui->connect_check,
+				      USB_CONNECT_CHECK_DELAY);
+#endif
 
 	return 0;
 }
