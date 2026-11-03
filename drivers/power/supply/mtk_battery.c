@@ -4908,6 +4908,32 @@ int disable_shutdown_cond(struct mtk_battery *gm, int shutdown_cond)
 	return 0;
 }
 
+/*
+ * The UI SOC shutdown trusts the UI SOC alone. The gauge restores that
+ * value from the PMIC RTC at boot and moves it only 1% per 1% of charge it
+ * counts, so after the battery charged while the gauge was not running
+ * (e.g. powered off) it can sit at 0-1% with the gauge SOC at 70% and the
+ * battery at 4 V, and the device powers itself off. Ignore it while the
+ * gauge SOC and the battery voltage are both at or above these limits. A
+ * really empty battery still shuts down through this path, the SOC zero
+ * path and the PMIC UVLO.
+ */
+#define UISOC_SHUTDOWN_SOC_LIMIT	5	/* %, gauge SOC */
+#define UISOC_SHUTDOWN_VBAT_LIMIT	3600	/* mV, measured under load */
+
+static bool uisoc_shutdown_is_bogus(struct mtk_battery *gm)
+{
+	int soc = gm->soc;
+	int vbat = gauge_get_int_property(GAUGE_PROP_BATTERY_VOLTAGE);
+
+	if (soc < UISOC_SHUTDOWN_SOC_LIMIT || vbat < UISOC_SHUTDOWN_VBAT_LIMIT)
+		return false;
+
+	pr_notice_ratelimited("%s: ignoring UI SOC %d%% shutdown, gauge soc %d%% vbat %dmV\n",
+		__func__, gm->ui_soc, soc, vbat);
+	return true;
+}
+
 int set_shutdown_cond(struct mtk_battery *gm, int shutdown_cond)
 {
 	int now_current;
@@ -4975,7 +5001,8 @@ int set_shutdown_cond(struct mtk_battery *gm, int shutdown_cond)
 		}
 		break;
 	case UISOC_ONE_PERCENT:
-		if (sdc->shutdown_status.is_uisoc_one_percent != true) {
+		if (sdc->shutdown_status.is_uisoc_one_percent != true &&
+		    !uisoc_shutdown_is_bogus(gm)) {
 			mutex_lock(&sdc->lock);
 			if (now_is_kpoc != 1) {
 				if (now_is_charging != 1) {
@@ -5086,7 +5113,10 @@ static int shutdown_event_handler(struct mtk_battery *gm)
 		now_current = gauge_get_int_property(
 			GAUGE_PROP_BATTERY_CURRENT);
 
-		if (current_ui_soc == 0) {
+		if (uisoc_shutdown_is_bogus(gm)) {
+			/* armed before the gauge recovered, e.g. on charge */
+			sdd->shutdown_status.is_uisoc_one_percent = false;
+		} else if (current_ui_soc == 0) {
 			duraction =
 				timespec_sub(
 				now, sdd->pre_time[UISOC_ONE_PERCENT]);
