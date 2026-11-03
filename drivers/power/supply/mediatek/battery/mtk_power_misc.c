@@ -76,6 +76,31 @@ static void wake_up_overheat(struct shutdown_controller *sdd)
 	wake_up(&sdd->wait_que);
 }
 
+/*
+ * The UI SOC shutdown trusts fuelgauged's UI SOC alone. The daemon restores
+ * that value from the PMIC RTC at boot and only moves it 1% per 1% of charge
+ * it counts. After the phone charged while the daemon was not running (e.g.
+ * powered off) it can sit at 0-1% with the gauge at 70% and the battery at
+ * 4 V, and the phone powers itself off. Ignore it while the gauge SOC and the
+ * battery voltage are both at or above these limits. A really empty battery
+ * still shuts down through this path, the SOC zero path and the PMIC UVLO.
+ */
+#define UISOC_SHUTDOWN_SOC_LIMIT	5	/* %, gauge SOC */
+#define UISOC_SHUTDOWN_VBAT_LIMIT	3600	/* mV, measured under load */
+
+static bool uisoc_shutdown_is_bogus(void)
+{
+	int soc = battery_get_soc();
+	int vbat = battery_get_bat_voltage();
+
+	if (soc < UISOC_SHUTDOWN_SOC_LIMIT || vbat < UISOC_SHUTDOWN_VBAT_LIMIT)
+		return false;
+
+	pr_notice_ratelimited("%s: ignoring UI SOC %d%% shutdown, gauge soc %d%% vbat %dmV\n",
+		__func__, battery_get_uisoc(), soc, vbat);
+	return true;
+}
+
 void set_shutdown_vbat_lt(int vbat_lt, int vbat_lt_lv1)
 {
 	g_vbat_lt = vbat_lt;
@@ -212,7 +237,8 @@ int set_shutdown_cond(int shutdown_cond)
 		}
 		break;
 	case UISOC_ONE_PERCENT:
-		if (sdc.shutdown_status.is_uisoc_one_percent != true) {
+		if (sdc.shutdown_status.is_uisoc_one_percent != true &&
+		    !uisoc_shutdown_is_bogus()) {
 			mutex_lock(&sdc.lock);
 			if (now_is_kpoc != 1) {
 				if (now_is_charging != 1) {
@@ -325,7 +351,10 @@ static int shutdown_event_handler(struct shutdown_controller *sdd)
 	if (sdd->shutdown_status.is_uisoc_one_percent) {
 		now_current = battery_get_bat_current();
 
-		if (current_ui_soc == 0) {
+		if (uisoc_shutdown_is_bogus()) {
+			/* armed before the gauge recovered, e.g. on charge */
+			sdd->shutdown_status.is_uisoc_one_percent = false;
+		} else if (current_ui_soc == 0) {
 			duraction =
 				timespec_sub(
 				now, sdd->pre_time[UISOC_ONE_PERCENT]);
