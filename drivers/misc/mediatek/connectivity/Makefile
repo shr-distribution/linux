@@ -39,6 +39,9 @@ endif
     $(MODULE_NAME)-objs += common/connectivity_build_in_adapter.o
     $(MODULE_NAME)-objs += common/wmt_build_in_adapter.o
 
+    # FM radio. Module only: it calls into the vendor's wmt_drv.ko.
+    obj-$(CONFIG_MTK_FMRADIO) += fmradio/
+
 
     # Do build-in for Makefile checking
     # export CONFIG_WLAN_DRV_BUILD_IN=y

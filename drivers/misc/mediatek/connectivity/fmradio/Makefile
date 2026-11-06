@@ -14,16 +14,9 @@
 ###############################################################################
 # Necessary Check
 
-ifneq ($(KERNEL_OUT),)
-    ccflags-y += -imacros $(KERNEL_OUT)/include/generated/autoconf.h
-endif
-
-ifndef TOP
-    TOP := $(srctree)/..
-endif
-
-# Force build fail on modpost warning
-KBUILD_MODPOST_FAIL_ON_WARNINGS := y
+# Built in-tree. The WMT functions this driver calls are exported by the
+# vendor's wmt_drv.ko, which modpost cannot see, so it warns about them as
+# undefined; that is expected and must not fail the build.
 ###############################################################################
 
 MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
@@ -58,7 +51,7 @@ ifneq ($(CONFIG_MTK_FMRADIO),)
 MODULE_NAME := fmradio_drv
 obj-m += $(MODULE_NAME).o
 
-ifeq ($(CFG_FM_CHIP),)
+ifeq ($(CONFIG_MTK_FM_CHIP),)
     FM_CHIP := mt6631_6635
 
     ccflags-y += -I$(src)/chips/mt6631/inc -I$(src)/chips/mt6635/inc
@@ -142,24 +135,24 @@ $(FM_CHIP)-objs    += core/fm_module.o \
                 core/fm_reg_utils.o
 
 ifeq ($(CFG_BUILD_CONNAC2), true)
-    CONNINFRA_SRC_FOLDER := $(TOP)/vendor/mediatek/kernel_modules/connectivity/conninfra
+    CONNINFRA_SRC_FOLDER := $(srctree)/../vendor/mediatek/kernel_modules/connectivity/conninfra
 
     ccflags-y += -I$(CONNINFRA_SRC_FOLDER)/include
     ccflags-y += -DCFG_FM_CONNAC2=1
     $(FM_CHIP)-objs += chips/mt6635/pub/mt6635_2_fm_lib.o
     $(FM_CHIP)-objs += plat/conn_infra.o
 else
-    WMT_SRC_FOLDER := $(TOP)/vendor/mediatek/kernel_modules/connectivity/common
+    WMT_SRC_FOLDER := $(srctree)/$(src)/wmt
     WMT_INCLUDE_PATH := common_main
 
     ccflags-y += -I$(WMT_SRC_FOLDER)/$(WMT_INCLUDE_PATH)/include \
                  -I$(WMT_SRC_FOLDER)/$(WMT_INCLUDE_PATH)/linux/include
     ccflags-y += -DCFG_FM_CONNAC2=0
     $(FM_CHIP)-objs += plat/legacy_wmt.o
+    $(FM_CHIP)-objs += plat/wmt_symbols.o
 endif
 
     $(MODULE_NAME)-objs += $($(FM_CHIP)-objs)
     #obj-$(CONFIG_MTK_FMRADIO) += private/
 endif
 
-obj-y += dummy.o

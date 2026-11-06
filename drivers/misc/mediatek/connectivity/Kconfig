@@ -379,12 +379,13 @@ config MTK_GPS_EMI
 
 config MTK_FMRADIO
 	tristate "MediaTek FMRadio driver"
-	depends on MTK_COMBO
+	depends on MTK_COMBO && m
 	help
-	  This config is used to choose
-	  if need to compile fmradio folder.
-	  Will compile fmradio folder if set to 'y',
-	  otherwise will not compile fmradio folder.
+	  MediaTek FM radio receiver driver (fmradio_drv), providing /dev/fm.
+
+	  It can only be built as a module: it calls the WMT functions
+	  exported by the vendor's wmt_drv.ko, which is not part of this
+	  kernel.
 
 config MTK_FM_CHIP
 	string "MTK FM CHIP"

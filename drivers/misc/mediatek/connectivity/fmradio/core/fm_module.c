@@ -31,6 +31,7 @@
 #include "fm_config.h"
 #include "fm_main.h"
 #include "fm_ioctl.h"
+#include "wmt_symbols.h"
 
 #define FM_PROC_FILE		"fm"
 
@@ -1612,11 +1613,18 @@ static signed int mt_fm_init(void)
 {
 	signed int ret = 0;
 
+#if !CFG_FM_CONNAC2
+	/* Before anything else: fm_env_setup() already calls into WMT. */
+	ret = fm_wmt_symbols_get();
+	if (ret)
+		return ret;
+#endif
+
 	ret = fm_env_setup();
 
 	if (ret) {
 		fm_env_destroy();
-		return ret;
+		goto err_wmt;
 	}
 	/* register fm device to platform bus */
 	/* ret = platform_device_register(&mt_fm_device);
@@ -1628,14 +1636,15 @@ static signed int mt_fm_init(void)
 	pr_fm_device = platform_device_alloc(FM_NAME, 0);
 	if (!pr_fm_device) {
 		WCN_DBG(FM_ERR | MAIN, "fm platform device alloc fail\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_wmt;
 	}
 
 	ret = platform_device_add(pr_fm_device);
 	if (ret) {
 		WCN_DBG(FM_ERR | MAIN, "fm platform device add failed(%d)\n", ret);
 		platform_device_put(pr_fm_device);
-		return ret;
+		goto err_wmt;
 	}
 
 	/* register fm driver to platform bus */
@@ -1644,12 +1653,18 @@ static signed int mt_fm_init(void)
 	if (ret) {
 		WCN_DBG(FM_ERR | MAIN, "fm platform driver register fail(%d)\n", ret);
 		platform_device_unregister(pr_fm_device);
-		return ret;
+		goto err_wmt;
 	}
 
 	fm_register_irq(&mt_fm_dev_drv);
 
 	WCN_DBG(FM_NTC | MAIN, "6. fm platform driver registered\n");
+	return ret;
+
+err_wmt:
+#if !CFG_FM_CONNAC2
+	fm_wmt_symbols_put();
+#endif
 	return ret;
 }
 
@@ -1666,6 +1681,9 @@ static void mt_fm_exit(void)
 	/* platform_device_unregister(&mt_fm_device); */
 	platform_device_unregister(pr_fm_device);
 	fm_env_destroy();
+#if !CFG_FM_CONNAC2
+	fm_wmt_symbols_put();
+#endif
 }
 
 #ifdef MTK_WCN_REMOVE_KERNEL_MODULE
