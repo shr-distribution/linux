@@ -24,6 +24,7 @@ static int msm_buf_mngr_get_buf(struct msm_buf_mngr_device *buf_mngr_dev,
 	unsigned long flags;
 	struct msm_buf_mngr_info *buf_info =
 		(struct msm_buf_mngr_info *)argp;
+	struct msm_get_bufs *bufs, *save;
 	struct msm_get_bufs *new_entry =
 		kzalloc(sizeof(struct msm_get_bufs), GFP_KERNEL);
 
@@ -41,11 +42,48 @@ static int msm_buf_mngr_get_buf(struct msm_buf_mngr_device *buf_mngr_dev,
 	}
 	new_entry->session_id = buf_info->session_id;
 	new_entry->stream_id = buf_info->stream_id;
+	new_entry->index = new_entry->vb2_buf->v4l2_buf.index;
 	spin_lock_irqsave(&buf_mngr_dev->buf_q_spinlock, flags);
+	/*
+	 * get_buf only hands out a buffer nobody holds, so an entry that is
+	 * still listed for the same session, stream and index is stale: a
+	 * buffer that was never done or put before its stream went away (the
+	 * camera daemon leaks one when a bus message races a metadata stream
+	 * off). Its vb2_buf may be freed, and buf_done would match it before
+	 * the new entry and leave the real buffer undelivered.
+	 */
+	list_for_each_entry_safe(bufs, save, &buf_mngr_dev->buf_qhead, entry) {
+		if (bufs->session_id == new_entry->session_id &&
+			bufs->stream_id == new_entry->stream_id &&
+			bufs->index == new_entry->index) {
+			pr_warn("%s: dropping stale entry %u/%u/%u\n", __func__,
+				bufs->session_id, bufs->stream_id, bufs->index);
+			list_del_init(&bufs->entry);
+			kfree(bufs);
+		}
+	}
 	list_add_tail(&new_entry->entry, &buf_mngr_dev->buf_qhead);
 	spin_unlock_irqrestore(&buf_mngr_dev->buf_q_spinlock, flags);
-	buf_info->index = new_entry->vb2_buf->v4l2_buf.index;
+	buf_info->index = new_entry->index;
 	return 0;
+}
+
+/*
+ * Whether an entry still names a buffer of its stream's current vb2 queue. A
+ * stream that was torn down and created again has new buffers, and the
+ * entry's vb2_buf may be freed: compare pointers, never dereference it.
+ */
+static bool msm_buf_mngr_entry_live(struct msm_buf_mngr_device *buf_mngr_dev,
+	struct msm_get_bufs *bufs)
+{
+	struct vb2_queue *q;
+
+	if (!buf_mngr_dev->vb2_ops.get_vb2_queue)
+		return true;
+	q = buf_mngr_dev->vb2_ops.get_vb2_queue(bufs->session_id,
+		bufs->stream_id);
+	return q && bufs->index < q->num_buffers &&
+		q->bufs[bufs->index] == bufs->vb2_buf;
 }
 
 static int msm_buf_mngr_buf_done(struct msm_buf_mngr_device *buf_mngr_dev,
@@ -59,7 +97,15 @@ static int msm_buf_mngr_buf_done(struct msm_buf_mngr_device *buf_mngr_dev,
 	list_for_each_entry_safe(bufs, save, &buf_mngr_dev->buf_qhead, entry) {
 		if ((bufs->session_id == buf_info->session_id) &&
 			(bufs->stream_id == buf_info->stream_id) &&
-			(bufs->vb2_buf->v4l2_buf.index == buf_info->index)) {
+			(bufs->index == buf_info->index)) {
+			if (!msm_buf_mngr_entry_live(buf_mngr_dev, bufs)) {
+				pr_warn("%s: dropping stale entry %u/%u/%u\n",
+					__func__, bufs->session_id,
+					bufs->stream_id, bufs->index);
+				list_del_init(&bufs->entry);
+				kfree(bufs);
+				continue;
+			}
 			bufs->vb2_buf->v4l2_buf.sequence  = buf_info->frame_id;
 			bufs->vb2_buf->v4l2_buf.timestamp = buf_info->timestamp;
 			ret = buf_mngr_dev->vb2_ops.buf_done
@@ -87,7 +133,15 @@ static int msm_buf_mngr_put_buf(struct msm_buf_mngr_device *buf_mngr_dev,
 	list_for_each_entry_safe(bufs, save, &buf_mngr_dev->buf_qhead, entry) {
 		if ((bufs->session_id == buf_info->session_id) &&
 			(bufs->stream_id == buf_info->stream_id) &&
-			(bufs->vb2_buf->v4l2_buf.index == buf_info->index)) {
+			(bufs->index == buf_info->index)) {
+			if (!msm_buf_mngr_entry_live(buf_mngr_dev, bufs)) {
+				pr_warn("%s: dropping stale entry %u/%u/%u\n",
+					__func__, bufs->session_id,
+					bufs->stream_id, bufs->index);
+				list_del_init(&bufs->entry);
+				kfree(bufs);
+				continue;
+			}
 			ret = buf_mngr_dev->vb2_ops.put_buf(bufs->vb2_buf,
 				buf_info->session_id, buf_info->stream_id);
 			list_del_init(&bufs->entry);
@@ -97,6 +151,29 @@ static int msm_buf_mngr_put_buf(struct msm_buf_mngr_device *buf_mngr_dev,
 	}
 	spin_unlock_irqrestore(&buf_mngr_dev->buf_q_spinlock, flags);
 	return ret;
+}
+
+/*
+ * msm_close(): the camera daemon closed the msm config node, which it holds
+ * open for its whole life, so every session is being destroyed and no buffer
+ * handed out by get_buf will be done or put any more. Free all entries rather
+ * than carry them, with their vb2_buf pointers, into the next daemon's
+ * sessions, which reuse the same session and stream ids. The close ioctl's
+ * argument is not filled in by msm_close() and is not read.
+ */
+static void msm_buf_mngr_sd_shutdown(struct msm_buf_mngr_device *buf_mngr_dev)
+{
+	unsigned long flags;
+	struct msm_get_bufs *bufs, *save;
+
+	spin_lock_irqsave(&buf_mngr_dev->buf_q_spinlock, flags);
+	list_for_each_entry_safe(bufs, save, &buf_mngr_dev->buf_qhead, entry) {
+		pr_debug("%s: freeing %u/%u/%u\n", __func__, bufs->session_id,
+			bufs->stream_id, bufs->index);
+		list_del_init(&bufs->entry);
+		kfree(bufs);
+	}
+	spin_unlock_irqrestore(&buf_mngr_dev->buf_q_spinlock, flags);
 }
 
 static long msm_buf_mngr_subdev_ioctl(struct v4l2_subdev *sd,
@@ -121,6 +198,9 @@ static long msm_buf_mngr_subdev_ioctl(struct v4l2_subdev *sd,
 		break;
 	case VIDIOC_MSM_BUF_MNGR_PUT_BUF:
 		rc = msm_buf_mngr_put_buf(buf_mngr_dev, argp);
+		break;
+	case MSM_SD_SHUTDOWN:
+		msm_buf_mngr_sd_shutdown(buf_mngr_dev);
 		break;
 	default:
 		return -ENOIOCTLCMD;

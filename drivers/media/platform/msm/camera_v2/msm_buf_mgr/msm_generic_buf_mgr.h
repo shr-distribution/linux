@@ -29,6 +29,8 @@ struct msm_get_bufs {
 	struct vb2_buffer *vb2_buf;
 	uint32_t session_id;
 	uint32_t stream_id;
+	/* vb2_buf->v4l2_buf.index when the entry was made; see get_buf */
+	uint32_t index;
 };
 
 struct msm_buf_mngr_device {
