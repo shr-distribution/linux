@@ -15,6 +15,7 @@
 #include <linux/slab.h>
 #include "cpufreq_governor.h"
 #include <linux/display_state.h>
+#include <linux/err.h>
 
 /* Relaxed version macros */
 #define RELAXED_VERSION_MAJOR			(1)
