@@ -58,7 +58,12 @@ static struct workqueue_struct *aw9523_key_wq;
 
 // External function declarations
 extern void agold_gpio_set(unsigned gpio, int value);
+#if IS_ENABLED(CONFIG_INPUT_TITANPOCKET_TOUCHPAD)
+/* drivers/input/misc/titanpocket-touchpad.c */
 extern int agold_touchpad_resume_suspend(int suspend);
+#else
+static inline int agold_touchpad_resume_suspend(int suspend) { return 0; }
+#endif
 
 // Constants
 #define AW9523_REG_CHIPID       0x10
@@ -649,8 +654,15 @@ static void aw9523_key_work(struct work_struct *work)
                                 pdata->keymap[key_idx].name, 1, row, col,
                                 pdata->keymap[key_idx].key_code, key_val);
 
+                        /*
+                         * The touch surface is the keyboard: a key going
+                         * down pushes into the sensor. Stock sleeps the
+                         * sensor until all keys are up again; left
+                         * scanning, its baseline drifts and it reports a
+                         * contact that never lifts.
+                         */
                         if (key_val == 1 && touchpad_flag == 1) {
-                            //agold_touchpad_resume_suspend(1);
+                            agold_touchpad_resume_suspend(1);
                         }
                     }
                 }
@@ -680,7 +692,7 @@ static void aw9523_key_work(struct work_struct *work)
         aw9523_write_reg(client, AW9523_REG_P0_INT, 0);
 
         if (touchpad_flag == 1) {
-            // agold_touchpad_resume_suspend(0);
+            agold_touchpad_resume_suspend(0);
         }
 
         enable_irq(pdata->irq);
