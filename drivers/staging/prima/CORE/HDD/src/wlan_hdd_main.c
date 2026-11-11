@@ -3037,6 +3037,71 @@ VOS_STATUS hdd_read_cfg_file(v_VOID_t *pCtx, char *pFileName,
 
   --------------------------------------------------------------------------*/
 
+static eHalStatus hdd_smeCloseSessionCallback(void *pContext);
+
+/*
+ * The firmware addresses a station by the MAC address its SME session was
+ * opened with (sme_OpenSession() adds the self STA with it). Changing only
+ * dev_addr left the firmware on the old address while user space, and the
+ * EAPOL keys wpa_supplicant derives, used the new one, so every WPA
+ * handshake failed. Reopen the session with the new address, as the
+ * deep-sleep resume path does.
+ */
+static int hdd_reopen_sta_session(hdd_adapter_t *pAdapter,
+                                  const v_U8_t *new_mac)
+{
+   hdd_context_t *pHddCtx = WLAN_HDD_GET_CTX(pAdapter);
+   v_MACADDR_t old_mac = pAdapter->macAddressCurrent;
+   eHalStatus halStatus;
+   long rc;
+
+   INIT_COMPLETION(pAdapter->session_close_comp_var);
+   halStatus = sme_CloseSession(pHddCtx->hHal, pAdapter->sessionId,
+                                hdd_smeCloseSessionCallback, pAdapter);
+   if (!HAL_STATUS_SUCCESS(halStatus))
+   {
+      hddLog(VOS_TRACE_LEVEL_ERROR, "%s: sme_CloseSession failed: %d",
+             __func__, halStatus);
+      return -EIO;
+   }
+   rc = wait_for_completion_timeout(&pAdapter->session_close_comp_var,
+                     msecs_to_jiffies(WLAN_WAIT_TIME_SESSIONOPENCLOSE));
+   if (!rc || test_bit(SME_SESSION_OPENED, &pAdapter->event_flags))
+   {
+      hddLog(VOS_TRACE_LEVEL_ERROR, "%s: session did not close", __func__);
+      return -EIO;
+   }
+
+   memcpy(&pAdapter->macAddressCurrent, new_mac, ETH_ALEN);
+
+   INIT_COMPLETION(pAdapter->session_open_comp_var);
+   sme_SetCurrDeviceMode(pHddCtx->hHal, pAdapter->device_mode);
+   halStatus = sme_OpenSession(pHddCtx->hHal, hdd_smeRoamCallback, pAdapter,
+                               (tANI_U8 *)&pAdapter->macAddressCurrent,
+                               &pAdapter->sessionId);
+   if (HAL_STATUS_SUCCESS(halStatus))
+   {
+      rc = wait_for_completion_timeout(&pAdapter->session_open_comp_var,
+                     msecs_to_jiffies(WLAN_WAIT_TIME_SESSIONOPENCLOSE));
+      if (rc && test_bit(SME_SESSION_OPENED, &pAdapter->event_flags))
+         return 0;
+   }
+
+   /* Bring the station back on the address it had. */
+   hddLog(VOS_TRACE_LEVEL_ERROR,
+          "%s: no session with the new address, restoring the old one",
+          __func__);
+   pAdapter->macAddressCurrent = old_mac;
+   INIT_COMPLETION(pAdapter->session_open_comp_var);
+   halStatus = sme_OpenSession(pHddCtx->hHal, hdd_smeRoamCallback, pAdapter,
+                               (tANI_U8 *)&pAdapter->macAddressCurrent,
+                               &pAdapter->sessionId);
+   if (HAL_STATUS_SUCCESS(halStatus))
+      wait_for_completion_timeout(&pAdapter->session_open_comp_var,
+                     msecs_to_jiffies(WLAN_WAIT_TIME_SESSIONOPENCLOSE));
+   return -EIO;
+}
+
 static int hdd_set_mac_address(struct net_device *dev, void *addr)
 {
    hdd_adapter_t *pAdapter = WLAN_HDD_GET_PRIV_PTR(dev);
@@ -3045,7 +3110,31 @@ static int hdd_set_mac_address(struct net_device *dev, void *addr)
 
    ENTER();
 
-   memcpy(&pAdapter->macAddressCurrent, psta_mac_addr->sa_data, ETH_ALEN);
+   if (!is_valid_ether_addr((const u8 *)psta_mac_addr->sa_data))
+      return -EADDRNOTAVAIL;
+
+   if (WLAN_HDD_INFRA_STATION == pAdapter->device_mode &&
+       memcmp(&pAdapter->macAddressCurrent, psta_mac_addr->sa_data, ETH_ALEN) &&
+       test_bit(SME_SESSION_OPENED, &pAdapter->event_flags))
+   {
+      hdd_station_ctx_t *pHddStaCtx = WLAN_HDD_GET_STATION_CTX_PTR(pAdapter);
+      int ret;
+
+      /* The session cannot be reopened under a running or associated
+       * interface; wpa_supplicant and connmand take wlan0 down first. */
+      if (netif_running(dev) ||
+          eConnectionState_NotConnected != pHddStaCtx->conn_info.connState)
+         return -EBUSY;
+
+      ret = hdd_reopen_sta_session(pAdapter,
+                                   (const v_U8_t *)psta_mac_addr->sa_data);
+      if (ret)
+         return ret;
+   }
+   else
+   {
+      memcpy(&pAdapter->macAddressCurrent, psta_mac_addr->sa_data, ETH_ALEN);
+   }
 
 #ifdef HDD_SESSIONIZE 
    // set the MAC address though the STA ID CFG.
