@@ -1591,12 +1591,12 @@ static void ffs_func_free(struct ffs_function *func)
 
 	/* cleanup after autoconfig */
 	spin_lock_irqsave(&func->ffs->eps_lock, flags);
-	do {
+	while (ep && count--) {
 		if (ep->ep && ep->req)
 			usb_ep_free_request(ep->ep, ep->req);
 		ep->req = NULL;
 		++ep;
-	} while (--count);
+	}
 	spin_unlock_irqrestore(&func->ffs->eps_lock, flags);
 
 	ffs_data_put(func->ffs);
