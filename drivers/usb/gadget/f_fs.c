@@ -144,8 +144,6 @@ struct ffs_data {
 	struct usb_request		*ep0req;		/* P: mutex */
 	struct completion		ep0req_completion;	/* P: mutex */
 	int				ep0req_status;		/* P: mutex */
-	struct completion		epin_completion;
-	struct completion		epout_completion;
 
 	/* reference counter */
 	atomic_t			ref;
@@ -884,7 +882,9 @@ static void ffs_user_copy_worker(struct work_struct *work)
 	int ret = io_data->status;
 	unsigned long flags;
 
-	if (io_data->read && ret > 0) {
+	if (io_data->read && ret > 0 && (size_t)ret > io_data->len) {
+		ret = -EOVERFLOW;
+	} else if (io_data->read && ret > 0) {
 		mm_segment_t oldfs = get_fs();
 
 		set_fs(USER_DS);
@@ -933,14 +933,18 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 {
 	struct ffs_epfile *epfile = file->private_data;
 	struct ffs_ep *ep;
-	struct ffs_data *ffs = epfile->ffs;
 	char *data = NULL;
 	ssize_t ret;
 	int halt;
-	int buffer_len = !read ? len : round_up(len, 1024);
+	/*
+	 * OUT requests go out in whole 1024-byte blocks (the SuperSpeed bulk
+	 * packet size), as this tree's vendor code did; a read that gets
+	 * more than was asked for fails with -EOVERFLOW.
+	 */
+	size_t data_len = io_data->read ? round_up(io_data->len, 1024) :
+					  io_data->len;
 
-	pr_debug("%s: len %d, buffer_len %d, read %d\n", __func__, len, buffer_len, read);
-
+	/* The file was released: fail until it is opened again. */
 	if (atomic_read(&epfile->error))
 		return -ENODEV;
 
@@ -955,6 +959,12 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 	if (!ep) {
 		if (file->f_flags & O_NONBLOCK) {
 			ret = -EAGAIN;
+			goto error;
+		}
+
+		/* Don't wait on write if device is offline */
+		if (!io_data->read) {
+			ret = -ENODEV;
 			goto error;
 		}
 
@@ -974,7 +984,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 	/* Allocate & copy */
 	if (!halt) {
-		data = kmalloc(io_data->len, GFP_KERNEL);
+		data = kmalloc(data_len, GFP_KERNEL);
 		if (unlikely(!data))
 			return -ENOMEM;
 		if (!io_data->read &&
@@ -1015,7 +1025,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			}
 
 			req->buf      = data;
-			req->length   = io_data->len;
+			req->length   = data_len;
 
 			io_data->buf = data;
 			io_data->ep = ep->ep;
@@ -1037,7 +1047,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 		} else {
 			req = ep->req;
 			req->buf      = data;
-			req->length   = io_data->len;
+			req->length   = data_len;
 
 			init_completion(&io_data->done);
 			req->context  = io_data;
@@ -1074,7 +1084,10 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 				}
 
 				ret = interrupted ? -EINTR : io_data->status;
-				if (io_data->read && ret > 0)
+				if (io_data->read && ret > 0 &&
+				    (size_t)ret > io_data->len)
+					ret = -EOVERFLOW;
+				else if (io_data->read && ret > 0)
 					ret = ffs_copy_to_iovec(io_data->iovec,
 								io_data->nr_segs,
 								data, ret);
@@ -1689,8 +1702,6 @@ static struct ffs_data *ffs_data_new(void)
 	spin_lock_init(&ffs->eps_lock);
 	init_waitqueue_head(&ffs->ev.waitq);
 	init_completion(&ffs->ep0req_completion);
-	init_completion(&ffs->epout_completion);
-	init_completion(&ffs->epin_completion);
 
 	/* XXX REVISIT need to update it in some places, or do we? */
 	ffs->ev.can_stall = 1;
@@ -1927,6 +1938,7 @@ static void ffs_func_eps_disable(struct ffs_function *func)
 
 	spin_lock_irqsave(&func->ffs->eps_lock, flags);
 	while (count--) {
+		atomic_set(&epfile->error, 1);
 		/* pending requests get nuked */
 		if (likely(ep->ep)) {
 			usb_ep_disable(ep->ep);
