@@ -28,6 +28,9 @@
 #include <linux/usb/functionfs.h>
 
 #include <linux/poll.h>
+#include <linux/aio.h>
+#include <linux/mmu_context.h>
+#include <linux/uio.h>
 
 
 #define FUNCTIONFS_MAGIC	0xa647361 /* Chosen by a honest dice roll ;) */
@@ -1019,12 +1022,376 @@ static long ffs_epfile_ioctl(struct file *file, unsigned code,
 	return ret;
 }
 
+/* Asynchronous I/O (io_submit()) *******************************************/
+
+/*
+ * One request submitted with io_submit(), from ffs_epfile_aio_io() until
+ * ffs_user_copy_worker() has completed its kiocb.
+ */
+struct ffs_io_data {
+	bool read;
+
+	struct kiocb *kiocb;
+	struct iovec *iovec;		/* reads: copy of the caller's */
+	unsigned long nr_segs;
+	size_t len;			/* bytes the caller asked for */
+
+	char *buf;
+	struct mm_struct *mm;
+	struct work_struct work;
+
+	struct ffs_data *ffs;
+	struct usb_ep *ep;
+	struct usb_request *req;	/* P: ffs->eps_lock */
+
+	ssize_t status;
+};
+
+/* Copies len bytes of a write from the caller's iovec into data. */
+static int ffs_copy_from_iovec(char *data, const struct iovec *iov,
+			       unsigned long nr_segs, size_t len)
+{
+	for (; len && nr_segs; ++iov, --nr_segs) {
+		size_t n = min(len, iov->iov_len);
+
+		if (unlikely(copy_from_user(data, iov->iov_base, n)))
+			return -EFAULT;
+		data += n;
+		len -= n;
+	}
+	return 0;
+}
+
+/*
+ * Copies the len bytes a read received into the caller's iovec. Only
+ * what the host sent is copied; the rest of the buffer was never written.
+ */
+static ssize_t ffs_copy_to_iovec(const struct iovec *iov,
+				 unsigned long nr_segs, const char *data,
+				 size_t len)
+{
+	ssize_t copied = 0;
+
+	for (; len && nr_segs; ++iov, --nr_segs) {
+		size_t n = min(len, iov->iov_len);
+
+		if (unlikely(copy_to_user(iov->iov_base, data, n)))
+			return -EFAULT;
+		data += n;
+		len -= n;
+		copied += n;
+	}
+	return copied;
+}
+
+static void ffs_user_copy_worker(struct work_struct *work)
+{
+	struct ffs_io_data *io_data = container_of(work, struct ffs_io_data,
+						   work);
+	struct kiocb *kiocb = io_data->kiocb;
+	ssize_t ret = io_data->status;
+	unsigned long flags;
+
+	if (io_data->read && ret > 0) {
+		mm_segment_t oldfs = get_fs();
+
+		set_fs(USER_DS);
+		use_mm(io_data->mm);
+		ret = ffs_copy_to_iovec(io_data->iovec, io_data->nr_segs,
+					io_data->buf, ret);
+		unuse_mm(io_data->mm);
+		set_fs(oldfs);
+	}
+
+	/*
+	 * kiocb_cancel() drops ctx_lock before it calls ffs_aio_cancel(), so
+	 * the hook can be running while this completes. Take the request
+	 * away from the kiocb under the lock ffs_aio_cancel() reads it
+	 * under, before aio_complete(): until then the kiocb holds the file,
+	 * and through it ffs and eps_lock.
+	 */
+	spin_lock_irqsave(&io_data->ffs->eps_lock, flags);
+	usb_ep_free_request(io_data->ep, io_data->req);
+	io_data->req = NULL;
+	kiocb->private = NULL;
+	spin_unlock_irqrestore(&io_data->ffs->eps_lock, flags);
+
+	aio_complete(kiocb, ret, ret);
+
+	mmdrop(io_data->mm);
+	kfree(io_data->iovec);
+	kfree(io_data->buf);
+	kfree(io_data);
+}
+
+static void ffs_epfile_async_io_complete(struct usb_ep *_ep,
+					 struct usb_request *req)
+{
+	struct ffs_io_data *io_data = req->context;
+
+	ENTER();
+
+	io_data->status = req->status ? req->status : req->actual;
+
+	/* Copying to the caller needs its mm: not here, in a worker. */
+	INIT_WORK(&io_data->work, ffs_user_copy_worker);
+	schedule_work(&io_data->work);
+}
+
+static int ffs_aio_cancel(struct kiocb *kiocb, struct io_event *e)
+{
+	struct ffs_epfile *epfile = kiocb->ki_filp->private_data;
+	struct ffs_io_data *io_data;
+	unsigned long flags;
+	int value;
+
+	ENTER();
+
+	spin_lock_irqsave(&epfile->ffs->eps_lock, flags);
+
+	/* See ffs_user_copy_worker(): only valid under eps_lock. */
+	io_data = kiocb->private;
+	if (likely(io_data && io_data->ep && io_data->req))
+		value = usb_ep_dequeue(io_data->ep, io_data->req);
+	else
+		value = -EINVAL;
+
+	spin_unlock_irqrestore(&epfile->ffs->eps_lock, flags);
+
+	/* Drop the reference kiocb_cancel() took for us. */
+	aio_put_req(kiocb);
+
+	return value;
+}
+
+static ssize_t ffs_epfile_aio_io(struct kiocb *kiocb,
+				 const struct iovec *iovec,
+				 unsigned long nr_segs, bool read)
+{
+	struct file *file = kiocb->ki_filp;
+	struct ffs_epfile *epfile = file->private_data;
+	struct ffs_data *ffs = epfile->ffs;
+	struct ffs_io_data *io_data;
+	struct usb_request *req;
+	struct ffs_ep *ep;
+	size_t len = iov_length(iovec, nr_segs);
+	size_t buffer_len;
+	char *data = NULL;
+	ssize_t ret;
+	int halt;
+
+	/* Are we still active? */
+	if (WARN_ON(ffs->state != FFS_ACTIVE))
+		return -ENODEV;
+
+	/* Wait for endpoint to be enabled */
+	ep = epfile->ep;
+	if (!ep) {
+		if (file->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+
+		if (wait_event_interruptible(epfile->wait, (ep = epfile->ep)))
+			return -EINTR;
+	}
+
+	io_data = kzalloc(sizeof(*io_data), GFP_KERNEL);
+	if (unlikely(!io_data))
+		return -ENOMEM;
+
+	/*
+	 * The worker copies a read into this mm. On 3.10 nothing else keeps
+	 * it: the kioctx no longer holds it (commit 41003a7bcfed, "aio:
+	 * remove retry-based AIO"), and exit_aio() only starts cancelling,
+	 * so a request can complete after its process has exited and its mm
+	 * has gone. Keep the mm_struct; its mappings may still go, and the
+	 * copy then fails with -EFAULT.
+	 */
+	io_data->mm = current->mm;
+	atomic_inc(&io_data->mm->mm_count);
+
+	if (read) {
+		io_data->iovec = kmalloc_array(nr_segs, sizeof(*iovec),
+					       GFP_KERNEL);
+		if (unlikely(!io_data->iovec)) {
+			ret = -ENOMEM;
+			goto error;
+		}
+		memcpy(io_data->iovec, iovec, nr_segs * sizeof(*iovec));
+	}
+
+	spin_lock_irq(&ffs->eps_lock);
+	if (epfile->ep != ep) {
+		/* In the meantime, endpoint got disabled or changed. */
+		spin_unlock_irq(&ffs->eps_lock);
+		ret = -ESHUTDOWN;
+		goto error;
+	}
+	halt = !read == !epfile->in;
+	/*
+	 * ffs_epfile_io() bounces through its static buffers, 8192 bytes at
+	 * a time. That limit is the size of those buffers; the controller
+	 * maps req->buf with dma_map_single(), so a kmalloc()ed buffer of the
+	 * whole length goes in one request. adbd 35 submits writes of up to
+	 * 16384 bytes and only checks a completed one for an error, not for
+	 * its length, so a write must not be cut short here.
+	 */
+	buffer_len = len;
+	spin_unlock_irq(&ffs->eps_lock);
+
+	if (halt && epfile->isoc) {
+		ret = -EINVAL;
+		goto error;
+	}
+
+	if (!halt) {
+		data = kmalloc(buffer_len, GFP_KERNEL);
+		if (unlikely(!data)) {
+			ret = -ENOMEM;
+			goto error;
+		}
+		if (!read && unlikely(ffs_copy_from_iovec(data, iovec, nr_segs,
+							  len))) {
+			ret = -EFAULT;
+			goto error;
+		}
+	}
+
+	/*
+	 * The 3.10 aio core finds a kiocb to cancel only on ctx->active_reqs,
+	 * where kiocb_set_cancel_fn() puts it. It takes ctx_lock, so not
+	 * under eps_lock. Until kiocb->private is set below, a cancel finds
+	 * nothing to dequeue.
+	 */
+	kiocb_set_cancel_fn(kiocb, ffs_aio_cancel);
+
+	ret = ffs_mutex_lock(&epfile->mutex, file->f_flags & O_NONBLOCK);
+	if (unlikely(ret))
+		goto error;
+
+	spin_lock_irq(&ffs->eps_lock);
+
+	if (epfile->ep != ep) {
+		ret = -ESHUTDOWN;
+		goto error_lock;
+	}
+
+	if (halt) {
+		if (!WARN_ON(!ep->ep))
+			usb_ep_set_halt(ep->ep);
+		ret = -EBADMSG;
+		goto error_lock;
+	}
+
+	req = usb_ep_alloc_request(ep->ep, GFP_ATOMIC);
+	if (unlikely(!req)) {
+		ret = -ENOMEM;
+		goto error_lock;
+	}
+
+	io_data->read = read;
+	io_data->kiocb = kiocb;
+	io_data->nr_segs = nr_segs;
+	io_data->len = len;
+	io_data->buf = data;
+	io_data->ffs = ffs;
+	io_data->ep = ep->ep;
+	io_data->req = req;
+
+	req->buf      = data;
+	req->length   = buffer_len;
+	req->context  = io_data;
+	req->complete = ffs_epfile_async_io_complete;
+
+	kiocb->private = io_data;
+
+	ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
+	if (unlikely(ret)) {
+		kiocb->private = NULL;
+		io_data->req = NULL;
+		usb_ep_free_request(ep->ep, req);
+		goto error_lock;
+	}
+
+	/* io_data and data belong to the completion now. */
+	spin_unlock_irq(&ffs->eps_lock);
+	mutex_unlock(&epfile->mutex);
+	return -EIOCBQUEUED;
+
+error_lock:
+	spin_unlock_irq(&ffs->eps_lock);
+	mutex_unlock(&epfile->mutex);
+error:
+	mmdrop(io_data->mm);
+	kfree(data);
+	kfree(io_data->iovec);
+	kfree(io_data);
+	return ret;
+}
+
+/*
+ * With ->aio_read/->aio_write in place, readv() and writev() reach them
+ * with a synchronous kiocb (do_sync_readv_writev()), which would then wait
+ * in wait_on_sync_kiocb(), uninterruptibly. Before, they went through
+ * do_loop_readv_writev(): one ->read/->write per segment. Keep doing that.
+ */
+static ssize_t ffs_epfile_sync_iov(struct kiocb *kiocb,
+				   const struct iovec *iov,
+				   unsigned long nr_segs, bool read)
+{
+	struct file *file = kiocb->ki_filp;
+	ssize_t total = 0;
+
+	for (; nr_segs; ++iov, --nr_segs) {
+		ssize_t n;
+
+		if (read)
+			n = ffs_epfile_read(file, iov->iov_base, iov->iov_len,
+					    &kiocb->ki_pos);
+		else
+			n = ffs_epfile_write(file, iov->iov_base, iov->iov_len,
+					     &kiocb->ki_pos);
+		if (n < 0) {
+			if (!total)
+				total = n;
+			break;
+		}
+		total += n;
+		if ((size_t)n != iov->iov_len)
+			break;
+	}
+	return total;
+}
+
+static ssize_t ffs_epfile_aio_read(struct kiocb *kiocb,
+				   const struct iovec *iovec,
+				   unsigned long nr_segs, loff_t pos)
+{
+	ENTER();
+
+	if (is_sync_kiocb(kiocb))
+		return ffs_epfile_sync_iov(kiocb, iovec, nr_segs, true);
+	return ffs_epfile_aio_io(kiocb, iovec, nr_segs, true);
+}
+
+static ssize_t ffs_epfile_aio_write(struct kiocb *kiocb,
+				    const struct iovec *iovec,
+				    unsigned long nr_segs, loff_t pos)
+{
+	ENTER();
+
+	if (is_sync_kiocb(kiocb))
+		return ffs_epfile_sync_iov(kiocb, iovec, nr_segs, false);
+	return ffs_epfile_aio_io(kiocb, iovec, nr_segs, false);
+}
+
 static const struct file_operations ffs_epfile_operations = {
 	.llseek =	no_llseek,
 
 	.open =		ffs_epfile_open,
 	.write =	ffs_epfile_write,
 	.read =		ffs_epfile_read,
+	.aio_read =	ffs_epfile_aio_read,
+	.aio_write =	ffs_epfile_aio_write,
 	.release =	ffs_epfile_release,
 	.unlocked_ioctl =	ffs_epfile_ioctl,
 };
