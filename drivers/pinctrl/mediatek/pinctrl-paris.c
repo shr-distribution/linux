@@ -808,7 +808,8 @@ static void mtk_gpio_set(struct gpio_chip *chip, unsigned int gpio, int value)
 
 void agold_gpio_set(unsigned gpio, int value)
 {
-	printk("enter agold_gpio_set(%d, %d)\n", gpio, value);
+	/* Debug only: the keyboard backlight calls this 30 times in 150us. */
+	pr_debug("enter agold_gpio_set(%d, %d)\n", gpio, value);
 
 	if (!pctl) {
 		pr_err("pctl does not exist\n");

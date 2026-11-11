@@ -752,6 +752,50 @@ int mt_brightness_set_pmic(enum mt65xx_led_pmic pmic_type, u32 level, u32 div)
 	return -1;
 }
 
+/*
+ * The keyboard backlight. The Titan Pocket's device tree puts
+ * "button-backlight" in GPIO mode with data = 1, and the GPIO case called
+ * data as a function pointer: the first write to the LED jumped to address 1
+ * and panicked the kernel. The stock kernel's GPIO case drives GPIO 159
+ * instead, from a work item (read from its mt_mt65xx_led_set_cust): on is 15
+ * low-high pulses of 5us each and a 3ms settle, off is the line held low for
+ * 5ms - a pulse-counting LED driver, given the same count every time, so the
+ * light has one brightness and a level change while it is on sends nothing.
+ *
+ * This runs from mt_mt65xx_led_work() under leds_mutex, so it may sleep.
+ */
+extern void agold_gpio_set(unsigned int gpio, int value);
+
+#define KBD_BACKLIGHT_GPIO	159
+#define KBD_BACKLIGHT_PULSES	15
+
+static bool kbd_backlight_on;
+
+static int mt_led_set_kbd_backlight(int level)
+{
+	int i;
+
+	if (!level) {
+		agold_gpio_set(KBD_BACKLIGHT_GPIO, 0);
+		usleep_range(5000, 5500);
+		kbd_backlight_on = false;
+		return 0;
+	}
+
+	if (kbd_backlight_on)
+		return 0;
+
+	for (i = 0; i < KBD_BACKLIGHT_PULSES; i++) {
+		agold_gpio_set(KBD_BACKLIGHT_GPIO, 0);
+		udelay(5);
+		agold_gpio_set(KBD_BACKLIGHT_GPIO, 1);
+		udelay(5);
+	}
+	usleep_range(3000, 3500);
+	kbd_backlight_on = true;
+	return 0;
+}
+
 int mt_mt65xx_led_set_cust(struct cust_mt65xx_led *cust, int level)
 {
 #ifdef CONFIG_MTK_PWM
@@ -799,7 +843,7 @@ int mt_mt65xx_led_set_cust(struct cust_mt65xx_led *cust, int level)
 
 	case MT65XX_LED_MODE_GPIO:
 		LEDS_DEBUG("%s led GPIO mode!!\n", __func__);
-		return ((cust_set_brightness) (cust->data)) (level);
+		return mt_led_set_kbd_backlight(level);
 
 	case MT65XX_LED_MODE_PMIC:
 		/* for button baclight used SINK channel, when set button ISINK,
