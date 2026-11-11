@@ -1007,6 +1007,33 @@ static struct led_trigger mt6370_pmu_led_trigger2[] = {
 	},
 };
 /* 6372 end */
+/*
+ * LED4 is the charge indicator. Taking it into cc, pwm or breath mode - a
+ * trigger, or a hardware blink through mt6370_pmu_led_blink_set() - turns
+ * the charger's auto mode off (mt6370_pmu_led_change_mode()), and nothing
+ * turned it back on: once a notification had used it, the phone showed no
+ * charging light until the next probe. Switching it off, or leaving one of
+ * the modes, hands it back.
+ */
+static void mt6370_pmu_led_chrind_auto(struct led_classdev *led_cdev)
+{
+	/*
+	 * The mode bits go back to what probe set as well: the charger lights
+	 * the indicator in whatever mode they hold, so after a hardware blink
+	 * (pwm mode) the charging light would blink with the notification's
+	 * timing.
+	 */
+	const u8 dim = rgbled_init_data[MT6370_PMU_REG_RGBCHRINDDIM -
+					MT6370_PMU_REG_RGB1DIM];
+
+	if (mt6370_pmu_led_get_index(led_cdev) != MT6370_PMU_LED4)
+		return;
+	if (mt6370_pmu_led_update_bits(led_cdev, MT6370_PMU_REG_RGBCHRINDDIM,
+				       0x80 | MT6370_LED_MODEMASK,
+				       dim & MT6370_LED_MODEMASK) < 0)
+		dev_err(led_cdev->dev, "%s: enable auto mode fail\n", __func__);
+}
+
 static void mt6370_pmu_led_bright_set(struct led_classdev *led_cdev,
 	enum led_brightness bright)
 {
@@ -1038,11 +1065,19 @@ static void mt6370_pmu_led_bright_set(struct led_classdev *led_cdev,
 		dev_err(led_cdev->dev, "invalid mt led index\n");
 		return;
 	}
-	ret = mt6370_pmu_led_update_bits(led_cdev, reg_addr, reg_mask,
-					 (bright & reg_mask) << reg_shift);
-	if (ret < 0) {
-		dev_err(led_cdev->dev, "update brightness fail\n");
-		return;
+	/*
+	 * Off is the enable bit alone. The current level is left as it is:
+	 * on LED4 it is also the level the charger lights the charge
+	 * indicator at in auto mode, and writing 0 there dimmed the charging
+	 * light for good (until the next probe rewrote it).
+	 */
+	if (bright) {
+		ret = mt6370_pmu_led_update_bits(led_cdev, reg_addr, reg_mask,
+						 (bright & reg_mask) << reg_shift);
+		if (ret < 0) {
+			dev_err(led_cdev->dev, "update brightness fail\n");
+			return;
+		}
 	}
 	if (!bright)
 		need_enable_timer = false;
@@ -1055,6 +1090,8 @@ static void mt6370_pmu_led_bright_set(struct led_classdev *led_cdev,
 					 (bright > 0) ? en_mask : ~en_mask);
 	if (ret < 0)
 		dev_err(led_cdev->dev, "update enable bit fail\n");
+	if (!bright)
+		mt6370_pmu_led_chrind_auto(led_cdev);
 }
 
 static enum led_brightness mt6370_pmu_led_bright_get(
@@ -1403,6 +1440,7 @@ static void mt6370_pmu_led_cc_deactivate(struct led_classdev *led_cdev)
 
 	for (i = 0; i < ARRAY_SIZE(mt_led_cc_mode_attrs); i++)
 		device_remove_file(led_cdev->dev, mt_led_cc_mode_attrs + i);
+	mt6370_pmu_led_chrind_auto(led_cdev);
 }
 
 static ssize_t mt_led_pwm_duty_attr_show(struct device *dev,
@@ -1611,6 +1649,7 @@ static void mt6370_pmu_led_pwm_deactivate(struct led_classdev *led_cdev)
 
 	for (i = 0; i < ARRAY_SIZE(mt_led_pwm_mode_attrs); i++)
 		device_remove_file(led_cdev->dev, mt_led_pwm_mode_attrs + i);
+	mt6370_pmu_led_chrind_auto(led_cdev);
 }
 
 static int mt6370_pmu_led_get_breath_regbase(struct led_classdev *led_cdev)
@@ -1943,6 +1982,7 @@ static void mt6370_pmu_led_breath_deactivate(struct led_classdev *led_cdev)
 
 	for (i = 0; i < ARRAY_SIZE(mt_led_breath_mode_attrs); i++)
 		device_remove_file(led_cdev->dev, mt_led_breath_mode_attrs + i);
+	mt6370_pmu_led_chrind_auto(led_cdev);
 }
 
 static struct led_trigger mt6370_pmu_led_trigger[] = {
