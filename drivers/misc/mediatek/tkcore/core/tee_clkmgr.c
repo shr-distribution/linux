@@ -26,6 +26,12 @@
 
 #include "tee_clkmgr_priv.h"
 
+#ifdef CONFIG_TRUSTKERNEL_TEE_FP_SUPPORT
+#include <linux/clk.h>
+#include <linux/err.h>
+#include <linux/spi/spi.h>
+#endif
+
 struct clkmgr_handle {
 	uint32_t token;
 	void *e, *d;
@@ -63,6 +69,75 @@ static struct clkmgr_handle *get_clkmgr_handle(uint32_t token)
 	return NULL;
 }
 
+#ifdef CONFIG_TRUSTKERNEL_TEE_FP_SUPPORT
+/*
+ * An SPI clock the TEE asks for without anything having registered it.
+ *
+ * TrustKernel's fingerprint trusted apps drive their sensor over SPI from
+ * the secure side and ask for the controller's clock by token: type "spi",
+ * id = the bus number. Nothing in this tree registers SPI clocks, so every
+ * such request failed with TEEC_ERROR_ITEM_NOT_FOUND ("invalid token 1")
+ * and the fingerprint HAL never came up. The stock kernel's
+ * tee_clkmgr_handle() does not need a registration either: for an unknown
+ * SPI token it looks the master up by bus number, takes "spi-clk" from the
+ * controller's device, and keeps a handle using clk_prepare_enable() and
+ * clk_disable_unprepare(). This does the same, reconstructed from that
+ * binary, but allocates and looks up outside the list lock rather than
+ * under it.
+ */
+static int clk_enable_wrap(const void *clk)
+{
+	return clk_prepare_enable((struct clk *) clk);
+}
+
+static void clk_disable_wrap(const void *clk)
+{
+	clk_disable_unprepare((struct clk *) clk);
+}
+
+static struct clkmgr_handle *spi_clkmgr_handle_create(uint32_t token)
+{
+	uint32_t id = token >> TEE_CLKMGR_TOKEN_ID_SHIFT;
+	struct spi_master *master;
+	struct clkmgr_handle *h, *w;
+	struct clk *clk;
+
+	master = spi_busnum_to_master(id);
+	if (master == NULL) {
+		pr_warn("tkcoredrv: spi%u not found\n", id);
+		return NULL;
+	}
+	clk = devm_clk_get(master->dev.parent, "spi-clk");
+	put_device(&master->dev);
+	if (IS_ERR(clk)) {
+		pr_warn("tkcoredrv: failed to get spi-clk: %ld\n", PTR_ERR(clk));
+		return NULL;
+	}
+
+	h = kzalloc(sizeof(*h), GFP_KERNEL);
+	if (h == NULL)
+		return NULL;
+	h->token = token;
+	h->e = (void *) clk_enable_wrap;
+	h->d = (void *) clk_disable_wrap;
+	h->p0 = clk;
+	h->argnum = 1;
+
+	spin_lock(&clk_list_lock);
+	list_for_each_entry(w, &clk_list, le) {
+		if (w->token == token) {
+			spin_unlock(&clk_list_lock);
+			kfree(h);
+			return w;
+		}
+	}
+	list_add(&h->le, &clk_list);
+	spin_unlock(&clk_list_lock);
+
+	return h;
+}
+#endif
+
 int tee_clkmgr_handle(uint32_t token, uint32_t op)
 {
 	struct clkmgr_handle *ph, h;
@@ -71,6 +146,14 @@ int tee_clkmgr_handle(uint32_t token, uint32_t op)
 	spin_lock(&clk_list_lock);
 
 	ph = get_clkmgr_handle(token | TEE_CLKMGR_TOKEN_NOT_LEGACY);
+#ifdef CONFIG_TRUSTKERNEL_TEE_FP_SUPPORT
+	if (ph == NULL && ((token | TEE_CLKMGR_TOKEN_NOT_LEGACY) >>
+			   TEE_CLKMGR_TOKEN_TYPE_SHIFT) == TEE_CLKMGR_TYPE_SPI) {
+		spin_unlock(&clk_list_lock);
+		ph = spi_clkmgr_handle_create(token | TEE_CLKMGR_TOKEN_NOT_LEGACY);
+		spin_lock(&clk_list_lock);
+	}
+#endif
 	if (ph == NULL) {
 		pr_err("invalid token %u\n", token);
 		spin_unlock(&clk_list_lock);
