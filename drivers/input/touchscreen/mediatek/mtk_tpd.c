@@ -418,44 +418,72 @@ static void touch_resume_workqueue_callback(struct work_struct *work)
 	g_tpd_drv->resume(NULL);
 	tpd_suspend_flag = 0;
 }
+/*
+ * Suspend the touch controller before the panel is powered down, not after.
+ * The Titan's Synaptics touch controller shares the panel's power: by the time
+ * FB_EVENT_BLANK arrives the panel is off, the controller has dropped off the
+ * bus, its interrupt line has already woken the driver's thread into some
+ * twenty failed reads, and suspend's own writes fail too ("ACK error",
+ * "Failed to read interrupt status", "Failed to read device control" at every
+ * screen-off). FB_EARLY_EVENT_BLANK comes some 500 ms earlier, while it still
+ * answers. FB_EVENT_BLANK still suspends if the early event never came, and a
+ * blank that is backed out (FB_R_EARLY_EVENT_BLANK) resumes it again.
+ */
+static void tpd_fb_suspend(void)
+{
+	int err;
+
+	if (g_tpd_drv && !tpd_suspend_flag) {
+		err = cancel_work_sync(&touch_resume_work);
+		if (!err)
+			TPD_DMESG("cancel resume_workqueue failed\n");
+		g_tpd_drv->suspend(NULL);
+	}
+	tpd_suspend_flag = 1;
+}
+
+static void tpd_fb_resume(void)
+{
+	if (g_tpd_drv && tpd_suspend_flag) {
+		if (!queue_work(touch_resume_workqueue, &touch_resume_work))
+			TPD_DMESG("start resume_workqueue failed\n");
+	}
+}
+
 static int tpd_fb_notifier_callback(
 			struct notifier_block *self,
 			unsigned long event, void *data)
 {
-	struct fb_event *evdata = NULL;
+	struct fb_event *evdata = data;
 	int blank;
-	int err = 0;
 
 	TPD_DEBUG("%s\n", __func__);
 
-	evdata = data;
 	/* If we aren't interested in this event, skip it immediately ... */
-	if (event != FB_EVENT_BLANK)
+	if (event != FB_EVENT_BLANK && event != FB_EARLY_EVENT_BLANK &&
+	    event != FB_R_EARLY_EVENT_BLANK)
+		return 0;
+	if (!evdata || !evdata->data)
 		return 0;
 
 	blank = *(int *)evdata->data;
-	TPD_DMESG("fb_notify(blank=%d)\n", blank);
+	TPD_DMESG("fb_notify(event=%lu, blank=%d)\n", event, blank);
 	switch (blank) {
 	case FB_BLANK_UNBLANK:
-		TPD_DMESG("LCD ON Notify\n");
-		if (g_tpd_drv && tpd_suspend_flag) {
-			err = queue_work(touch_resume_workqueue,
-						&touch_resume_work);
-			if (!err) {
-				TPD_DMESG("start resume_workqueue failed\n");
-				return err;
-			}
+		if (event == FB_EVENT_BLANK) {
+			TPD_DMESG("LCD ON Notify\n");
+			tpd_fb_resume();
 		}
 		break;
 	case FB_BLANK_POWERDOWN:
-		TPD_DMESG("LCD OFF Notify\n");
-		if (g_tpd_drv && !tpd_suspend_flag) {
-			err = cancel_work_sync(&touch_resume_work);
-			if (!err)
-				TPD_DMESG("cancel resume_workqueue failed\n");
-			g_tpd_drv->suspend(NULL);
+		if (event == FB_R_EARLY_EVENT_BLANK) {
+			TPD_DMESG("LCD OFF backed out\n");
+			tpd_fb_resume();
+		} else {
+			TPD_DMESG("LCD OFF Notify%s\n",
+				  event == FB_EARLY_EVENT_BLANK ? " (early)" : "");
+			tpd_fb_suspend();
 		}
-		tpd_suspend_flag = 1;
 		break;
 	default:
 		break;
