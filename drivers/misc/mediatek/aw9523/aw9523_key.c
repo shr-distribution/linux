@@ -789,6 +789,12 @@ static void aw9523_input_register(void) {
     }
     AW9523_LOG("%s[%d]\n", __func__,__LINE__);
     aw9523_key->input_dev = aw9523_kpd_input_dev;
+    /*
+     * Under the I2C client, not /devices/virtual: a keyboard with no parent
+     * looks like one a program made with uinput, and the input method does
+     * not count it as a hardware keyboard.
+     */
+    aw9523_kpd_input_dev->dev.parent = aw9523_key->dev;
     __set_bit(EV_KEY, aw9523_kpd_input_dev->evbit);
     __set_bit(EV_SYN, aw9523_kpd_input_dev->evbit);
 
