@@ -183,6 +183,27 @@ static unsigned char keyst_new[P1_NUM_MAX];
 
 static unsigned char keyst_def[KEYST_MAX][P1_NUM_MAX];
 
+/*
+ * The Titan's key contacts drop out: a key that is still held reads as
+ * released for one to four scans (15-70 ms) and then pressed again, which
+ * types the letter twice. Every dropout captured came right after the key
+ * went down (a first hold of 15-59 ms); deliberate typing, including real
+ * double letters, holds a key for longer than that or leaves a longer gap.
+ *
+ * So a release after a hold shorter than AW9523_BOUNCE_HOLD_MS is held back
+ * for AW9523_BOUNCE_GAP_MS. If the key reads pressed again within that time
+ * it is the same keystroke: neither the release nor the second press is
+ * reported. Otherwise the release is reported once the time is up. The cost
+ * is that one key tapped twice faster than that reads as one tap.
+ */
+#define AW9523_BOUNCE_HOLD_MS    60
+#define AW9523_BOUNCE_GAP_MS     80
+#define AW9523_NUM_KEYS          (P0_NUM_MAX * P1_NUM_MAX)
+static ktime_t key_pressed_at[AW9523_NUM_KEYS];
+static ktime_t key_released_at[AW9523_NUM_KEYS];
+static bool key_release_held[AW9523_NUM_KEYS];
+static DEFINE_MUTEX(aw9523_scan_lock);
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 static unsigned char i2c_write_reg(unsigned char addr, unsigned char reg_data);
 static unsigned char i2c_read_reg(unsigned char addr);
@@ -349,20 +370,21 @@ static void aw9523_key_eint_work(struct work_struct *work) {
     unsigned char i, j, idx;
     unsigned char val;
     bool update_now = false; // Used to detect ghosting
-    int keymap_len;
     int x = 0;
-    int y = 0;
     int t;
     // These data structures are large enough they can't overflow.
     int press_count = 0;
     int press_codes[P0_NUM_MAX * P1_NUM_MAX];
     int release_count = 0;
     int release_codes[P0_NUM_MAX * P1_NUM_MAX];
+    bool releases_held = false;
+    ktime_t now;
 
     AW9523_LOG("Handling Interrupt (%d)\n",aw9523_key->irq_enabled);
 
+    mutex_lock(&aw9523_scan_lock);
+
     keymap = aw9523_key->keymap;
-    keymap_len = aw9523_key->keymap_len;
 
     for (i = 0; i < P1_NUM_MAX; i++) {
         if (P1_KCOL_MASK & (1 << i)) {
@@ -377,6 +399,8 @@ static void aw9523_key_eint_work(struct work_struct *work) {
             AW9523_LOG("Column %d, keyst_new value: 0x%02x\n", i, keyst_new[i]);  // DEBUG: Print filtered value
         }
     }
+    now = ktime_get();
+
     // Print full keyst_new array for debugging
     AW9523_LOG("Full keyst_new array: [0x%02x, 0x%02x, 0x%02x, 0x%02x, 0x%02x, 0x%02x, 0x%02x]\n",
                keyst_new[0], keyst_new[1], keyst_new[2], keyst_new[3],
@@ -388,7 +412,6 @@ static void aw9523_key_eint_work(struct work_struct *work) {
      * released, then detect the correct keypress. See youtu.be/L3ByBtM-w9I */
     if (memcmp(keyst_old, keyst_new, P1_NUM_MAX)) {    // keyst changed
         val = P0_KROW_MASK; // The distinct columns used
-        y = 0;
         update_now = true; // Now by default, do the update since keyst changed.
         for (i = 0; i < P1_NUM_MAX; i++) {
             if (keyst_new[i] == P0_KROW_MASK) {
@@ -431,16 +454,28 @@ static void aw9523_key_eint_work(struct work_struct *work) {
                     idx = i * P0_NUM_MAX + j;
                     if (keyst_new[i] & (1 << j)) {    // release
                         keymap[idx].key_val = 0;
-                        release_codes[release_count] = keymap[idx].key_code;
-                        release_count++;
+                        if (ktime_ms_delta(now, key_pressed_at[idx]) < AW9523_BOUNCE_HOLD_MS) {
+                            // Possibly a dropout: decide once the gap is over.
+                            key_released_at[idx] = now;
+                            key_release_held[idx] = true;
+                        } else {
+                            release_codes[release_count] = keymap[idx].key_code;
+                            release_count++;
+                        }
                         if (keymap[idx].key_code == KEY_LEFTMETA) {
                             AW9523_LOG("LEFTMETA RELEASE");
                             aw9523MetaKeyPressed = false;
                         }
                     } else {    // press
                         keymap[idx].key_val = 1;
-                        press_codes[press_count] = keymap[idx].key_code;
-                        press_count++;
+                        if (key_release_held[idx]) {
+                            // Back within the gap: the same keystroke, still down.
+                            key_release_held[idx] = false;
+                        } else {
+                            key_pressed_at[idx] = now;
+                            press_codes[press_count] = keymap[idx].key_code;
+                            press_count++;
+                        }
                         if (keymap[idx].key_code == KEY_LEFTMETA) {
                             AW9523_LOG("LEFTMETA PRESS");
                             aw9523MetaKeyPressed = true;
@@ -476,14 +511,51 @@ static void aw9523_key_eint_work(struct work_struct *work) {
         memcpy(keyst_old, keyst_new, P1_NUM_MAX);
     }
 
-    if (((!(memcmp(&keyst_new[0], &keyst_def[KEYST_NEW][0], P1_NUM_MAX))))) {
+    // Report the held-back releases whose key stayed up for the whole gap.
+    release_count = 0;
+    for (idx = 0; idx < AW9523_NUM_KEYS; idx++) {
+        if (!key_release_held[idx])
+            continue;
+        if (ktime_ms_delta(now, key_released_at[idx]) < AW9523_BOUNCE_GAP_MS) {
+            releases_held = true;
+            continue;
+        }
+        key_release_held[idx] = false;
+        input_report_key(aw9523_key->input_dev, keymap[idx].key_code, 0);
+        release_count++;
+    }
+    if (release_count)
+        input_sync(aw9523_key->input_dev);
+
+    // Keep scanning while a release is held back, so it is decided in time.
+    if (!releases_held && !memcmp(&keyst_new[0], &keyst_def[KEYST_NEW][0], P1_NUM_MAX)) {
         AW9523_LOG("No keys pressed return to interrupt monitoring\n");
         aw9523_reset_to_monitor_for_state_change();
     } else {
         AW9523_LOG("Scheduling matrix rescan - keys held down\n");
         aw9523_schedule_matrix_rescan(false);
     }
+    mutex_unlock(&aw9523_scan_lock);
     AW9523_LOG("%s: end \n", __func__);
+}
+
+/* Report every held-back release now: no scan may come to decide it. */
+static void aw9523_flush_held_releases(void)
+{
+    int idx;
+    bool any = false;
+
+    mutex_lock(&aw9523_scan_lock);
+    for (idx = 0; idx < AW9523_NUM_KEYS; idx++) {
+        if (!key_release_held[idx])
+            continue;
+        key_release_held[idx] = false;
+        input_report_key(aw9523_key->input_dev, aw9523_key->keymap[idx].key_code, 0);
+        any = true;
+    }
+    if (any)
+        input_sync(aw9523_key->input_dev);
+    mutex_unlock(&aw9523_scan_lock);
 }
 
 static enum hrtimer_restart aw9523_key_timer_func(struct hrtimer *timer)
@@ -889,7 +961,7 @@ static int aw9523_i2c_probe(struct i2c_client *client, const struct i2c_device_i
     return err;
 }
 
-int agold_key_suspend()
+int agold_key_suspend(void)
 {
     unsigned char reg_value;
     int ret;
@@ -916,11 +988,12 @@ int agold_key_suspend()
     // Cancel any pending work
     cancel_delayed_work_sync(&aw9523_key->work);
     cancel_work_sync(&aw9523_key->eint_work);
+    aw9523_flush_held_releases();
 
     return 0;
 }
 
-int agold_key_resume()
+int agold_key_resume(void)
 {
     unsigned char reg_value;
     int ret;

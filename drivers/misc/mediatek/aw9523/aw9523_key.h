@@ -25,7 +25,11 @@
  
 #define AW9523_TAG "[aw9523] "
 
-#define AW9523_DEBUG
+/*
+ * Logs every matrix scan at KERN_ERR: thousands of lines a minute while
+ * typing, and it stretches the 10 ms scan to 15 ms. Debugging only.
+ */
+//#define AW9523_DEBUG
 
 #ifdef AW9523_DEBUG
 #define AW9523_FUN(f) printk(KERN_ERR AW9523_TAG "%s\n", __FUNCTION__)
