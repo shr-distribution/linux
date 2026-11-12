@@ -187,8 +187,8 @@ static unsigned char keyst_def[KEYST_MAX][P1_NUM_MAX];
  * The Titan's key contacts drop out: a key that is still held reads as
  * released for one to four scans (15-70 ms) and then pressed again, which
  * types the letter twice. Every dropout captured came right after the key
- * went down (a first hold of 15-59 ms); deliberate typing, including real
- * double letters, holds a key for longer than that or leaves a longer gap.
+ * went down (a first hold of 15-60 ms); deliberate typing, including real
+ * double letters, held a key for 90 ms or more.
  *
  * So a release after a hold shorter than AW9523_BOUNCE_HOLD_MS is held back
  * for AW9523_BOUNCE_GAP_MS. If the key reads pressed again within that time
@@ -196,7 +196,7 @@ static unsigned char keyst_def[KEYST_MAX][P1_NUM_MAX];
  * reported. Otherwise the release is reported once the time is up. The cost
  * is that one key tapped twice faster than that reads as one tap.
  */
-#define AW9523_BOUNCE_HOLD_MS    60
+#define AW9523_BOUNCE_HOLD_MS    75
 #define AW9523_BOUNCE_GAP_MS     80
 #define AW9523_NUM_KEYS          (P0_NUM_MAX * P1_NUM_MAX)
 static ktime_t key_pressed_at[AW9523_NUM_KEYS];
