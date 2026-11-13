@@ -84,6 +84,35 @@
 #define KBASE_MEM_ION_SYNC_WORKAROUND
 #endif
 
+#ifdef KBASE_MEM_ION_SYNC_WORKAROUND
+/*
+ * Syncs the parts of an imported dma-buf the kernel maps, and skips the rest.
+ *
+ * Cache maintenance on arm64 goes through the linear map, and memory carved
+ * out with no-map - the display's framebuffer, mtkfb's smem - is not in it:
+ * dma_sync_sg_for_cpu() on such an entry invalidates an address that is not
+ * mapped and the kernel oopses in __dma_inv_area. A screenshot
+ * imports the framebuffer into the GPU, so it took the whole phone down.
+ * Memory the kernel never maps has no cache lines of its own to clean or
+ * invalidate, so leaving it out loses nothing.
+ */
+static void kbase_sync_imported_sg(struct device *dev, struct sg_table *sgt,
+		enum dma_data_direction dir, bool for_cpu)
+{
+	struct scatterlist *sg;
+	unsigned int i;
+
+	for_each_sg(sgt->sgl, sg, sgt->nents, i) {
+		if (!pfn_valid(page_to_pfn(sg_page(sg))))
+			continue;
+		if (for_cpu)
+			dma_sync_sg_for_cpu(dev, sg, 1, dir);
+		else
+			dma_sync_sg_for_device(dev, sg, 1, dir);
+	}
+}
+#endif
+
 
 static int kbase_vmap_phy_pages(struct kbase_context *kctx,
 		struct kbase_va_region *reg, u64 offset_bytes, size_t size,
@@ -965,8 +994,7 @@ int kbase_mem_do_sync_imported(struct kbase_context *kctx,
 			struct dma_buf_attachment *attachment = reg->gpu_alloc->imported.umm.dma_attachment;
 			struct sg_table *sgt = reg->gpu_alloc->imported.umm.sgt;
 
-			dma_sync_sg_for_device(attachment->dev, sgt->sgl,
-					sgt->nents, dir);
+			kbase_sync_imported_sg(attachment->dev, sgt, dir, false);
 			ret = 0;
 		}
 #else
@@ -994,8 +1022,7 @@ int kbase_mem_do_sync_imported(struct kbase_context *kctx,
 			struct dma_buf_attachment *attachment = reg->gpu_alloc->imported.umm.dma_attachment;
 			struct sg_table *sgt = reg->gpu_alloc->imported.umm.sgt;
 
-			dma_sync_sg_for_cpu(attachment->dev, sgt->sgl,
-					sgt->nents, dir);
+			kbase_sync_imported_sg(attachment->dev, sgt, dir, true);
 			ret = 0;
 		}
 #else
