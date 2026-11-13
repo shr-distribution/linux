@@ -32,6 +32,7 @@
 #include "include/pmic_auxadc.h"
 #include <pmic_lbat_service.h>
 #include <mt-plat/mtk_charger.h>
+#include <linux/power/oz8806_battery.h>
 
 #if defined(CONFIG_MTK_BASE_POWER)
 #include <mtk_idle.h>
@@ -518,6 +519,7 @@ int bat_percent_notify_handler(void *unused)
 {
 	ktime_t ktime;
 	int bat_per_val = 0;
+	struct oz8806_reading oz;
 
 	do {
 		ktime = ktime_set(10, 0);
@@ -531,6 +533,16 @@ int bat_percent_notify_handler(void *unused)
 #if (CONFIG_MTK_GAUGE_VERSION == 30)
 		bat_per_val = battery_get_uisoc();
 #endif
+		/*
+		 * A board with an OZ8806 (the Titan Pocket) reports its charge
+		 * from that gauge. MediaTek's ui_soc counts against a reference
+		 * profile and starts from 0 when nothing was saved, then takes
+		 * hours to climb past BAT_PERCENT_LINIT: until it did, this
+		 * held "battery low" and the flashlight core refused the torch
+		 * at any charge. Use the gauge the battery supply reports.
+		 */
+		if (!oz8806_battery_read(&oz))
+			bat_per_val = oz.capacity;
 		if ((upmu_get_rgs_chrdet() == 0) &&
 		    (g_battery_percent_level == 0) &&
 		    (bat_per_val <= BAT_PERCENT_LINIT)) {
