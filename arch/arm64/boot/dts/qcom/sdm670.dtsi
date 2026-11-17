@@ -1197,7 +1197,12 @@
 		qcom,bark-time = <11000>;
 		qcom,pet-time = <9360>;
 		qcom,ipi-ping;
-		qcom,wakeup-enable;
+		/*
+		 * No qcom,wakeup-enable: the counter keeps running in
+		 * s2idle while the pet timer is frozen, and the bark it
+		 * raises is replayed after resume. Stop the watchdog
+		 * across suspend instead, as mainline qcom-wdt does.
+		 */
 	};
 
 	qcom,msm-rtb {
