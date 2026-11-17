@@ -516,17 +516,53 @@ static irqreturn_t wdog_bark_handler(int irq, void *dev_id)
 {
 	struct msm_watchdog_data *wdog_dd = (struct msm_watchdog_data *)dev_id;
 	unsigned long nanosec_rem;
-	unsigned long long t = sched_clock();
+	/* Read the pet before the clock, so that now >= last_pet. */
+	unsigned long long last_pet = READ_ONCE(wdog_dd->last_pet);
+	unsigned long long now = sched_clock();
+	unsigned long long since_pet = now - last_pet;
+	unsigned long long t = now;
+	unsigned long long pet = last_pet;
 
 	nanosec_rem = do_div(t, 1000000000);
 	dev_info(wdog_dd->dev, "Watchdog bark! Now = %lu.%06lu\n",
 			(unsigned long) t, nanosec_rem / 1000);
 
-	nanosec_rem = do_div(wdog_dd->last_pet, 1000000000);
+	/*
+	 * Print a copy: do_div() divides in place, and dividing
+	 * wdog_dd->last_pet itself would corrupt it for pet_watchdog() once
+	 * a stale bark returns below.
+	 */
+	nanosec_rem = do_div(pet, 1000000000);
 	dev_info(wdog_dd->dev, "Watchdog last pet at %lu.%06lu\n",
-			(unsigned long) wdog_dd->last_pet, nanosec_rem / 1000);
+			(unsigned long) pet, nanosec_rem / 1000);
 	if (wdog_dd->do_ipi_ping)
 		dump_cpu_alive_mask(wdog_dd);
+
+	/*
+	 * Ignore a bark that cannot belong to the current count.
+	 *
+	 * The bark IRQ is requested without IRQF_NO_SUSPEND. If it fires while
+	 * the system is suspended, the IRQ core only marks it pending and
+	 * replays it from resume_device_irqs(), after msm_watchdog_resume() has
+	 * already reset the counter. On sargo that reset a healthy phone:
+	 * after "Suspended for 724.799 seconds" and "PM: noirq resume of
+	 * devices complete", the bark arrived at 3185.181190 with the last pet
+	 * at 3185.180530, 0.66 ms earlier, and nothing was stalled.
+	 *
+	 * A real bark comes bark_time after the last WDT0_RST. last_pet is
+	 * taken just after that write, so a real one arrives only slightly
+	 * short of bark_time after it. One inside half the bark time was raised
+	 * against an earlier count, which the pet has already cleared. A real
+	 * hang still barks one bark_time after its last pet, and the hardware
+	 * bite follows 3 s later if this handler never runs.
+	 */
+	if (since_pet < (unsigned long long)wdog_dd->bark_time *
+			NSEC_PER_MSEC / 2) {
+		dev_warn(wdog_dd->dev,
+			 "Ignoring a stale bark: the counter was reset %llu us ago (bark time %u ms)\n",
+			 div_u64(since_pet, NSEC_PER_USEC), wdog_dd->bark_time);
+		return IRQ_HANDLED;
+	}
 
 	/*
 	 * Say what was stuck before resetting the SoC.
@@ -536,11 +572,10 @@ static irqreturn_t wdog_bark_handler(int irq, void *dev_id)
 	 * sargo the watchdog has bitten twice during long idle runs
 	 * (androidboot.bootreason=watchdog, 2026-09-19 11:46 and 22:16), the
 	 * second time with "PM: suspend entry" as the last line in the
-	 * journal: the suspend transition did not finish within the 11 s
-	 * qcom,bark-time, which this platform deliberately keeps running
-	 * across suspend (qcom,wakeup-enable, so msm_watchdog_suspend() only
-	 * pets and leaves the counter enabled). Which task was stuck, and
-	 * where, was not recorded anywhere.
+	 * journal. The DT then still set qcom,wakeup-enable, so
+	 * msm_watchdog_suspend() only pet and left the counter running across
+	 * suspend; the stale-bark check above explains at least one such reset.
+	 * Which task was stuck, if any, and where, was not recorded anywhere.
 	 *
 	 * dump_stack() gives the context that took the bark, and
 	 * show_state_filter(TASK_UNINTERRUPTIBLE) walks every task in D state
